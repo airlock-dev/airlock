@@ -79,6 +79,9 @@ export const HitlProviderConfig = z.discriminatedUnion('type', [
     headers: z.record(z.string()).default({}),
   }),
   z.object({
+    type: z.literal('tui'),
+  }),
+  z.object({
     type: z.literal('macos'),
   }),
   z.object({

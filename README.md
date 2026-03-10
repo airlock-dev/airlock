@@ -125,6 +125,7 @@ See [`examples/gateway.yaml`](examples/gateway.yaml) for a fully annotated refer
 
 | Provider | Config `type` | Notes |
 |----------|--------------|-------|
+| TUI | `tui` | Terminal UI on stderr — `[a]pprove` / `[d]eny` with `j/k` navigation via `/dev/tty` |
 | macOS dialog | `macos` | Native approve/deny popup via `osascript` — best for local dev on Mac |
 | Dashboard | `dashboard` | Localhost web UI (default port 4112) with live SSE updates |
 | Telegram bot | `telegram` | Long-polls for replies; reply `approve ABC123` or `deny ABC123` |
