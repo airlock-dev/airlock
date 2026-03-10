@@ -38,10 +38,8 @@ export class ClientPool {
 
   private createClient(id: string, cfg: McpServerConfig): McpClient {
     if (cfg.type === 'stdio') {
-      if (!cfg.command) throw new Error(`MCP ${id}: stdio type requires 'command'`);
-      return new StdioMcpClient(id, cfg.command, cfg.args ?? [], cfg.env);
+      return new StdioMcpClient(id, cfg.command, cfg.args, cfg.env);
     } else {
-      if (!cfg.url) throw new Error(`MCP ${id}: sse type requires 'url'`);
       return new SseMcpClient(id, cfg.url, cfg.headers);
     }
   }

@@ -34,7 +34,7 @@ describe('HitlEngine.create() returns id and code synchronously', () => {
     expect(ticket).toHaveProperty('result');
     expect(typeof ticket.id).toBe('string');
     expect(typeof ticket.code).toBe('string');
-    expect(ticket.code).toMatch(/^[A-Z0-9]{6}$/);
+    expect(ticket.code).toMatch(/^[A-Z0-9]{8}$/);
     expect(ticket.result).toBeInstanceOf(Promise);
   });
 
@@ -112,7 +112,7 @@ describe('Batcher receives real id and code from engine', () => {
     expect(notifications).toHaveLength(1);
     expect(notifications[0].code).toBe(ticket.code);
     expect(notifications[0].id).toBe(ticket.id);
-    expect(notifications[0].code).toMatch(/^[A-Z0-9]{6}$/);
+    expect(notifications[0].code).toMatch(/^[A-Z0-9]{8}$/);
 
     vi.useRealTimers();
   });

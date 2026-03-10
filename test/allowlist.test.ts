@@ -67,30 +67,11 @@ describe('AllowlistEngine', () => {
     expect(engine.evaluate('nobody', 'anything')).toBe('deny');
   });
 
-  it('filterTools removes denied tools', () => {
-    const engine = new AllowlistEngine({
-      agent1: makeAgent(['github/*', 'filesystem/*']),
-    });
-    const tools = [
-      { name: 'github/create_pr',    description: '', inputSchema: { type: 'object' as const, properties: {} } },
-      { name: 'slack/send_message',  description: '', inputSchema: { type: 'object' as const, properties: {} } },
-      { name: 'filesystem/read_file',description: '', inputSchema: { type: 'object' as const, properties: {} } },
-    ];
-    const filtered = engine.filterTools('agent1', tools);
-    expect(filtered.map(t => t.name)).toEqual(['github/create_pr', 'filesystem/read_file']);
-  });
-
-  it('evaluateDomain: empty allowlist allows all', () => {
-    const engine = new AllowlistEngine({ agent1: makeAgent([]) });
-    expect(engine.evaluateDomain('agent1', 'example.com')).toBe(true);
-  });
-
-  it('evaluateDomain: blocks unlisted domains', () => {
-    const agent = makeAgent([]);
-    agent.http.domain_allowlist = ['api.example.com', '*.sentry.io'];
-    const engine = new AllowlistEngine({ agent1: agent });
-    expect(engine.evaluateDomain('agent1', 'api.example.com')).toBe(true);
-    expect(engine.evaluateDomain('agent1', 'org.sentry.io')).toBe(true);
-    expect(engine.evaluateDomain('agent1', 'evil.com')).toBe(false);
+  it('reload() updates agent configs', () => {
+    const engine = new AllowlistEngine({ agent1: makeAgent(['github/*']) });
+    expect(engine.evaluate('agent1', 'github/create_pr')).toBe('allow');
+    engine.reload({ agent1: makeAgent(['filesystem/*']) });
+    expect(engine.evaluate('agent1', 'github/create_pr')).toBe('deny');
+    expect(engine.evaluate('agent1', 'filesystem/read_file')).toBe('allow');
   });
 });

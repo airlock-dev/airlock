@@ -298,7 +298,7 @@ describe('call_tool — HITL gate', () => {
     await new Promise(r => setTimeout(r, 200)); // let batcher window close
 
     expect(batched).toHaveLength(1);
-    expect(batched[0].code).toMatch(/^[A-Z0-9]{6}$/);
+    expect(batched[0].code).toMatch(/^[A-Z0-9]{8}$/);
     expect(batched[0].code).not.toBe('pending');
     expect(batched[0].id).not.toBe('pending');
 

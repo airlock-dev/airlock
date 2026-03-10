@@ -48,7 +48,8 @@ describe('executeExec()', () => {
 
   it('respects cwd argument', async () => {
     const result = await executeExec('pwd', makeAgentConfig(), '/tmp');
-    expect(result.stdout.trim()).toBe('/tmp');
+    // macOS resolves /tmp → /private/tmp
+    expect(result.stdout.trim()).toMatch(/^(\/tmp|\/private\/tmp)$/);
   });
 
   it('uses clean env from config (not inheriting all process env)', async () => {

@@ -26,10 +26,21 @@ export interface HitlQueueEntry {
 
 export class AuditDb {
   private db: Database.Database;
+  private stmts!: {
+    insertAudit: Database.Statement;
+    insertHitl: Database.Statement;
+    updateHitlStatus: Database.Statement;
+    getHitlByCode: Database.Statement;
+    getHitlById: Database.Statement;
+    getPendingHitl: Database.Statement;
+    cleanupAudit: Database.Statement;
+    cleanupHitl: Database.Statement;
+  };
 
   constructor(dbPath: string) {
     this.db = new Database(dbPath);
     this.init();
+    this.prepareStatements();
   }
 
   private init(): void {
@@ -65,11 +76,29 @@ export class AuditDb {
     `);
   }
 
+  private prepareStatements(): void {
+    this.stmts = {
+      insertAudit: this.db.prepare(`
+        INSERT INTO audit_log (ts, agent_id, tool, args, result, error, duration_ms, hitl_code)
+        VALUES (@ts, @agent_id, @tool, @args, @result, @error, @duration_ms, @hitl_code)
+      `),
+      insertHitl: this.db.prepare(`
+        INSERT INTO hitl_queue (id, code, agent_id, tool, args, status, created_at)
+        VALUES (@id, @code, @agent_id, @tool, @args, @status, @created_at)
+      `),
+      updateHitlStatus: this.db.prepare(`
+        UPDATE hitl_queue SET status = @status, reason = @reason, resolved_at = @resolved_at WHERE id = @id
+      `),
+      getHitlByCode: this.db.prepare('SELECT * FROM hitl_queue WHERE code = ?'),
+      getHitlById: this.db.prepare('SELECT * FROM hitl_queue WHERE id = ?'),
+      getPendingHitl: this.db.prepare("SELECT * FROM hitl_queue WHERE status = 'pending' ORDER BY created_at ASC"),
+      cleanupAudit: this.db.prepare('DELETE FROM audit_log WHERE ts < ?'),
+      cleanupHitl: this.db.prepare("DELETE FROM hitl_queue WHERE status != 'pending' AND resolved_at < ?"),
+    };
+  }
+
   insertAudit(entry: Omit<AuditEntry, 'id'>): void {
-    this.db.prepare(`
-      INSERT INTO audit_log (ts, agent_id, tool, args, result, error, duration_ms, hitl_code)
-      VALUES (@ts, @agent_id, @tool, @args, @result, @error, @duration_ms, @hitl_code)
-    `).run({
+    this.stmts.insertAudit.run({
       error: null,
       duration_ms: null,
       hitl_code: null,
@@ -91,41 +120,38 @@ export class AuditDb {
     if (filters.since) { conditions.push('ts >= @since');      params.since = filters.since; }
 
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
-    const limit = filters.limit ?? 100;
+    const limit = Math.max(1, Math.min(filters.limit ?? 100, 10000));
+    params.limit = limit;
 
     return this.db.prepare(
-      `SELECT * FROM audit_log ${where} ORDER BY ts DESC LIMIT ${limit}`
+      `SELECT * FROM audit_log ${where} ORDER BY ts DESC LIMIT @limit`
     ).all(params) as AuditEntry[];
   }
 
   insertHitl(entry: HitlQueueEntry): void {
-    this.db.prepare(`
-      INSERT INTO hitl_queue (id, code, agent_id, tool, args, status, created_at)
-      VALUES (@id, @code, @agent_id, @tool, @args, @status, @created_at)
-    `).run(entry);
+    this.stmts.insertHitl.run(entry);
   }
 
   updateHitlStatus(id: string, status: HitlQueueEntry['status'], reason?: string): void {
-    this.db.prepare(`
-      UPDATE hitl_queue SET status = @status, reason = @reason, resolved_at = @resolved_at WHERE id = @id
-    `).run({ id, status, reason: reason ?? null, resolved_at: new Date().toISOString() });
+    this.stmts.updateHitlStatus.run({ id, status, reason: reason ?? null, resolved_at: new Date().toISOString() });
   }
 
   getHitlByCode(code: string): HitlQueueEntry | undefined {
-    return this.db.prepare('SELECT * FROM hitl_queue WHERE code = ?').get(code) as HitlQueueEntry | undefined;
+    return this.stmts.getHitlByCode.get(code) as HitlQueueEntry | undefined;
   }
 
   getHitlById(id: string): HitlQueueEntry | undefined {
-    return this.db.prepare('SELECT * FROM hitl_queue WHERE id = ?').get(id) as HitlQueueEntry | undefined;
+    return this.stmts.getHitlById.get(id) as HitlQueueEntry | undefined;
   }
 
   getPendingHitl(): HitlQueueEntry[] {
-    return this.db.prepare("SELECT * FROM hitl_queue WHERE status = 'pending' ORDER BY created_at ASC").all() as HitlQueueEntry[];
+    return this.stmts.getPendingHitl.all() as HitlQueueEntry[];
   }
 
   cleanup(retentionDays: number): void {
     const cutoff = new Date(Date.now() - retentionDays * 86400_000).toISOString();
-    this.db.prepare("DELETE FROM audit_log WHERE ts < ?").run(cutoff);
+    this.stmts.cleanupAudit.run(cutoff);
+    this.stmts.cleanupHitl.run(cutoff);
   }
 
   close(): void {

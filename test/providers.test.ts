@@ -31,8 +31,8 @@ describe('parseApprovalCommand()', () => {
   it('returns null for non-matching input', () => {
     expect(parseApprovalCommand('hello world')).toBeNull();
     expect(parseApprovalCommand('approve')).toBeNull();         // no code
-    expect(parseApprovalCommand('approve TOOSHORT')).toBeNull(); // not 6 chars
-    expect(parseApprovalCommand('approve TOOLONGCODE')).toBeNull();
+    expect(parseApprovalCommand('approve SHORT')).toBeNull();   // too short (5 chars)
+    expect(parseApprovalCommand('approve TOOLONGCODE1')).toBeNull(); // too long (11 chars)
     expect(parseApprovalCommand('')).toBeNull();
   });
 
@@ -127,7 +127,7 @@ function makeTelegramProvider(api: ApprovalApi = makeApprovalApi()) {
   return new TelegramHitlProvider({ bot_token: 'test-token', chat_id: '12345' }, api);
 }
 
-function makeFetchWithUpdates(updates: Array<{ update_id: number; message?: { text: string } }>) {
+function makeFetchWithUpdates(updates: Array<{ update_id: number; message?: { text: string; chat?: { id: number } } }>) {
   return vi.fn().mockImplementation((url: string) => {
     if (url.includes('getUpdates')) {
       return Promise.resolve({
@@ -164,7 +164,7 @@ describe('TelegramHitlProvider', () => {
   it('calls approve when polling returns approve message', async () => {
     vi.useRealTimers();
     const api = makeApprovalApi();
-    const fetch = makeFetchWithUpdates([{ update_id: 1, message: { text: 'approve AB1234' } }]);
+    const fetch = makeFetchWithUpdates([{ update_id: 1, message: { text: 'approve AB1234', chat: { id: 99 } } }]);
     vi.stubGlobal('fetch', fetch);
     const provider = new TelegramHitlProvider({ bot_token: 'tok', chat_id: '99' }, api);
     await provider.init();
@@ -178,13 +178,26 @@ describe('TelegramHitlProvider', () => {
   it('calls deny when polling returns deny message', async () => {
     vi.useRealTimers();
     const api = makeApprovalApi();
-    const fetch = makeFetchWithUpdates([{ update_id: 2, message: { text: 'deny AB1234 nope' } }]);
+    const fetch = makeFetchWithUpdates([{ update_id: 2, message: { text: 'deny AB1234 nope', chat: { id: 99 } } }]);
     vi.stubGlobal('fetch', fetch);
     const provider = new TelegramHitlProvider({ bot_token: 'tok', chat_id: '99' }, api);
     await provider.init();
     await new Promise(r => setTimeout(r, 1100));
     await provider.stop();
     expect(api.deny).toHaveBeenCalledWith('AB1234', 'nope');
+    vi.useFakeTimers();
+  });
+
+  it('ignores messages from unauthorized chats', async () => {
+    vi.useRealTimers();
+    const api = makeApprovalApi();
+    const fetch = makeFetchWithUpdates([{ update_id: 1, message: { text: 'approve AB1234', chat: { id: 777 } } }]);
+    vi.stubGlobal('fetch', fetch);
+    const provider = new TelegramHitlProvider({ bot_token: 'tok', chat_id: '99' }, api);
+    await provider.init();
+    await new Promise(r => setTimeout(r, 1100));
+    await provider.stop();
+    expect(api.approve).not.toHaveBeenCalled();
     vi.useFakeTimers();
   });
 
@@ -195,10 +208,9 @@ describe('TelegramHitlProvider', () => {
     const fetch = vi.fn().mockImplementation((url: string) => {
       if (url.includes('getUpdates')) {
         callCount++;
-        const offset = parseInt(new URL(url).searchParams.get('offset') ?? '0');
         // First call returns update, second returns empty (since offset advanced)
         const result = callCount === 1
-          ? [{ update_id: 5, message: { text: 'approve AB1234' } }]
+          ? [{ update_id: 5, message: { text: 'approve AB1234', chat: { id: 99 } } }]
           : [];
         return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ ok: true, result }) });
       }

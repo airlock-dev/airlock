@@ -4,7 +4,7 @@ export interface ParsedApproval {
   reason?: string;
 }
 
-const CODE = '[A-Z0-9]{6}';
+const CODE = '[A-Z0-9]{6,8}';
 
 // Matches both bare commands ("approve ABC123") and prefixed ("hitl approve ABC123")
 const APPROVE_RE = new RegExp(`(?:hitl\\s+)?approve\\s+(${CODE})\\s*$`, 'i');

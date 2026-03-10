@@ -33,7 +33,7 @@ export class ConfigWatcher extends EventEmitter {
   }
 
   stop(): void {
-    this.watcher?.close();
+    void this.watcher?.close();
   }
 
   on(event: 'reload', listener: (config: Config) => void): this;

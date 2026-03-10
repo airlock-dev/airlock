@@ -62,14 +62,16 @@ export function createAgentServer(deps: AgentServerDeps): Server {
     let needsHitl = decision === 'hitl';
 
     if (toolName === 'exec/run') {
-      const command = args['command'] as string | undefined;
-      if (!command) throw new McpError(ErrorCode.InvalidParams, 'exec/run requires a command');
+      const command = args['command'];
+      if (typeof command !== 'string' || !command) {
+        throw new McpError(ErrorCode.InvalidParams, 'exec/run requires a string command');
+      }
 
       const cmdDecision = evaluateExecCommand(command, agentConfig);
       if (cmdDecision === 'deny') {
         log.info({ agentId, command }, 'exec command denied by policy');
         auditLogger.log({ agent_id: agentId, tool: toolName, args: JSON.stringify(args), result: 'denied' });
-        throw new McpError(ErrorCode.InvalidRequest, `Command denied by policy: ${command}`);
+        throw new McpError(ErrorCode.InvalidRequest, `Command denied by policy`);
       }
       if (cmdDecision === 'hitl') needsHitl = true;
     }

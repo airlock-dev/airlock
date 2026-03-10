@@ -11,12 +11,8 @@ import { auditApiPlugin } from './audit/api.js';
 import { sseServerPlugin } from './transport/sse-server.js';
 import type { AgentServerDeps } from './transport/agent-server.js';
 import type { Config } from './config/loader.js';
-import type { HitlProvider } from './hitl/providers/types.js';
-import { StdioHitlProvider } from './hitl/providers/stdio.js';
-import { TelegramHitlProvider } from './hitl/providers/telegram.js';
-import { OpenClawHitlProvider } from './hitl/providers/openclaw.js';
-import { SlackHitlProvider } from './hitl/providers/slack.js';
-import { WebhookHitlProvider } from './hitl/providers/webhook.js';
+import type { HitlProvider, ApprovalApi } from './hitl/providers/types.js';
+import { createHitlProvider } from './hitl/provider-factory.js';
 import { childLogger } from './util/logger.js';
 
 const log = childLogger('gateway');
@@ -41,10 +37,15 @@ export class Gateway {
     this.auditLogger = new AuditLogger(this.config.audit);
     this.auditLogger.startDailyCleanup();
 
-    // HITL provider
+    // HITL — provider needs approvalApi but engine doesn't exist yet, use forwarder
     this.hitlBatcher = new HitlBatcher(this.config.hitl.batch_window_ms);
 
-    this.hitlProvider = this.createHitlProvider();
+    const approvalForwarder: ApprovalApi = {
+      approve: (code) => this.hitlEngine.approve(code),
+      deny: (code, reason) => this.hitlEngine.deny(code, reason),
+    };
+
+    this.hitlProvider = createHitlProvider(this.config.hitl.provider, approvalForwarder);
 
     this.hitlEngine = new HitlEngine(
       this.auditLogger,
@@ -80,6 +81,7 @@ export class Gateway {
     await this.app.register(auditApiPlugin, { auditLogger: this.auditLogger, secret });
     await this.app.register(sseServerPlugin, {
       getDeps: (agentId: string) => this.buildAgentDeps(agentId),
+      secret,
     });
 
     this.app.get('/health', async () => {
@@ -110,12 +112,13 @@ export class Gateway {
     };
   }
 
-  reload(newConfig: Config): void {
+  async reload(newConfig: Config): Promise<void> {
     log.info('Reloading gateway config');
     this.config = newConfig;
     this.allowlist.reload(newConfig.agents);
-    // HitlEngine timeout can't be changed in-flight (active requests keep old timeout)
-    log.info('Config reloaded: allowlist and agent configs updated');
+    this.registry.reloadAgents(newConfig.agents, newConfig.security);
+    await this.registry.refresh();
+    log.info('Config reloaded: allowlist, registry, and agent configs updated');
   }
 
   async stop(): Promise<void> {
@@ -124,31 +127,5 @@ export class Gateway {
     await this.pool?.stop();
     await this.hitlProvider?.stop();
     this.auditLogger?.stop();
-  }
-
-  private createHitlProvider(): HitlProvider {
-    const cfg = this.config.hitl.provider;
-
-    switch (cfg.type) {
-      case 'telegram':
-        return new TelegramHitlProvider(
-          { bot_token: cfg.bot_token, chat_id: cfg.chat_id },
-          this.hitlEngine,
-        );
-      case 'openclaw':
-        return new OpenClawHitlProvider(
-          { gateway_url: cfg.gateway_url, token: cfg.token, session_key: cfg.session_key },
-          this.hitlEngine,
-        );
-      case 'slack':
-        return new SlackHitlProvider({ webhook_url: cfg.webhook_url });
-      case 'webhook':
-        return new WebhookHitlProvider({ url: cfg.url, headers: cfg.headers });
-      case 'stdio':
-        return new StdioHitlProvider(this.hitlEngine);
-      default:
-        log.warn({ type: (cfg as { type: string }).type }, 'Unknown HITL provider type, falling back to stdio');
-        return new StdioHitlProvider(this.hitlEngine);
-    }
   }
 }

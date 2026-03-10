@@ -9,9 +9,15 @@ export interface ExecResult {
   stderr: string;
   duration_ms: number;
   timed_out: boolean;
+  truncated?: boolean;
 }
 
 export type ExecDecision = 'allow' | 'hitl' | 'deny';
+
+const MAX_OUTPUT_BYTES = 10 * 1024 * 1024; // 10MB cap on stdout/stderr
+
+/** Shell metacharacters that allow command chaining / injection */
+const SHELL_INJECTION_RE = /[;|&`$(){}]/;
 
 export function buildExecTool(): Tool {
   return {
@@ -29,7 +35,18 @@ export function buildExecTool(): Tool {
   };
 }
 
+/**
+ * Reject commands containing shell metacharacters that could bypass
+ * the prefix-based allow/deny matching (e.g. chaining via ; && || | $()).
+ */
+export function containsShellInjection(command: string): boolean {
+  return SHELL_INJECTION_RE.test(command);
+}
+
 export function evaluateExecCommand(command: string, agentConfig: AgentConfig): ExecDecision {
+  // Reject shell injection regardless of allow/deny patterns
+  if (containsShellInjection(command)) return 'deny';
+
   // Deny takes priority
   if (agentConfig.exec.deny.some(p => matchesCommand(p, command))) return 'deny';
   if (agentConfig.exec.hitl.some(p => matchesCommand(p, command))) return 'hitl';
@@ -56,9 +73,29 @@ export async function executeExec(
     let stdout = '';
     let stderr = '';
     let timedOut = false;
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    let truncated = false;
 
-    child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
-    child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
+    child.stdout.on('data', (chunk: Buffer) => {
+      if (stdoutBytes < MAX_OUTPUT_BYTES) {
+        const remaining = MAX_OUTPUT_BYTES - stdoutBytes;
+        stdout += chunk.slice(0, remaining).toString();
+      } else {
+        truncated = true;
+      }
+      stdoutBytes += chunk.length;
+    });
+
+    child.stderr.on('data', (chunk: Buffer) => {
+      if (stderrBytes < MAX_OUTPUT_BYTES) {
+        const remaining = MAX_OUTPUT_BYTES - stderrBytes;
+        stderr += chunk.slice(0, remaining).toString();
+      } else {
+        truncated = true;
+      }
+      stderrBytes += chunk.length;
+    });
 
     const timer = setTimeout(() => {
       timedOut = true;
@@ -76,6 +113,7 @@ export async function executeExec(
         stderr,
         duration_ms: Date.now() - start,
         timed_out: timedOut,
+        truncated,
       });
     });
 

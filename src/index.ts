@@ -54,22 +54,27 @@ async function main(): Promise<void> {
 
   const watcher = new ConfigWatcher(configPath);
   watcher.on('reload', (newConfig) => {
-    gateway.reload(newConfig);
+    gateway.reload(newConfig).catch(err => {
+      logger.error({ err }, 'Failed to apply reloaded config');
+    });
   });
   watcher.start();
 
-  process.on('SIGTERM', async () => {
-    logger.info('SIGTERM received, shutting down');
-    watcher.stop();
-    await gateway.stop();
+  const shutdown = async (signal: string) => {
+    logger.info({ signal }, 'Shutdown signal received');
+    try {
+      watcher.stop();
+      await gateway.stop();
+    } catch (err) {
+      logger.error({ err }, 'Error during shutdown');
+    }
     process.exit(0);
-  });
+  };
 
-  process.on('SIGINT', async () => {
-    logger.info('SIGINT received, shutting down');
-    watcher.stop();
-    await gateway.stop();
-    process.exit(0);
+  process.on('SIGTERM', () => void shutdown('SIGTERM'));
+  process.on('SIGINT', () => void shutdown('SIGINT'));
+  process.on('unhandledRejection', (err) => {
+    logger.error({ err }, 'Unhandled promise rejection');
   });
 
   await gateway.start();

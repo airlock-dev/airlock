@@ -2,7 +2,7 @@ import { formatBatch } from '../formatter.js';
 import { childLogger } from '../../util/logger.js';
 import type { HitlProvider, HitlNotification } from './types.js';
 
-const log = childLogger('hitl:webhook');
+const log = childLogger('hitl-webhook');
 
 export interface WebhookHitlConfig {
   url: string;

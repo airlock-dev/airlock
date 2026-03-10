@@ -59,7 +59,7 @@ export class TelegramHitlProvider implements HitlProvider {
       if (data.ok && data.result.length > 0) {
         for (const update of data.result) {
           this.lastUpdateId = Math.max(this.lastUpdateId, update.update_id);
-          this.handleMessage(update.message?.text ?? '');
+          this.handleUpdate(update);
         }
       }
     } catch (err) {
@@ -68,7 +68,16 @@ export class TelegramHitlProvider implements HitlProvider {
     this.schedulePoll();
   }
 
-  private handleMessage(text: string): void {
+  private handleUpdate(update: TelegramUpdate): void {
+    const chatId = update.message?.chat?.id;
+    const text = update.message?.text ?? '';
+
+    // Only process messages from the configured chat
+    if (!chatId || String(chatId) !== this.config.chat_id) {
+      log.warn({ chatId, expected: this.config.chat_id }, 'Ignoring message from unauthorized chat');
+      return;
+    }
+
     const parsed = parseApprovalCommand(text);
     if (!parsed) return;
 
@@ -89,5 +98,5 @@ export class TelegramHitlProvider implements HitlProvider {
 
 interface TelegramUpdate {
   update_id: number;
-  message?: { text?: string };
+  message?: { text?: string; chat?: { id: number } };
 }

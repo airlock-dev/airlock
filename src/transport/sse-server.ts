@@ -1,3 +1,4 @@
+import { timingSafeEqual } from 'crypto';
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { createAgentServer, connectAgentServer } from './agent-server.js';
@@ -6,11 +7,31 @@ import { childLogger } from '../util/logger.js';
 
 const log = childLogger('sse-server');
 
+function constantTimeEqual(a: string, b: string): boolean {
+  const bufA = Buffer.from(a);
+  const bufB = Buffer.from(b);
+  if (bufA.length !== bufB.length) return false;
+  return timingSafeEqual(bufA, bufB);
+}
+
 export async function sseServerPlugin(
   app: FastifyInstance,
-  opts: { getDeps: (agentId: string) => AgentServerDeps | undefined },
+  opts: {
+    getDeps: (agentId: string) => AgentServerDeps | undefined;
+    secret?: string;
+  },
 ): Promise<void> {
+  const { secret } = opts;
   const sessions = new Map<string, SSEServerTransport>();
+
+  // Auth for SSE endpoints
+  app.addHook('preHandler', async (request, reply) => {
+    if (!secret) return;
+    const auth = request.headers.authorization ?? '';
+    if (!constantTimeEqual(auth, `Bearer ${secret}`)) {
+      return reply.status(401).send({ error: 'Unauthorized' });
+    }
+  });
 
   app.get('/agents/:profileId/sse', async (request: FastifyRequest, reply: FastifyReply) => {
     const { profileId } = request.params as { profileId: string };
