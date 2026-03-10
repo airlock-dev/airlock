@@ -69,7 +69,12 @@ export class AuditDb {
     this.db.prepare(`
       INSERT INTO audit_log (ts, agent_id, tool, args, result, error, duration_ms, hitl_code)
       VALUES (@ts, @agent_id, @tool, @args, @result, @error, @duration_ms, @hitl_code)
-    `).run(entry);
+    `).run({
+      error: null,
+      duration_ms: null,
+      hitl_code: null,
+      ...entry,
+    });
   }
 
   queryAudit(filters: {

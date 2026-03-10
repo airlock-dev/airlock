@@ -38,37 +38,27 @@ describe('HitlEngine', () => {
   });
 
   it('resolves approved when approve() called by code', async () => {
-    const promise = engine.request({ agentId: 'agent1', tool: 'github/create_pr', args: {} });
-
-    // Get the code from the DB insert call
-    const call = (auditLogger.insertHitl as ReturnType<typeof vi.fn>).mock.calls[0][0];
-    engine.approve(call.code);
-
-    const result = await promise;
-    expect(result).toBe('approved');
+    const { code, result } = engine.create({ agentId: 'agent1', tool: 'github/create_pr', args: {} });
+    engine.approve(code);
+    expect(await result).toBe('approved');
   });
 
   it('resolves denied when deny() called', async () => {
-    const promise = engine.request({ agentId: 'agent1', tool: 'github/create_pr', args: {} });
-
-    const call = (auditLogger.insertHitl as ReturnType<typeof vi.fn>).mock.calls[0][0];
-    engine.deny(call.code, 'not today');
-
-    const result = await promise;
-    expect(result).toBe('denied');
+    const { code, result } = engine.create({ agentId: 'agent1', tool: 'github/create_pr', args: {} });
+    engine.deny(code, 'not today');
+    expect(await result).toBe('denied');
   });
 
   it('resolves timeout after timeout period', async () => {
     vi.useFakeTimers();
-    const promise = engine.request({ agentId: 'agent1', tool: 'github/create_pr', args: {} });
+    const { result } = engine.create({ agentId: 'agent1', tool: 'github/create_pr', args: {} });
     vi.advanceTimersByTime(6000);
-    const result = await promise;
-    expect(result).toBe('timeout');
+    expect(await result).toBe('timeout');
     vi.useRealTimers();
   });
 
-  it('getPending() returns pending requests', async () => {
-    void engine.request({ agentId: 'agent1', tool: 'github/create_pr', args: { repo: 'test' } });
+  it('getPending() returns pending requests', () => {
+    engine.create({ agentId: 'agent1', tool: 'github/create_pr', args: { repo: 'test' } });
     const pending = engine.getPending();
     expect(pending).toHaveLength(1);
     expect(pending[0].agentId).toBe('agent1');
@@ -76,10 +66,9 @@ describe('HitlEngine', () => {
   });
 
   it('removes from pending after resolve', async () => {
-    const promise = engine.request({ agentId: 'agent1', tool: 'github/create_pr', args: {} });
-    const call = (auditLogger.insertHitl as ReturnType<typeof vi.fn>).mock.calls[0][0];
-    engine.approve(call.id); // approve by id
-    await promise;
+    const { id, result } = engine.create({ agentId: 'agent1', tool: 'github/create_pr', args: {} });
+    engine.approve(id);
+    await result;
     expect(engine.getPending()).toHaveLength(0);
   });
 });

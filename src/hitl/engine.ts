@@ -7,6 +7,12 @@ const log = childLogger('hitl-engine');
 
 export type HitlResult = 'approved' | 'denied' | 'timeout';
 
+export interface HitlTicket {
+  id: string;
+  code: string;
+  result: Promise<HitlResult>;
+}
+
 interface PendingRequest {
   id: string;
   code: string;
@@ -24,18 +30,18 @@ export class HitlEngine implements ApprovalApi {
   constructor(
     private auditLogger: AuditLogger,
     private provider: HitlProvider,
-    private timeoutMs: number,
+    readonly timeoutMs: number,
   ) {}
 
-  async request(params: {
+  create(params: {
     agentId: string;
     tool: string;
     args: Record<string, unknown>;
-  }): Promise<HitlResult> {
+  }): HitlTicket {
     const id   = generateId();
     const code = generateApprovalCode();
 
-    // Persist to DB
+    // Persist to DB synchronously before returning
     this.auditLogger.insertHitl({
       id,
       code,
@@ -46,7 +52,7 @@ export class HitlEngine implements ApprovalApi {
       created_at: new Date().toISOString(),
     });
 
-    return new Promise<HitlResult>((resolve) => {
+    const result = new Promise<HitlResult>((resolve) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
         this.byCode.delete(code);
@@ -59,9 +65,10 @@ export class HitlEngine implements ApprovalApi {
       const req: PendingRequest = { id, code, ...params, resolve, timer };
       this.pending.set(id, req);
       this.byCode.set(code, id);
-
-      log.info({ id, code, agent: params.agentId, tool: params.tool }, 'HITL request created');
     });
+
+    log.info({ id, code, agent: params.agentId, tool: params.tool }, 'HITL request created');
+    return { id, code, result };
   }
 
   /** Approve by code (used by providers) or by id (used by API) */

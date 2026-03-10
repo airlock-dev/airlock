@@ -76,21 +76,18 @@ export function createAgentServer(deps: AgentServerDeps): Server {
 
     // 3. HITL gate
     if (needsHitl) {
-      let notifyArgs = args;
-      // Queue into batcher — for now we do immediate single-request flow
-      const hitlPromise = hitlEngine.request({ agentId, tool: toolName, args });
+      const ticket = hitlEngine.create({ agentId, tool: toolName, args });
 
-      // Notify via batcher
       hitlBatcher.add({
-        id: 'pending', // engine has already registered
-        code: 'pending',
+        id: ticket.id,
+        code: ticket.code,
         agentId,
         tool: toolName,
         args,
-        timeoutMs: 300000,
+        timeoutMs: hitlEngine.timeoutMs,
       });
 
-      const result = await hitlPromise;
+      const result = await ticket.result;
 
       if (result === 'denied') {
         auditLogger.log({ agent_id: agentId, tool: toolName, args: JSON.stringify(args), result: 'hitl_denied' });
