@@ -3,7 +3,7 @@ import { parseArgs } from 'util';
 import { loadConfig } from './config/loader.js';
 import { ConfigWatcher } from './config/watcher.js';
 import { Gateway } from './gateway.js';
-import { runStdioServer } from './transport/stdio-server.js';
+import { runStdioMode } from './stdio-mode.js';
 import { logger } from './util/logger.js';
 
 const { values } = parseArgs({
@@ -42,24 +42,10 @@ async function main(): Promise<void> {
   let config = loadConfig(configPath);
 
   if (values.profile) {
-    // Stdio mode — single agent, no HTTP server
-    const agentId = values.profile;
-    const agentConfig = config.agents[agentId];
-    if (!agentConfig) {
-      logger.error({ agentId }, 'Unknown agent profile');
+    await runStdioMode(config, values.profile).catch(err => {
+      logger.error({ err }, 'Fatal error in stdio mode');
       process.exit(1);
-    }
-
-    const gateway = new Gateway(config);
-    await gateway.start();
-
-    const deps = gateway.buildAgentDeps(agentId);
-    if (!deps) {
-      logger.error({ agentId }, 'Failed to build agent deps');
-      process.exit(1);
-    }
-
-    await runStdioServer(deps);
+    });
     return;
   }
 
