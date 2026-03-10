@@ -148,13 +148,20 @@ All management endpoints require `Authorization: Bearer <api_secret>` when `serv
 ## Testing
 
 ```bash
-npm test          # 198 unit tests
-npm run build     # TypeScript compile check
-
-# End-to-end with MCP Inspector
-npx @modelcontextprotocol/inspector \
-  node dist/index.js --profile claude-code --config examples/gateway.yaml
+npm test                              # 223 unit + integration tests
+npm test -- test/integration.test.ts  # just the integration test (real child process)
+npm run build                         # TypeScript compile check
 ```
+
+### Interactive testing with MCP Inspector
+
+A self-contained test config with an echo MCP server is included — no tokens or external services needed:
+
+```bash
+npx @modelcontextprotocol/inspector npx tsx src/index.ts -- --profile test --config test/test-gateway.yaml
+```
+
+Open `http://localhost:6274`, then list tools and call `tools/echo` or `tools/add` through the UI.
 
 ## systemd
 

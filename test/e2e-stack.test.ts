@@ -16,15 +16,11 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import {
-  ListToolsRequestSchema,
-  CallToolRequestSchema,
-} from '@modelcontextprotocol/sdk/types.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 
+import { createDownstreamServer } from './echo-server.js';
 import { createAgentServer, connectAgentServer } from '../src/transport/agent-server.js';
 import { ToolRegistry } from '../src/registry/registry.js';
 import { AllowlistEngine } from '../src/allowlist/engine.js';
@@ -33,57 +29,6 @@ import { HitlBatcher } from '../src/hitl/batcher.js';
 import type { AgentConfig, SecurityConfig } from '../src/config/schema.js';
 import type { AuditLogger } from '../src/audit/logger.js';
 import type { HealthStatus } from '../src/pool/pool.js';
-
-// ─── Fake downstream MCP server ───────────────────────────────────────────────
-
-const DOWNSTREAM_TOOLS: Tool[] = [
-  {
-    name: 'echo',
-    description: 'Returns the message back',
-    inputSchema: {
-      type: 'object',
-      properties: { message: { type: 'string' } },
-      required: ['message'],
-    },
-  },
-  {
-    name: 'add',
-    description: 'Adds two numbers',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        a: { type: 'number' },
-        b: { type: 'number' },
-      },
-      required: ['a', 'b'],
-    },
-  },
-];
-
-function createDownstreamServer(): Server {
-  const server = new Server(
-    { name: 'fake-mcp', version: '0.0.1' },
-    { capabilities: { tools: {} } },
-  );
-
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: DOWNSTREAM_TOOLS,
-  }));
-
-  server.setRequestHandler(CallToolRequestSchema, async (req) => {
-    const args = req.params.arguments ?? {};
-    if (req.params.name === 'echo') {
-      return { content: [{ type: 'text', text: String(args['message'] ?? '') }] };
-    }
-    if (req.params.name === 'add') {
-      const result = Number(args['a']) + Number(args['b']);
-      return { content: [{ type: 'text', text: String(result) }] };
-    }
-    throw new Error(`Unknown tool: ${req.params.name}`);
-  });
-
-  return server;
-}
 
 // ─── FakePool ─────────────────────────────────────────────────────────────────
 // Satisfies the interface ToolRegistry expects without touching production pool code.
