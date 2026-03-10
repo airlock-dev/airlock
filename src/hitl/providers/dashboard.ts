@@ -176,10 +176,20 @@ function act(action, code) {
 
 function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 
+if ('Notification' in window) Notification.requestPermission();
+
 const es = new EventSource('/events');
 es.onmessage = (e) => {
   const msg = JSON.parse(e.data);
-  if (msg.type === 'new') render(msg.request);
+  if (msg.type === 'new') {
+    render(msg.request);
+    if (Notification.permission === 'granted') {
+      new Notification('Airlock: ' + msg.request.tool, {
+        body: 'agent: ' + msg.request.agentId + '\\n' + msg.request.code,
+        tag: msg.request.code,
+      });
+    }
+  }
   if (msg.type === 'resolved') {
     const el = cards.get(msg.code);
     if (el) {
