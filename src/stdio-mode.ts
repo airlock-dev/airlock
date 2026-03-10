@@ -8,6 +8,8 @@ import { AuditLogger } from './audit/logger.js';
 import { StdioHitlProvider } from './hitl/providers/stdio.js';
 import { TelegramHitlProvider } from './hitl/providers/telegram.js';
 import { OpenClawHitlProvider } from './hitl/providers/openclaw.js';
+import { SlackHitlProvider } from './hitl/providers/slack.js';
+import { WebhookHitlProvider } from './hitl/providers/webhook.js';
 import { runStdioServer } from './transport/stdio-server.js';
 import type { Config } from './config/loader.js';
 import type { HitlProvider, ApprovalApi } from './hitl/providers/types.js';
@@ -88,6 +90,10 @@ function buildHitlProvider(config: Config, approvalApi: ApprovalApi): HitlProvid
         { gateway_url: cfg.gateway_url, token: cfg.token, session_key: cfg.session_key },
         approvalApi,
       );
+    case 'slack':
+      return new SlackHitlProvider({ webhook_url: cfg.webhook_url });
+    case 'webhook':
+      return new WebhookHitlProvider({ url: cfg.url, headers: cfg.headers });
     default:
       return new StdioHitlProvider(approvalApi);
   }

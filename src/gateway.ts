@@ -15,6 +15,8 @@ import type { HitlProvider } from './hitl/providers/types.js';
 import { StdioHitlProvider } from './hitl/providers/stdio.js';
 import { TelegramHitlProvider } from './hitl/providers/telegram.js';
 import { OpenClawHitlProvider } from './hitl/providers/openclaw.js';
+import { SlackHitlProvider } from './hitl/providers/slack.js';
+import { WebhookHitlProvider } from './hitl/providers/webhook.js';
 import { childLogger } from './util/logger.js';
 
 const log = childLogger('gateway');
@@ -138,6 +140,10 @@ export class Gateway {
           { gateway_url: cfg.gateway_url, token: cfg.token, session_key: cfg.session_key },
           this.hitlEngine,
         );
+      case 'slack':
+        return new SlackHitlProvider({ webhook_url: cfg.webhook_url });
+      case 'webhook':
+        return new WebhookHitlProvider({ url: cfg.url, headers: cfg.headers });
       case 'stdio':
         return new StdioHitlProvider(this.hitlEngine);
       default:
