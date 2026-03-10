@@ -1,5 +1,7 @@
 import * as readline from 'readline';
+import type { Readable } from 'stream';
 import { formatBatch } from '../formatter.js';
+import { parseApprovalCommand } from '../parser.js';
 import type { HitlProvider, HitlNotification, ApprovalApi } from './types.js';
 import { childLogger } from '../../util/logger.js';
 
@@ -8,22 +10,23 @@ const log = childLogger('hitl-stdio');
 export class StdioHitlProvider implements HitlProvider {
   private rl?: readline.Interface;
 
-  constructor(private approvalApi: ApprovalApi) {}
+  constructor(
+    private approvalApi: ApprovalApi,
+    private inputStream: Readable = process.stdin as unknown as Readable,
+  ) {}
 
   async init(): Promise<void> {
-    this.rl = readline.createInterface({ input: process.stdin, terminal: false });
+    this.rl = readline.createInterface({ input: this.inputStream, terminal: false });
     this.rl.on('line', (line) => {
-      const trimmed = line.trim();
-      const approveMatch = trimmed.match(/^approve\s+([A-Z0-9]{6})$/i);
-      const denyMatch    = trimmed.match(/^deny\s+([A-Z0-9]{6})(?:\s+(.+))?$/i);
+      const parsed = parseApprovalCommand(line);
+      if (!parsed) return;
 
-      if (approveMatch) {
-        // We don't have id from code here — engine handles code→id lookup
-        log.info({ code: approveMatch[1] }, 'Approve received via stdio');
-        this.approvalApi.approve(approveMatch[1]);
-      } else if (denyMatch) {
-        log.info({ code: denyMatch[1] }, 'Deny received via stdio');
-        this.approvalApi.deny(denyMatch[1], denyMatch[2]);
+      if (parsed.type === 'approve') {
+        log.info({ code: parsed.code }, 'Approve received via stdio');
+        this.approvalApi.approve(parsed.code);
+      } else {
+        log.info({ code: parsed.code }, 'Deny received via stdio');
+        this.approvalApi.deny(parsed.code, parsed.reason);
       }
     });
     log.info('Stdio HITL provider ready. Type: approve <CODE> or deny <CODE>');

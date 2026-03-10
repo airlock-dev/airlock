@@ -1,5 +1,6 @@
 import { WebSocket } from 'ws';
 import { formatBatch } from '../formatter.js';
+import { parseApprovalCommand } from '../parser.js';
 import { generateId } from '../../util/id.js';
 import type { HitlProvider, HitlNotification, ApprovalApi } from './types.js';
 import { childLogger } from '../../util/logger.js';
@@ -63,19 +64,18 @@ export class OpenClawHitlProvider implements HitlProvider {
   }
 
   private handleMessage(msg: Record<string, unknown>): void {
-    // Look for chat messages containing hitl approve/deny patterns
     const text = extractText(msg);
     if (!text) return;
 
-    const approveMatch = text.match(/hitl\s+approve\s+([A-Z0-9]{6})/i);
-    const denyMatch    = text.match(/hitl\s+deny\s+([A-Z0-9]{6})(?:\s+(.+))?/i);
+    const parsed = parseApprovalCommand(text);
+    if (!parsed) return;
 
-    if (approveMatch) {
-      log.info({ code: approveMatch[1] }, 'Approve via OpenClaw');
-      this.approvalApi.approve(approveMatch[1]);
-    } else if (denyMatch) {
-      log.info({ code: denyMatch[1] }, 'Deny via OpenClaw');
-      this.approvalApi.deny(denyMatch[1], denyMatch[2]);
+    if (parsed.type === 'approve') {
+      log.info({ code: parsed.code }, 'Approve via OpenClaw');
+      this.approvalApi.approve(parsed.code);
+    } else {
+      log.info({ code: parsed.code }, 'Deny via OpenClaw');
+      this.approvalApi.deny(parsed.code, parsed.reason);
     }
   }
 

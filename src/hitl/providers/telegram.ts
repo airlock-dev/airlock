@@ -1,4 +1,5 @@
 import { formatBatch } from '../formatter.js';
+import { parseApprovalCommand } from '../parser.js';
 import type { HitlProvider, HitlNotification, ApprovalApi } from './types.js';
 import { childLogger } from '../../util/logger.js';
 
@@ -68,15 +69,15 @@ export class TelegramHitlProvider implements HitlProvider {
   }
 
   private handleMessage(text: string): void {
-    const approveMatch = text.match(/^approve\s+([A-Z0-9]{6})$/i);
-    const denyMatch    = text.match(/^deny\s+([A-Z0-9]{6})(?:\s+(.+))?$/i);
+    const parsed = parseApprovalCommand(text);
+    if (!parsed) return;
 
-    if (approveMatch) {
-      log.info({ code: approveMatch[1] }, 'Approve via Telegram');
-      this.approvalApi.approve(approveMatch[1]);
-    } else if (denyMatch) {
-      log.info({ code: denyMatch[1] }, 'Deny via Telegram');
-      this.approvalApi.deny(denyMatch[1], denyMatch[2]);
+    if (parsed.type === 'approve') {
+      log.info({ code: parsed.code }, 'Approve via Telegram');
+      this.approvalApi.approve(parsed.code);
+    } else {
+      log.info({ code: parsed.code }, 'Deny via Telegram');
+      this.approvalApi.deny(parsed.code, parsed.reason);
     }
   }
 
