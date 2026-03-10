@@ -18,6 +18,10 @@ test-integration:
 inspect:
     npx @modelcontextprotocol/inspector npx tsx src/index.ts -- --profile test --config test/test-gateway.yaml
 
+# Run with dashboard HITL (open http://localhost:4112 for approvals)
+dev:
+    npx tsx src/index.ts --profile dev --config examples/local-dev.yaml
+
 # Run tests with coverage
 coverage:
     npx vitest run --coverage

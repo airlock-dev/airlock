@@ -79,6 +79,13 @@ export const HitlProviderConfig = z.discriminatedUnion('type', [
     headers: z.record(z.string()).default({}),
   }),
   z.object({
+    type: z.literal('macos'),
+  }),
+  z.object({
+    type: z.literal('dashboard'),
+    port: z.number().int().min(1).max(65535).default(4112),
+  }),
+  z.object({
     type: z.literal('stdio'),
   }),
 ]);

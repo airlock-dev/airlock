@@ -5,6 +5,8 @@ import { TelegramHitlProvider } from './providers/telegram.js';
 import { OpenClawHitlProvider } from './providers/openclaw.js';
 import { SlackHitlProvider } from './providers/slack.js';
 import { WebhookHitlProvider } from './providers/webhook.js';
+import { MacosHitlProvider } from './providers/macos.js';
+import { DashboardHitlProvider } from './providers/dashboard.js';
 import { childLogger } from '../util/logger.js';
 
 const log = childLogger('hitl-factory');
@@ -25,6 +27,10 @@ export function createHitlProvider(cfg: HitlProviderConfig, approvalApi: Approva
       return new SlackHitlProvider({ webhook_url: cfg.webhook_url });
     case 'webhook':
       return new WebhookHitlProvider({ url: cfg.url, headers: cfg.headers });
+    case 'macos':
+      return new MacosHitlProvider(approvalApi);
+    case 'dashboard':
+      return new DashboardHitlProvider({ port: cfg.port }, approvalApi);
     case 'stdio':
       return new StdioHitlProvider(approvalApi);
     default:

@@ -1,0 +1,46 @@
+# Local development config with dashboard HITL.
+# Uses the echo MCP server — no tokens or external services needed.
+#
+# Run:  npx tsx src/index.ts --profile dev --config examples/local-dev.yaml
+# Then open http://localhost:4112 to see the approval dashboard.
+#
+# Tools "tools/echo" and "tools/add" are available.
+# "tools/add" requires HITL approval — call it to see the dashboard in action.
+
+mcps:
+  tools:
+    type: stdio
+    command: npx
+    args: ["tsx", "test/echo-server.ts"]
+
+agents:
+  dev:
+    allow:
+      - "tools/*"
+    hitl:
+      - "tools/add"
+    exec:
+      allow: []
+      hitl: []
+      deny: ["*"]
+    http:
+      domain_allowlist: []
+
+hitl:
+  provider:
+    type: dashboard
+    port: 4112
+  timeout_ms: 300000
+  batch_window_ms: 2000
+
+security:
+  blocked_hosts:
+    - localhost
+    - 127.0.0.1
+    - "::1"
+  allowed_local: []
+
+audit:
+  db_path: ":memory:"
+  retention_days: 1
+  redact_fields: []

@@ -125,6 +125,8 @@ See [`examples/gateway.yaml`](examples/gateway.yaml) for a fully annotated refer
 
 | Provider | Config `type` | Notes |
 |----------|--------------|-------|
+| macOS dialog | `macos` | Native approve/deny popup via `osascript` — best for local dev on Mac |
+| Dashboard | `dashboard` | Localhost web UI (default port 4112) with live SSE updates |
 | Telegram bot | `telegram` | Long-polls for replies; reply `approve ABC123` or `deny ABC123` |
 | Slack webhook | `slack` | Incoming webhook, fire-and-forget; pair with slash commands for approvals |
 | Generic webhook | `webhook` | POSTs `{requests, text}` JSON; configurable headers |
