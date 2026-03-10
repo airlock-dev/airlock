@@ -1,0 +1,27 @@
+[Unit]
+Description=Airlock MCP Gateway
+After=network.target openclaw-gateway.service
+Wants=openclaw-gateway.service
+
+[Service]
+Type=simple
+User=openclaw
+WorkingDirectory=/home/openclaw/airlock
+ExecStart=/usr/bin/node /home/openclaw/airlock/dist/index.js --config /etc/airlock/gateway.yaml
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=airlock
+
+# Environment
+EnvironmentFile=-/etc/airlock/env
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/airlock
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,32 @@
+{
+  "name": "airlock",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": {
+    "airlock": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/index.ts",
+    "test": "vitest"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.1",
+    "@types/ws": "^8.18.1",
+    "better-sqlite3": "^9.4.0",
+    "chokidar": "^3.6.0",
+    "fastify": "^5.0.0",
+    "pino": "^9.0.0",
+    "pino-pretty": "^13.0.0",
+    "ws": "^8.19.0",
+    "yaml": "^2.4.0",
+    "zod": "^3.22.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.0",
+    "@types/node": "^22.0.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.4.0",
+    "vitest": "^3.0.0"
+  }
+}

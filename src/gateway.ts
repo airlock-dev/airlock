@@ -1,0 +1,148 @@
+import Fastify from 'fastify';
+import type { FastifyInstance } from 'fastify';
+import { ClientPool } from './pool/pool.js';
+import { ToolRegistry } from './registry/registry.js';
+import { AllowlistEngine } from './allowlist/engine.js';
+import { HitlEngine } from './hitl/engine.js';
+import { HitlBatcher } from './hitl/batcher.js';
+import { AuditLogger } from './audit/logger.js';
+import { hitlApiPlugin } from './hitl/api.js';
+import { auditApiPlugin } from './audit/api.js';
+import { sseServerPlugin } from './transport/sse-server.js';
+import type { AgentServerDeps } from './transport/agent-server.js';
+import type { Config } from './config/loader.js';
+import type { HitlProvider } from './hitl/providers/types.js';
+import { StdioHitlProvider } from './hitl/providers/stdio.js';
+import { TelegramHitlProvider } from './hitl/providers/telegram.js';
+import { OpenClawHitlProvider } from './hitl/providers/openclaw.js';
+import { childLogger } from './util/logger.js';
+
+const log = childLogger('gateway');
+
+export class Gateway {
+  private pool!: ClientPool;
+  private registry!: ToolRegistry;
+  private allowlist!: AllowlistEngine;
+  private hitlEngine!: HitlEngine;
+  private hitlBatcher!: HitlBatcher;
+  private hitlProvider!: HitlProvider;
+  private auditLogger!: AuditLogger;
+  private app!: FastifyInstance;
+  private startTime = Date.now();
+
+  constructor(private config: Config) {}
+
+  async start(): Promise<void> {
+    log.info('Starting Airlock gateway');
+
+    // Audit logger
+    this.auditLogger = new AuditLogger(this.config.audit);
+    this.auditLogger.startDailyCleanup();
+
+    // HITL provider
+    this.hitlBatcher = new HitlBatcher(this.config.hitl.batch_window_ms);
+
+    this.hitlProvider = this.createHitlProvider();
+
+    this.hitlEngine = new HitlEngine(
+      this.auditLogger,
+      this.hitlProvider,
+      this.config.hitl.timeout_ms,
+    );
+
+    // Wire batcher → provider
+    this.hitlBatcher.onBatchReady((_agentId, requests) => {
+      void this.hitlProvider.notify(requests).catch(err =>
+        log.error({ err }, 'Failed to send HITL notifications'),
+      );
+    });
+
+    await this.hitlProvider.init();
+    await this.hitlEngine.recoverPending();
+
+    // MCP pool
+    this.pool = new ClientPool(this.config.mcps);
+    await this.pool.initialize();
+
+    // Allowlist + registry
+    this.allowlist = new AllowlistEngine(this.config.agents);
+    this.registry = new ToolRegistry(this.pool, this.allowlist, this.config.agents, this.config.security);
+    await this.registry.refresh();
+
+    // HTTP server
+    this.app = Fastify({ logger: false });
+
+    const secret = this.config.server.api_secret;
+
+    await this.app.register(hitlApiPlugin, { engine: this.hitlEngine, secret });
+    await this.app.register(auditApiPlugin, { auditLogger: this.auditLogger, secret });
+    await this.app.register(sseServerPlugin, {
+      getDeps: (agentId: string) => this.buildAgentDeps(agentId),
+    });
+
+    this.app.get('/health', async () => {
+      const mcpHealth = this.pool.healthCheck();
+      const pendingHitl = this.hitlEngine.getPending().length;
+      const uptime = Math.floor((Date.now() - this.startTime) / 1000);
+      return { status: 'ok', mcpHealth, pendingHitl, uptime };
+    });
+
+    const { port, host } = this.config.server;
+    await this.app.listen({ port, host });
+    log.info({ port, host }, 'Airlock gateway listening');
+  }
+
+  buildAgentDeps(agentId: string): AgentServerDeps | undefined {
+    const agentConfig = this.config.agents[agentId];
+    if (!agentConfig) return undefined;
+
+    return {
+      agentId,
+      agentConfig,
+      registry: this.registry,
+      allowlist: this.allowlist,
+      hitlEngine: this.hitlEngine,
+      hitlBatcher: this.hitlBatcher,
+      hitlProvider: this.hitlProvider,
+      auditLogger: this.auditLogger,
+    };
+  }
+
+  reload(newConfig: Config): void {
+    log.info('Reloading gateway config');
+    this.config = newConfig;
+    this.allowlist.reload(newConfig.agents);
+    // HitlEngine timeout can't be changed in-flight (active requests keep old timeout)
+    log.info('Config reloaded: allowlist and agent configs updated');
+  }
+
+  async stop(): Promise<void> {
+    log.info('Stopping Airlock gateway');
+    await this.app?.close();
+    await this.pool?.stop();
+    await this.hitlProvider?.stop();
+    this.auditLogger?.stop();
+  }
+
+  private createHitlProvider(): HitlProvider {
+    const cfg = this.config.hitl.provider;
+
+    switch (cfg.type) {
+      case 'telegram':
+        return new TelegramHitlProvider(
+          { bot_token: cfg.bot_token, chat_id: cfg.chat_id },
+          this.hitlEngine,
+        );
+      case 'openclaw':
+        return new OpenClawHitlProvider(
+          { gateway_url: cfg.gateway_url, token: cfg.token, session_key: cfg.session_key },
+          this.hitlEngine,
+        );
+      case 'stdio':
+        return new StdioHitlProvider(this.hitlEngine);
+      default:
+        log.warn({ type: (cfg as { type: string }).type }, 'Unknown HITL provider type, falling back to stdio');
+        return new StdioHitlProvider(this.hitlEngine);
+    }
+  }
+}

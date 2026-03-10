@@ -1,0 +1,114 @@
+# Airlock Gateway Configuration
+# Environment variables are substituted using ${VAR_NAME} syntax.
+
+server:
+  port: 4111
+  host: 127.0.0.1
+  # api_secret: ${AIRLOCK_API_SECRET}
+
+# Downstream MCP servers
+mcps:
+  filesystem:
+    type: stdio
+    command: npx
+    args: ["-y", "@modelcontextprotocol/server-filesystem", "/home/user/projects"]
+
+  github:
+    type: stdio
+    command: npx
+    args: ["-y", "@modelcontextprotocol/server-github"]
+    env:
+      GITHUB_PERSONAL_ACCESS_TOKEN: ${GITHUB_TOKEN}
+
+  # Example SSE-based MCP
+  # myserver:
+  #   type: sse
+  #   url: http://localhost:8000/sse
+  #   headers:
+  #     Authorization: Bearer ${MY_SERVER_TOKEN}
+
+# Agent profiles
+agents:
+  # Helena: full-access developer agent with HITL on destructive ops
+  helena:
+    allow:
+      - "filesystem/*"
+      - "github/*"
+      - "http/*"
+      - "exec/run"
+    hitl:
+      - "github/create_pr"
+      - "github/merge_pull_request"
+      - "github/delete_branch"
+    exec:
+      allow:
+        - "git status"
+        - "git diff*"
+        - "git log*"
+        - "npm test*"
+        - "npm run*"
+      hitl:
+        - "git push*"
+        - "git merge*"
+      deny:
+        - "sudo*"
+        - "rm -rf*"
+    http:
+      domain_allowlist:
+        - "api.github.com"
+        - "*.sentry.io"
+
+  # Claude Code: read-only, no HITL needed
+  claude-code:
+    allow:
+      - "filesystem/*"
+      - "github/list*"
+      - "github/get*"
+      - "http/get"
+    exec:
+      allow:
+        - "git status"
+        - "git diff*"
+        - "npm test"
+      deny:
+        - "*"  # deny everything not explicitly allowed
+
+# HITL configuration
+hitl:
+  # provider:
+  #   type: telegram
+  #   bot_token: ${TELEGRAM_BOT_TOKEN}
+  #   chat_id: ${TELEGRAM_CHAT_ID}
+  #
+  # provider:
+  #   type: openclaw
+  #   gateway_url: ws://localhost:18789
+  #   token: ${OPENCLAW_TOKEN}
+  #   session_key: "agent:main:telegram:channel:123456789"
+  provider:
+    type: stdio  # prints to stderr for dev/testing
+  timeout_ms: 300000      # 5 minutes
+  batch_window_ms: 10000  # collect requests for 10s before notifying
+
+# Security defaults
+security:
+  blocked_hosts:
+    - localhost
+    - 127.0.0.1
+    - "::1"
+    - "*.local"
+    - "10.*"
+    - "192.168.*"
+    - "172.16.*"
+  allowed_local: []  # override to allow specific local hosts
+
+# Audit logging
+audit:
+  db_path: ./airlock-audit.db
+  retention_days: 90
+  redact_fields:
+    - password
+    - token
+    - secret
+    - key
+    - authorization
