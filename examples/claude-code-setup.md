@@ -24,7 +24,7 @@ Or using `npx` if not globally installed:
   "mcpServers": {
     "airlock": {
       "command": "npx",
-      "args": ["-y", "airlock", "--profile", "claude-code", "--config", "/etc/airlock/gateway.yaml"]
+      "args": ["-y", "airlock-bot", "--profile", "claude-code", "--config", "/etc/airlock/gateway.yaml"]
     }
   }
 }
