@@ -1,5 +1,9 @@
 # Airlock
 
+[![CI](https://github.com/airlock-dev/airlock/actions/workflows/ci.yml/badge.svg)](https://github.com/airlock-dev/airlock/actions/workflows/ci.yml)
+[![Node](https://img.shields.io/node/v/airlock-bot)](https://www.npmjs.com/package/airlock-bot)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 A permissions-aware MCP gateway that sits between AI agents (Claude Code, Cursor, OpenClaw, etc.) and your downstream tool servers. Airlock enforces per-agent allowlists, requires human approval for sensitive operations, and keeps a full audit trail of every tool call.
 
 ```
