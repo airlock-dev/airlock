@@ -130,5 +130,6 @@ export async function runStdioMode(config: Config, agentId: string, configPath: 
     hitlBatcher,
     hitlProvider,
     auditLogger,
+    securityConfig: config.security,
   });
 }

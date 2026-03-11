@@ -1,0 +1,101 @@
+import type { AgentConfig } from '../config/schema.js';
+import type { Middleware, MiddlewareDeps } from './types.js';
+import { compose } from './compose.js';
+import { allowlistMiddleware } from './core/allowlist.js';
+import { execPolicyMiddleware } from './core/exec-policy.js';
+import { hitlGateMiddleware } from './core/hitl-gate.js';
+import { executeMiddleware } from './core/execute.js';
+import { schemaValidatorMiddleware } from './core/schema-validator.js';
+import { rateLimiterMiddleware } from './core/rate-limiter.js';
+import { untrustedEnvelopeMiddleware } from './post/untrusted-envelope.js';
+import { stripQueryParamsMiddleware } from './post/strip-query-params.js';
+import { outputInjectionDetectorMiddleware } from './post/output-injection-detector.js';
+import { canaryTokenInjectorMiddleware } from './post/canary-token-injector.js';
+import { outputSizeLimiterMiddleware } from './post/output-size-limiter.js';
+import { outputSummarizerMiddleware } from './post/output-summarizer.js';
+import { injectionDetectorMiddleware } from './detectors/injection-detector.js';
+import { sensitivityClassifierMiddleware } from './detectors/sensitivity-classifier.js';
+import type { MiddlewareItemConfig } from '../config/schema.js';
+
+function resolveMiddleware(item: MiddlewareItemConfig): Middleware {
+  switch (item.name) {
+    case 'schema-validator':
+      return schemaValidatorMiddleware();
+    case 'rate-limiter':
+      return rateLimiterMiddleware({
+        max_requests: item.max_requests ?? 60,
+        window_ms: item.window_ms ?? 60_000,
+        per: item.per as 'agent' | 'tool' | undefined,
+      });
+    case 'untrusted-envelope':
+      return untrustedEnvelopeMiddleware();
+    case 'strip-query-params':
+      return stripQueryParamsMiddleware();
+    case 'output-injection-detector':
+      return outputInjectionDetectorMiddleware({
+        mode: item.mode as 'detect' | 'mangle' | undefined,
+      });
+    case 'canary-token-injector':
+      return canaryTokenInjectorMiddleware();
+    case 'output-size-limiter':
+      return outputSizeLimiterMiddleware({
+        max_lines: item.max_lines,
+        max_chars: item.max_chars,
+      });
+    case 'output-summarizer':
+      return outputSummarizerMiddleware({
+        model: item.model ?? 'claude-haiku-4-5-20251001',
+        threshold_chars: item.threshold_chars,
+      });
+    case 'injection-detector':
+      return injectionDetectorMiddleware({
+        backend: item.backend as 'regex' | 'deberta' | undefined,
+        mode: item.mode as 'detect' | 'mangle' | 'escalate' | undefined,
+        inference_url: item.inference_url,
+        threshold: item.threshold,
+      });
+    case 'sensitivity-classifier':
+      return sensitivityClassifierMiddleware({
+        mode: item.mode as 'detect' | 'escalate' | undefined,
+        threshold: item.threshold,
+        backend: item.backend as 'heuristic' | 'llm' | undefined,
+        model: item.model,
+      });
+    default:
+      throw new Error(`Unknown middleware: ${(item as { name: string }).name}`);
+  }
+}
+
+/**
+ * Builds the complete middleware chain for an agent.
+ *
+ * Core zone (fixed order, always present):
+ *   allowlist → exec-policy → [detectors from config] → hitl-gate → execute
+ *
+ * Post zone (user-configurable, wraps around core):
+ *   Applied in config order, each wraps the downstream response
+ */
+export function buildMiddlewareChain(agentConfig: AgentConfig, _deps: MiddlewareDeps): Middleware {
+  const userMiddleware = agentConfig.middleware ?? [];
+
+  // Separate detectors (pre-execution, core zone) from post middlewares
+  const detectorNames = new Set(['injection-detector', 'sensitivity-classifier']);
+  const coreUserMiddleware = userMiddleware.filter(m => detectorNames.has(m.name));
+  const postUserMiddleware = userMiddleware.filter(m => !detectorNames.has(m.name));
+
+  // Core zone: fixed security-critical order
+  const coreMiddlewares: Middleware[] = [
+    allowlistMiddleware(),
+    execPolicyMiddleware(),
+    ...coreUserMiddleware.map(resolveMiddleware),
+    hitlGateMiddleware(),
+    executeMiddleware(),
+  ];
+
+  // Post zone: user-configurable
+  const postMiddlewares: Middleware[] = postUserMiddleware.map(resolveMiddleware);
+
+  // Post middlewares wrap the core chain
+  // They run after execution (or wrap around it), so they go before core in compose order
+  return compose([...postMiddlewares, ...coreMiddlewares]);
+}
