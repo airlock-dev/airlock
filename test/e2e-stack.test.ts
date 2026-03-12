@@ -75,6 +75,7 @@ function makeAgentConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
     tool_overrides: {},
     exec: { allow: [], hitl: [], deny: ['*'], env: {}, default_timeout_ms: 5000 },
     http: { domain_allowlist: [], max_response_bytes: 1048576, timeout_ms: 5000 },
+    middleware: [],
     ...overrides,
   };
 }

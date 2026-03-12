@@ -85,6 +85,12 @@ function resolveMiddleware(item: MiddlewareItemConfig): Middleware {
   }
 }
 
+const DEFAULT_MIDDLEWARE: MiddlewareItemConfig[] = [
+  { name: 'schema-validator', enabled: true },
+  { name: 'untrusted-envelope', enabled: true },
+  { name: 'output-injection-detector', mode: 'detect', enabled: true },
+];
+
 /**
  * Builds the complete middleware chain for an agent.
  *
@@ -93,14 +99,39 @@ function resolveMiddleware(item: MiddlewareItemConfig): Middleware {
  *
  * Post zone (user-configurable, wraps around core):
  *   Applied in config order, each wraps the downstream response
+ *
+ * Default middlewares (schema-validator, untrusted-envelope, output-injection-detector)
+ * are included unless explicitly disabled via `enabled: false`.
  */
 export function buildMiddlewareChain(agentConfig: AgentConfig, _deps: MiddlewareDeps): Middleware {
-  const userMiddleware = agentConfig.middleware ?? [];
+  const userMiddleware = agentConfig.middleware;
+
+  // undefined  → defaults (schema-validator, untrusted-envelope, output-injection-detector)
+  // []         → bare pipeline, no middlewares at all
+  // [items...] → defaults + user items; use `enabled: false` to disable a default
+  let enabledMiddleware: MiddlewareItemConfig[];
+
+  if (userMiddleware === undefined) {
+    enabledMiddleware = DEFAULT_MIDDLEWARE;
+  } else if (userMiddleware.length === 0) {
+    enabledMiddleware = [];
+  } else {
+    const disabledNames = new Set(
+      userMiddleware.filter(m => m.enabled === false).map(m => m.name),
+    );
+    const userNames = new Set(userMiddleware.map(m => m.name));
+    const defaults = DEFAULT_MIDDLEWARE
+      .filter(m => !disabledNames.has(m.name) && !userNames.has(m.name));
+    enabledMiddleware = [
+      ...defaults,
+      ...userMiddleware.filter(m => m.enabled !== false),
+    ];
+  }
 
   // Separate detectors (pre-execution, core zone) from post middlewares
   const detectorNames = new Set(['injection-detector', 'sensitivity-classifier']);
-  const coreUserMiddleware = userMiddleware.filter(m => detectorNames.has(m.name));
-  const postUserMiddleware = userMiddleware.filter(m => !detectorNames.has(m.name));
+  const coreUserMiddleware = enabledMiddleware.filter(m => detectorNames.has(m.name));
+  const postUserMiddleware = enabledMiddleware.filter(m => !detectorNames.has(m.name));
 
   // Core zone: fixed security-critical order
   const coreMiddlewares: Middleware[] = [

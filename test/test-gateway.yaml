@@ -15,6 +15,7 @@ agents:
     allow:
       - "echo/*"
     hitl: []
+    middleware: []
     exec:
       allow: []
       hitl: []

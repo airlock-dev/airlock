@@ -40,13 +40,38 @@ function makeCtx(deps: MiddlewareDeps, agentConfig: AgentConfig, overrides: Part
 }
 
 describe('buildMiddlewareChain', () => {
-  it('builds default chain with no middleware config', async () => {
+  it('builds bare chain with middleware: []', async () => {
     const deps = makeDeps();
     const config = makeAgentConfig();
     const chain = buildMiddlewareChain(config, deps);
     const ctx = makeCtx(deps, config);
     const result = await chain(ctx, async () => { throw new Error('should not reach final next'); });
     expect(result.text).toContain('"ok":true');
+    expect(result.text).not.toContain('<untrusted-output');
+  });
+
+  it('applies defaults when middleware is undefined', async () => {
+    const deps = makeDeps();
+    const config = makeAgentConfig();
+    delete (config as any).middleware; // simulate YAML with no middleware key
+    const chain = buildMiddlewareChain(config, deps);
+    const ctx = makeCtx(deps, config);
+    const result = await chain(ctx, async () => { throw new Error('should not reach final next'); });
+    // Default includes untrusted-envelope
+    expect(result.text).toContain('<untrusted-output');
+    expect(result.text).toContain('</untrusted-output>');
+  });
+
+  it('disables a default with enabled: false', async () => {
+    const deps = makeDeps();
+    const config = makeAgentConfig([
+      { name: 'untrusted-envelope', enabled: false },
+    ]);
+    const chain = buildMiddlewareChain(config, deps);
+    const ctx = makeCtx(deps, config);
+    const result = await chain(ctx, async () => { throw new Error('should not reach final next'); });
+    // untrusted-envelope disabled, but other defaults still present
+    expect(result.text).not.toContain('<untrusted-output');
   });
 
   it('includes untrusted-envelope middleware', async () => {

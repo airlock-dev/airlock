@@ -69,6 +69,7 @@ export const MiddlewareItemConfig = z.object({
     'injection-detector',
     'sensitivity-classifier',
   ]),
+  enabled: z.boolean().default(true),
   // tool filtering — glob patterns (e.g. "github/*", "http/get")
   tools: z.array(z.string()).optional(),
   exclude: z.array(z.string()).optional(),
@@ -98,7 +99,7 @@ export const AgentConfig = z.object({
   tool_overrides: z.record(ToolOverride).default({}),
   exec: AgentExecConfig.default({}),
   http: AgentHttpConfig.default({}),
-  middleware: z.array(MiddlewareItemConfig).default([]),
+  middleware: z.array(MiddlewareItemConfig).optional(),
 });
 export type AgentConfig = z.infer<typeof AgentConfig>;
 
