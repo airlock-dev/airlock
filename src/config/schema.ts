@@ -35,13 +35,41 @@ export const McpServerConfig = z.discriminatedUnion('type', [
 ]);
 export type McpServerConfig = z.infer<typeof McpServerConfig>;
 
+export const ProviderConfig = z.union([
+  z.literal('builtin'),
+  McpServerConfig,
+]);
+export type ProviderConfig = z.infer<typeof ProviderConfig>;
+
+/** Extract only MCP server configs from the providers map */
+export function getMcpConfigs(providers: Record<string, ProviderConfig>): Record<string, McpServerConfig> {
+  const result: Record<string, McpServerConfig> = {};
+  for (const [id, cfg] of Object.entries(providers)) {
+    if (cfg !== 'builtin') {
+      result[id] = cfg;
+    }
+  }
+  return result;
+}
+
+/** Extract the set of builtin provider names (e.g. "exec", "http") */
+export function getBuiltinProviders(providers: Record<string, ProviderConfig>): Set<string> {
+  const result = new Set<string>();
+  for (const [id, cfg] of Object.entries(providers)) {
+    if (cfg === 'builtin') {
+      result.add(id);
+    }
+  }
+  return result;
+}
+
 export const ToolOverride = z.object({
   description: z.string().optional(),
 });
 
 export const AgentExecConfig = z.object({
   allow: z.array(z.string()).default([]),
-  hitl: z.array(z.string()).default([]),
+  ask: z.array(z.string()).default([]),
   deny: z.array(z.string()).default([]),
   env: z.record(z.string()).default({}),
   default_timeout_ms: z.number().default(30000),
@@ -52,7 +80,6 @@ export const AgentHttpConfig = z.object({
   domain_allowlist: z.array(z.string()).default([]),
   max_response_bytes: z.number().default(1048576), // 1MB
   timeout_ms: z.number().default(30000),
-  strip_query_params: z.boolean().default(false),
 });
 export type AgentHttpConfig = z.infer<typeof AgentHttpConfig>;
 
@@ -95,7 +122,8 @@ export type MiddlewareItemConfig = z.infer<typeof MiddlewareItemConfig>;
 export const AgentConfig = z.object({
   token: EnvString.optional(),
   allow: z.array(z.string()).default([]),
-  hitl: z.array(z.string()).default([]),
+  ask: z.array(z.string()).default([]),
+  deny: z.array(z.string()).default([]),
   tool_overrides: z.record(ToolOverride).default({}),
   exec: AgentExecConfig.default({}),
   http: AgentHttpConfig.default({}),
@@ -103,7 +131,7 @@ export const AgentConfig = z.object({
 });
 export type AgentConfig = z.infer<typeof AgentConfig>;
 
-export const HitlProviderConfig = z.discriminatedUnion('type', [
+export const ApprovalProviderConfig = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('telegram'),
     bot_token: EnvString,
@@ -138,17 +166,23 @@ export const HitlProviderConfig = z.discriminatedUnion('type', [
     type: z.literal('stdio'),
   }),
 ]);
-export type HitlProviderConfig = z.infer<typeof HitlProviderConfig>;
+export type ApprovalProviderConfig = z.infer<typeof ApprovalProviderConfig>;
 
-export const HitlConfig = z.object({
+// Keep HitlProviderConfig as an alias for internal code that references it
+export type HitlProviderConfig = ApprovalProviderConfig;
+
+export const ApprovalsConfig = z.object({
   provider: z.union([
-    HitlProviderConfig,
-    z.array(HitlProviderConfig).min(1),
+    ApprovalProviderConfig,
+    z.array(ApprovalProviderConfig).min(1),
   ]).default({ type: 'stdio' }),
   timeout_ms: z.number().int().min(1000).default(300000), // 5 minutes
   batch_window_ms: z.number().int().min(0).default(10000),
 });
-export type HitlConfig = z.infer<typeof HitlConfig>;
+export type ApprovalsConfig = z.infer<typeof ApprovalsConfig>;
+
+// Keep HitlConfig as an alias for internal code
+export type HitlConfig = ApprovalsConfig;
 
 export const SecurityConfig = z.object({
   blocked_hosts: z.array(z.string()).default([
@@ -182,9 +216,9 @@ export const ServerConfig = z.object({
 export type ServerConfig = z.infer<typeof ServerConfig>;
 
 export const GatewayConfig = z.object({
-  mcps: z.record(McpServerConfig).default({}),
+  providers: z.record(ProviderConfig).default({}),
   agents: z.record(AgentConfig).default({}),
-  hitl: HitlConfig.default({}),
+  approvals: ApprovalsConfig.default({}),
   security: SecurityConfig.default({}),
   audit: AuditConfig.default({}),
   server: ServerConfig.default({}),

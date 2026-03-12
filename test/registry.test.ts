@@ -45,9 +45,10 @@ function makePool(toolsByMcp: Record<string, Tool[]>, callResult: unknown = { ok
 function makeAgentConfig(allow: string[], overrides: Record<string, { description?: string }> = {}): AgentConfig {
   return {
     allow,
-    hitl: [],
+    ask: [],
+    deny: [],
     tool_overrides: overrides,
-    exec: { allow: [], hitl: [], deny: [], env: {}, default_timeout_ms: 30000 },
+    exec: { allow: [], ask: [], deny: [], env: {}, default_timeout_ms: 30000 },
     http: { domain_allowlist: [], max_response_bytes: 1048576, timeout_ms: 30000 },
   };
 }
@@ -63,7 +64,7 @@ describe('ToolRegistry', () => {
     const pool = makePool({ github: [makeTool('create_pr'), makeTool('list_prs')] });
     const agents = { agent1: makeAgentConfig(['github/*']) };
     const allowlist = new AllowlistEngine(agents);
-    const registry = new ToolRegistry(pool as never, allowlist, agents, { blocked_hosts: [], allowed_local: [] });
+    const registry = new ToolRegistry(pool as never, allowlist, agents, { blocked_hosts: [], allowed_local: [] }, new Set(['http', 'exec']));
 
     await registry.refresh();
     const all = registry.getAllTools();
@@ -77,7 +78,7 @@ describe('ToolRegistry', () => {
     const pool = makePool({});
     const agents = { agent1: makeAgentConfig(['http/*', 'exec/run']) };
     const allowlist = new AllowlistEngine(agents);
-    const registry = new ToolRegistry(pool as never, allowlist, agents, { blocked_hosts: [], allowed_local: [] });
+    const registry = new ToolRegistry(pool as never, allowlist, agents, { blocked_hosts: [], allowed_local: [] }, new Set(['http', 'exec']));
 
     await registry.refresh();
     const names = registry.getAllTools().map(t => t.name);
@@ -93,7 +94,7 @@ describe('ToolRegistry', () => {
     });
     const agents = { agent1: makeAgentConfig(['github/*']) };
     const allowlist = new AllowlistEngine(agents);
-    const registry = new ToolRegistry(pool as never, allowlist, agents, { blocked_hosts: [], allowed_local: [] });
+    const registry = new ToolRegistry(pool as never, allowlist, agents, { blocked_hosts: [], allowed_local: [] }, new Set(['http', 'exec']));
 
     await registry.refresh();
     const filtered = registry.getFiltered('agent1');
@@ -109,7 +110,7 @@ describe('ToolRegistry', () => {
       agent1: makeAgentConfig(['github/*'], { 'github/create_pr': { description: 'Custom description' } }),
     };
     const allowlist = new AllowlistEngine(agents);
-    const registry = new ToolRegistry(pool as never, allowlist, agents, { blocked_hosts: [], allowed_local: [] });
+    const registry = new ToolRegistry(pool as never, allowlist, agents, { blocked_hosts: [], allowed_local: [] }, new Set(['http', 'exec']));
 
     await registry.refresh();
     const filtered = registry.getFiltered('agent1');
@@ -121,7 +122,7 @@ describe('ToolRegistry', () => {
     const pool = makePool({ github: [makeTool('create_pr')] }, { number: 42 });
     const agents = { agent1: makeAgentConfig(['github/*']) };
     const allowlist = new AllowlistEngine(agents);
-    const registry = new ToolRegistry(pool as never, allowlist, agents, { blocked_hosts: [], allowed_local: [] });
+    const registry = new ToolRegistry(pool as never, allowlist, agents, { blocked_hosts: [], allowed_local: [] }, new Set(['http', 'exec']));
 
     await registry.refresh();
     const result = await registry.call('github/create_pr', { repo: 'test' }, 'agent1');
@@ -133,7 +134,7 @@ describe('ToolRegistry', () => {
     const pool = makePool({});
     const agents = { agent1: makeAgentConfig([]) };
     const allowlist = new AllowlistEngine(agents);
-    const registry = new ToolRegistry(pool as never, allowlist, agents, { blocked_hosts: [], allowed_local: [] });
+    const registry = new ToolRegistry(pool as never, allowlist, agents, { blocked_hosts: [], allowed_local: [] }, new Set(['http', 'exec']));
 
     await registry.refresh();
     await expect(registry.call('github/create_pr', {}, 'agent1')).rejects.toThrow('Unknown tool');
@@ -144,7 +145,7 @@ describe('ToolRegistry', () => {
     const agents = { agent1: makeAgentConfig(['http/*']) };
     const allowlist = new AllowlistEngine(agents);
     const security = { blocked_hosts: ['localhost', '127.0.0.1', '*.local', '10.*', '192.168.*'], allowed_local: [] };
-    const registry = new ToolRegistry(pool as never, allowlist, agents, security);
+    const registry = new ToolRegistry(pool as never, allowlist, agents, security, new Set(['http', 'exec']));
 
     await registry.refresh();
 
@@ -167,7 +168,7 @@ describe('ToolRegistry', () => {
     };
     const agents = { agent1: makeAgentConfig(['github/*']) };
     const allowlist = new AllowlistEngine(agents);
-    const registry = new ToolRegistry(pool as never, allowlist, agents, { blocked_hosts: [], allowed_local: [] });
+    const registry = new ToolRegistry(pool as never, allowlist, agents, { blocked_hosts: [], allowed_local: [] }, new Set(['http', 'exec']));
 
     // Should not throw
     await expect(registry.refresh()).resolves.not.toThrow();

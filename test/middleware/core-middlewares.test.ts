@@ -13,9 +13,9 @@ function makeCtx(overrides: Partial<ToolCallContext> = {}): ToolCallContext {
     callId: 'test',
     agentId: 'agent1',
     agentConfig: {
-      allow: [], hitl: [], tool_overrides: {}, middleware: [],
-      exec: { allow: [], hitl: [], deny: ['*'], env: {}, default_timeout_ms: 5000 },
-      http: { domain_allowlist: [], max_response_bytes: 1048576, timeout_ms: 5000, strip_query_params: false },
+      allow: [], ask: [], deny: [], tool_overrides: {}, middleware: [],
+      exec: { allow: [], ask: [], deny: ['*'], env: {}, default_timeout_ms: 5000 },
+      http: { domain_allowlist: [], max_response_bytes: 1048576, timeout_ms: 5000 },
     },
     toolName: 'github/create_pr',
     args: {},
@@ -48,12 +48,12 @@ describe('allowlistMiddleware', () => {
     await expect(mw(ctx, okNext)).rejects.toThrow('Tool not available');
   });
 
-  it('sets needsHitl for hitl decision', async () => {
+  it('sets needsApproval for ask decision', async () => {
     const mw = allowlistMiddleware();
     const ctx = makeCtx();
-    (ctx.deps.allowlist.evaluate as any).mockReturnValue('hitl');
+    (ctx.deps.allowlist.evaluate as any).mockReturnValue('ask');
     await mw(ctx, okNext);
-    expect(ctx.meta.needsHitl).toBe(true);
+    expect(ctx.meta.needsApproval).toBe(true);
   });
 });
 
@@ -78,7 +78,7 @@ describe('execPolicyMiddleware', () => {
       args: { command: 'sudo rm -rf /' },
       agentConfig: {
         ...makeCtx().agentConfig,
-        exec: { allow: [], hitl: [], deny: ['sudo*'], env: {}, default_timeout_ms: 5000 },
+        exec: { allow: [], ask: [], deny: ['sudo*'], env: {}, default_timeout_ms: 5000 },
       },
     });
     await expect(mw(ctx, okNext)).rejects.toThrow('Command denied by policy');
@@ -86,7 +86,7 @@ describe('execPolicyMiddleware', () => {
 });
 
 describe('hitlGateMiddleware', () => {
-  it('passes through when needsHitl is false', async () => {
+  it('passes through when needsApproval is false', async () => {
     const mw = hitlGateMiddleware();
     const ctx = makeCtx();
     const result = await mw(ctx, okNext);

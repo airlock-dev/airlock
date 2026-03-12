@@ -1,14 +1,14 @@
 # yaml-language-server: $schema=../schema.json
-# Local development config with dashboard HITL.
+# Local development config with dashboard approval.
 # Uses the echo MCP server — no tokens or external services needed.
 #
 # Run:  npx tsx src/index.ts --profile dev --config examples/local-dev.yaml
 # Then open http://localhost:4112 to see the approval dashboard.
 #
 # Tools "echo/echo" and "echo/add" are available.
-# "echo/add" requires HITL approval — call it to see the dashboard in action.
+# "echo/add" requires approval — call it to see the dashboard in action.
 
-mcps:
+providers:
   echo:
     type: stdio
     command: npx
@@ -18,16 +18,10 @@ agents:
   dev:
     allow:
       - "echo/*"
-    hitl:
+    ask:
       - "echo/add"
-    exec:
-      allow: []
-      hitl: []
-      deny: ["*"]
-    http:
-      domain_allowlist: []
 
-hitl:
+approvals:
   provider:
     type: dashboard
     port: 4112

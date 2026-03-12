@@ -4,7 +4,7 @@
 # Interactive:  npx @modelcontextprotocol/inspector npx tsx src/index.ts -- --profile test --config test/test-gateway.yaml
 # Automated:   npm test -- test/integration.test.ts
 
-mcps:
+providers:
   echo:
     type: stdio
     command: npx
@@ -14,16 +14,16 @@ agents:
   test:
     allow:
       - "echo/*"
-    hitl: []
+    ask: []
     middleware: []
     exec:
       allow: []
-      hitl: []
+      ask: []
       deny: ["*"]
     http:
       domain_allowlist: []
 
-hitl:
+approvals:
   provider:
     type: webhook
     url: "http://localhost:19999/dev-null"

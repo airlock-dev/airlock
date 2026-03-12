@@ -3,7 +3,7 @@ import type { Middleware } from '../types.js';
 
 export function hitlGateMiddleware(): Middleware {
   return async (ctx, next) => {
-    if (!ctx.meta.needsHitl) return next();
+    if (!ctx.meta.needsApproval) return next();
 
     const { hitlEngine, hitlBatcher, auditLogger } = ctx.deps;
     const ticket = hitlEngine.create({ agentId: ctx.agentId, tool: ctx.toolName, args: ctx.args });

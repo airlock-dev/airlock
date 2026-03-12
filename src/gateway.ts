@@ -13,6 +13,7 @@ import type { AgentServerDeps } from './transport/agent-server.js';
 import type { Config } from './config/loader.js';
 import type { HitlProvider, ApprovalApi } from './hitl/providers/types.js';
 import { createHitlProvider } from './hitl/provider-factory.js';
+import { getMcpConfigs, getBuiltinProviders } from './config/schema.js';
 import { childLogger } from './util/logger.js';
 
 const log = childLogger('gateway');
@@ -37,34 +38,35 @@ export class Gateway {
     this.auditLogger = new AuditLogger(this.config.audit);
     this.auditLogger.startDailyCleanup();
 
-    // HITL — provider needs approvalApi but engine doesn't exist yet, use forwarder
-    this.hitlBatcher = new HitlBatcher(this.config.hitl.batch_window_ms);
+    // Approvals — provider needs approvalApi but engine doesn't exist yet, use forwarder
+    this.hitlBatcher = new HitlBatcher(this.config.approvals.batch_window_ms);
 
     const approvalForwarder: ApprovalApi = {
       approve: (code) => this.hitlEngine.approve(code),
       deny: (code, reason) => this.hitlEngine.deny(code, reason),
     };
 
-    this.hitlProvider = createHitlProvider(this.config.hitl.provider, approvalForwarder);
+    this.hitlProvider = createHitlProvider(this.config.approvals.provider, approvalForwarder);
 
     this.hitlEngine = new HitlEngine(
       this.auditLogger,
       this.hitlProvider,
-      this.config.hitl.timeout_ms,
+      this.config.approvals.timeout_ms,
     );
 
     // Wire batcher → provider
     this.hitlBatcher.onBatchReady((_agentId, requests) => {
       void this.hitlProvider.notify(requests).catch(err =>
-        log.error({ err }, 'Failed to send HITL notifications'),
+        log.error({ err }, 'Failed to send approval notifications'),
       );
     });
 
     await this.hitlProvider.init();
     await this.hitlEngine.recoverPending();
 
-    // MCP pool
-    this.pool = new ClientPool(this.config.mcps);
+    // MCP pool — only connect to actual MCP servers, not builtins
+    const mcpConfigs = getMcpConfigs(this.config.providers);
+    this.pool = new ClientPool(mcpConfigs);
     this.pool.onClientReady((id) => {
       log.info({ id }, 'MCP became ready, refreshing tool registry');
       this.registry.refresh().catch(err => log.error({ err }, 'Failed to refresh registry after MCP ready'));
@@ -72,8 +74,9 @@ export class Gateway {
     await this.pool.initialize();
 
     // Allowlist + registry
+    const builtins = getBuiltinProviders(this.config.providers);
     this.allowlist = new AllowlistEngine(this.config.agents);
-    this.registry = new ToolRegistry(this.pool, this.allowlist, this.config.agents, this.config.security);
+    this.registry = new ToolRegistry(this.pool, this.allowlist, this.config.agents, this.config.security, builtins);
     await this.registry.refresh();
 
     // HTTP server
@@ -90,9 +93,9 @@ export class Gateway {
 
     this.app.get('/health', async () => {
       const mcpHealth = this.pool.healthCheck();
-      const pendingHitl = this.hitlEngine.getPending().length;
+      const pendingApprovals = this.hitlEngine.getPending().length;
       const uptime = Math.floor((Date.now() - this.startTime) / 1000);
-      return { status: 'ok', mcpHealth, pendingHitl, uptime };
+      return { status: 'ok', mcpHealth, pendingApprovals, uptime };
     });
 
     const { port, host } = this.config.server;
@@ -121,11 +124,13 @@ export class Gateway {
   async reload(newConfig: Config): Promise<void> {
     log.info('Reloading gateway config');
     this.config = newConfig;
-    await this.pool.reload(newConfig.mcps);
+    const mcpConfigs = getMcpConfigs(newConfig.providers);
+    const builtins = getBuiltinProviders(newConfig.providers);
+    await this.pool.reload(mcpConfigs);
     this.allowlist.reload(newConfig.agents);
-    this.registry.reloadAgents(newConfig.agents, newConfig.security);
+    this.registry.reloadAgents(newConfig.agents, newConfig.security, builtins);
     await this.registry.refresh();
-    log.info('Config reloaded: MCPs, allowlist, registry, and agent configs updated');
+    log.info('Config reloaded: providers, allowlist, registry, and agent configs updated');
   }
 
   async stop(): Promise<void> {

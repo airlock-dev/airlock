@@ -12,7 +12,7 @@ export interface ExecResult {
   truncated?: boolean;
 }
 
-export type ExecDecision = 'allow' | 'hitl' | 'deny';
+export type ExecDecision = 'allow' | 'ask' | 'deny';
 
 const MAX_OUTPUT_BYTES = 10 * 1024 * 1024; // 10MB cap on stdout/stderr
 
@@ -49,7 +49,7 @@ export function evaluateExecCommand(command: string, agentConfig: AgentConfig): 
 
   // Deny takes priority
   if (agentConfig.exec.deny.some(p => matchesCommand(p, command))) return 'deny';
-  if (agentConfig.exec.hitl.some(p => matchesCommand(p, command))) return 'hitl';
+  if (agentConfig.exec.ask.some(p => matchesCommand(p, command))) return 'ask';
   if (agentConfig.exec.allow.some(p => matchesCommand(p, command))) return 'allow';
   return 'deny'; // fail-closed
 }

@@ -129,9 +129,9 @@ async function checkSensitivity(
       error: `score=${score}, labels=${details}`,
     });
 
-    if (mode === 'escalate' && phase === 'args' && !ctx.meta.needsHitl) {
-      ctx.meta.needsHitl = true;
-      ctx.meta.hitlReason = `High sensitivity data detected (score: ${score}, ${details})`;
+    if (mode === 'escalate' && phase === 'args' && !ctx.meta.needsApproval) {
+      ctx.meta.needsApproval = true;
+      ctx.meta.approvalReason = `High sensitivity data detected (score: ${score}, ${details})`;
     }
   }
 }

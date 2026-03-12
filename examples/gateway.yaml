@@ -7,8 +7,8 @@ server:
   host: 127.0.0.1
   # api_secret: ${AIRLOCK_API_SECRET}
 
-# Downstream MCP servers
-mcps:
+# Tool providers — MCP servers and builtins
+providers:
   filesystem:
     type: stdio
     command: npx
@@ -28,16 +28,19 @@ mcps:
   #   headers:
   #     Authorization: Bearer ${MY_SERVER_TOKEN}
 
+  exec: builtin
+  http: builtin
+
 # Agent profiles
 agents:
-  # Helena: full-access developer agent with HITL on destructive ops
+  # Helena: full-access developer agent with approval on destructive ops
   helena:
     allow:
       - "filesystem/*"
       - "github/*"
       - "http/*"
       - "exec/run"
-    hitl:
+    ask:
       - "github/create_pr"
       - "github/merge_pull_request"
       - "github/delete_branch"
@@ -48,7 +51,7 @@ agents:
         - "git log*"
         - "npm test*"
         - "npm run*"
-      hitl:
+      ask:
         - "git push*"
         - "git merge*"
       deny:
@@ -59,7 +62,7 @@ agents:
         - "api.github.com"
         - "*.sentry.io"
 
-  # Claude Code: read-only, no HITL needed
+  # Claude Code: read-only, no approval needed
   claude-code:
     allow:
       - "filesystem/*"
@@ -74,8 +77,8 @@ agents:
       deny:
         - "*"  # deny everything not explicitly allowed
 
-# HITL configuration
-hitl:
+# Approval configuration
+approvals:
   # provider:
   #   type: telegram
   #   bot_token: ${TELEGRAM_BOT_TOKEN}

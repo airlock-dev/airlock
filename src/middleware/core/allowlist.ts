@@ -16,8 +16,8 @@ export function allowlistMiddleware(): Middleware {
       throw new McpError(ErrorCode.InvalidRequest, `Tool not available: ${ctx.toolName}`);
     }
 
-    if (decision === 'hitl') {
-      ctx.meta.needsHitl = true;
+    if (decision === 'ask') {
+      ctx.meta.needsApproval = true;
     }
 
     return next();

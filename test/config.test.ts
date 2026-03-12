@@ -5,7 +5,7 @@ import { tmpdir } from 'os';
 import { loadConfig } from '../src/config/loader.js';
 import { GatewayConfig } from '../src/config/schema.js';
 
-// ─── Schema / env var substitution ───────────────────────────────────────────
+// --- Schema / env var substitution ---
 
 describe('GatewayConfig schema', () => {
   it('parses a minimal valid config with all defaults', () => {
@@ -13,7 +13,7 @@ describe('GatewayConfig schema', () => {
     expect(result.success).toBe(true);
     if (!result.success) return;
     expect(result.data.server.port).toBe(4111);
-    expect(result.data.hitl.timeout_ms).toBe(300000);
+    expect(result.data.approvals.timeout_ms).toBe(300000);
     expect(result.data.security.blocked_hosts).toContain('localhost');
     expect(result.data.audit.retention_days).toBe(90);
   });
@@ -21,28 +21,28 @@ describe('GatewayConfig schema', () => {
   it('substitutes ${VAR} with environment variable', () => {
     process.env['TEST_TOKEN_XYZ'] = 'my-secret';
     const result = GatewayConfig.safeParse({
-      hitl: { provider: { type: 'telegram', bot_token: '${TEST_TOKEN_XYZ}', chat_id: '123' } },
+      approvals: { provider: { type: 'telegram', bot_token: '${TEST_TOKEN_XYZ}', chat_id: '123' } },
     });
     delete process.env['TEST_TOKEN_XYZ'];
     expect(result.success).toBe(true);
     if (!result.success) return;
-    const provider = result.data.hitl.provider as { type: 'telegram'; bot_token: string };
+    const provider = result.data.approvals.provider as { type: 'telegram'; bot_token: string };
     expect(provider.bot_token).toBe('my-secret');
   });
 
   it('throws on missing required env var', () => {
     delete process.env['MISSING_VAR_XYZ'];
     expect(() => GatewayConfig.parse({
-      hitl: { provider: { type: 'telegram', bot_token: '${MISSING_VAR_XYZ}', chat_id: '123' } },
+      approvals: { provider: { type: 'telegram', bot_token: '${MISSING_VAR_XYZ}', chat_id: '123' } },
     })).toThrow('MISSING_VAR_XYZ');
   });
 
-  it('validates agent allow/hitl as arrays of strings', () => {
+  it('validates agent allow/ask as arrays of strings', () => {
     const result = GatewayConfig.safeParse({
       agents: {
         agent1: {
           allow: ['github/*', 'filesystem/*'],
-          hitl: ['github/create_pr'],
+          ask: ['github/create_pr'],
         },
       },
     });
@@ -62,22 +62,45 @@ describe('GatewayConfig schema', () => {
   });
 
   it('validates mcp stdio type requires command', () => {
-    // Valid: stdio with command
     const ok = GatewayConfig.safeParse({
-      mcps: { github: { type: 'stdio', command: 'npx', args: ['-y', 'server'] } },
+      providers: { github: { type: 'stdio', command: 'npx', args: ['-y', 'server'] } },
     });
     expect(ok.success).toBe(true);
   });
 
-  it('defaults hitl provider to stdio', () => {
+  it('defaults approval provider to stdio', () => {
     const result = GatewayConfig.safeParse({});
     expect(result.success).toBe(true);
     if (!result.success) return;
-    expect(result.data.hitl.provider.type).toBe('stdio');
+    expect(result.data.approvals.provider.type).toBe('stdio');
+  });
+
+  it('accepts builtin string shorthand for providers', () => {
+    const result = GatewayConfig.safeParse({
+      providers: { exec: 'builtin', http: 'builtin' },
+    });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.providers['exec']).toBe('builtin');
+    expect(result.data.providers['http']).toBe('builtin');
+  });
+
+  it('supports deny list on agents', () => {
+    const result = GatewayConfig.safeParse({
+      agents: {
+        agent1: {
+          allow: ['github/*'],
+          deny: ['github/delete_repo'],
+        },
+      },
+    });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.agents['agent1'].deny).toEqual(['github/delete_repo']);
   });
 });
 
-// ─── loadConfig ───────────────────────────────────────────────────────────────
+// --- loadConfig ---
 
 describe('loadConfig()', () => {
   let dir: string;
@@ -94,16 +117,21 @@ describe('loadConfig()', () => {
     const yaml = `
 server:
   port: 4200
+providers:
+  echo:
+    type: stdio
+    command: echo
+    args: ["hello"]
 agents:
   helena:
     allow:
-      - "github/*"
+      - "echo/*"
 `;
     const path = join(dir, 'gateway.yaml');
     writeFileSync(path, yaml);
     const config = loadConfig(path);
     expect(config.server.port).toBe(4200);
-    expect(config.agents['helena'].allow).toContain('github/*');
+    expect(config.agents['helena'].allow).toContain('echo/*');
   });
 
   it('throws on invalid config with helpful message', () => {
@@ -125,5 +153,21 @@ agents:
     const config = loadConfig(path);
     delete process.env['TEST_AGENT_SECRET'];
     expect(config.server.api_secret).toBe('supersecret');
+  });
+
+  it('errors when agent references unknown provider', () => {
+    const yaml = `
+providers:
+  echo:
+    type: stdio
+    command: echo
+agents:
+  agent1:
+    allow:
+      - "unknown_mcp/*"
+`;
+    const path = join(dir, 'gateway.yaml');
+    writeFileSync(path, yaml);
+    expect(() => loadConfig(path)).toThrow(/unknown provider/i);
   });
 });
