@@ -75,6 +75,16 @@ export class DashboardHitlProvider implements HitlProvider {
     });
 
     await new Promise<void>((resolve) => {
+      this.server!.on('error', (err: NodeJS.ErrnoException) => {
+        if (err.code === 'EADDRINUSE') {
+          log.warn({ port: this.config.port }, 'Dashboard port in use — running without dashboard UI');
+          this.server = undefined;
+          resolve();
+        } else {
+          log.error({ err }, 'Dashboard server error');
+          resolve(); // don't crash the process
+        }
+      });
       this.server!.listen(this.config.port, '127.0.0.1', () => {
         log.info({ port: this.config.port }, 'HITL dashboard listening');
         resolve();

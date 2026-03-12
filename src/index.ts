@@ -42,7 +42,7 @@ async function main(): Promise<void> {
   let config = loadConfig(configPath);
 
   if (values.profile) {
-    await runStdioMode(config, values.profile).catch(err => {
+    await runStdioMode(config, values.profile, configPath).catch(err => {
       logger.error({ err }, 'Fatal error in stdio mode');
       process.exit(1);
     });

@@ -5,7 +5,7 @@
 # Automated:   npm test -- test/integration.test.ts
 
 mcps:
-  tools:
+  echo:
     type: stdio
     command: npx
     args: ["tsx", "test/echo-server.ts"]
@@ -13,7 +13,7 @@ mcps:
 agents:
   test:
     allow:
-      - "tools/*"
+      - "echo/*"
     hitl: []
     exec:
       allow: []

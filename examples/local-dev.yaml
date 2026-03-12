@@ -4,11 +4,11 @@
 # Run:  npx tsx src/index.ts --profile dev --config examples/local-dev.yaml
 # Then open http://localhost:4112 to see the approval dashboard.
 #
-# Tools "tools/echo" and "tools/add" are available.
-# "tools/add" requires HITL approval — call it to see the dashboard in action.
+# Tools "echo/echo" and "echo/add" are available.
+# "echo/add" requires HITL approval — call it to see the dashboard in action.
 
 mcps:
-  tools:
+  echo:
     type: stdio
     command: npx
     args: ["tsx", "test/echo-server.ts"]
@@ -16,9 +16,9 @@ mcps:
 agents:
   dev:
     allow:
-      - "tools/*"
+      - "echo/*"
     hitl:
-      - "tools/add"
+      - "echo/add"
     exec:
       allow: []
       hitl: []

@@ -21,6 +21,7 @@ const log = childLogger('agent-server');
 export interface AgentServerDeps {
   agentId: string;
   agentConfig: AgentConfig;
+  getAgentConfig?: () => AgentConfig;
   registry: ToolRegistry;
   allowlist: AllowlistEngine;
   hitlEngine: HitlEngine;
@@ -31,9 +32,10 @@ export interface AgentServerDeps {
 
 export function createAgentServer(deps: AgentServerDeps): Server {
   const {
-    agentId, agentConfig, registry, allowlist,
+    agentId, registry, allowlist,
     hitlEngine, hitlBatcher, hitlProvider, auditLogger,
   } = deps;
+  const getConfig = deps.getAgentConfig ?? (() => deps.agentConfig);
 
   const server = new Server(
     { name: 'airlock', version: '0.1.0' },
@@ -67,7 +69,7 @@ export function createAgentServer(deps: AgentServerDeps): Server {
         throw new McpError(ErrorCode.InvalidParams, 'exec/run requires a string command');
       }
 
-      const cmdDecision = evaluateExecCommand(command, agentConfig);
+      const cmdDecision = evaluateExecCommand(command, getConfig());
       if (cmdDecision === 'deny') {
         log.info({ agentId, command }, 'exec command denied by policy');
         auditLogger.log({ agent_id: agentId, tool: toolName, args: JSON.stringify(args), result: 'denied' });
@@ -109,7 +111,7 @@ export function createAgentServer(deps: AgentServerDeps): Server {
         const command = args['command'] as string;
         const cwd = args['cwd'] as string | undefined;
         const timeoutMs = args['timeout_ms'] as number | undefined;
-        callResult = await executeExec(command, agentConfig, cwd, timeoutMs);
+        callResult = await executeExec(command, getConfig(), cwd, timeoutMs);
       } else {
         callResult = await registry.call(toolName, args, agentId);
       }

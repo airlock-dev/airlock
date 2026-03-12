@@ -1,5 +1,6 @@
 import type { HitlProvider, ApprovalApi } from './providers/types.js';
 import type { HitlProviderConfig } from '../config/schema.js';
+import { CompositeHitlProvider } from './providers/composite.js';
 import { StdioHitlProvider } from './providers/stdio.js';
 import { TelegramHitlProvider } from './providers/telegram.js';
 import { OpenClawHitlProvider } from './providers/openclaw.js';
@@ -12,7 +13,18 @@ import { childLogger } from '../util/logger.js';
 
 const log = childLogger('hitl-factory');
 
-export function createHitlProvider(cfg: HitlProviderConfig, approvalApi: ApprovalApi): HitlProvider {
+export function createHitlProvider(
+  cfg: HitlProviderConfig | HitlProviderConfig[],
+  approvalApi: ApprovalApi,
+): HitlProvider {
+  if (Array.isArray(cfg)) {
+    const providers = cfg.map(c => createSingleProvider(c, approvalApi));
+    return providers.length === 1 ? providers[0] : new CompositeHitlProvider(providers);
+  }
+  return createSingleProvider(cfg, approvalApi);
+}
+
+function createSingleProvider(cfg: HitlProviderConfig, approvalApi: ApprovalApi): HitlProvider {
   switch (cfg.type) {
     case 'telegram':
       return new TelegramHitlProvider(

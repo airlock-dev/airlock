@@ -25,6 +25,13 @@ export const McpServerConfig = z.discriminatedUnion('type', [
     url: z.string().url(),
     headers: z.record(z.string()).optional(),
   }),
+  z.object({
+    type: z.literal('http'),
+    url: z.string().url(),
+    headers: z.record(z.string()).optional(),
+    oauth: z.boolean().default(false),
+    oauth_callback_port: z.number().int().min(1).max(65535).default(18432),
+  }),
 ]);
 export type McpServerConfig = z.infer<typeof McpServerConfig>;
 
@@ -49,6 +56,7 @@ export const AgentHttpConfig = z.object({
 export type AgentHttpConfig = z.infer<typeof AgentHttpConfig>;
 
 export const AgentConfig = z.object({
+  token: EnvString.optional(),
   allow: z.array(z.string()).default([]),
   hitl: z.array(z.string()).default([]),
   tool_overrides: z.record(ToolOverride).default({}),
@@ -95,7 +103,10 @@ export const HitlProviderConfig = z.discriminatedUnion('type', [
 export type HitlProviderConfig = z.infer<typeof HitlProviderConfig>;
 
 export const HitlConfig = z.object({
-  provider: HitlProviderConfig.default({ type: 'stdio' }),
+  provider: z.union([
+    HitlProviderConfig,
+    z.array(HitlProviderConfig).min(1),
+  ]).default({ type: 'stdio' }),
   timeout_ms: z.number().int().min(1000).default(300000), // 5 minutes
   batch_window_ms: z.number().int().min(0).default(10000),
 });

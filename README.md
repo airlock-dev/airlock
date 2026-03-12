@@ -164,7 +164,7 @@ A self-contained test config with an echo MCP server is included — no tokens o
 npx @modelcontextprotocol/inspector npx tsx src/index.ts -- --profile test --config test/test-gateway.yaml
 ```
 
-Open `http://localhost:6274`, then list tools and call `tools/echo` or `tools/add` through the UI.
+Open `http://localhost:6274`, then list tools and call `echo/echo` or `echo/add` through the UI.
 
 ## systemd
 

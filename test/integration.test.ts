@@ -36,13 +36,13 @@ describe('integration: stdio child process', () => {
     const { tools } = await client.listTools();
     const names = tools.map(t => t.name);
 
-    expect(names).toContain('tools/echo');
-    expect(names).toContain('tools/add');
+    expect(names).toContain('echo/echo');
+    expect(names).toContain('echo/add');
   });
 
   it('tools have proper input schemas', async () => {
     const { tools } = await client.listTools();
-    const echo = tools.find(t => t.name === 'tools/echo');
+    const echo = tools.find(t => t.name === 'echo/echo');
 
     expect(echo).toBeDefined();
     expect(echo!.inputSchema).toEqual({
@@ -52,9 +52,9 @@ describe('integration: stdio child process', () => {
     });
   });
 
-  it('calls tools/echo and gets the message back', async () => {
+  it('calls echo/echo and gets the message back', async () => {
     const result = await client.callTool({
-      name: 'tools/echo',
+      name: 'echo/echo',
       arguments: { message: 'hello from integration test' },
     });
 
@@ -62,9 +62,9 @@ describe('integration: stdio child process', () => {
     expect(outer.content[0].text).toBe('hello from integration test');
   });
 
-  it('calls tools/add and gets the sum', async () => {
+  it('calls echo/add and gets the sum', async () => {
     const result = await client.callTool({
-      name: 'tools/add',
+      name: 'echo/add',
       arguments: { a: 17, b: 25 },
     });
 

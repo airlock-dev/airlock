@@ -7,13 +7,14 @@ import { HitlBatcher } from './hitl/batcher.js';
 import { AuditLogger } from './audit/logger.js';
 import { createHitlProvider } from './hitl/provider-factory.js';
 import { runStdioServer } from './transport/stdio-server.js';
+import { ConfigWatcher } from './config/watcher.js';
 import type { Config } from './config/loader.js';
 import type { ApprovalApi } from './hitl/providers/types.js';
 import { childLogger } from './util/logger.js';
 
 const log = childLogger('stdio-mode');
 
-export async function runStdioMode(config: Config, agentId: string): Promise<void> {
+export async function runStdioMode(config: Config, agentId: string, configPath: string): Promise<void> {
   const agentConfig = config.agents[agentId];
   if (!agentConfig) {
     throw new Error(`Unknown agent profile: ${agentId}`);
@@ -21,7 +22,8 @@ export async function runStdioMode(config: Config, agentId: string): Promise<voi
 
   // Stdio mode uses stdin/stdout for MCP protocol — the stdio HITL provider
   // also reads from stdin, which would corrupt the MCP transport.
-  if (config.hitl.provider.type === 'stdio') {
+  const providers = Array.isArray(config.hitl.provider) ? config.hitl.provider : [config.hitl.provider];
+  if (providers.some(p => p.type === 'stdio')) {
     throw new Error(
       'Cannot use hitl provider "stdio" in stdio mode — both the MCP transport and HITL ' +
       'provider would read from stdin. Use "telegram", "slack", "webhook", or "openclaw" instead.',
@@ -29,6 +31,8 @@ export async function runStdioMode(config: Config, agentId: string): Promise<voi
   }
 
   log.info({ agentId }, 'Starting Airlock in stdio mode');
+
+  let currentAgentConfig = agentConfig;
 
   // Audit
   const auditLogger = new AuditLogger(config.audit);
@@ -66,16 +70,43 @@ export async function runStdioMode(config: Config, agentId: string): Promise<voi
   );
 
   const pool = new ClientPool(filteredMcps);
+  pool.onClientReady((id) => {
+    log.info({ id }, 'MCP became ready, refreshing tool registry');
+    registry.refresh().catch(err => log.error({ err }, 'Failed to refresh registry after MCP ready'));
+  });
   await pool.initialize();
 
   const allowlist = new AllowlistEngine(config.agents);
   const registry = new ToolRegistry(pool, allowlist, config.agents, config.security);
   await registry.refresh();
 
+  // Hot reload — allowlists, agent config, security (not MCP connections or HITL provider)
+  const watcher = new ConfigWatcher(configPath);
+  watcher.on('reload', (newConfig) => {
+    try {
+      if (newConfig.agents[agentId]) {
+        currentAgentConfig = newConfig.agents[agentId];
+      }
+      pool.reload(newConfig.mcps).then(() => {
+        allowlist.reload(newConfig.agents);
+        registry.reloadAgents(newConfig.agents, newConfig.security);
+        return registry.refresh();
+      }).then(() => {
+        log.info('Config reloaded: MCPs, allowlist, agent config, security');
+      }).catch(err => {
+        log.error({ err }, 'Failed to apply reloaded config');
+      });
+    } catch (err) {
+      log.error({ err }, 'Failed to apply reloaded config');
+    }
+  });
+  watcher.start();
+
   // Graceful shutdown
   const shutdown = async () => {
     log.info('Shutting down stdio mode');
     try {
+      watcher.stop();
       await pool.stop();
       await hitlProvider.stop();
       auditLogger.stop();
@@ -92,6 +123,7 @@ export async function runStdioMode(config: Config, agentId: string): Promise<voi
   await runStdioServer({
     agentId,
     agentConfig,
+    getAgentConfig: () => currentAgentConfig,
     registry,
     allowlist,
     hitlEngine,

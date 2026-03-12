@@ -65,6 +65,10 @@ export class Gateway {
 
     // MCP pool
     this.pool = new ClientPool(this.config.mcps);
+    this.pool.onClientReady((id) => {
+      log.info({ id }, 'MCP became ready, refreshing tool registry');
+      this.registry.refresh().catch(err => log.error({ err }, 'Failed to refresh registry after MCP ready'));
+    });
     await this.pool.initialize();
 
     // Allowlist + registry
@@ -103,6 +107,7 @@ export class Gateway {
     return {
       agentId,
       agentConfig,
+      getAgentConfig: () => this.config.agents[agentId] ?? agentConfig,
       registry: this.registry,
       allowlist: this.allowlist,
       hitlEngine: this.hitlEngine,
@@ -115,10 +120,11 @@ export class Gateway {
   async reload(newConfig: Config): Promise<void> {
     log.info('Reloading gateway config');
     this.config = newConfig;
+    await this.pool.reload(newConfig.mcps);
     this.allowlist.reload(newConfig.agents);
     this.registry.reloadAgents(newConfig.agents, newConfig.security);
     await this.registry.refresh();
-    log.info('Config reloaded: allowlist, registry, and agent configs updated');
+    log.info('Config reloaded: MCPs, allowlist, registry, and agent configs updated');
   }
 
   async stop(): Promise<void> {
