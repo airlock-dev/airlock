@@ -52,8 +52,45 @@ export const AgentHttpConfig = z.object({
   domain_allowlist: z.array(z.string()).default([]),
   max_response_bytes: z.number().default(1048576), // 1MB
   timeout_ms: z.number().default(30000),
+  strip_query_params: z.boolean().default(false),
 });
 export type AgentHttpConfig = z.infer<typeof AgentHttpConfig>;
+
+export const MiddlewareItemConfig = z.object({
+  name: z.enum([
+    'schema-validator',
+    'rate-limiter',
+    'untrusted-envelope',
+    'strip-query-params',
+    'output-injection-detector',
+    'canary-token-injector',
+    'output-size-limiter',
+    'output-summarizer',
+    'injection-detector',
+    'sensitivity-classifier',
+  ]),
+  enabled: z.boolean().default(true),
+  // tool filtering — glob patterns (e.g. "github/*", "http/get")
+  tools: z.array(z.string()).optional(),
+  exclude: z.array(z.string()).optional(),
+  // rate-limiter
+  max_requests: z.number().optional(),
+  window_ms: z.number().optional(),
+  per: z.enum(['agent', 'tool']).optional(),
+  // output-injection-detector
+  mode: z.enum(['detect', 'mangle', 'escalate']).optional(),
+  // injection-detector
+  backend: z.enum(['regex', 'deberta', 'heuristic', 'llm']).optional(),
+  inference_url: z.string().optional(),
+  threshold: z.number().optional(),
+  // output-size-limiter
+  max_lines: z.number().optional(),
+  max_chars: z.number().optional(),
+  // output-summarizer / sensitivity-classifier
+  model: z.string().optional(),
+  threshold_chars: z.number().optional(),
+}).strict();
+export type MiddlewareItemConfig = z.infer<typeof MiddlewareItemConfig>;
 
 export const AgentConfig = z.object({
   token: EnvString.optional(),
@@ -62,6 +99,7 @@ export const AgentConfig = z.object({
   tool_overrides: z.record(ToolOverride).default({}),
   exec: AgentExecConfig.default({}),
   http: AgentHttpConfig.default({}),
+  middleware: z.array(MiddlewareItemConfig).optional(),
 });
 export type AgentConfig = z.infer<typeof AgentConfig>;
 

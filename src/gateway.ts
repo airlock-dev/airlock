@@ -114,6 +114,7 @@ export class Gateway {
       hitlBatcher: this.hitlBatcher,
       hitlProvider: this.hitlProvider,
       auditLogger: this.auditLogger,
+      securityConfig: this.config.security,
     };
   }
 

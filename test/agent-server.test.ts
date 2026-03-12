@@ -18,7 +18,8 @@ function makeAgentConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
     hitl: [],
     tool_overrides: {},
     exec: { allow: [], hitl: [], deny: ['*'], env: {}, default_timeout_ms: 5000 },
-    http: { domain_allowlist: [], max_response_bytes: 1048576, timeout_ms: 5000 },
+    http: { domain_allowlist: [], max_response_bytes: 1048576, timeout_ms: 5000, strip_query_params: false },
+    middleware: [],
     ...overrides,
   };
 }
@@ -44,6 +45,7 @@ function makeMockRegistry(tools: Tool[] = [], callResult: unknown = { ok: true }
   return {
     getFiltered: vi.fn().mockReturnValue(tools),
     call: vi.fn().mockResolvedValue(callResult),
+    getAllTools: vi.fn().mockReturnValue(tools),
   };
 }
 
