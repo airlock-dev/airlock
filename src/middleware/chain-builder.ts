@@ -15,7 +15,26 @@ import { outputSizeLimiterMiddleware } from './post/output-size-limiter.js';
 import { outputSummarizerMiddleware } from './post/output-summarizer.js';
 import { injectionDetectorMiddleware } from './detectors/injection-detector.js';
 import { sensitivityClassifierMiddleware } from './detectors/sensitivity-classifier.js';
+import { matches } from '../allowlist/pattern.js';
 import type { MiddlewareItemConfig } from '../config/schema.js';
+
+function shouldRunForTool(
+  toolName: string,
+  tools?: string[],
+  exclude?: string[],
+): boolean {
+  if (exclude?.some(p => matches(p, toolName))) return false;
+  if (tools && !tools.some(p => matches(p, toolName))) return false;
+  return true;
+}
+
+function withToolFilter(mw: Middleware, item: MiddlewareItemConfig): Middleware {
+  if (!item.tools && !item.exclude) return mw;
+  return (ctx, next) => {
+    if (!shouldRunForTool(ctx.toolName, item.tools, item.exclude)) return next();
+    return mw(ctx, next);
+  };
+}
 
 function resolveMiddleware(item: MiddlewareItemConfig): Middleware {
   switch (item.name) {
@@ -87,13 +106,13 @@ export function buildMiddlewareChain(agentConfig: AgentConfig, _deps: Middleware
   const coreMiddlewares: Middleware[] = [
     allowlistMiddleware(),
     execPolicyMiddleware(),
-    ...coreUserMiddleware.map(resolveMiddleware),
+    ...coreUserMiddleware.map(m => withToolFilter(resolveMiddleware(m), m)),
     hitlGateMiddleware(),
     executeMiddleware(),
   ];
 
   // Post zone: user-configurable
-  const postMiddlewares: Middleware[] = postUserMiddleware.map(resolveMiddleware);
+  const postMiddlewares: Middleware[] = postUserMiddleware.map(m => withToolFilter(resolveMiddleware(m), m));
 
   // Post middlewares wrap the core chain
   // They run after execution (or wrap around it), so they go before core in compose order

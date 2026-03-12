@@ -69,6 +69,9 @@ export const MiddlewareItemConfig = z.object({
     'injection-detector',
     'sensitivity-classifier',
   ]),
+  // tool filtering — glob patterns (e.g. "github/*", "http/get")
+  tools: z.array(z.string()).optional(),
+  exclude: z.array(z.string()).optional(),
   // rate-limiter
   max_requests: z.number().optional(),
   window_ms: z.number().optional(),
