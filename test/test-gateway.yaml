@@ -1,0 +1,42 @@
+# Self-contained test config for Airlock.
+# Uses the echo-server as a downstream MCP — no tokens or external services needed.
+#
+# Interactive:  npx @modelcontextprotocol/inspector npx tsx src/index.ts -- --profile test --config test/test-gateway.yaml
+# Automated:   npm test -- test/integration.test.ts
+
+mcps:
+  echo:
+    type: stdio
+    command: npx
+    args: ["tsx", "test/echo-server.ts"]
+
+agents:
+  test:
+    allow:
+      - "echo/*"
+    hitl: []
+    exec:
+      allow: []
+      hitl: []
+      deny: ["*"]
+    http:
+      domain_allowlist: []
+
+hitl:
+  provider:
+    type: webhook
+    url: "http://localhost:19999/dev-null"
+  timeout_ms: 5000
+  batch_window_ms: 100
+
+security:
+  blocked_hosts:
+    - localhost
+    - 127.0.0.1
+    - "::1"
+  allowed_local: []
+
+audit:
+  db_path: ":memory:"
+  retention_days: 1
+  redact_fields: []

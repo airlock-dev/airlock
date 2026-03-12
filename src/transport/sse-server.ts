@@ -1,3 +1,4 @@
+import { timingSafeEqual } from 'crypto';
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { createAgentServer, connectAgentServer } from './agent-server.js';
@@ -6,11 +7,55 @@ import { childLogger } from '../util/logger.js';
 
 const log = childLogger('sse-server');
 
+function constantTimeEqual(a: string, b: string): boolean {
+  const bufA = Buffer.from(a);
+  const bufB = Buffer.from(b);
+  if (bufA.length !== bufB.length) return false;
+  return timingSafeEqual(bufA, bufB);
+}
+
 export async function sseServerPlugin(
   app: FastifyInstance,
-  opts: { getDeps: (agentId: string) => AgentServerDeps | undefined },
+  opts: {
+    getDeps: (agentId: string) => AgentServerDeps | undefined;
+    secret?: string;
+  },
 ): Promise<void> {
-  const sessions = new Map<string, SSEServerTransport>();
+  const { secret } = opts;
+  const sessions = new Map<string, { transport: SSEServerTransport; profileId: string }>();
+
+  function checkAgentAuth(request: FastifyRequest, reply: FastifyReply, deps: AgentServerDeps): boolean {
+    const token = deps.agentConfig.token;
+    if (token) {
+      const auth = request.headers.authorization ?? '';
+      if (!constantTimeEqual(auth, `Bearer ${token}`)) {
+        reply.status(401).send({ error: 'Unauthorized' });
+        return false;
+      }
+      return true;
+    }
+    // No per-agent token — fall back to global api_secret
+    if (secret) {
+      const auth = request.headers.authorization ?? '';
+      if (!constantTimeEqual(auth, `Bearer ${secret}`)) {
+        reply.status(401).send({ error: 'Unauthorized' });
+        return false;
+      }
+    }
+    return true;
+  }
+
+  // Auth for non-agent endpoints (management API)
+  app.addHook('preHandler', async (request, reply) => {
+    const url = request.url;
+    // Agent endpoints handle their own auth
+    if (url.startsWith('/agents/')) return;
+    if (!secret) return;
+    const auth = request.headers.authorization ?? '';
+    if (!constantTimeEqual(auth, `Bearer ${secret}`)) {
+      return reply.status(401).send({ error: 'Unauthorized' });
+    }
+  });
 
   app.get('/agents/:profileId/sse', async (request: FastifyRequest, reply: FastifyReply) => {
     const { profileId } = request.params as { profileId: string };
@@ -20,10 +65,12 @@ export async function sseServerPlugin(
       return reply.status(404).send({ error: `Unknown agent profile: ${profileId}` });
     }
 
+    if (!checkAgentAuth(request, reply, deps)) return;
+
     log.info({ profileId }, 'New SSE connection');
 
     const transport = new SSEServerTransport('/agents/' + profileId + '/messages', reply.raw);
-    sessions.set(transport.sessionId, transport);
+    sessions.set(transport.sessionId, { transport, profileId });
 
     transport.onclose = () => {
       sessions.delete(transport.sessionId);
@@ -33,24 +80,35 @@ export async function sseServerPlugin(
     const server = createAgentServer(deps);
     await connectAgentServer(server, transport);
 
-    // Keep connection open
+    // Clean up when client disconnects
     request.raw.on('close', () => {
       sessions.delete(transport.sessionId);
+      transport.close().catch(() => {});
     });
   });
 
   app.post('/agents/:profileId/messages', async (request: FastifyRequest, reply: FastifyReply) => {
+    const { profileId } = request.params as { profileId: string };
     const { sessionId } = request.query as { sessionId?: string };
 
     if (!sessionId) {
       return reply.status(400).send({ error: 'sessionId query param required' });
     }
 
-    const transport = sessions.get(sessionId);
-    if (!transport) {
+    const session = sessions.get(sessionId);
+    if (!session) {
       return reply.status(404).send({ error: `Session not found: ${sessionId}` });
     }
 
-    await transport.handlePostMessage(request.raw, reply.raw);
+    // Verify the session belongs to the profile in the URL
+    if (session.profileId !== profileId) {
+      return reply.status(403).send({ error: 'Session does not belong to this agent' });
+    }
+
+    // Check auth on message posts too
+    const deps = opts.getDeps(profileId);
+    if (!deps || !checkAgentAuth(request, reply, deps)) return;
+
+    await session.transport.handlePostMessage(request.raw, reply.raw);
   });
 }

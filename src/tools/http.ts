@@ -69,6 +69,7 @@ export async function executeHttp(
       headers,
       body: ['post', 'put', 'patch'].includes(method) ? body : undefined,
       signal: controller.signal,
+      redirect: 'manual',
     });
 
     clearTimeout(timer);
@@ -76,15 +77,33 @@ export async function executeHttp(
     const responseHeaders: Record<string, string> = {};
     response.headers.forEach((value, key) => { responseHeaders[key] = value; });
 
-    const buffer = await response.arrayBuffer();
-    let bodyText: string;
+    // Stream response with size cap instead of buffering entirely
+    let bodyText = '';
     let truncated = false;
+    const reader = response.body?.getReader();
 
-    if (buffer.byteLength > maxBytes) {
-      bodyText = Buffer.from(buffer.slice(0, maxBytes)).toString('utf-8');
-      truncated = true;
-    } else {
-      bodyText = Buffer.from(buffer).toString('utf-8');
+    if (reader) {
+      let bytesRead = 0;
+      const decoder = new TextDecoder();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        bytesRead += value.byteLength;
+        if (bytesRead <= maxBytes) {
+          bodyText += decoder.decode(value, { stream: true });
+        } else {
+          // Only include up to the limit
+          const overshoot = bytesRead - maxBytes;
+          const usable = value.byteLength - overshoot;
+          if (usable > 0) {
+            bodyText += decoder.decode(value.slice(0, usable), { stream: true });
+          }
+          truncated = true;
+          reader.cancel();
+          break;
+        }
+      }
+      bodyText += decoder.decode(); // flush
     }
 
     return { status: response.status, headers: responseHeaders, body: bodyText, truncated };

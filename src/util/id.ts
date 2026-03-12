@@ -1,10 +1,15 @@
-import { randomBytes } from 'crypto';
+import { randomBytes, randomInt } from 'crypto';
 
-/** Generate a 6-char uppercase alphanumeric HITL approval code */
+const APPROVAL_CODE_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+const APPROVAL_CODE_LENGTH = 8; // 36^8 ≈ 2.8 trillion
+
+/** Generate an 8-char uppercase alphanumeric HITL approval code (no modular bias) */
 export function generateApprovalCode(): string {
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-  const bytes = randomBytes(6);
-  return Array.from(bytes).map(b => chars[b % chars.length]).join('');
+  let code = '';
+  for (let i = 0; i < APPROVAL_CODE_LENGTH; i++) {
+    code += APPROVAL_CODE_CHARS[randomInt(APPROVAL_CODE_CHARS.length)];
+  }
+  return code;
 }
 
 /** Generate a unique request ID (UUID-like) */

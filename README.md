@@ -1,5 +1,9 @@
 # Airlock
 
+[![CI](https://github.com/airlock-dev/airlock/actions/workflows/ci.yml/badge.svg)](https://github.com/airlock-dev/airlock/actions/workflows/ci.yml)
+[![Node](https://img.shields.io/node/v/airlock-bot)](https://www.npmjs.com/package/airlock-bot)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 A permissions-aware MCP gateway that sits between AI agents (Claude Code, Cursor, OpenClaw, etc.) and your downstream tool servers. Airlock enforces per-agent allowlists, requires human approval for sensitive operations, and keeps a full audit trail of every tool call.
 
 ```
@@ -121,6 +125,9 @@ See [`examples/gateway.yaml`](examples/gateway.yaml) for a fully annotated refer
 
 | Provider | Config `type` | Notes |
 |----------|--------------|-------|
+| TUI | `tui` | Terminal UI on stderr — `[a]pprove` / `[d]eny` with `j/k` navigation via `/dev/tty` |
+| macOS dialog | `macos` | Native approve/deny popup via `osascript` — best for local dev on Mac |
+| Dashboard | `dashboard` | Localhost web UI (default port 4112) with live SSE updates |
 | Telegram bot | `telegram` | Long-polls for replies; reply `approve ABC123` or `deny ABC123` |
 | Slack webhook | `slack` | Incoming webhook, fire-and-forget; pair with slash commands for approvals |
 | Generic webhook | `webhook` | POSTs `{requests, text}` JSON; configurable headers |
@@ -144,13 +151,20 @@ All management endpoints require `Authorization: Bearer <api_secret>` when `serv
 ## Testing
 
 ```bash
-npm test          # 198 unit tests
-npm run build     # TypeScript compile check
-
-# End-to-end with MCP Inspector
-npx @modelcontextprotocol/inspector \
-  node dist/index.js --profile claude-code --config examples/gateway.yaml
+npm test                              # 223 unit + integration tests
+npm test -- test/integration.test.ts  # just the integration test (real child process)
+npm run build                         # TypeScript compile check
 ```
+
+### Interactive testing with MCP Inspector
+
+A self-contained test config with an echo MCP server is included — no tokens or external services needed:
+
+```bash
+npx @modelcontextprotocol/inspector npx tsx src/index.ts -- --profile test --config test/test-gateway.yaml
+```
+
+Open `http://localhost:6274`, then list tools and call `echo/echo` or `echo/add` through the UI.
 
 ## systemd
 

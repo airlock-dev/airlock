@@ -22,17 +22,30 @@ function makeAgentConfig(httpOverrides: Partial<AgentConfig['http']> = {}): Agen
   };
 }
 
+function makeReadableBody(body: string) {
+  const buf = Buffer.from(body);
+  let read = false;
+  return {
+    getReader() {
+      return {
+        async read() {
+          if (read) return { done: true, value: undefined };
+          read = true;
+          return { done: false, value: new Uint8Array(buf) };
+        },
+        cancel() {},
+      };
+    },
+  };
+}
+
 function mockFetch(status: number, body: string, headers: Record<string, string> = {}) {
   const headersMap = new Map(Object.entries({ 'content-type': 'text/plain', ...headers }));
   return vi.fn().mockResolvedValue({
     ok: status >= 200 && status < 300,
     status,
     headers: { forEach: (cb: (v: string, k: string) => void) => headersMap.forEach(cb) },
-    arrayBuffer: () => {
-      // Buffer.from(body).buffer is a pooled ArrayBuffer — slice to get a dedicated one
-      const buf = Buffer.from(body);
-      return Promise.resolve(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength));
-    },
+    body: makeReadableBody(body),
   });
 }
 

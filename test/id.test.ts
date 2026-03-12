@@ -2,19 +2,19 @@ import { describe, it, expect } from 'vitest';
 import { generateApprovalCode, generateId } from '../src/util/id.js';
 
 describe('generateApprovalCode()', () => {
-  it('returns a 6-character string', () => {
-    expect(generateApprovalCode()).toHaveLength(6);
+  it('returns an 8-character string', () => {
+    expect(generateApprovalCode()).toHaveLength(8);
   });
 
   it('contains only uppercase letters and digits', () => {
     for (let i = 0; i < 50; i++) {
-      expect(generateApprovalCode()).toMatch(/^[A-Z0-9]{6}$/);
+      expect(generateApprovalCode()).toMatch(/^[A-Z0-9]{8}$/);
     }
   });
 
   it('generates unique codes', () => {
     const codes = new Set(Array.from({ length: 100 }, () => generateApprovalCode()));
-    // With 36^6 = 2.17B possibilities, 100 codes should all be unique
+    // With 36^8 ≈ 2.8T possibilities, 100 codes should all be unique
     expect(codes.size).toBe(100);
   });
 });

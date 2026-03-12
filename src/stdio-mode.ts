@@ -5,25 +5,34 @@ import { AllowlistEngine } from './allowlist/engine.js';
 import { HitlEngine } from './hitl/engine.js';
 import { HitlBatcher } from './hitl/batcher.js';
 import { AuditLogger } from './audit/logger.js';
-import { StdioHitlProvider } from './hitl/providers/stdio.js';
-import { TelegramHitlProvider } from './hitl/providers/telegram.js';
-import { OpenClawHitlProvider } from './hitl/providers/openclaw.js';
-import { SlackHitlProvider } from './hitl/providers/slack.js';
-import { WebhookHitlProvider } from './hitl/providers/webhook.js';
+import { createHitlProvider } from './hitl/provider-factory.js';
 import { runStdioServer } from './transport/stdio-server.js';
+import { ConfigWatcher } from './config/watcher.js';
 import type { Config } from './config/loader.js';
-import type { HitlProvider, ApprovalApi } from './hitl/providers/types.js';
+import type { ApprovalApi } from './hitl/providers/types.js';
 import { childLogger } from './util/logger.js';
 
 const log = childLogger('stdio-mode');
 
-export async function runStdioMode(config: Config, agentId: string): Promise<void> {
+export async function runStdioMode(config: Config, agentId: string, configPath: string): Promise<void> {
   const agentConfig = config.agents[agentId];
   if (!agentConfig) {
     throw new Error(`Unknown agent profile: ${agentId}`);
   }
 
+  // Stdio mode uses stdin/stdout for MCP protocol — the stdio HITL provider
+  // also reads from stdin, which would corrupt the MCP transport.
+  const providers = Array.isArray(config.hitl.provider) ? config.hitl.provider : [config.hitl.provider];
+  if (providers.some(p => p.type === 'stdio')) {
+    throw new Error(
+      'Cannot use hitl provider "stdio" in stdio mode — both the MCP transport and HITL ' +
+      'provider would read from stdin. Use "telegram", "slack", "webhook", or "openclaw" instead.',
+    );
+  }
+
   log.info({ agentId }, 'Starting Airlock in stdio mode');
+
+  let currentAgentConfig = agentConfig;
 
   // Audit
   const auditLogger = new AuditLogger(config.audit);
@@ -37,7 +46,7 @@ export async function runStdioMode(config: Config, agentId: string): Promise<voi
   };
 
   const hitlBatcher = new HitlBatcher(config.hitl.batch_window_ms);
-  const hitlProvider = buildHitlProvider(config, approvalForwarder);
+  const hitlProvider = createHitlProvider(config.hitl.provider, approvalForwarder);
 
   hitlEngine = new HitlEngine(auditLogger, hitlProvider, config.hitl.timeout_ms);
 
@@ -61,16 +70,60 @@ export async function runStdioMode(config: Config, agentId: string): Promise<voi
   );
 
   const pool = new ClientPool(filteredMcps);
+  pool.onClientReady((id) => {
+    log.info({ id }, 'MCP became ready, refreshing tool registry');
+    registry.refresh().catch(err => log.error({ err }, 'Failed to refresh registry after MCP ready'));
+  });
   await pool.initialize();
 
   const allowlist = new AllowlistEngine(config.agents);
   const registry = new ToolRegistry(pool, allowlist, config.agents, config.security);
   await registry.refresh();
 
+  // Hot reload — allowlists, agent config, security (not MCP connections or HITL provider)
+  const watcher = new ConfigWatcher(configPath);
+  watcher.on('reload', (newConfig) => {
+    try {
+      if (newConfig.agents[agentId]) {
+        currentAgentConfig = newConfig.agents[agentId];
+      }
+      pool.reload(newConfig.mcps).then(() => {
+        allowlist.reload(newConfig.agents);
+        registry.reloadAgents(newConfig.agents, newConfig.security);
+        return registry.refresh();
+      }).then(() => {
+        log.info('Config reloaded: MCPs, allowlist, agent config, security');
+      }).catch(err => {
+        log.error({ err }, 'Failed to apply reloaded config');
+      });
+    } catch (err) {
+      log.error({ err }, 'Failed to apply reloaded config');
+    }
+  });
+  watcher.start();
+
+  // Graceful shutdown
+  const shutdown = async () => {
+    log.info('Shutting down stdio mode');
+    try {
+      watcher.stop();
+      await pool.stop();
+      await hitlProvider.stop();
+      auditLogger.stop();
+    } catch (err) {
+      log.error({ err }, 'Error during stdio shutdown');
+    }
+    process.exit(0);
+  };
+
+  process.on('SIGTERM', () => void shutdown());
+  process.on('SIGINT', () => void shutdown());
+
   // No HTTP server — stdio only
   await runStdioServer({
     agentId,
     agentConfig,
+    getAgentConfig: () => currentAgentConfig,
     registry,
     allowlist,
     hitlEngine,
@@ -78,23 +131,4 @@ export async function runStdioMode(config: Config, agentId: string): Promise<voi
     hitlProvider,
     auditLogger,
   });
-}
-
-function buildHitlProvider(config: Config, approvalApi: ApprovalApi): HitlProvider {
-  const cfg = config.hitl.provider;
-  switch (cfg.type) {
-    case 'telegram':
-      return new TelegramHitlProvider({ bot_token: cfg.bot_token, chat_id: cfg.chat_id }, approvalApi);
-    case 'openclaw':
-      return new OpenClawHitlProvider(
-        { gateway_url: cfg.gateway_url, token: cfg.token, session_key: cfg.session_key },
-        approvalApi,
-      );
-    case 'slack':
-      return new SlackHitlProvider({ webhook_url: cfg.webhook_url });
-    case 'webhook':
-      return new WebhookHitlProvider({ url: cfg.url, headers: cfg.headers });
-    default:
-      return new StdioHitlProvider(approvalApi);
-  }
 }

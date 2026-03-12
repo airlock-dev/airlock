@@ -6,3 +6,5 @@ dist/
 .env
 /env
 *.js.map
+coverage/
+local/

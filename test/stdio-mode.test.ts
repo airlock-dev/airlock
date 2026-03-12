@@ -80,7 +80,7 @@ const MINIMAL_CONFIG = {
       http: { domain_allowlist: [], max_response_bytes: 1048576, timeout_ms: 5000 },
     },
   },
-  hitl: { provider: { type: 'stdio' as const }, timeout_ms: 300000, batch_window_ms: 10000 },
+  hitl: { provider: { type: 'webhook' as const, url: 'http://localhost:9999/hook', headers: {} }, timeout_ms: 300000, batch_window_ms: 10000 },
   security: { blocked_hosts: [], allowed_local: [] },
   audit: { db_path: ':memory:', retention_days: 90, redact_fields: [] },
   server: { port: 4111, host: '127.0.0.1' },

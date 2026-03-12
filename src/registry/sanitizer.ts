@@ -21,17 +21,19 @@ export function sanitizeToolDescription(
   if (override !== undefined) return override;
   if (!description) return '';
 
-  // Warn on suspicious patterns
+  // Strip suspicious patterns (possible prompt injection from downstream MCPs)
+  let cleaned = description;
   for (const pattern of SUSPICIOUS_PATTERNS) {
-    if (pattern.test(description)) {
-      log.warn({ toolName, pattern: pattern.source }, 'Suspicious pattern in tool description (possible prompt injection)');
+    if (pattern.test(cleaned)) {
+      log.warn({ toolName, pattern: pattern.source }, 'Stripping suspicious pattern from tool description (possible prompt injection)');
+      cleaned = cleaned.replace(pattern, '[removed]');
     }
   }
 
   // Truncate
-  if (description.length > MAX_DESCRIPTION_LENGTH) {
-    return description.slice(0, MAX_DESCRIPTION_LENGTH) + '…';
+  if (cleaned.length > MAX_DESCRIPTION_LENGTH) {
+    return cleaned.slice(0, MAX_DESCRIPTION_LENGTH) + '…';
   }
 
-  return description;
+  return cleaned;
 }

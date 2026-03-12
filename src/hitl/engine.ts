@@ -125,7 +125,9 @@ export class HitlEngine implements ApprovalApi {
 
     for (const row of rows) {
       let args: Record<string, unknown> = {};
-      try { args = JSON.parse(row.args); } catch {}
+      try { args = JSON.parse(row.args); } catch {
+        log.warn({ id: row.id }, 'Failed to parse HITL args from DB, using empty args');
+      }
 
       const elapsed = Date.now() - new Date(row.created_at).getTime();
       const remaining = this.timeoutMs - elapsed;

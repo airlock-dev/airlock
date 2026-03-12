@@ -23,6 +23,11 @@ export class ToolRegistry {
     this.builtinTools = [...buildHttpTools(), buildExecTool()];
   }
 
+  reloadAgents(agents: Record<string, AgentConfig>, security: SecurityConfig): void {
+    this.agents = agents;
+    this.security = security;
+  }
+
   async refresh(): Promise<void> {
     const tools: Tool[] = [];
 

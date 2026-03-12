@@ -1,48 +1,60 @@
 import { StdioMcpClient } from './stdio-client.js';
 import { SseMcpClient } from './sse-client.js';
+import { HttpMcpClient } from './http-client.js';
 import type { McpServerConfig } from '../config/schema.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { childLogger } from '../util/logger.js';
 
 const log = childLogger('pool');
 
-type McpClient = StdioMcpClient | SseMcpClient;
+type McpClient = StdioMcpClient | SseMcpClient | HttpMcpClient;
 export type HealthStatus = 'ok' | 'degraded' | 'down';
 
 export class ClientPool {
   private clients = new Map<string, McpClient>();
   private healthTimer?: NodeJS.Timeout;
+  private _onClientReady?: (id: string) => void;
 
   constructor(private mcps: Record<string, McpServerConfig>) {}
 
+  onClientReady(cb: (id: string) => void): void {
+    this._onClientReady = cb;
+  }
+
   async initialize(): Promise<void> {
     const entries = Object.entries(this.mcps);
-    await Promise.allSettled(entries.map(async ([id, cfg]) => {
-      try {
-        const client = this.createClient(id, cfg);
-        await client.connect();
-        this.clients.set(id, client);
-        log.info({ id }, 'MCP connected');
-      } catch (err) {
-        log.error({ err, id }, 'Failed to connect MCP (will retry in background)');
-        // Still create the client so it can reconnect
-        const client = this.createClient(id, cfg);
-        this.clients.set(id, client);
-        // Start reconnect loop
-        client.connect().catch(() => {});
-      }
-    }));
-
+    await Promise.allSettled(entries.map(([id, cfg]) => this.connectClient(id, cfg)));
     this.startHealthCheck();
   }
 
+  private async connectClient(id: string, cfg: McpServerConfig): Promise<void> {
+    const client = this.createClient(id, cfg);
+    this.clients.set(id, client);
+    try {
+      await client.connect();
+      log.info({ id }, 'MCP connected');
+      this._onClientReady?.(id);
+    } catch (err) {
+      log.error({ err, id }, 'Failed to connect MCP (will retry in background)');
+      this.connectInBackground(id, client);
+    }
+  }
+
+  private connectInBackground(id: string, client: McpClient): void {
+    client.connect().then(() => {
+      log.info({ id }, 'MCP connected (background)');
+      this._onClientReady?.(id);
+    }).catch(() => {});
+  }
+
   private createClient(id: string, cfg: McpServerConfig): McpClient {
-    if (cfg.type === 'stdio') {
-      if (!cfg.command) throw new Error(`MCP ${id}: stdio type requires 'command'`);
-      return new StdioMcpClient(id, cfg.command, cfg.args ?? [], cfg.env);
-    } else {
-      if (!cfg.url) throw new Error(`MCP ${id}: sse type requires 'url'`);
-      return new SseMcpClient(id, cfg.url, cfg.headers);
+    switch (cfg.type) {
+      case 'stdio':
+        return new StdioMcpClient(id, cfg.command, cfg.args, cfg.env);
+      case 'sse':
+        return new SseMcpClient(id, cfg.url, cfg.headers);
+      case 'http':
+        return new HttpMcpClient(id, cfg.url, cfg.headers, cfg.oauth, cfg.oauth_callback_port);
     }
   }
 
@@ -57,6 +69,31 @@ export class ClientPool {
     if (!client) throw new Error(`Unknown MCP: ${mcpId}`);
     if (!client.isReady()) throw new Error(`MCP ${mcpId} is not connected`);
     return client.callTool(toolName, args);
+  }
+
+  async reload(newMcps: Record<string, McpServerConfig>): Promise<void> {
+    const oldIds = new Set(this.clients.keys());
+    const newIds = new Set(Object.keys(newMcps));
+
+    // Remove MCPs that no longer exist
+    for (const id of oldIds) {
+      if (!newIds.has(id)) {
+        log.info({ id }, 'Removing MCP (no longer in config)');
+        const client = this.clients.get(id)!;
+        await client.stop().catch(err => log.error({ err, id }, 'Error stopping removed MCP'));
+        this.clients.delete(id);
+      }
+    }
+
+    // Add new MCPs
+    for (const [id, cfg] of Object.entries(newMcps)) {
+      if (!oldIds.has(id)) {
+        log.info({ id }, 'Adding new MCP from config reload');
+        void this.connectClient(id, cfg);
+      }
+    }
+
+    this.mcps = newMcps;
   }
 
   healthCheck(): Record<string, HealthStatus> {

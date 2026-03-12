@@ -23,6 +23,7 @@ export class SseMcpClient {
   async connect(): Promise<void> {
     this.transport = new SSEClientTransport(
       new URL(this.url),
+      { requestInit: this.headers ? { headers: this.headers } : undefined },
     );
 
     this.client = new Client({ name: 'airlock', version: '0.1.0' });
