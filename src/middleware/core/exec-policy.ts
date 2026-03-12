@@ -23,8 +23,8 @@ export function execPolicyMiddleware(): Middleware {
       });
       throw new McpError(ErrorCode.InvalidRequest, 'Command denied by policy');
     }
-    if (cmdDecision === 'hitl') {
-      ctx.meta.needsHitl = true;
+    if (cmdDecision === 'ask') {
+      ctx.meta.needsApproval = true;
     }
 
     return next();

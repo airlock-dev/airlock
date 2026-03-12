@@ -4,27 +4,28 @@ import type { AgentConfig } from '../src/config/schema.js';
 
 function makeAgent(
   allow: string[],
-  hitl: string[],
+  ask: string[],
   deny: string[],
 ): AgentConfig {
   return {
     allow: [],
-    hitl: [],
+    ask: [],
+    deny: [],
     tool_overrides: {},
-    exec: { allow, hitl, deny, env: {}, default_timeout_ms: 30000 },
+    exec: { allow, ask, deny, env: {}, default_timeout_ms: 30000 },
     http: { domain_allowlist: [], max_response_bytes: 1048576, timeout_ms: 30000 },
   };
 }
 
 describe('evaluateExecCommand()', () => {
-  it('deny takes priority over hitl and allow', () => {
+  it('deny takes priority over ask and allow', () => {
     const agent = makeAgent(['*'], ['*'], ['sudo*']);
     expect(evaluateExecCommand('sudo rm -rf /', agent)).toBe('deny');
   });
 
-  it('hitl triggers for matching commands', () => {
+  it('ask triggers for matching commands', () => {
     const agent = makeAgent(['git*'], ['git push*'], []);
-    expect(evaluateExecCommand('git push origin main', agent)).toBe('hitl');
+    expect(evaluateExecCommand('git push origin main', agent)).toBe('ask');
     expect(evaluateExecCommand('git status', agent)).toBe('allow');
   });
 

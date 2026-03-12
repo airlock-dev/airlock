@@ -92,8 +92,8 @@ export function injectionDetectorMiddleware(opts: InjectionDetectorOptions = {})
         log.warn({ err }, 'DeBERTa inference failed for args, falling back to regex');
         preInjection = classifyWithRegex(argsText).isInjection;
         if (mode === 'escalate') {
-          ctx.meta.needsHitl = true;
-          ctx.meta.hitlReason = 'DeBERTa inference unavailable — escalating as precaution';
+          ctx.meta.needsApproval = true;
+          ctx.meta.approvalReason = 'DeBERTa inference unavailable — escalating as precaution';
         }
       }
     } else {
@@ -111,8 +111,8 @@ export function injectionDetectorMiddleware(opts: InjectionDetectorOptions = {})
       });
 
       if (mode === 'escalate') {
-        ctx.meta.needsHitl = true;
-        ctx.meta.hitlReason = 'Prompt injection detected in tool arguments';
+        ctx.meta.needsApproval = true;
+        ctx.meta.approvalReason = 'Prompt injection detected in tool arguments';
       }
     }
 
@@ -129,8 +129,8 @@ export function injectionDetectorMiddleware(opts: InjectionDetectorOptions = {})
         log.warn({ err }, 'DeBERTa inference failed for response, falling back to regex');
         postInjection = classifyWithRegex(response.text).isInjection;
         if (mode === 'escalate') {
-          ctx.meta.needsHitl = true;
-          ctx.meta.hitlReason = 'DeBERTa inference unavailable — escalating as precaution';
+          ctx.meta.needsApproval = true;
+          ctx.meta.approvalReason = 'DeBERTa inference unavailable — escalating as precaution';
         }
       }
     } else {

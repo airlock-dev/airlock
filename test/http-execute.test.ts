@@ -10,9 +10,10 @@ const DEFAULT_SECURITY: SecurityConfig = {
 function makeAgentConfig(httpOverrides: Partial<AgentConfig['http']> = {}): AgentConfig {
   return {
     allow: ['http/*'],
-    hitl: [],
+    ask: [],
+    deny: [],
     tool_overrides: {},
-    exec: { allow: [], hitl: [], deny: [], env: {}, default_timeout_ms: 5000 },
+    exec: { allow: [], ask: [], deny: [], env: {}, default_timeout_ms: 5000 },
     http: {
       domain_allowlist: [],
       max_response_bytes: 1048576,

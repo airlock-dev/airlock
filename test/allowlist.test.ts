@@ -35,12 +35,13 @@ describe('matchesCommand()', () => {
   });
 });
 
-function makeAgent(allow: string[], hitl: string[] = []): AgentConfig {
+function makeAgent(allow: string[], ask: string[] = [], deny: string[] = []): AgentConfig {
   return {
     allow,
-    hitl,
+    ask,
+    deny,
     tool_overrides: {},
-    exec: { allow: [], hitl: [], deny: [], env: {}, default_timeout_ms: 30000 },
+    exec: { allow: [], ask: [], deny: [], env: {}, default_timeout_ms: 30000 },
     http: { domain_allowlist: [], max_response_bytes: 1048576, timeout_ms: 30000 },
   };
 }
@@ -56,10 +57,31 @@ describe('AllowlistEngine', () => {
     expect(engine.evaluate('agent1', 'github/create_pr')).toBe('allow');
   });
 
-  it('returns hitl for tools in hitl sublist', () => {
+  it('returns ask for tools in ask list', () => {
     const engine = new AllowlistEngine({ agent1: makeAgent(['github/*'], ['github/create_pr']) });
-    expect(engine.evaluate('agent1', 'github/create_pr')).toBe('hitl');
+    expect(engine.evaluate('agent1', 'github/create_pr')).toBe('ask');
     expect(engine.evaluate('agent1', 'github/list_prs')).toBe('allow');
+  });
+
+  it('ask implies allow — no need to also put in allow list', () => {
+    // Only in ask, NOT in allow — should still return ask (not deny)
+    const engine = new AllowlistEngine({ agent1: makeAgent([], ['github/create_pr']) });
+    expect(engine.evaluate('agent1', 'github/create_pr')).toBe('ask');
+  });
+
+  it('deny takes priority over allow and ask', () => {
+    const engine = new AllowlistEngine({
+      agent1: makeAgent(['github/*'], ['github/create_pr'], ['github/create_pr']),
+    });
+    expect(engine.evaluate('agent1', 'github/create_pr')).toBe('deny');
+  });
+
+  it('deny wildcard blocks everything in namespace', () => {
+    const engine = new AllowlistEngine({
+      agent1: makeAgent(['github/*'], [], ['github/*']),
+    });
+    expect(engine.evaluate('agent1', 'github/create_pr')).toBe('deny');
+    expect(engine.evaluate('agent1', 'github/list_prs')).toBe('deny');
   });
 
   it('denies unknown agent', () => {

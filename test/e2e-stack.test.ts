@@ -71,9 +71,10 @@ const SECURITY: SecurityConfig = {
 function makeAgentConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
   return {
     allow: ['tools/*'],
-    hitl: [],
+    ask: [],
+    deny: [],
     tool_overrides: {},
-    exec: { allow: [], hitl: [], deny: ['*'], env: {}, default_timeout_ms: 5000 },
+    exec: { allow: [], ask: [], deny: ['*'], env: {}, default_timeout_ms: 5000 },
     http: { domain_allowlist: [], max_response_bytes: 1048576, timeout_ms: 5000 },
     middleware: [],
     ...overrides,
@@ -114,7 +115,7 @@ async function buildStack(agentConfig: AgentConfig = makeAgentConfig()): Promise
   const pool = new FakePool('tools', poolClient);
   const agents = { agent: agentConfig };
   const allowlist = new AllowlistEngine(agents);
-  const registry = new ToolRegistry(pool as never, allowlist, agents, SECURITY);
+  const registry = new ToolRegistry(pool as never, allowlist, agents, SECURITY, new Set(['http', 'exec']));
   await registry.refresh();
 
   // 3. Real HITL engine + batcher
@@ -233,7 +234,7 @@ describe('e2e: call_tool — downstream routing', () => {
 
 describe('e2e: call_tool — HITL gate with real downstream', () => {
   it('blocks the downstream call until approved, then executes', async () => {
-    const config = makeAgentConfig({ allow: ['tools/*'], hitl: ['tools/echo'] });
+    const config = makeAgentConfig({ allow: ['tools/*'], ask: ['tools/echo'] });
     const stack = await buildStack(config);
 
     const callPromise = stack.testClient.callTool({
@@ -261,7 +262,7 @@ describe('e2e: call_tool — HITL gate with real downstream', () => {
   });
 
   it('returns error when HITL is denied — downstream never called', async () => {
-    const config = makeAgentConfig({ allow: ['tools/*'], hitl: ['tools/add'] });
+    const config = makeAgentConfig({ allow: ['tools/*'], ask: ['tools/add'] });
     const stack = await buildStack(config);
 
     const callPromise = stack.testClient.callTool({
@@ -281,13 +282,13 @@ describe('e2e: call_tool — HITL gate with real downstream', () => {
   });
 });
 
-// ─── Built-in exec/run — allow / hitl / deny at per-command level ────────────
+// ─── Built-in exec/run — allow / ask / deny at per-command level ─────────────
 
 describe('e2e: exec/run — per-command policy', () => {
   it('ALLOW: runs an allowed command and returns output', async () => {
     const config = makeAgentConfig({
       allow: ['exec/run'],
-      exec: { allow: ['echo*'], hitl: [], deny: [], env: {}, default_timeout_ms: 5000 },
+      exec: { allow: ['echo*'], ask: [], deny: [], env: {}, default_timeout_ms: 5000 },
     });
     const stack = await buildStack(config);
 
@@ -308,7 +309,7 @@ describe('e2e: exec/run — per-command policy', () => {
   it('DENY: rejects a denied command', async () => {
     const config = makeAgentConfig({
       allow: ['exec/run'],
-      exec: { allow: ['echo*'], hitl: [], deny: ['rm*'], env: {}, default_timeout_ms: 5000 },
+      exec: { allow: ['echo*'], ask: [], deny: ['rm*'], env: {}, default_timeout_ms: 5000 },
     });
     const stack = await buildStack(config);
 
@@ -325,7 +326,7 @@ describe('e2e: exec/run — per-command policy', () => {
   it('DENY: deny takes priority over allow', async () => {
     const config = makeAgentConfig({
       allow: ['exec/run'],
-      exec: { allow: ['rm*'], hitl: [], deny: ['rm -rf*'], env: {}, default_timeout_ms: 5000 },
+      exec: { allow: ['rm*'], ask: [], deny: ['rm -rf*'], env: {}, default_timeout_ms: 5000 },
     });
     const stack = await buildStack(config);
 
@@ -338,7 +339,7 @@ describe('e2e: exec/run — per-command policy', () => {
   it('DENY: commands not in any list are denied (fail-closed)', async () => {
     const config = makeAgentConfig({
       allow: ['exec/run'],
-      exec: { allow: ['echo*'], hitl: [], deny: [], env: {}, default_timeout_ms: 5000 },
+      exec: { allow: ['echo*'], ask: [], deny: [], env: {}, default_timeout_ms: 5000 },
     });
     const stack = await buildStack(config);
 
@@ -351,7 +352,7 @@ describe('e2e: exec/run — per-command policy', () => {
   it('DENY: shell injection is blocked regardless of allow patterns', async () => {
     const config = makeAgentConfig({
       allow: ['exec/run'],
-      exec: { allow: ['echo*'], hitl: [], deny: [], env: {}, default_timeout_ms: 5000 },
+      exec: { allow: ['echo*'], ask: [], deny: [], env: {}, default_timeout_ms: 5000 },
     });
     const stack = await buildStack(config);
 
@@ -364,7 +365,7 @@ describe('e2e: exec/run — per-command policy', () => {
   it('HITL APPROVE: command matching hitl pattern blocks, then executes on approve', async () => {
     const config = makeAgentConfig({
       allow: ['exec/run'],
-      exec: { allow: ['echo*'], hitl: ['echo secret*'], deny: [], env: {}, default_timeout_ms: 5000 },
+      exec: { allow: ['echo*'], ask: ['echo secret*'], deny: [], env: {}, default_timeout_ms: 5000 },
     });
     const stack = await buildStack(config);
 
@@ -392,7 +393,7 @@ describe('e2e: exec/run — per-command policy', () => {
   it('HITL DENY: command matching hitl pattern blocks, then errors on deny', async () => {
     const config = makeAgentConfig({
       allow: ['exec/run'],
-      exec: { allow: ['echo*'], hitl: ['echo danger*'], deny: [], env: {}, default_timeout_ms: 5000 },
+      exec: { allow: ['echo*'], ask: ['echo danger*'], deny: [], env: {}, default_timeout_ms: 5000 },
     });
     const stack = await buildStack(config);
 
@@ -414,7 +415,7 @@ describe('e2e: exec/run — per-command policy', () => {
   it('exec/run blocked at allowlist level when not in agent allow list', async () => {
     const config = makeAgentConfig({
       allow: ['tools/*'],  // exec/run NOT allowed
-      exec: { allow: ['echo*'], hitl: [], deny: [], env: {}, default_timeout_ms: 5000 },
+      exec: { allow: ['echo*'], ask: [], deny: [], env: {}, default_timeout_ms: 5000 },
     });
     const stack = await buildStack(config);
 
@@ -425,7 +426,7 @@ describe('e2e: exec/run — per-command policy', () => {
   });
 });
 
-// ─── Built-in http/* — allow / hitl / deny ──────────────────────────────────
+// ─── Built-in http/* — allow / ask / deny ───────────────────────────────────
 
 describe('e2e: http/* — security and policy', () => {
   it('DENY: http/get not listed returns rejected', async () => {
@@ -503,7 +504,7 @@ describe('e2e: http/* — security and policy', () => {
   it('HITL APPROVE: http tool gated by HITL, approved executes', async () => {
     const config = makeAgentConfig({
       allow: ['http/*'],
-      hitl: ['http/post'],
+      ask: ['http/post'],
       http: { domain_allowlist: ['httpbin.org'], max_response_bytes: 1048576, timeout_ms: 5000 },
     });
     const stack = await buildStack(config);
@@ -529,7 +530,7 @@ describe('e2e: http/* — security and policy', () => {
   it('HITL DENY: http tool gated by HITL, denied returns error', async () => {
     const config = makeAgentConfig({
       allow: ['http/*'],
-      hitl: ['http/get'],
+      ask: ['http/get'],
       http: { domain_allowlist: ['example.com'], max_response_bytes: 1048576, timeout_ms: 5000 },
     });
     const stack = await buildStack(config);
@@ -578,7 +579,7 @@ describe('e2e: http/* — security and policy', () => {
 
 describe('e2e: external MCP — HITL wildcard patterns', () => {
   it('HITL on wildcard pattern: tools/* all require HITL', async () => {
-    const config = makeAgentConfig({ allow: ['tools/*'], hitl: ['tools/*'] });
+    const config = makeAgentConfig({ allow: ['tools/*'], ask: ['tools/*'] });
     const stack = await buildStack(config);
 
     const callPromise = stack.testClient.callTool({
@@ -598,7 +599,7 @@ describe('e2e: external MCP — HITL wildcard patterns', () => {
   });
 
   it('HITL on specific tool only — other tools pass through', async () => {
-    const config = makeAgentConfig({ allow: ['tools/*'], hitl: ['tools/add'] });
+    const config = makeAgentConfig({ allow: ['tools/*'], ask: ['tools/add'] });
     const stack = await buildStack(config);
 
     // tools/echo should pass without HITL
@@ -632,7 +633,7 @@ describe('e2e: external MCP — HITL wildcard patterns', () => {
     const provider = makeMockProvider();
     const hitlEngine = new HitlEngine(auditLogger, provider as never, 500);
 
-    const config = makeAgentConfig({ allow: ['tools/*'], hitl: ['tools/echo'] });
+    const config = makeAgentConfig({ allow: ['tools/*'], ask: ['tools/echo'] });
 
     // Build stack manually to inject the short-timeout engine
     const downstream = createDownstreamServer();
@@ -644,7 +645,7 @@ describe('e2e: external MCP — HITL wildcard patterns', () => {
     const pool = new FakePool('tools', poolClient);
     const agents = { agent: config };
     const allowlist = new AllowlistEngine(agents);
-    const registry = new ToolRegistry(pool as never, allowlist, agents, SECURITY);
+    const registry = new ToolRegistry(pool as never, allowlist, agents, SECURITY, new Set(['http', 'exec']));
     await registry.refresh();
 
     const hitlBatcher = new HitlBatcher(50);
@@ -675,14 +676,14 @@ describe('e2e: external MCP — HITL wildcard patterns', () => {
   });
 });
 
-// ─── Mixed: allow some, hitl some, deny some ────────────────────────────────
+// ─── Mixed: allow some, ask some, deny some ─────────────────────────────────
 
-describe('e2e: mixed policy — allow + hitl + deny across tool types', () => {
-  it('agent with mixed policy: MCP allowed, exec hitl-gated, http blocked', async () => {
+describe('e2e: mixed policy — allow + ask + deny across tool types', () => {
+  it('agent with mixed policy: MCP allowed, exec approval-gated, http blocked', async () => {
     const config = makeAgentConfig({
       allow: ['tools/echo', 'exec/run'],  // no http/*
-      hitl: [],
-      exec: { allow: ['echo*'], hitl: ['echo deploy*'], deny: ['rm*'], env: {}, default_timeout_ms: 5000 },
+      ask: [],
+      exec: { allow: ['echo*'], ask: ['echo deploy*'], deny: ['rm*'], env: {}, default_timeout_ms: 5000 },
     });
     const stack = await buildStack(config);
 

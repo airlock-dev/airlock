@@ -15,10 +15,11 @@ import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 function makeAgentConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
   return {
     allow: [],
-    hitl: [],
+    ask: [],
+    deny: [],
     tool_overrides: {},
-    exec: { allow: [], hitl: [], deny: ['*'], env: {}, default_timeout_ms: 5000 },
-    http: { domain_allowlist: [], max_response_bytes: 1048576, timeout_ms: 5000, strip_query_params: false },
+    exec: { allow: [], ask: [], deny: ['*'], env: {}, default_timeout_ms: 5000 },
+    http: { domain_allowlist: [], max_response_bytes: 1048576, timeout_ms: 5000 },
     middleware: [],
     ...overrides,
   };
@@ -176,7 +177,7 @@ describe('call_tool — exec/run policy', () => {
     const auditLogger = makeMockAuditLogger();
     const agentConfig = makeAgentConfig({
       allow: ['exec/run'],
-      exec: { allow: ['git*'], hitl: [], deny: ['sudo*'], env: {}, default_timeout_ms: 5000 },
+      exec: { allow: ['git*'], ask: [], deny: ['sudo*'], env: {}, default_timeout_ms: 5000 },
     });
     const allowlist = new AllowlistEngine({ agent1: agentConfig });
     const deps = makeDeps({ agentConfig, allowlist, auditLogger });
@@ -194,7 +195,7 @@ describe('call_tool — exec/run policy', () => {
   it('executes allowed exec command and returns output', async () => {
     const agentConfig = makeAgentConfig({
       allow: ['exec/run'],
-      exec: { allow: ['echo*'], hitl: [], deny: [], env: {}, default_timeout_ms: 5000 },
+      exec: { allow: ['echo*'], ask: [], deny: [], env: {}, default_timeout_ms: 5000 },
     });
     const allowlist = new AllowlistEngine({ agent1: agentConfig });
     const deps = makeDeps({ agentConfig, allowlist });
@@ -211,7 +212,7 @@ describe('call_tool — exec/run policy', () => {
 
 describe('call_tool — HITL gate', () => {
   it('blocks until approved, then executes', async () => {
-    const agentConfig = makeAgentConfig({ allow: ['github/*'], hitl: ['github/create_pr'] });
+    const agentConfig = makeAgentConfig({ allow: ['github/*'], ask: ['github/create_pr'] });
     const allowlist = new AllowlistEngine({ agent1: agentConfig });
     const auditLogger = makeMockAuditLogger();
     const provider = makeMockProvider();
@@ -242,7 +243,7 @@ describe('call_tool — HITL gate', () => {
   });
 
   it('returns error when denied', async () => {
-    const agentConfig = makeAgentConfig({ allow: ['github/*'], hitl: ['github/create_pr'] });
+    const agentConfig = makeAgentConfig({ allow: ['github/*'], ask: ['github/create_pr'] });
     const allowlist = new AllowlistEngine({ agent1: agentConfig });
     const auditLogger = makeMockAuditLogger();
     const provider = makeMockProvider();
@@ -263,7 +264,7 @@ describe('call_tool — HITL gate', () => {
 
   it('returns timeout error when approval times out', async () => {
     vi.useFakeTimers();
-    const agentConfig = makeAgentConfig({ allow: ['github/*'], hitl: ['github/create_pr'] });
+    const agentConfig = makeAgentConfig({ allow: ['github/*'], ask: ['github/create_pr'] });
     const allowlist = new AllowlistEngine({ agent1: agentConfig });
     const auditLogger = makeMockAuditLogger();
     const provider = makeMockProvider();
@@ -283,7 +284,7 @@ describe('call_tool — HITL gate', () => {
   });
 
   it('batcher receives real id and code — not placeholder values', async () => {
-    const agentConfig = makeAgentConfig({ allow: ['github/*'], hitl: ['github/create_pr'] });
+    const agentConfig = makeAgentConfig({ allow: ['github/*'], ask: ['github/create_pr'] });
     const allowlist = new AllowlistEngine({ agent1: agentConfig });
     const auditLogger = makeMockAuditLogger();
     const provider = makeMockProvider();
@@ -312,7 +313,7 @@ describe('call_tool — HITL gate', () => {
   it('exec/run command matching hitl pattern routes to HITL gate', async () => {
     const agentConfig = makeAgentConfig({
       allow: ['exec/run'],
-      exec: { allow: ['git*'], hitl: ['git push*'], deny: [], env: {}, default_timeout_ms: 5000 },
+      exec: { allow: ['git*'], ask: ['git push*'], deny: [], env: {}, default_timeout_ms: 5000 },
     });
     const allowlist = new AllowlistEngine({ agent1: agentConfig });
     const auditLogger = makeMockAuditLogger();

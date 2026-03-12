@@ -19,13 +19,24 @@ export class ToolRegistry {
     private allowlist: AllowlistEngine,
     private agents: Record<string, AgentConfig>,
     private security: SecurityConfig,
+    private builtins: Set<string> = new Set(),
   ) {
-    this.builtinTools = [...buildHttpTools(), buildExecTool()];
+    this.rebuildBuiltins();
   }
 
-  reloadAgents(agents: Record<string, AgentConfig>, security: SecurityConfig): void {
+  private rebuildBuiltins(): void {
+    this.builtinTools = [];
+    if (this.builtins.has('http')) this.builtinTools.push(...buildHttpTools());
+    if (this.builtins.has('exec')) this.builtinTools.push(buildExecTool());
+  }
+
+  reloadAgents(agents: Record<string, AgentConfig>, security: SecurityConfig, builtins?: Set<string>): void {
     this.agents = agents;
     this.security = security;
+    if (builtins) {
+      this.builtins = builtins;
+      this.rebuildBuiltins();
+    }
   }
 
   async refresh(): Promise<void> {

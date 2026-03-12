@@ -5,11 +5,12 @@ import type { AgentConfig } from '../src/config/schema.js';
 function makeAgentConfig(execOverrides: Partial<AgentConfig['exec']> = {}): AgentConfig {
   return {
     allow: ['exec/run'],
-    hitl: [],
+    ask: [],
+    deny: [],
     tool_overrides: {},
     exec: {
       allow: ['*'],
-      hitl: [],
+      ask: [],
       deny: [],
       env: {},
       default_timeout_ms: 5000,

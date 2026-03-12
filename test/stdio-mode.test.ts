@@ -2,12 +2,13 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { requiredMcpsForAgent } from '../src/pool/required-mcps.js';
 import type { AgentConfig } from '../src/config/schema.js';
 
-function makeAgent(allow: string[]): AgentConfig {
+function makeAgent(allow: string[], ask: string[] = []): AgentConfig {
   return {
     allow,
-    hitl: [],
+    ask,
+    deny: [],
     tool_overrides: {},
-    exec: { allow: [], hitl: [], deny: [], env: {}, default_timeout_ms: 30000 },
+    exec: { allow: [], ask: [], deny: [], env: {}, default_timeout_ms: 30000 },
     http: { domain_allowlist: [], max_response_bytes: 1048576, timeout_ms: 30000 },
   };
 }
@@ -58,29 +59,29 @@ describe('requiredMcpsForAgent()', () => {
     expect(result).toEqual(['github']);
   });
 
-  it('ignores hitl list — only allow list drives MCP connections', () => {
-    const agent = makeAgent(['github/*']);
-    agent.hitl = ['slack/*']; // slack is in hitl but NOT in allow — should not connect to slack
+  it('includes MCPs from ask list (ask implies allowed)', () => {
+    const agent = makeAgent(['github/*'], ['slack/*']);
     const result = requiredMcpsForAgent(agent, AVAILABLE_MCPS);
-    expect(result).not.toContain('slack');
-    expect(result).toEqual(['github']);
+    expect(result).toContain('github');
+    expect(result).toContain('slack');
   });
 });
 
-// ─── StdioMode integration ────────────────────────────────────────────────────
+// --- StdioMode integration ---
 
 const MINIMAL_CONFIG = {
-  mcps: {},
+  providers: {},
   agents: {
     'claude-code': {
       allow: ['http/get'],
-      hitl: [],
+      ask: [],
+      deny: [],
       tool_overrides: {},
-      exec: { allow: [], hitl: [], deny: [], env: {}, default_timeout_ms: 5000 },
+      exec: { allow: [], ask: [], deny: [], env: {}, default_timeout_ms: 5000 },
       http: { domain_allowlist: [], max_response_bytes: 1048576, timeout_ms: 5000 },
     },
   },
-  hitl: { provider: { type: 'webhook' as const, url: 'http://localhost:9999/hook', headers: {} }, timeout_ms: 300000, batch_window_ms: 10000 },
+  approvals: { provider: { type: 'webhook' as const, url: 'http://localhost:9999/hook', headers: {} }, timeout_ms: 300000, batch_window_ms: 10000 },
   security: { blocked_hosts: [], allowed_local: [] },
   audit: { db_path: ':memory:', retention_days: 90, redact_fields: [] },
   server: { port: 4111, host: '127.0.0.1' },
@@ -94,7 +95,7 @@ describe('runStdioMode()', () => {
     const stdioServerModule = await import('../src/transport/stdio-server.js');
     const stdioSpy = vi.spyOn(stdioServerModule, 'runStdioServer').mockResolvedValue();
 
-    await runStdioMode(MINIMAL_CONFIG as never, 'claude-code');
+    await runStdioMode(MINIMAL_CONFIG as never, 'claude-code', '');
 
     expect(stdioSpy).toHaveBeenCalledOnce();
     expect(stdioSpy.mock.calls[0][0].agentId).toBe('claude-code');
@@ -103,7 +104,7 @@ describe('runStdioMode()', () => {
   it('throws for unknown profile', async () => {
     const { runStdioMode } = await import('../src/stdio-mode.js');
     await expect(
-      runStdioMode(MINIMAL_CONFIG as never, 'nonexistent'),
+      runStdioMode(MINIMAL_CONFIG as never, 'nonexistent', ''),
     ).rejects.toThrow(/Unknown agent profile/);
   });
 
@@ -114,20 +115,19 @@ describe('runStdioMode()', () => {
 
     const poolModule = await import('../src/pool/pool.js');
     vi.spyOn(poolModule.ClientPool.prototype, 'initialize').mockResolvedValue();
-    // Capture what MCPs the pool was constructed with
-    const poolInstances: ClientPool[] = [];
+    const poolInstances: typeof poolModule.ClientPool[] = [];
     const OrigClientPool = poolModule.ClientPool;
     vi.spyOn(poolModule, 'ClientPool' as keyof typeof poolModule).mockImplementation(
       (mcps: Record<string, unknown>) => {
         const instance = new OrigClientPool(mcps as never);
-        poolInstances.push(instance);
+        poolInstances.push(instance as never);
         return instance;
       },
     );
 
     const config = {
       ...MINIMAL_CONFIG,
-      mcps: {
+      providers: {
         github:     { type: 'stdio' as const, command: 'npx', args: [] },
         filesystem: { type: 'stdio' as const, command: 'npx', args: [] },
         slack:      { type: 'stdio' as const, command: 'npx', args: [] },
@@ -135,18 +135,18 @@ describe('runStdioMode()', () => {
       agents: {
         'claude-code': {
           allow: ['github/*', 'filesystem/read_file'],
-          hitl: [],
+          ask: [],
+          deny: [],
           tool_overrides: {},
-          exec: { allow: [], hitl: [], deny: [], env: {}, default_timeout_ms: 5000 },
+          exec: { allow: [], ask: [], deny: [], env: {}, default_timeout_ms: 5000 },
           http: { domain_allowlist: [], max_response_bytes: 1048576, timeout_ms: 5000 },
         },
       },
     };
 
-    await runStdioMode(config as never, 'claude-code');
+    await runStdioMode(config as never, 'claude-code', '');
 
     expect(stdioSpy).toHaveBeenCalledOnce();
-    // requiredMcpsForAgent filters at config level — verify via the unit-tested function directly
     const { requiredMcpsForAgent: req } = await import('../src/pool/required-mcps.js');
     const needed = req(config.agents['claude-code'] as never, ['github', 'filesystem', 'slack']);
     expect(needed).toContain('github');

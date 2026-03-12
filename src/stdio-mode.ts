@@ -10,6 +10,7 @@ import { runStdioServer } from './transport/stdio-server.js';
 import { ConfigWatcher } from './config/watcher.js';
 import type { Config } from './config/loader.js';
 import type { ApprovalApi } from './hitl/providers/types.js';
+import { getMcpConfigs, getBuiltinProviders } from './config/schema.js';
 import { childLogger } from './util/logger.js';
 
 const log = childLogger('stdio-mode');
@@ -20,12 +21,12 @@ export async function runStdioMode(config: Config, agentId: string, configPath: 
     throw new Error(`Unknown agent profile: ${agentId}`);
   }
 
-  // Stdio mode uses stdin/stdout for MCP protocol — the stdio HITL provider
+  // Stdio mode uses stdin/stdout for MCP protocol — the stdio approval provider
   // also reads from stdin, which would corrupt the MCP transport.
-  const providers = Array.isArray(config.hitl.provider) ? config.hitl.provider : [config.hitl.provider];
+  const providers = Array.isArray(config.approvals.provider) ? config.approvals.provider : [config.approvals.provider];
   if (providers.some(p => p.type === 'stdio')) {
     throw new Error(
-      'Cannot use hitl provider "stdio" in stdio mode — both the MCP transport and HITL ' +
+      'Cannot use approval provider "stdio" in stdio mode — both the MCP transport and approval ' +
       'provider would read from stdin. Use "telegram", "slack", "webhook", or "openclaw" instead.',
     );
   }
@@ -38,21 +39,21 @@ export async function runStdioMode(config: Config, agentId: string, configPath: 
   const auditLogger = new AuditLogger(config.audit);
   auditLogger.startDailyCleanup();
 
-  // HITL — provider is created before engine, so forward calls via closure
+  // Approvals — provider is created before engine, so forward calls via closure
   let hitlEngine!: HitlEngine;
   const approvalForwarder: ApprovalApi = {
     approve: (code) => hitlEngine.approve(code),
     deny: (code, reason) => hitlEngine.deny(code, reason),
   };
 
-  const hitlBatcher = new HitlBatcher(config.hitl.batch_window_ms);
-  const hitlProvider = createHitlProvider(config.hitl.provider, approvalForwarder);
+  const hitlBatcher = new HitlBatcher(config.approvals.batch_window_ms);
+  const hitlProvider = createHitlProvider(config.approvals.provider, approvalForwarder);
 
-  hitlEngine = new HitlEngine(auditLogger, hitlProvider, config.hitl.timeout_ms);
+  hitlEngine = new HitlEngine(auditLogger, hitlProvider, config.approvals.timeout_ms);
 
   hitlBatcher.onBatchReady((_agentId, requests) => {
     void hitlProvider.notify(requests).catch(err =>
-      log.error({ err }, 'Failed to send HITL notification'),
+      log.error({ err }, 'Failed to send approval notification'),
     );
   });
 
@@ -60,15 +61,17 @@ export async function runStdioMode(config: Config, agentId: string, configPath: 
   await hitlEngine.recoverPending();
 
   // Pool — only the MCPs this profile actually needs
-  const allMcpIds = Object.keys(config.mcps);
+  const mcpConfigs = getMcpConfigs(config.providers);
+  const allMcpIds = Object.keys(mcpConfigs);
   const neededIds = requiredMcpsForAgent(agentConfig, allMcpIds);
-  const filteredMcps = Object.fromEntries(neededIds.map(id => [id, config.mcps[id]]));
+  const filteredMcps = Object.fromEntries(neededIds.map(id => [id, mcpConfigs[id]]));
 
   log.info(
     { agentId, needed: neededIds, skipped: allMcpIds.filter(id => !neededIds.includes(id)) },
     'Connecting to required MCPs only',
   );
 
+  const builtins = getBuiltinProviders(config.providers);
   const pool = new ClientPool(filteredMcps);
   pool.onClientReady((id) => {
     log.info({ id }, 'MCP became ready, refreshing tool registry');
@@ -77,22 +80,24 @@ export async function runStdioMode(config: Config, agentId: string, configPath: 
   await pool.initialize();
 
   const allowlist = new AllowlistEngine(config.agents);
-  const registry = new ToolRegistry(pool, allowlist, config.agents, config.security);
+  const registry = new ToolRegistry(pool, allowlist, config.agents, config.security, builtins);
   await registry.refresh();
 
-  // Hot reload — allowlists, agent config, security (not MCP connections or HITL provider)
+  // Hot reload — allowlists, agent config, security (not MCP connections or approval provider)
   const watcher = new ConfigWatcher(configPath);
   watcher.on('reload', (newConfig) => {
     try {
       if (newConfig.agents[agentId]) {
         currentAgentConfig = newConfig.agents[agentId];
       }
-      pool.reload(newConfig.mcps).then(() => {
+      const newMcpConfigs = getMcpConfigs(newConfig.providers);
+      const newBuiltins = getBuiltinProviders(newConfig.providers);
+      pool.reload(newMcpConfigs).then(() => {
         allowlist.reload(newConfig.agents);
-        registry.reloadAgents(newConfig.agents, newConfig.security);
+        registry.reloadAgents(newConfig.agents, newConfig.security, newBuiltins);
         return registry.refresh();
       }).then(() => {
-        log.info('Config reloaded: MCPs, allowlist, agent config, security');
+        log.info('Config reloaded: providers, allowlist, agent config, security');
       }).catch(err => {
         log.error({ err }, 'Failed to apply reloaded config');
       });

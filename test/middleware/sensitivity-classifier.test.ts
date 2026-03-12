@@ -32,7 +32,7 @@ describe('sensitivityClassifierMiddleware — heuristic', () => {
     const mw = sensitivityClassifierMiddleware({ mode: 'escalate', threshold: 0.5, backend: 'heuristic' });
     const ctx = makeCtx();
     await mw(ctx, makeNext('token: eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abc123def456'));
-    expect(ctx.meta.needsHitl).toBeUndefined();
+    expect(ctx.meta.needsApproval).toBeUndefined();
     expect(ctx.deps.auditLogger.log).toHaveBeenCalledWith(
       expect.objectContaining({ result: 'sensitivity_response' }),
     );
@@ -49,7 +49,7 @@ describe('sensitivityClassifierMiddleware — heuristic', () => {
     const mw = sensitivityClassifierMiddleware({ mode: 'escalate', threshold: 0.7, backend: 'heuristic' });
     const ctx = makeCtx();
     await mw(ctx, makeNext('password: "hunter2"'));
-    expect(ctx.meta.needsHitl).toBeUndefined();
+    expect(ctx.meta.needsApproval).toBeUndefined();
     expect(ctx.deps.auditLogger.log).toHaveBeenCalledWith(
       expect.objectContaining({ result: 'sensitivity_response' }),
     );
@@ -71,17 +71,17 @@ describe('sensitivityClassifierMiddleware — heuristic', () => {
 
   it('does not escalate when already escalated', async () => {
     const mw = sensitivityClassifierMiddleware({ mode: 'escalate', threshold: 0.7, backend: 'heuristic' });
-    const ctx = makeCtx({ meta: { needsHitl: true } });
+    const ctx = makeCtx({ meta: { needsApproval: true } });
     await mw(ctx, makeNext('SSN: 123-45-6789'));
-    // needsHitl was already true, so it stays true but no duplicate set
-    expect(ctx.meta.needsHitl).toBe(true);
+    // needsApproval was already true, so it stays true but no duplicate set
+    expect(ctx.meta.needsApproval).toBe(true);
   });
 
   it('scans args in pre-execution phase', async () => {
     const mw = sensitivityClassifierMiddleware({ mode: 'escalate', threshold: 0.7, backend: 'heuristic' });
     const ctx = makeCtx({ args: { data: 'AKIAIOSFODNN7EXAMPLE' } });
     await mw(ctx, makeNext('clean output'));
-    expect(ctx.meta.needsHitl).toBe(true);
+    expect(ctx.meta.needsApproval).toBe(true);
     expect(ctx.deps.auditLogger.log).toHaveBeenCalledWith(
       expect.objectContaining({ result: 'sensitivity_args' }),
     );
@@ -102,6 +102,6 @@ describe('sensitivityClassifierMiddleware — llm backend', () => {
     // SSN in args — heuristic fallback should catch it and escalate in pre-execution phase
     const ctx = makeCtx({ args: { data: 'SSN: 123-45-6789' } });
     await mw(ctx, makeNext('clean output'));
-    expect(ctx.meta.needsHitl).toBe(true);
+    expect(ctx.meta.needsApproval).toBe(true);
   });
 });
