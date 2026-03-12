@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=../schema.json
 # Airlock Gateway Configuration
 # Environment variables are substituted using ${VAR_NAME} syntax.
 

@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=../schema.json
 # Local development config with dashboard HITL.
 # Uses the echo MCP server — no tokens or external services needed.
 #

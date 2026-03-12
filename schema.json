@@ -1,0 +1,633 @@
+{
+  "$ref": "#/definitions/AirlockConfig",
+  "definitions": {
+    "AirlockConfig": {
+      "type": "object",
+      "properties": {
+        "mcps": {
+          "type": "object",
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "stdio"
+                  },
+                  "command": {
+                    "type": "string"
+                  },
+                  "args": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "default": []
+                  },
+                  "env": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "required": [
+                  "type",
+                  "command"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "sse"
+                  },
+                  "url": {
+                    "type": "string",
+                    "format": "uri"
+                  },
+                  "headers": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "required": [
+                  "type",
+                  "url"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "http"
+                  },
+                  "url": {
+                    "type": "string",
+                    "format": "uri"
+                  },
+                  "headers": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "string"
+                    }
+                  },
+                  "oauth": {
+                    "type": "boolean",
+                    "default": false
+                  },
+                  "oauth_callback_port": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 65535,
+                    "default": 18432
+                  }
+                },
+                "required": [
+                  "type",
+                  "url"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          },
+          "default": {}
+        },
+        "agents": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "token": {
+                "type": "string"
+              },
+              "allow": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "default": []
+              },
+              "hitl": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "default": []
+              },
+              "tool_overrides": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "object",
+                  "properties": {
+                    "description": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "default": {}
+              },
+              "exec": {
+                "type": "object",
+                "properties": {
+                  "allow": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "default": []
+                  },
+                  "hitl": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "default": []
+                  },
+                  "deny": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "default": []
+                  },
+                  "env": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "string"
+                    },
+                    "default": {}
+                  },
+                  "default_timeout_ms": {
+                    "type": "number",
+                    "default": 30000
+                  }
+                },
+                "additionalProperties": false,
+                "default": {}
+              },
+              "http": {
+                "type": "object",
+                "properties": {
+                  "domain_allowlist": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "default": []
+                  },
+                  "max_response_bytes": {
+                    "type": "number",
+                    "default": 1048576
+                  },
+                  "timeout_ms": {
+                    "type": "number",
+                    "default": 30000
+                  }
+                },
+                "additionalProperties": false,
+                "default": {}
+              }
+            },
+            "additionalProperties": false
+          },
+          "default": {}
+        },
+        "hitl": {
+          "type": "object",
+          "properties": {
+            "provider": {
+              "anyOf": [
+                {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "telegram"
+                        },
+                        "bot_token": {
+                          "type": "string"
+                        },
+                        "chat_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "bot_token",
+                        "chat_id"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "openclaw"
+                        },
+                        "gateway_url": {
+                          "type": "string",
+                          "default": "ws://localhost:18789"
+                        },
+                        "token": {
+                          "type": "string"
+                        },
+                        "session_key": {
+                          "type": "string",
+                          "default": "main"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "token"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "slack"
+                        },
+                        "webhook_url": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "webhook_url"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "webhook"
+                        },
+                        "url": {
+                          "type": "string"
+                        },
+                        "headers": {
+                          "type": "object",
+                          "additionalProperties": {
+                            "type": "string"
+                          },
+                          "default": {}
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "url"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "tui"
+                        }
+                      },
+                      "required": [
+                        "type"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "macos"
+                        }
+                      },
+                      "required": [
+                        "type"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "dashboard"
+                        },
+                        "port": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 65535,
+                          "default": 4112
+                        }
+                      },
+                      "required": [
+                        "type"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "const": "stdio"
+                        }
+                      },
+                      "required": [
+                        "type"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ]
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "type": {
+                            "type": "string",
+                            "const": "telegram"
+                          },
+                          "bot_token": {
+                            "type": "string"
+                          },
+                          "chat_id": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "type",
+                          "bot_token",
+                          "chat_id"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "type": {
+                            "type": "string",
+                            "const": "openclaw"
+                          },
+                          "gateway_url": {
+                            "type": "string",
+                            "default": "ws://localhost:18789"
+                          },
+                          "token": {
+                            "type": "string"
+                          },
+                          "session_key": {
+                            "type": "string",
+                            "default": "main"
+                          }
+                        },
+                        "required": [
+                          "type",
+                          "token"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "type": {
+                            "type": "string",
+                            "const": "slack"
+                          },
+                          "webhook_url": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "type",
+                          "webhook_url"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "type": {
+                            "type": "string",
+                            "const": "webhook"
+                          },
+                          "url": {
+                            "type": "string"
+                          },
+                          "headers": {
+                            "type": "object",
+                            "additionalProperties": {
+                              "type": "string"
+                            },
+                            "default": {}
+                          }
+                        },
+                        "required": [
+                          "type",
+                          "url"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "type": {
+                            "type": "string",
+                            "const": "tui"
+                          }
+                        },
+                        "required": [
+                          "type"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "type": {
+                            "type": "string",
+                            "const": "macos"
+                          }
+                        },
+                        "required": [
+                          "type"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "type": {
+                            "type": "string",
+                            "const": "dashboard"
+                          },
+                          "port": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 65535,
+                            "default": 4112
+                          }
+                        },
+                        "required": [
+                          "type"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "type": {
+                            "type": "string",
+                            "const": "stdio"
+                          }
+                        },
+                        "required": [
+                          "type"
+                        ],
+                        "additionalProperties": false
+                      }
+                    ]
+                  },
+                  "minItems": 1
+                }
+              ],
+              "default": {
+                "type": "stdio"
+              }
+            },
+            "timeout_ms": {
+              "type": "integer",
+              "minimum": 1000,
+              "default": 300000
+            },
+            "batch_window_ms": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 10000
+            }
+          },
+          "additionalProperties": false,
+          "default": {}
+        },
+        "security": {
+          "type": "object",
+          "properties": {
+            "blocked_hosts": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [
+                "localhost",
+                "127.0.0.1",
+                "0.0.0.0",
+                "::1",
+                "::ffff:127.0.0.1",
+                "*.local",
+                "10.*",
+                "172.16.*",
+                "172.17.*",
+                "172.18.*",
+                "172.19.*",
+                "172.20.*",
+                "172.21.*",
+                "172.22.*",
+                "172.23.*",
+                "172.24.*",
+                "172.25.*",
+                "172.26.*",
+                "172.27.*",
+                "172.28.*",
+                "172.29.*",
+                "172.30.*",
+                "172.31.*",
+                "192.168.*",
+                "169.254.*",
+                "fc00:*",
+                "fd00:*",
+                "fe80:*"
+              ]
+            },
+            "allowed_local": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            }
+          },
+          "additionalProperties": false,
+          "default": {}
+        },
+        "audit": {
+          "type": "object",
+          "properties": {
+            "db_path": {
+              "type": "string",
+              "default": "./audit.db"
+            },
+            "retention_days": {
+              "type": "number",
+              "default": 90
+            },
+            "redact_fields": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [
+                "password",
+                "token",
+                "secret",
+                "key",
+                "authorization"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "default": {}
+        },
+        "server": {
+          "type": "object",
+          "properties": {
+            "port": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535,
+              "default": 4111
+            },
+            "host": {
+              "type": "string",
+              "default": "127.0.0.1"
+            },
+            "api_secret": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "default": {}
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}
