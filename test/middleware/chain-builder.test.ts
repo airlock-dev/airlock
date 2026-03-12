@@ -219,15 +219,15 @@ describe('buildMiddlewareChain', () => {
     expect(hitlCreated).toHaveLength(1);
   });
 
-  it('includes sensitivity-classifier in core zone', async () => {
+  it('includes sensitivity-classifier in core zone (escalates on args)', async () => {
     const deps = makeDeps();
-    (deps.registry.call as any).mockResolvedValue('SSN: 123-45-6789');
     const config = makeAgentConfig([
       { name: 'sensitivity-classifier', backend: 'heuristic', mode: 'escalate', threshold: 0.7 },
     ]);
     const chain = buildMiddlewareChain(config, deps);
 
-    const ctx = makeCtx(deps, config);
+    // Sensitive data in args triggers pre-execution escalation
+    const ctx = makeCtx(deps, config, { args: { data: 'SSN: 123-45-6789' } });
     (deps.hitlEngine as any).create = vi.fn().mockReturnValue({
       id: 'id', code: 'CODE', result: Promise.resolve('approved'),
     });

@@ -91,6 +91,10 @@ export function injectionDetectorMiddleware(opts: InjectionDetectorOptions = {})
       } catch (err) {
         log.warn({ err }, 'DeBERTa inference failed for args, falling back to regex');
         preInjection = classifyWithRegex(argsText).isInjection;
+        if (mode === 'escalate') {
+          ctx.meta.needsHitl = true;
+          ctx.meta.hitlReason = 'DeBERTa inference unavailable — escalating as precaution';
+        }
       }
     } else {
       const result = classifyWithRegex(argsText);
@@ -124,6 +128,10 @@ export function injectionDetectorMiddleware(opts: InjectionDetectorOptions = {})
       } catch (err) {
         log.warn({ err }, 'DeBERTa inference failed for response, falling back to regex');
         postInjection = classifyWithRegex(response.text).isInjection;
+        if (mode === 'escalate') {
+          ctx.meta.needsHitl = true;
+          ctx.meta.hitlReason = 'DeBERTa inference unavailable — escalating as precaution';
+        }
       }
     } else {
       postInjection = classifyWithRegex(response.text).isInjection;

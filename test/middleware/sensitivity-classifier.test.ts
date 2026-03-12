@@ -28,11 +28,14 @@ function makeNext(text: string): () => Promise<ToolCallResponse> {
 }
 
 describe('sensitivityClassifierMiddleware — heuristic', () => {
-  it('detects JWT tokens', async () => {
+  it('detects JWT tokens in response and logs (no escalation on response phase)', async () => {
     const mw = sensitivityClassifierMiddleware({ mode: 'escalate', threshold: 0.5, backend: 'heuristic' });
     const ctx = makeCtx();
     await mw(ctx, makeNext('token: eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abc123def456'));
-    expect(ctx.meta.needsHitl).toBe(true);
+    expect(ctx.meta.needsHitl).toBeUndefined();
+    expect(ctx.deps.auditLogger.log).toHaveBeenCalledWith(
+      expect.objectContaining({ result: 'sensitivity_response' }),
+    );
   });
 
   it('detects internal IPs', async () => {
@@ -42,11 +45,14 @@ describe('sensitivityClassifierMiddleware — heuristic', () => {
     expect(ctx.deps.auditLogger.log).toHaveBeenCalled();
   });
 
-  it('detects password fields', async () => {
+  it('detects password fields in response and logs (no escalation on response phase)', async () => {
     const mw = sensitivityClassifierMiddleware({ mode: 'escalate', threshold: 0.7, backend: 'heuristic' });
     const ctx = makeCtx();
     await mw(ctx, makeNext('password: "hunter2"'));
-    expect(ctx.meta.needsHitl).toBe(true);
+    expect(ctx.meta.needsHitl).toBeUndefined();
+    expect(ctx.deps.auditLogger.log).toHaveBeenCalledWith(
+      expect.objectContaining({ result: 'sensitivity_response' }),
+    );
   });
 
   it('detects phone numbers at low threshold', async () => {
@@ -93,9 +99,9 @@ describe('sensitivityClassifierMiddleware — llm backend', () => {
       backend: 'llm',
       model: 'nonexistent-model',
     });
-    const ctx = makeCtx();
-    // SSN should be caught by heuristic fallback
-    await mw(ctx, makeNext('SSN: 123-45-6789'));
+    // SSN in args — heuristic fallback should catch it and escalate in pre-execution phase
+    const ctx = makeCtx({ args: { data: 'SSN: 123-45-6789' } });
+    await mw(ctx, makeNext('clean output'));
     expect(ctx.meta.needsHitl).toBe(true);
   });
 });

@@ -95,7 +95,7 @@ const DEFAULT_MIDDLEWARE: MiddlewareItemConfig[] = [
  * Builds the complete middleware chain for an agent.
  *
  * Core zone (fixed order, always present):
- *   allowlist → exec-policy → [detectors from config] → hitl-gate → execute
+ *   allowlist → exec-policy → schema-validator → [detectors from config] → hitl-gate → execute
  *
  * Post zone (user-configurable, wraps around core):
  *   Applied in config order, each wraps the downstream response
@@ -128,16 +128,22 @@ export function buildMiddlewareChain(agentConfig: AgentConfig, _deps: Middleware
     ];
   }
 
-  // Separate detectors (pre-execution, core zone) from post middlewares
-  const detectorNames = new Set(['injection-detector', 'sensitivity-classifier']);
-  const coreUserMiddleware = enabledMiddleware.filter(m => detectorNames.has(m.name));
-  const postUserMiddleware = enabledMiddleware.filter(m => !detectorNames.has(m.name));
+  // Separate core-zone middleware (detectors + schema-validator) from post middlewares
+  const coreNames = new Set(['injection-detector', 'sensitivity-classifier', 'schema-validator']);
+  const coreUserMiddleware = enabledMiddleware.filter(m => coreNames.has(m.name));
+  const postUserMiddleware = enabledMiddleware.filter(m => !coreNames.has(m.name));
+
+  // Extract schema-validator separately — it runs before detectors
+  const schemaValidators = coreUserMiddleware.filter(m => m.name === 'schema-validator');
+  const detectors = coreUserMiddleware.filter(m => m.name !== 'schema-validator');
 
   // Core zone: fixed security-critical order
+  //   allowlist → exec-policy → schema-validator → [detectors] → hitl-gate → execute
   const coreMiddlewares: Middleware[] = [
     allowlistMiddleware(),
     execPolicyMiddleware(),
-    ...coreUserMiddleware.map(m => withToolFilter(resolveMiddleware(m), m)),
+    ...schemaValidators.map(m => withToolFilter(resolveMiddleware(m), m)),
+    ...detectors.map(m => withToolFilter(resolveMiddleware(m), m)),
     hitlGateMiddleware(),
     executeMiddleware(),
   ];

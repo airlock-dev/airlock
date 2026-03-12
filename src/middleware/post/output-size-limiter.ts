@@ -29,7 +29,8 @@ export function outputSizeLimiterMiddleware(opts: OutputSizeLimiterOptions = {})
     if (!needsLineTruncation && !needsCharTruncation) return response;
 
     // Write full output to file
-    const dir = join(tmpdir(), 'airlock', ctx.agentId);
+    const safeAgentId = ctx.agentId.replace(/[^a-zA-Z0-9_-]/g, '_');
+    const dir = join(tmpdir(), 'airlock', safeAgentId);
     const filePath = join(dir, `${ctx.callId}.txt`);
 
     try {

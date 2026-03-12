@@ -63,25 +63,30 @@ describe('injectionDetectorMiddleware (regex)', () => {
 });
 
 describe('sensitivityClassifierMiddleware (heuristic)', () => {
-  it('detects SSN and escalates', async () => {
+  it('detects SSN in response and logs (no escalation on response phase)', async () => {
     const mw = sensitivityClassifierMiddleware({ mode: 'escalate', threshold: 0.7, backend: 'heuristic' });
     const ctx = makeCtx();
     await mw(ctx, makeNext('SSN: 123-45-6789'));
-    expect(ctx.meta.needsHitl).toBe(true);
+    expect(ctx.meta.needsHitl).toBeUndefined();
+    expect(ctx.deps.auditLogger.log).toHaveBeenCalledWith(
+      expect.objectContaining({ result: 'sensitivity_response' }),
+    );
   });
 
-  it('detects AWS access keys', async () => {
+  it('detects AWS access keys in response and logs', async () => {
     const mw = sensitivityClassifierMiddleware({ mode: 'escalate', threshold: 0.7, backend: 'heuristic' });
     const ctx = makeCtx();
     await mw(ctx, makeNext('key: AKIAIOSFODNN7EXAMPLE'));
-    expect(ctx.meta.needsHitl).toBe(true);
+    expect(ctx.meta.needsHitl).toBeUndefined();
+    expect(ctx.deps.auditLogger.log).toHaveBeenCalled();
   });
 
-  it('detects private keys', async () => {
+  it('detects private keys in response and logs', async () => {
     const mw = sensitivityClassifierMiddleware({ mode: 'escalate', threshold: 0.7, backend: 'heuristic' });
     const ctx = makeCtx();
     await mw(ctx, makeNext('-----BEGIN RSA PRIVATE KEY-----\nbase64data\n-----END RSA PRIVATE KEY-----'));
-    expect(ctx.meta.needsHitl).toBe(true);
+    expect(ctx.meta.needsHitl).toBeUndefined();
+    expect(ctx.deps.auditLogger.log).toHaveBeenCalled();
   });
 
   it('does not flag low-sensitivity content', async () => {

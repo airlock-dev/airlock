@@ -3,7 +3,9 @@ import type { Middleware } from '../types.js';
 export function untrustedEnvelopeMiddleware(): Middleware {
   return async (ctx, next) => {
     const response = await next();
-    response.text = `<untrusted-output tool="${ctx.toolName}" call-id="${ctx.callId}">\n${response.text}\n</untrusted-output>`;
+    const escapedTool = ctx.toolName.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
+    const escapedCallId = ctx.callId.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
+    response.text = `<untrusted-output tool="${escapedTool}" call-id="${escapedCallId}">\n${response.text}\n</untrusted-output>`;
     return response;
   };
 }

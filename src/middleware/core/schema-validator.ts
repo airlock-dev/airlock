@@ -13,7 +13,8 @@ export function schemaValidatorMiddleware(): Middleware {
     const tool = tools.find(t => t.name === ctx.toolName);
     if (!tool?.inputSchema) return next();
 
-    const schemaKey = ctx.toolName;
+    const schemaHash = JSON.stringify(tool.inputSchema);
+    const schemaKey = `${ctx.toolName}:${schemaHash}`;
     let validate = validatorCache.get(schemaKey);
     if (!validate) {
       validate = ajv.compile(tool.inputSchema);

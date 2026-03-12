@@ -36,9 +36,10 @@ export function rateLimiterMiddleware(opts: RateLimiterOptions): Middleware {
       );
     }
 
+    const response = await next();
     timestamps.push(now);
     windows.set(key, timestamps);
-    return next();
+    return response;
   };
 }
 

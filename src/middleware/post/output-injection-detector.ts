@@ -14,7 +14,7 @@ const INJECTION_PATTERNS = [
   /\[INST\]/i,
   /\[\/INST\]/i,
   /<<\s*SYS\s*>>/i,
-  /\bA]ssistant:\s/i,
+  /\bAssistant:\s/i,
   /\bHuman:\s/i,
   /\bUser:\s/i,
   /do\s+not\s+follow\s+(any\s+)?previous/i,
@@ -41,7 +41,10 @@ export function outputInjectionDetectorMiddleware(
       if (pattern.test(response.text)) {
         flagged = true;
         if (mode === 'mangle') {
-          response.text = response.text.replace(pattern, '[REDACTED: suspected injection]');
+          response.text = response.text.replace(
+            new RegExp(pattern.source, pattern.flags + (pattern.flags.includes('g') ? '' : 'g')),
+            '[REDACTED: suspected injection]',
+          );
         }
       }
     }

@@ -66,7 +66,8 @@ async function llmScore(
   try {
     return JSON.parse(result);
   } catch {
-    return { score: 0, reasoning: 'Failed to parse LLM response' };
+    log.warn('Failed to parse LLM sensitivity response, falling back to high score');
+    return { score: 1.0, reasoning: 'Failed to parse LLM response — defaulting to high sensitivity' };
   }
 }
 
@@ -128,7 +129,7 @@ async function checkSensitivity(
       error: `score=${score}, labels=${details}`,
     });
 
-    if (mode === 'escalate' && !ctx.meta.needsHitl) {
+    if (mode === 'escalate' && phase === 'args' && !ctx.meta.needsHitl) {
       ctx.meta.needsHitl = true;
       ctx.meta.hitlReason = `High sensitivity data detected (score: ${score}, ${details})`;
     }

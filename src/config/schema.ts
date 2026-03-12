@@ -89,7 +89,7 @@ export const MiddlewareItemConfig = z.object({
   // output-summarizer / sensitivity-classifier
   model: z.string().optional(),
   threshold_chars: z.number().optional(),
-}).passthrough();
+}).strict();
 export type MiddlewareItemConfig = z.infer<typeof MiddlewareItemConfig>;
 
 export const AgentConfig = z.object({
