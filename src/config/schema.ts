@@ -244,9 +244,40 @@ export const ServerConfig = z.object({
 });
 export type ServerConfig = z.infer<typeof ServerConfig>;
 
+// --- CLI backend config ---
+
+export const CliParamConfig = z.object({
+  type: z.enum(['string', 'number', 'boolean']),
+  flag: z.string().regex(/^-/, 'Flag must start with a dash (e.g. -n, --verbose)').optional(),
+  positional: z.boolean().default(false),
+  required: z.boolean().default(false),
+  default: z.union([z.string(), z.number(), z.boolean()]).optional(),
+  description: z.string().optional(),
+});
+export type CliParamConfig = z.infer<typeof CliParamConfig>;
+
+export const CliCommandConfig = z.object({
+  exec: z.string(),
+  description: z.string().optional(),
+  params: z.record(CliParamConfig).default({}),
+  cwd: z.string().optional(),
+  timeout: z.number().default(30),
+});
+export type CliCommandConfig = z.infer<typeof CliCommandConfig>;
+
+export const CliConfig = z.object({
+  discovered: z.string().optional(),
+  shell: z.string().optional(),
+  cwd: z.string().optional(),
+  max_output_bytes: z.number().default(30_000),
+  commands: z.record(CliCommandConfig).default({}),
+});
+export type CliConfig = z.infer<typeof CliConfig>;
+
 export const GatewayConfig = z.object({
   providers: z.record(ProviderConfig).default({}),
   profiles: z.record(ProfileConfig).default({}),
+  clis: z.record(CliConfig).default({}),
   agents: z.record(AgentConfig).default({}),
   approvals: ApprovalsConfig.default({}),
   security: SecurityConfig.default({}),
