@@ -418,7 +418,7 @@ describe('timeout handling', () => {
   it('kills command that exceeds timeout', async () => {
     const config = makeCliConfig({
       commands: {
-        slow: { exec: 'sleep 60', params: {}, timeout: 1 },
+        slow: { exec: 'sleep 0.1', params: {}, timeout: 0.05 },
       },
     });
 
@@ -427,5 +427,5 @@ describe('timeout handling', () => {
 
     expect(result.success).toBe(false);
     expect(result.error).toMatch(/timed out/);
-  }, 15_000);
+  }, 10_000);
 });
