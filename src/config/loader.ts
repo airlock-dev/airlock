@@ -24,7 +24,6 @@ export function loadConfig(path: string): Config {
   if (!result.success) {
     throw new Error(`Invalid config at ${path}:\n${result.error.toString()}`);
   }
-  applyProfiles(result.data);
   const diagnostics = validateConfig(result.data);
   for (const d of diagnostics) {
     const ctx = d.agent ? { agent: d.agent } : {};
@@ -44,6 +43,7 @@ export function loadConfig(path: string): Config {
         errors.map((e) => `  - ${e.agent ? `[${e.agent}] ` : ''}${e.message}`).join('\n')
     );
   }
+  applyProfiles(result.data);
   return result.data;
 }
 

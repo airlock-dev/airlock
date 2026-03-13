@@ -38,7 +38,6 @@ profiles:
     allow:
       - 'github/create_issue'
       - 'github/create_pr'
-      - 'github/merge_pull_request'
     ask:
       - 'github/delete_branch'
       - 'github/merge_pull_request'
