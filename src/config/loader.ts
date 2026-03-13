@@ -1,6 +1,6 @@
 import { readFileSync } from 'fs';
 import { parse as parseYaml } from 'yaml';
-import { GatewayConfig, getBuiltinProviders, getMcpConfigs } from './schema.js';
+import { GatewayConfig, getBuiltinProviders } from './schema.js';
 import { matches } from '../allowlist/pattern.js';
 import { childLogger } from '../util/logger.js';
 import type { z } from 'zod';
@@ -18,7 +18,7 @@ export interface ConfigDiagnostic {
 
 export function loadConfig(path: string): Config {
   const raw = readFileSync(path, 'utf-8');
-  const parsed = parseYaml(raw);
+  const parsed: unknown = parseYaml(raw);
   const result = GatewayConfig.safeParse(parsed);
   if (!result.success) {
     throw new Error(`Invalid config at ${path}:\n${result.error.toString()}`);
@@ -35,11 +35,11 @@ export function loadConfig(path: string): Config {
       log.info(ctx, msg);
     }
   }
-  const errors = diagnostics.filter(d => d.level === 'error');
+  const errors = diagnostics.filter((d) => d.level === 'error');
   if (errors.length > 0) {
     throw new Error(
       `Config validation failed with ${errors.length} error(s):\n` +
-      errors.map(e => `  - ${e.agent ? `[${e.agent}] ` : ''}${e.message}`).join('\n'),
+        errors.map((e) => `  - ${e.agent ? `[${e.agent}] ` : ''}${e.message}`).join('\n')
     );
   }
   return result.data;
@@ -49,7 +49,6 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
   const diagnostics: ConfigDiagnostic[] = [];
   const providerNames = new Set(Object.keys(config.providers));
   const builtins = getBuiltinProviders(config.providers);
-  const mcpNames = new Set(Object.keys(getMcpConfigs(config.providers)));
 
   for (const [agentId, agent] of Object.entries(config.agents)) {
     // Collect all referenced namespaces from allow/ask/deny
@@ -76,8 +75,11 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
     // Check for shadowed rules: allow pattern also matched by deny
     for (const allowPattern of agent.allow) {
       for (const denyPattern of agent.deny) {
-        if (matches(denyPattern, allowPattern) || matches(allowPattern, denyPattern) ||
-            patternsOverlap(allowPattern, denyPattern)) {
+        if (
+          matches(denyPattern, allowPattern) ||
+          matches(allowPattern, denyPattern) ||
+          patternsOverlap(allowPattern, denyPattern)
+        ) {
           diagnostics.push({
             level: 'warn',
             agent: agentId,
@@ -91,8 +93,11 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
     // Check for unreachable ask: ask pattern also matched by deny
     for (const askPattern of agent.ask) {
       for (const denyPattern of agent.deny) {
-        if (matches(denyPattern, askPattern) || matches(askPattern, denyPattern) ||
-            patternsOverlap(askPattern, denyPattern)) {
+        if (
+          matches(denyPattern, askPattern) ||
+          matches(askPattern, denyPattern) ||
+          patternsOverlap(askPattern, denyPattern)
+        ) {
           diagnostics.push({
             level: 'warn',
             agent: agentId,
@@ -115,7 +120,7 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
     }
 
     // Check exec deny-all with other exec patterns
-    const hasCatchAllDeny = agent.exec.deny.some(p => p === '*');
+    const hasCatchAllDeny = agent.exec.deny.some((p) => p === '*');
     if (hasCatchAllDeny && (agent.exec.allow.length > 0 || agent.exec.ask.length > 0)) {
       diagnostics.push({
         level: 'warn',

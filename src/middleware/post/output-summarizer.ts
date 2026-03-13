@@ -31,8 +31,10 @@ export function outputSummarizerMiddleware(opts: OutputSummarizerOptions): Middl
       const { generateText } = await import('ai');
 
       const { text: summary } = await generateText({
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-assignment
         model: opts.model as any, // provider-specific model reference
-        system: 'You are a concise technical summarizer. Summarize the following tool output, preserving key data, errors, and actionable information. Be brief.',
+        system:
+          'You are a concise technical summarizer. Summarize the following tool output, preserving key data, errors, and actionable information. Be brief.',
         prompt: response.text.slice(0, 50_000), // cap input
         maxOutputTokens: 1024,
       });

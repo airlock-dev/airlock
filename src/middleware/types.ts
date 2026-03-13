@@ -25,7 +25,7 @@ export interface ToolCallResponse {
 
 export type Middleware = (
   ctx: ToolCallContext,
-  next: () => Promise<ToolCallResponse>,
+  next: () => Promise<ToolCallResponse>
 ) => Promise<ToolCallResponse>;
 
 export interface MiddlewareDeps {

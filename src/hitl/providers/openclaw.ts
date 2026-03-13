@@ -20,7 +20,7 @@ export class OpenClawHitlProvider implements HitlProvider {
 
   constructor(
     private config: OpenClawConfig,
-    private approvalApi: ApprovalApi,
+    private approvalApi: ApprovalApi
   ) {}
 
   async init(): Promise<void> {
@@ -56,7 +56,9 @@ export class OpenClawHitlProvider implements HitlProvider {
       ws.on('close', () => {
         if (!this.stopped) {
           log.warn('OpenClaw WS disconnected, reconnecting in 5s');
-          this.reconnectTimer = setTimeout(() => this.connect().catch(() => {}), 5000);
+          this.reconnectTimer = setTimeout(() => {
+            void this.connect().catch(() => {});
+          }, 5000);
           this.reconnectTimer.unref();
         }
       });
@@ -79,10 +81,10 @@ export class OpenClawHitlProvider implements HitlProvider {
     }
   }
 
-  async notify(requests: HitlNotification[]): Promise<void> {
+  notify(requests: HitlNotification[]): Promise<void> {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       log.error('OpenClaw WS not connected, cannot send HITL notification');
-      return;
+      return Promise.resolve();
     }
 
     const message = formatBatch(requests);
@@ -98,12 +100,14 @@ export class OpenClawHitlProvider implements HitlProvider {
     };
 
     this.ws.send(JSON.stringify(rpc));
+    return Promise.resolve();
   }
 
-  async stop(): Promise<void> {
+  stop(): Promise<void> {
     this.stopped = true;
     clearTimeout(this.reconnectTimer);
     this.ws?.close();
+    return Promise.resolve();
   }
 }
 

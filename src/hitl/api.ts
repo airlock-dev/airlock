@@ -9,9 +9,10 @@ function constantTimeEqual(a: string, b: string): boolean {
   return timingSafeEqual(bufA, bufB);
 }
 
+// eslint-disable-next-line @typescript-eslint/require-await
 export async function hitlApiPlugin(
   app: FastifyInstance,
-  opts: { engine: HitlEngine; secret?: string },
+  opts: { engine: HitlEngine; secret?: string }
 ): Promise<void> {
   const { engine, secret } = opts;
 

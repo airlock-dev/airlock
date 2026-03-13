@@ -17,14 +17,13 @@ export class SseMcpClient {
   constructor(
     private id: string,
     private url: string,
-    private headers?: Record<string, string>,
+    private headers?: Record<string, string>
   ) {}
 
   async connect(): Promise<void> {
-    this.transport = new SSEClientTransport(
-      new URL(this.url),
-      { requestInit: this.headers ? { headers: this.headers } : undefined },
-    );
+    this.transport = new SSEClientTransport(new URL(this.url), {
+      requestInit: this.headers ? { headers: this.headers } : undefined,
+    });
 
     this.client = new Client({ name: 'airlock', version: '0.1.0' });
 
@@ -32,9 +31,14 @@ export class SseMcpClient {
       this.ready = false;
       if (!this.stopped) {
         const delay = BACKOFF_STEPS[Math.min(this.reconnectAttempt, BACKOFF_STEPS.length - 1)];
-        log.warn({ id: this.id, attempt: this.reconnectAttempt, delay }, 'SSE MCP disconnected, reconnecting');
+        log.warn(
+          { id: this.id, attempt: this.reconnectAttempt, delay },
+          'SSE MCP disconnected, reconnecting'
+        );
         this.reconnectAttempt++;
-        setTimeout(() => this.connect().catch(err => log.error({ err, id: this.id }, 'Reconnect failed')), delay);
+        setTimeout(() => {
+          void this.connect().catch((err) => log.error({ err, id: this.id }, 'Reconnect failed'));
+        }, delay);
       }
     };
 
@@ -60,7 +64,9 @@ export class SseMcpClient {
     return this.client.callTool({ name, arguments: args });
   }
 
-  isReady(): boolean { return this.ready; }
+  isReady(): boolean {
+    return this.ready;
+  }
 
   async stop(): Promise<void> {
     this.stopped = true;

@@ -18,7 +18,7 @@ export class StdioMcpClient {
     private id: string,
     private command: string,
     private args: string[],
-    private env?: Record<string, string>,
+    private env?: Record<string, string>
   ) {}
 
   async connect(): Promise<void> {
@@ -34,9 +34,14 @@ export class StdioMcpClient {
       this.ready = false;
       if (!this.stopped) {
         const delay = BACKOFF_STEPS[Math.min(this.reconnectAttempt, BACKOFF_STEPS.length - 1)];
-        log.warn({ id: this.id, attempt: this.reconnectAttempt, delay }, 'MCP disconnected, reconnecting');
+        log.warn(
+          { id: this.id, attempt: this.reconnectAttempt, delay },
+          'MCP disconnected, reconnecting'
+        );
         this.reconnectAttempt++;
-        setTimeout(() => this.connect().catch(err => log.error({ err, id: this.id }, 'Reconnect failed')), delay);
+        setTimeout(() => {
+          void this.connect().catch((err) => log.error({ err, id: this.id }, 'Reconnect failed'));
+        }, delay);
       }
     };
 
@@ -62,7 +67,9 @@ export class StdioMcpClient {
     return this.client.callTool({ name, arguments: args });
   }
 
-  isReady(): boolean { return this.ready; }
+  isReady(): boolean {
+    return this.ready;
+  }
 
   async stop(): Promise<void> {
     this.stopped = true;

@@ -21,17 +21,24 @@ export function hitlGateMiddleware(): Middleware {
 
     if (result === 'denied') {
       auditLogger.log({
-        agent_id: ctx.agentId, tool: ctx.toolName,
-        args: JSON.stringify(ctx.args), result: 'hitl_denied',
+        agent_id: ctx.agentId,
+        tool: ctx.toolName,
+        args: JSON.stringify(ctx.args),
+        result: 'hitl_denied',
       });
       throw new McpError(ErrorCode.InvalidRequest, 'Request denied by operator');
     }
     if (result === 'timeout') {
       auditLogger.log({
-        agent_id: ctx.agentId, tool: ctx.toolName,
-        args: JSON.stringify(ctx.args), result: 'hitl_timeout',
+        agent_id: ctx.agentId,
+        tool: ctx.toolName,
+        args: JSON.stringify(ctx.args),
+        result: 'hitl_timeout',
       });
-      throw new McpError(ErrorCode.InvalidRequest, 'Approval timed out. Re-request when operator is available.');
+      throw new McpError(
+        ErrorCode.InvalidRequest,
+        'Approval timed out. Re-request when operator is available.'
+      );
     }
 
     return next();

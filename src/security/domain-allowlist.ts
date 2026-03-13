@@ -6,7 +6,7 @@
 export function isDomainAllowed(hostname: string, allowlist: string[]): boolean {
   if (allowlist.length === 0) return true;
 
-  return allowlist.some(pattern => {
+  return allowlist.some((pattern) => {
     if (pattern === hostname) return true;
     if (pattern.startsWith('*.')) {
       const suffix = pattern.slice(2);

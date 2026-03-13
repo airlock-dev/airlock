@@ -28,10 +28,11 @@ export function canaryTokenInjectorMiddleware(): Middleware {
       if (argsStr.includes(token)) {
         log.error(
           { agentId: ctx.agentId, tool: ctx.toolName, leakedFrom: meta.tool, token },
-          'Canary token detected in tool arguments — possible data exfiltration',
+          'Canary token detected in tool arguments — possible data exfiltration'
         );
         ctx.deps.auditLogger.log({
-          agent_id: ctx.agentId, tool: ctx.toolName,
+          agent_id: ctx.agentId,
+          tool: ctx.toolName,
           args: JSON.stringify(ctx.args),
           result: 'canary_leaked',
           error: `Canary token ${token} from ${meta.tool} found in args`,
@@ -56,7 +57,10 @@ export function canaryTokenInjectorMiddleware(): Middleware {
 }
 
 /** For testing */
-export function getActiveCanaryTokens(): Map<string, { agentId: string; tool: string; createdAt: number }> {
+export function getActiveCanaryTokens(): Map<
+  string,
+  { agentId: string; tool: string; createdAt: number }
+> {
   return activeTokens;
 }
 

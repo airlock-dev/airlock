@@ -15,7 +15,11 @@ import { childLogger } from './util/logger.js';
 
 const log = childLogger('stdio-mode');
 
-export async function runStdioMode(config: Config, agentId: string, configPath: string): Promise<void> {
+export async function runStdioMode(
+  config: Config,
+  agentId: string,
+  configPath: string
+): Promise<void> {
   const agentConfig = config.agents[agentId];
   if (!agentConfig) {
     throw new Error(`Unknown agent profile: ${agentId}`);
@@ -23,11 +27,13 @@ export async function runStdioMode(config: Config, agentId: string, configPath: 
 
   // Stdio mode uses stdin/stdout for MCP protocol — the stdio approval provider
   // also reads from stdin, which would corrupt the MCP transport.
-  const providers = Array.isArray(config.approvals.provider) ? config.approvals.provider : [config.approvals.provider];
-  if (providers.some(p => p.type === 'stdio')) {
+  const providers = Array.isArray(config.approvals.provider)
+    ? config.approvals.provider
+    : [config.approvals.provider];
+  if (providers.some((p) => p.type === 'stdio')) {
     throw new Error(
       'Cannot use approval provider "stdio" in stdio mode — both the MCP transport and approval ' +
-      'provider would read from stdin. Use "telegram", "slack", "webhook", or "openclaw" instead.',
+        'provider would read from stdin. Use "telegram", "slack", "webhook", or "openclaw" instead.'
     );
   }
 
@@ -40,6 +46,7 @@ export async function runStdioMode(config: Config, agentId: string, configPath: 
   auditLogger.startDailyCleanup();
 
   // Approvals — provider is created before engine, so forward calls via closure
+  // eslint-disable-next-line prefer-const
   let hitlEngine!: HitlEngine;
   const approvalForwarder: ApprovalApi = {
     approve: (code) => hitlEngine.approve(code),
@@ -52,9 +59,9 @@ export async function runStdioMode(config: Config, agentId: string, configPath: 
   hitlEngine = new HitlEngine(auditLogger, hitlProvider, config.approvals.timeout_ms);
 
   hitlBatcher.onBatchReady((_agentId, requests) => {
-    void hitlProvider.notify(requests).catch(err =>
-      log.error({ err }, 'Failed to send approval notification'),
-    );
+    void hitlProvider
+      .notify(requests)
+      .catch((err) => log.error({ err }, 'Failed to send approval notification'));
   });
 
   await hitlProvider.init();
@@ -64,18 +71,20 @@ export async function runStdioMode(config: Config, agentId: string, configPath: 
   const mcpConfigs = getMcpConfigs(config.providers);
   const allMcpIds = Object.keys(mcpConfigs);
   const neededIds = requiredMcpsForAgent(agentConfig, allMcpIds);
-  const filteredMcps = Object.fromEntries(neededIds.map(id => [id, mcpConfigs[id]]));
+  const filteredMcps = Object.fromEntries(neededIds.map((id) => [id, mcpConfigs[id]]));
 
   log.info(
-    { agentId, needed: neededIds, skipped: allMcpIds.filter(id => !neededIds.includes(id)) },
-    'Connecting to required MCPs only',
+    { agentId, needed: neededIds, skipped: allMcpIds.filter((id) => !neededIds.includes(id)) },
+    'Connecting to required MCPs only'
   );
 
   const builtins = getBuiltinProviders(config.providers);
   const pool = new ClientPool(filteredMcps);
   pool.onClientReady((id) => {
     log.info({ id }, 'MCP became ready, refreshing tool registry');
-    registry.refresh().catch(err => log.error({ err }, 'Failed to refresh registry after MCP ready'));
+    registry
+      .refresh()
+      .catch((err) => log.error({ err }, 'Failed to refresh registry after MCP ready'));
   });
   await pool.initialize();
 
@@ -92,15 +101,19 @@ export async function runStdioMode(config: Config, agentId: string, configPath: 
       }
       const newMcpConfigs = getMcpConfigs(newConfig.providers);
       const newBuiltins = getBuiltinProviders(newConfig.providers);
-      pool.reload(newMcpConfigs).then(() => {
-        allowlist.reload(newConfig.agents);
-        registry.reloadAgents(newConfig.agents, newConfig.security, newBuiltins);
-        return registry.refresh();
-      }).then(() => {
-        log.info('Config reloaded: providers, allowlist, agent config, security');
-      }).catch(err => {
-        log.error({ err }, 'Failed to apply reloaded config');
-      });
+      pool
+        .reload(newMcpConfigs)
+        .then(() => {
+          allowlist.reload(newConfig.agents);
+          registry.reloadAgents(newConfig.agents, newConfig.security, newBuiltins);
+          return registry.refresh();
+        })
+        .then(() => {
+          log.info('Config reloaded: providers, allowlist, agent config, security');
+        })
+        .catch((err) => {
+          log.error({ err }, 'Failed to apply reloaded config');
+        });
     } catch (err) {
       log.error({ err }, 'Failed to apply reloaded config');
     }

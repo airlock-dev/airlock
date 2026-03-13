@@ -31,7 +31,7 @@ export class FileOAuthProvider implements OAuthClientProvider {
 
   constructor(
     private serverId: string,
-    private callbackPort: number,
+    private callbackPort: number
   ) {
     const home = process.env.HOME ?? process.env.USERPROFILE ?? '.';
     const dir = join(home, '.airlock', 'oauth');
@@ -72,16 +72,20 @@ export class FileOAuthProvider implements OAuthClientProvider {
     await this.save();
   }
 
-  async redirectToAuthorization(url: URL): Promise<void> {
+  redirectToAuthorization(url: URL): Promise<void> {
     const now = Date.now();
     if (now - this.browserOpenedAt < 30_000) {
       log.debug({ serverId: this.serverId }, 'Skipping duplicate browser open (debounced)');
-      return;
+      return Promise.resolve();
     }
     this.browserOpenedAt = now;
-    log.info({ serverId: this.serverId, url: url.toString() }, 'Opening browser for OAuth authorization');
+    log.info(
+      { serverId: this.serverId, url: url.toString() },
+      'Opening browser for OAuth authorization'
+    );
     const cmd = process.platform === 'darwin' ? 'open' : 'xdg-open';
     execFile(cmd, [url.toString()]);
+    return Promise.resolve();
   }
 
   async saveCodeVerifier(verifier: string): Promise<void> {
@@ -115,7 +119,9 @@ export class FileOAuthProvider implements OAuthClientProvider {
 
         if (error) {
           res.writeHead(200, { 'Content-Type': 'text/html' });
-          res.end('<html><body><h2>Authorization failed</h2><p>You can close this tab.</p></body></html>');
+          res.end(
+            '<html><body><h2>Authorization failed</h2><p>You can close this tab.</p></body></html>'
+          );
           this.stopCallbackServer();
           reject(new Error(`OAuth error: ${error}`));
           return;
@@ -152,7 +158,7 @@ export class FileOAuthProvider implements OAuthClientProvider {
   private async load(): Promise<void> {
     try {
       const data = await readFile(this.storePath, 'utf-8');
-      this.data = JSON.parse(data);
+      this.data = JSON.parse(data) as PersistedData;
     } catch {
       this.data = {};
     }

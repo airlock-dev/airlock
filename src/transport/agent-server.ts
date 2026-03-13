@@ -1,8 +1,5 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import {
-  ListToolsRequestSchema,
-  CallToolRequestSchema,
-} from '@modelcontextprotocol/sdk/types.js';
+import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import type { ToolRegistry } from '../registry/registry.js';
 import type { AllowlistEngine } from '../allowlist/engine.js';
@@ -30,30 +27,30 @@ export interface AgentServerDeps {
 }
 
 export function createAgentServer(deps: AgentServerDeps): Server {
-  const {
-    agentId, registry, allowlist,
-    hitlEngine, hitlBatcher, auditLogger,
-  } = deps;
+  const { agentId, registry, allowlist, hitlEngine, hitlBatcher, auditLogger } = deps;
   const getConfig = deps.getAgentConfig ?? (() => deps.agentConfig);
 
-  const chain = deps.chain ?? buildMiddlewareChain(getConfig(), {
-    registry, allowlist, hitlEngine, hitlBatcher, auditLogger,
-    securityConfig: deps.securityConfig ?? { blocked_hosts: [], allowed_local: [] },
-  });
+  const chain =
+    deps.chain ??
+    buildMiddlewareChain(getConfig(), {
+      registry,
+      allowlist,
+      hitlEngine,
+      hitlBatcher,
+      auditLogger,
+      securityConfig: deps.securityConfig ?? { blocked_hosts: [], allowed_local: [] },
+    });
 
-  const server = new Server(
-    { name: 'airlock', version: '0.1.0' },
-    { capabilities: { tools: {} } },
-  );
+  const server = new Server({ name: 'airlock', version: '0.1.0' }, { capabilities: { tools: {} } });
 
-  server.setRequestHandler(ListToolsRequestSchema, async () => {
+  server.setRequestHandler(ListToolsRequestSchema, () => {
     const tools = registry.getFiltered(agentId);
     return { tools };
   });
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const toolName = request.params.name;
-    const args = (request.params.arguments ?? {}) as Record<string, unknown>;
+    const args = request.params.arguments ?? {};
 
     const ctx: ToolCallContext = {
       callId: generateId(),
@@ -63,13 +60,17 @@ export function createAgentServer(deps: AgentServerDeps): Server {
       args,
       meta: {},
       deps: {
-        registry, allowlist, hitlEngine, hitlBatcher, auditLogger,
+        registry,
+        allowlist,
+        hitlEngine,
+        hitlBatcher,
+        auditLogger,
         securityConfig: deps.securityConfig ?? { blocked_hosts: [], allowed_local: [] },
       },
       startedAt: Date.now(),
     };
 
-    const response = await chain(ctx, async () => {
+    const response = await chain(ctx, () => {
       throw new Error('Middleware chain did not terminate — missing execute middleware');
     });
 

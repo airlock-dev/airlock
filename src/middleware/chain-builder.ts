@@ -18,13 +18,9 @@ import { sensitivityClassifierMiddleware } from './detectors/sensitivity-classif
 import { matches } from '../allowlist/pattern.js';
 import type { MiddlewareItemConfig } from '../config/schema.js';
 
-function shouldRunForTool(
-  toolName: string,
-  tools?: string[],
-  exclude?: string[],
-): boolean {
-  if (exclude?.some(p => matches(p, toolName))) return false;
-  if (tools && !tools.some(p => matches(p, toolName))) return false;
+function shouldRunForTool(toolName: string, tools?: string[], exclude?: string[]): boolean {
+  if (exclude?.some((p) => matches(p, toolName))) return false;
+  if (tools && !tools.some((p) => matches(p, toolName))) return false;
   return true;
 }
 
@@ -44,7 +40,7 @@ function resolveMiddleware(item: MiddlewareItemConfig): Middleware {
       return rateLimiterMiddleware({
         max_requests: item.max_requests ?? 60,
         window_ms: item.window_ms ?? 60_000,
-        per: item.per as 'agent' | 'tool' | undefined,
+        per: item.per,
       });
     case 'untrusted-envelope':
       return untrustedEnvelopeMiddleware();
@@ -52,7 +48,7 @@ function resolveMiddleware(item: MiddlewareItemConfig): Middleware {
       return stripQueryParamsMiddleware();
     case 'output-injection-detector':
       return outputInjectionDetectorMiddleware({
-        mode: item.mode as 'detect' | 'mangle' | undefined,
+        mode: item.mode as 'detect' | 'mangle' | undefined, // schema includes 'escalate' which is not valid for output-injection-detector
       });
     case 'canary-token-injector':
       return canaryTokenInjectorMiddleware();
@@ -69,7 +65,7 @@ function resolveMiddleware(item: MiddlewareItemConfig): Middleware {
     case 'injection-detector':
       return injectionDetectorMiddleware({
         backend: item.backend as 'regex' | 'deberta' | undefined,
-        mode: item.mode as 'detect' | 'mangle' | 'escalate' | undefined,
+        mode: item.mode,
         inference_url: item.inference_url,
         threshold: item.threshold,
       });
@@ -117,39 +113,39 @@ export function buildMiddlewareChain(agentConfig: AgentConfig, _deps: Middleware
     enabledMiddleware = [];
   } else {
     const disabledNames = new Set(
-      userMiddleware.filter(m => m.enabled === false).map(m => m.name),
+      userMiddleware.filter((m) => m.enabled === false).map((m) => m.name)
     );
-    const userNames = new Set(userMiddleware.map(m => m.name));
-    const defaults = DEFAULT_MIDDLEWARE
-      .filter(m => !disabledNames.has(m.name) && !userNames.has(m.name));
-    enabledMiddleware = [
-      ...defaults,
-      ...userMiddleware.filter(m => m.enabled !== false),
-    ];
+    const userNames = new Set(userMiddleware.map((m) => m.name));
+    const defaults = DEFAULT_MIDDLEWARE.filter(
+      (m) => !disabledNames.has(m.name) && !userNames.has(m.name)
+    );
+    enabledMiddleware = [...defaults, ...userMiddleware.filter((m) => m.enabled !== false)];
   }
 
   // Separate core-zone middleware (detectors + schema-validator) from post middlewares
   const coreNames = new Set(['injection-detector', 'sensitivity-classifier', 'schema-validator']);
-  const coreUserMiddleware = enabledMiddleware.filter(m => coreNames.has(m.name));
-  const postUserMiddleware = enabledMiddleware.filter(m => !coreNames.has(m.name));
+  const coreUserMiddleware = enabledMiddleware.filter((m) => coreNames.has(m.name));
+  const postUserMiddleware = enabledMiddleware.filter((m) => !coreNames.has(m.name));
 
   // Extract schema-validator separately — it runs before detectors
-  const schemaValidators = coreUserMiddleware.filter(m => m.name === 'schema-validator');
-  const detectors = coreUserMiddleware.filter(m => m.name !== 'schema-validator');
+  const schemaValidators = coreUserMiddleware.filter((m) => m.name === 'schema-validator');
+  const detectors = coreUserMiddleware.filter((m) => m.name !== 'schema-validator');
 
   // Core zone: fixed security-critical order
   //   allowlist → exec-policy → schema-validator → [detectors] → hitl-gate → execute
   const coreMiddlewares: Middleware[] = [
     allowlistMiddleware(),
     execPolicyMiddleware(),
-    ...schemaValidators.map(m => withToolFilter(resolveMiddleware(m), m)),
-    ...detectors.map(m => withToolFilter(resolveMiddleware(m), m)),
+    ...schemaValidators.map((m) => withToolFilter(resolveMiddleware(m), m)),
+    ...detectors.map((m) => withToolFilter(resolveMiddleware(m), m)),
     hitlGateMiddleware(),
     executeMiddleware(),
   ];
 
   // Post zone: user-configurable
-  const postMiddlewares: Middleware[] = postUserMiddleware.map(m => withToolFilter(resolveMiddleware(m), m));
+  const postMiddlewares: Middleware[] = postUserMiddleware.map((m) =>
+    withToolFilter(resolveMiddleware(m), m)
+  );
 
   // Post middlewares wrap the core chain
   // They run after execution (or wrap around it), so they go before core in compose order

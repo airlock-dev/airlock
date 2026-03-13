@@ -37,7 +37,7 @@ export interface InjectionDetectorOptions {
 async function classifyWithDeberta(
   text: string,
   inferenceUrl: string,
-  threshold: number,
+  threshold: number
 ): Promise<{ isInjection: boolean; score: number }> {
   const response = await fetch(inferenceUrl, {
     method: 'POST',
@@ -50,7 +50,11 @@ async function classifyWithDeberta(
     throw new Error(`DeBERTa inference failed: ${response.status}`);
   }
 
-  const result = await response.json() as { score?: number; label?: string; probability?: number };
+  const result = (await response.json()) as {
+    score?: number;
+    label?: string;
+    probability?: number;
+  };
   const score = result.score ?? result.probability ?? 0;
   return { isInjection: score >= threshold, score };
 }
@@ -79,14 +83,17 @@ export function injectionDetectorMiddleware(opts: InjectionDetectorOptions = {})
   return async (ctx, next) => {
     // Pre-execution: scan args
     const argsText = JSON.stringify(ctx.args);
-    let preInjection = false;
+    let preInjection: boolean;
 
     if (backend === 'deberta' && inference_url) {
       try {
         const result = await classifyWithDeberta(argsText, inference_url, threshold);
         preInjection = result.isInjection;
         if (preInjection) {
-          log.warn({ agentId: ctx.agentId, tool: ctx.toolName, score: result.score }, 'DeBERTa: injection detected in args');
+          log.warn(
+            { agentId: ctx.agentId, tool: ctx.toolName, score: result.score },
+            'DeBERTa: injection detected in args'
+          );
         }
       } catch (err) {
         log.warn({ err }, 'DeBERTa inference failed for args, falling back to regex');
@@ -100,14 +107,19 @@ export function injectionDetectorMiddleware(opts: InjectionDetectorOptions = {})
       const result = classifyWithRegex(argsText);
       preInjection = result.isInjection;
       if (preInjection) {
-        log.warn({ agentId: ctx.agentId, tool: ctx.toolName, patterns: result.matchedPatterns }, 'Regex: injection detected in args');
+        log.warn(
+          { agentId: ctx.agentId, tool: ctx.toolName, patterns: result.matchedPatterns },
+          'Regex: injection detected in args'
+        );
       }
     }
 
     if (preInjection) {
       ctx.deps.auditLogger.log({
-        agent_id: ctx.agentId, tool: ctx.toolName,
-        args: JSON.stringify(ctx.args), result: 'injection_detected_args',
+        agent_id: ctx.agentId,
+        tool: ctx.toolName,
+        args: JSON.stringify(ctx.args),
+        result: 'injection_detected_args',
       });
 
       if (mode === 'escalate') {
@@ -119,7 +131,7 @@ export function injectionDetectorMiddleware(opts: InjectionDetectorOptions = {})
     const response = await next();
 
     // Post-execution: scan response
-    let postInjection = false;
+    let postInjection: boolean;
 
     if (backend === 'deberta' && inference_url) {
       try {
@@ -138,10 +150,15 @@ export function injectionDetectorMiddleware(opts: InjectionDetectorOptions = {})
     }
 
     if (postInjection) {
-      log.warn({ agentId: ctx.agentId, tool: ctx.toolName }, 'Injection pattern detected in response');
+      log.warn(
+        { agentId: ctx.agentId, tool: ctx.toolName },
+        'Injection pattern detected in response'
+      );
       ctx.deps.auditLogger.log({
-        agent_id: ctx.agentId, tool: ctx.toolName,
-        args: JSON.stringify(ctx.args), result: 'injection_detected_response',
+        agent_id: ctx.agentId,
+        tool: ctx.toolName,
+        args: JSON.stringify(ctx.args),
+        result: 'injection_detected_response',
       });
 
       if (mode === 'mangle') {

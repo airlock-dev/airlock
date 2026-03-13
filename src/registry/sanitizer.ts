@@ -16,7 +16,7 @@ const MAX_DESCRIPTION_LENGTH = 500;
 export function sanitizeToolDescription(
   toolName: string,
   description: string | undefined,
-  override?: string,
+  override?: string
 ): string {
   if (override !== undefined) return override;
   if (!description) return '';
@@ -25,7 +25,10 @@ export function sanitizeToolDescription(
   let cleaned = description;
   for (const pattern of SUSPICIOUS_PATTERNS) {
     if (pattern.test(cleaned)) {
-      log.warn({ toolName, pattern: pattern.source }, 'Stripping suspicious pattern from tool description (possible prompt injection)');
+      log.warn(
+        { toolName, pattern: pattern.source },
+        'Stripping suspicious pattern from tool description (possible prompt injection)'
+      );
       cleaned = cleaned.replace(pattern, '[removed]');
     }
   }

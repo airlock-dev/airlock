@@ -5,12 +5,12 @@
 export function isBlockedHost(
   hostname: string,
   blockedList: string[],
-  allowedLocal: string[],
+  allowedLocal: string[]
 ): boolean {
   // If explicitly allowed, override block
-  if (allowedLocal.some(p => hostPatternMatches(p, hostname))) return false;
+  if (allowedLocal.some((p) => hostPatternMatches(p, hostname))) return false;
 
-  return blockedList.some(p => hostPatternMatches(p, hostname));
+  return blockedList.some((p) => hostPatternMatches(p, hostname));
 }
 
 function hostPatternMatches(pattern: string, hostname: string): boolean {

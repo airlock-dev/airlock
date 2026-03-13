@@ -19,7 +19,7 @@ export class ToolRegistry {
     private allowlist: AllowlistEngine,
     private agents: Record<string, AgentConfig>,
     private security: SecurityConfig,
-    private builtins: Set<string> = new Set(),
+    private builtins: Set<string> = new Set()
   ) {
     this.rebuildBuiltins();
   }
@@ -30,7 +30,11 @@ export class ToolRegistry {
     if (this.builtins.has('exec')) this.builtinTools.push(buildExecTool());
   }
 
-  reloadAgents(agents: Record<string, AgentConfig>, security: SecurityConfig, builtins?: Set<string>): void {
+  reloadAgents(
+    agents: Record<string, AgentConfig>,
+    security: SecurityConfig,
+    builtins?: Set<string>
+  ): void {
     this.agents = agents;
     this.security = security;
     if (builtins) {
@@ -73,21 +77,17 @@ export class ToolRegistry {
     const overrides = agent?.tool_overrides ?? {};
 
     return this.cachedTools
-      .filter(t => this.allowlist.evaluate(agentId, t.name) !== 'deny')
-      .map(t => ({
+      .filter((t) => this.allowlist.evaluate(agentId, t.name) !== 'deny')
+      .map((t) => ({
         ...t,
-        description: sanitizeToolDescription(
-          t.name,
-          t.description,
-          overrides[t.name]?.description,
-        ),
+        description: sanitizeToolDescription(t.name, t.description, overrides[t.name]?.description),
       }));
   }
 
   async call(
     namespacedName: string,
     args: Record<string, unknown>,
-    agentId: string,
+    agentId: string
   ): Promise<unknown> {
     // Built-in HTTP tools
     const httpMatch = namespacedName.match(/^http\/(get|post|put|patch|delete|head)$/);

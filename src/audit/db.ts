@@ -2,11 +2,11 @@ import Database from 'better-sqlite3';
 
 export interface AuditEntry {
   id?: number;
-  ts: string;          // ISO timestamp
+  ts: string; // ISO timestamp
   agent_id: string;
   tool: string;
-  args: string;        // JSON string
-  result: string;      // 'success' | 'error' | 'denied' | 'hitl_approved' | 'hitl_denied' | 'hitl_timeout'
+  args: string; // JSON string
+  result: string; // 'success' | 'error' | 'denied' | 'hitl_approved' | 'hitl_denied' | 'hitl_timeout'
   error?: string;
   duration_ms?: number;
   hitl_code?: string;
@@ -17,7 +17,7 @@ export interface HitlQueueEntry {
   code: string;
   agent_id: string;
   tool: string;
-  args: string;        // JSON string
+  args: string; // JSON string
   status: 'pending' | 'approved' | 'denied' | 'timeout';
   reason?: string;
   created_at: string;
@@ -91,9 +91,13 @@ export class AuditDb {
       `),
       getHitlByCode: this.db.prepare('SELECT * FROM hitl_queue WHERE code = ?'),
       getHitlById: this.db.prepare('SELECT * FROM hitl_queue WHERE id = ?'),
-      getPendingHitl: this.db.prepare("SELECT * FROM hitl_queue WHERE status = 'pending' ORDER BY created_at ASC"),
+      getPendingHitl: this.db.prepare(
+        "SELECT * FROM hitl_queue WHERE status = 'pending' ORDER BY created_at ASC"
+      ),
       cleanupAudit: this.db.prepare('DELETE FROM audit_log WHERE ts < ?'),
-      cleanupHitl: this.db.prepare("DELETE FROM hitl_queue WHERE status != 'pending' AND resolved_at < ?"),
+      cleanupHitl: this.db.prepare(
+        "DELETE FROM hitl_queue WHERE status != 'pending' AND resolved_at < ?"
+      ),
     };
   }
 
@@ -115,17 +119,26 @@ export class AuditDb {
     const conditions: string[] = [];
     const params: Record<string, unknown> = {};
 
-    if (filters.agent) { conditions.push('agent_id = @agent'); params.agent = filters.agent; }
-    if (filters.tool)  { conditions.push('tool = @tool');      params.tool  = filters.tool;  }
-    if (filters.since) { conditions.push('ts >= @since');      params.since = filters.since; }
+    if (filters.agent) {
+      conditions.push('agent_id = @agent');
+      params.agent = filters.agent;
+    }
+    if (filters.tool) {
+      conditions.push('tool = @tool');
+      params.tool = filters.tool;
+    }
+    if (filters.since) {
+      conditions.push('ts >= @since');
+      params.since = filters.since;
+    }
 
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
     const limit = Math.max(1, Math.min(filters.limit ?? 100, 10000));
     params.limit = limit;
 
-    return this.db.prepare(
-      `SELECT * FROM audit_log ${where} ORDER BY ts DESC LIMIT @limit`
-    ).all(params) as AuditEntry[];
+    return this.db
+      .prepare(`SELECT * FROM audit_log ${where} ORDER BY ts DESC LIMIT @limit`)
+      .all(params) as AuditEntry[];
   }
 
   insertHitl(entry: HitlQueueEntry): void {
@@ -133,7 +146,12 @@ export class AuditDb {
   }
 
   updateHitlStatus(id: string, status: HitlQueueEntry['status'], reason?: string): void {
-    this.stmts.updateHitlStatus.run({ id, status, reason: reason ?? null, resolved_at: new Date().toISOString() });
+    this.stmts.updateHitlStatus.run({
+      id,
+      status,
+      reason: reason ?? null,
+      resolved_at: new Date().toISOString(),
+    });
   }
 
   getHitlByCode(code: string): HitlQueueEntry | undefined {

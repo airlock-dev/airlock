@@ -20,8 +20,11 @@ export function executeMiddleware(): Middleware {
 
       const duration = Date.now() - ctx.startedAt;
       auditLogger.log({
-        agent_id: ctx.agentId, tool: ctx.toolName,
-        args: JSON.stringify(ctx.args), result: 'success', duration_ms: duration,
+        agent_id: ctx.agentId,
+        tool: ctx.toolName,
+        args: JSON.stringify(ctx.args),
+        result: 'success',
+        duration_ms: duration,
       });
 
       return {
@@ -32,8 +35,12 @@ export function executeMiddleware(): Middleware {
       const duration = Date.now() - ctx.startedAt;
       const error = err instanceof Error ? err.message : String(err);
       auditLogger.log({
-        agent_id: ctx.agentId, tool: ctx.toolName,
-        args: JSON.stringify(ctx.args), result: 'error', error, duration_ms: duration,
+        agent_id: ctx.agentId,
+        tool: ctx.toolName,
+        args: JSON.stringify(ctx.args),
+        result: 'error',
+        error,
+        duration_ms: duration,
       });
       throw new McpError(ErrorCode.InternalError, error);
     }

@@ -18,8 +18,10 @@ export function execPolicyMiddleware(): Middleware {
     if (cmdDecision === 'deny') {
       log.info({ agentId: ctx.agentId, command }, 'exec command denied by policy');
       ctx.deps.auditLogger.log({
-        agent_id: ctx.agentId, tool: ctx.toolName,
-        args: JSON.stringify(ctx.args), result: 'denied',
+        agent_id: ctx.agentId,
+        tool: ctx.toolName,
+        args: JSON.stringify(ctx.args),
+        result: 'denied',
       });
       throw new McpError(ErrorCode.InvalidRequest, 'Command denied by policy');
     }

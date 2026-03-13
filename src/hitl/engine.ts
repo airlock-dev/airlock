@@ -25,20 +25,16 @@ interface PendingRequest {
 
 export class HitlEngine implements ApprovalApi {
   private pending = new Map<string, PendingRequest>(); // id → request
-  private byCode  = new Map<string, string>();          // code → id
+  private byCode = new Map<string, string>(); // code → id
 
   constructor(
     private auditLogger: AuditLogger,
     private provider: HitlProvider,
-    readonly timeoutMs: number,
+    readonly timeoutMs: number
   ) {}
 
-  create(params: {
-    agentId: string;
-    tool: string;
-    args: Record<string, unknown>;
-  }): HitlTicket {
-    const id   = generateId();
+  create(params: { agentId: string; tool: string; args: Record<string, unknown> }): HitlTicket {
+    const id = generateId();
     const code = generateApprovalCode();
 
     // Persist to DB synchronously before returning
@@ -101,9 +97,19 @@ export class HitlEngine implements ApprovalApi {
     req.resolve('denied');
   }
 
-  getPending(): Array<{ id: string; code: string; agentId: string; tool: string; args: Record<string, unknown> }> {
-    return Array.from(this.pending.values()).map(r => ({
-      id: r.id, code: r.code, agentId: r.agentId, tool: r.tool, args: r.args,
+  getPending(): Array<{
+    id: string;
+    code: string;
+    agentId: string;
+    tool: string;
+    args: Record<string, unknown>;
+  }> {
+    return Array.from(this.pending.values()).map((r) => ({
+      id: r.id,
+      code: r.code,
+      agentId: r.agentId,
+      tool: r.tool,
+      args: r.args,
     }));
   }
 
@@ -117,6 +123,7 @@ export class HitlEngine implements ApprovalApi {
   }
 
   /** Recover pending requests from DB on startup */
+  // eslint-disable-next-line @typescript-eslint/require-await
   async recoverPending(): Promise<void> {
     const rows = this.auditLogger.getPendingHitl();
     if (rows.length === 0) return;
@@ -125,7 +132,9 @@ export class HitlEngine implements ApprovalApi {
 
     for (const row of rows) {
       let args: Record<string, unknown> = {};
-      try { args = JSON.parse(row.args); } catch {
+      try {
+        args = JSON.parse(row.args) as Record<string, unknown>;
+      } catch {
         log.warn({ id: row.id }, 'Failed to parse HITL args from DB, using empty args');
       }
 
@@ -148,18 +157,31 @@ export class HitlEngine implements ApprovalApi {
         timer.unref();
 
         const req: PendingRequest = {
-          id: row.id, code: row.code, agentId: row.agent_id,
-          tool: row.tool, args, resolve, timer,
+          id: row.id,
+          code: row.code,
+          agentId: row.agent_id,
+          tool: row.tool,
+          args,
+          resolve,
+          timer,
         };
         this.pending.set(row.id, req);
         this.byCode.set(row.code, row.id);
       });
 
       // Notify again so operator sees recovered requests
-      void this.provider.notify([{
-        id: row.id, code: row.code, agentId: row.agent_id,
-        tool: row.tool, args, timeoutMs: remaining,
-      }]).catch(err => log.warn({ err }, 'Failed to re-notify recovered HITL request'));
+      void this.provider
+        .notify([
+          {
+            id: row.id,
+            code: row.code,
+            agentId: row.agent_id,
+            tool: row.tool,
+            args,
+            timeoutMs: remaining,
+          },
+        ])
+        .catch((err) => log.warn({ err }, 'Failed to re-notify recovered HITL request'));
 
       void promise; // tracked in pending map
     }

@@ -13,7 +13,6 @@ const GREEN = `${ESC}32m`;
 const RED = `${ESC}31m`;
 const YELLOW = `${ESC}33m`;
 const CYAN = `${ESC}36m`;
-const BG_GRAY = `${ESC}48;5;236m`;
 
 interface PendingItem {
   req: HitlNotification;
@@ -21,21 +20,21 @@ interface PendingItem {
 }
 
 export class TuiHitlProvider implements HitlProvider {
-  private tty: typeof import('fs') extends { createReadStream: infer T } ? ReturnType<typeof createReadStream> : never;
+  private tty: ReturnType<typeof createReadStream>;
   private items: PendingItem[] = [];
   private selected = 0;
   private active = false;
 
   constructor(private approvalApi: ApprovalApi) {
     // Read keystrokes from /dev/tty — doesn't touch stdin/stdout
-    this.tty = createReadStream('/dev/tty', { encoding: 'utf8' }) as any;
+    this.tty = createReadStream('/dev/tty', { encoding: 'utf8' });
   }
 
   async init(): Promise<void> {
     this.active = true;
 
     // Put tty in raw mode to get individual keypresses
-    const fd = (this.tty as any).fd;
+    const fd = (this.tty as { fd?: unknown }).fd;
     if (typeof fd === 'number') {
       try {
         const tty = await import('tty');
@@ -48,7 +47,7 @@ export class TuiHitlProvider implements HitlProvider {
           ttyReadStream.setEncoding('utf8');
           ttyReadStream.on('data', (key: string) => this.handleKey(key));
           ttyReadStream.resume();
-          this.tty = ttyReadStream as any;
+          this.tty = ttyReadStream as unknown as ReturnType<typeof createReadStream>;
         }
       } catch {
         // Fallback: line-based input
@@ -63,24 +62,28 @@ export class TuiHitlProvider implements HitlProvider {
     log.info('TUI HITL provider ready — approve/deny from your terminal');
   }
 
-  async stop(): Promise<void> {
+  stop(): Promise<void> {
     this.active = false;
     try {
-      (this.tty as any).destroy?.();
-    } catch {}
+      (this.tty as { destroy?: () => void }).destroy?.();
+    } catch {
+      /* swallow */
+    }
+    return Promise.resolve();
   }
 
-  async notify(requests: HitlNotification[]): Promise<void> {
+  notify(requests: HitlNotification[]): Promise<void> {
     for (const req of requests) {
       this.items.push({ req, status: 'pending' });
     }
     this.render();
+    return Promise.resolve();
   }
 
   private handleKey(key: string): void {
     if (!this.active) return;
 
-    const pending = this.items.filter(i => i.status === 'pending');
+    const pending = this.items.filter((i) => i.status === 'pending');
     if (pending.length === 0) return;
 
     // Ctrl-C
@@ -131,12 +134,14 @@ export class TuiHitlProvider implements HitlProvider {
 
   private render(): void {
     const out = process.stderr;
-    const pending = this.items.filter(i => i.status === 'pending');
-    const resolved = this.items.filter(i => i.status !== 'pending');
+    const pending = this.items.filter((i) => i.status === 'pending');
+    const resolved = this.items.filter((i) => i.status !== 'pending');
 
     const lines: string[] = [];
     lines.push('');
-    lines.push(`${BOLD}${CYAN}  Airlock Approvals${RESET}  ${DIM}[a]pprove  [d]eny  [j/k] navigate${RESET}`);
+    lines.push(
+      `${BOLD}${CYAN}  Airlock Approvals${RESET}  ${DIM}[a]pprove  [d]eny  [j/k] navigate${RESET}`
+    );
     lines.push(`${DIM}  ${'─'.repeat(60)}${RESET}`);
 
     if (pending.length === 0) {
@@ -149,8 +154,8 @@ export class TuiHitlProvider implements HitlProvider {
         const args = this.formatArgs(item.req.args);
         lines.push(
           `${prefix}${selected ? BOLD : ''}${item.req.tool}${RESET}` +
-          `  ${DIM}agent:${item.req.agentId}${RESET}` +
-          `  ${DIM}[${item.req.code}]${RESET}`
+            `  ${DIM}agent:${item.req.agentId}${RESET}` +
+            `  ${DIM}[${item.req.code}]${RESET}`
         );
         lines.push(`${selected ? '     ' : '     '}${DIM}${args}${RESET}`);
       }
@@ -162,7 +167,9 @@ export class TuiHitlProvider implements HitlProvider {
       lines.push(`${DIM}  ${'─'.repeat(60)}${RESET}`);
       for (const item of recent) {
         const color = item.status === 'approved' ? GREEN : RED;
-        lines.push(`${DIM}   ${color}${item.status}${RESET}${DIM}  ${item.req.tool}  [${item.req.code}]${RESET}`);
+        lines.push(
+          `${DIM}   ${color}${item.status}${RESET}${DIM}  ${item.req.tool}  [${item.req.code}]${RESET}`
+        );
       }
     }
 
@@ -175,9 +182,12 @@ export class TuiHitlProvider implements HitlProvider {
 
   private formatArgs(args: Record<string, unknown>): string {
     const parts = Object.entries(args).map(([k, v]) => {
-      const val = typeof v === 'string'
-        ? (v.length > 40 ? `"${v.slice(0, 40)}..."` : `"${v}"`)
-        : JSON.stringify(v);
+      const val =
+        typeof v === 'string'
+          ? v.length > 40
+            ? `"${v.slice(0, 40)}..."`
+            : `"${v}"`
+          : JSON.stringify(v);
       return `${k}: ${val}`;
     });
     const str = parts.join(', ');

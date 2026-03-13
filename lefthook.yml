@@ -1,0 +1,13 @@
+pre-commit:
+  parallel: true
+  commands:
+    typecheck:
+      run: node_modules/.bin/tsc --noEmit
+    lint:
+      glob: "src/**/*.ts"
+      run: node_modules/.bin/eslint --max-warnings 0 {staged_files}
+    format:
+      glob: "**/*.{ts,js,md,yaml,yml}"
+      run: node_modules/.bin/prettier --check {staged_files}
+    secrets:
+      run: gitleaks protect --staged --no-banner
