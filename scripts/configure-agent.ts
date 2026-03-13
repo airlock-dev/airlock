@@ -17,13 +17,15 @@
  *   a        allow  (on tool: that tool; on header: all tools in provider)
  *   s        ask    (same)
  *   d        deny   (same)
- *   enter    confirm & print YAML
+ *   enter    confirm → action picker (edit / copy / print)
  *   q        quit without output
  */
 
 import { parseArgs } from 'util';
-import { readFileSync } from 'fs';
-import { parse as parseYaml } from 'yaml';
+import { readFileSync, writeFileSync, copyFileSync, openSync } from 'fs';
+import { ReadStream } from 'tty';
+import { execSync } from 'child_process';
+import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { ClientPool } from '../src/pool/pool.js';
 import { getMcpConfigs } from '../src/config/schema.js';
@@ -341,8 +343,6 @@ async function main(): Promise<void> {
 
   process.stdout.write(`\n${BOLD}Found ${entries.length} tools.${RESET} Press any key to start…`);
 
-  const { openSync } = await import('fs');
-  const { ReadStream } = await import('tty');
   const ttyFd = openSync('/dev/tty', 'r+');
   const tty = new ReadStream(ttyFd);
   tty.setEncoding('utf8');
@@ -435,8 +435,81 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
+  const yaml = renderYaml(values.agent!, entries);
+
+  // ── Action picker ───────────────────────────────────────────────────────────
+  process.stdout.write(`\n${BOLD}${CYAN}What would you like to do?${RESET}\n`);
+  process.stdout.write(
+    `  ${BOLD}[e]${RESET} edit config directly  ${DIM}(backs up original to .bak)${RESET}\n`
+  );
+  process.stdout.write(`  ${BOLD}[c]${RESET} copy to clipboard\n`);
+  process.stdout.write(`  ${BOLD}[p]${RESET} print to stdout\n`);
+  process.stdout.write(`  ${BOLD}[q]${RESET} abort\n\n`);
+  process.stdout.write(`> `);
+
+  const ttyFd2 = openSync('/dev/tty', 'r+');
+  const tty2 = new ReadStream(ttyFd2);
+  tty2.setEncoding('utf8');
+
+  const action = await new Promise<string>((resolve) => {
+    tty2.setRawMode(true);
+    tty2.resume();
+    tty2.once('data', (key: string) => {
+      tty2.setRawMode(false);
+      tty2.destroy();
+      resolve(key);
+    });
+  });
+
+  process.stdout.write('\n');
+
+  if (action === 'q' || action === '\x03') {
+    console.log('Aborted.');
+    process.exit(0);
+  }
+
+  if (action === 'p') {
+    console.log(`\n${BOLD}${CYAN}# Paste into your airlock.yaml:${RESET}\n`);
+    console.log(yaml);
+    console.log();
+    process.exit(0);
+  }
+
+  if (action === 'c') {
+    const clipCmd = process.platform === 'darwin' ? 'pbcopy' : 'xclip -selection clipboard';
+    try {
+      execSync(clipCmd, { input: yaml });
+      console.log(`${GREEN}✓ Copied to clipboard.${RESET}`);
+    } catch {
+      console.error(`Could not copy to clipboard. Here is the YAML:\n`);
+      console.log(yaml);
+    }
+    process.exit(0);
+  }
+
+  if (action === 'e') {
+    const configPath = values.config!;
+    const backupPath = configPath.replace(/\.ya?ml$/i, '') + '.bak';
+    copyFileSync(configPath, backupPath);
+
+    const doc = parseYaml(readFileSync(configPath, 'utf8')) as Record<string, unknown>;
+    const agents = (doc.agents ?? {}) as Record<string, unknown>;
+    agents[values.agent!] = {
+      allow: entries.filter((e) => e.decision === 'allow').map((e) => e.namespacedName),
+      ask: entries.filter((e) => e.decision === 'ask').map((e) => e.namespacedName),
+      deny: entries.filter((e) => e.decision === 'deny').map((e) => e.namespacedName),
+    };
+    doc.agents = agents;
+    writeFileSync(configPath, stringifyYaml(doc));
+
+    console.log(`${GREEN}✓ Updated ${configPath}${RESET}`);
+    console.log(`${DIM}  Original backed up to ${backupPath}${RESET}`);
+    process.exit(0);
+  }
+
+  // fallback — unrecognised key
   console.log(`\n${BOLD}${CYAN}# Paste into your airlock.yaml:${RESET}\n`);
-  console.log(renderYaml(values.agent!, entries));
+  console.log(yaml);
   console.log();
 }
 
