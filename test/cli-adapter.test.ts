@@ -1,4 +1,7 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { writeFileSync, mkdirSync, rmSync } from 'fs';
+import { join } from 'path';
+import { tmpdir } from 'os';
 import { CliBackendAdapter } from '../src/backend/cli/adapter.js';
 import { CliParamConfig, GatewayConfig } from '../src/config/schema.js';
 import type { CliConfig } from '../src/config/schema.js';
@@ -261,4 +264,167 @@ describe('validateConfig CLI warnings', () => {
     const warn = diagnostics.find((d) => d.message.includes('file'));
     expect(warn).toBeUndefined();
   });
+});
+
+describe('discovered commands merge', () => {
+  let tmpDir: string;
+
+  beforeAll(() => {
+    tmpDir = join(tmpdir(), `airlock-test-${Date.now()}`);
+    mkdirSync(tmpDir, { recursive: true });
+  });
+
+  afterAll(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('merges discovered commands with inline commands', async () => {
+    const discoveredPath = join(tmpDir, 'discovered.yaml');
+    writeFileSync(
+      discoveredPath,
+      `commands:
+  status:
+    exec: 'git status'
+    timeout: 10
+  diff:
+    exec: 'git diff'
+    timeout: 10
+`
+    );
+
+    const config = makeCliConfig({
+      discovered: discoveredPath,
+      commands: {
+        log: { exec: 'git log', params: {}, timeout: 30 },
+      },
+    });
+
+    const adapter = new CliBackendAdapter('git', config);
+    const tools = await adapter.listTools();
+    const names = tools.map((t) => t.name);
+
+    expect(names).toContain('git/status');
+    expect(names).toContain('git/diff');
+    expect(names).toContain('git/log');
+  });
+
+  it('inline commands override discovered commands with same name', async () => {
+    const discoveredPath = join(tmpDir, 'override.yaml');
+    writeFileSync(
+      discoveredPath,
+      `commands:
+  status:
+    exec: 'git status --short'
+    description: 'discovered version'
+    timeout: 10
+`
+    );
+
+    const config = makeCliConfig({
+      discovered: discoveredPath,
+      commands: {
+        status: {
+          exec: 'git status --long',
+          description: 'inline version',
+          params: {},
+          timeout: 30,
+        },
+      },
+    });
+
+    const adapter = new CliBackendAdapter('git', config);
+    const tools = await adapter.listTools();
+    const statusTool = tools.find((t) => t.name === 'git/status');
+
+    expect(statusTool).toBeDefined();
+    expect(statusTool!.description).toBe('inline version');
+  });
+
+  it('skips invalid discovered commands gracefully', async () => {
+    const discoveredPath = join(tmpDir, 'invalid.yaml');
+    writeFileSync(
+      discoveredPath,
+      `commands:
+  bad:
+    notAnExecField: 'oops'
+`
+    );
+
+    const config = makeCliConfig({
+      discovered: discoveredPath,
+      commands: {
+        good: { exec: 'echo ok', params: {}, timeout: 5 },
+      },
+    });
+
+    const adapter = new CliBackendAdapter('git', config);
+    const tools = await adapter.listTools();
+    const names = tools.map((t) => t.name);
+
+    expect(names).toEqual(['git/good']);
+  });
+
+  it('handles missing discovered file gracefully', async () => {
+    const config = makeCliConfig({
+      discovered: join(tmpDir, 'nonexistent.yaml'),
+      commands: {
+        echo: { exec: 'echo hi', params: {}, timeout: 5 },
+      },
+    });
+
+    const adapter = new CliBackendAdapter('test', config);
+    const tools = await adapter.listTools();
+    expect(tools).toHaveLength(1);
+    expect(tools[0].name).toBe('test/echo');
+  });
+});
+
+describe('output truncation', () => {
+  it('truncates stdout exceeding maxOutputBytes', async () => {
+    // Generate 200 bytes of output, cap at 100
+    const config = makeCliConfig({
+      commands: {
+        big: { exec: 'head -c 200 /dev/zero | tr "\\0" "A"', params: {}, timeout: 5 },
+      },
+    });
+
+    const adapter = new CliBackendAdapter('test', config, { maxOutputBytes: 100 });
+    const result = await adapter.call({ tool: 'test/big', args: {}, agentId: 'a1' });
+
+    expect(result.success).toBe(true);
+    expect(result.metadata?.truncated).toBe(true);
+    const stdout = (result.data as { stdout: string }).stdout;
+    expect(stdout.length).toBeLessThanOrEqual(100);
+  });
+
+  it('does not truncate output within limit', async () => {
+    const config = makeCliConfig({
+      commands: {
+        small: { exec: 'echo hello', params: {}, timeout: 5 },
+      },
+    });
+
+    const adapter = new CliBackendAdapter('test', config, { maxOutputBytes: 1000 });
+    const result = await adapter.call({ tool: 'test/small', args: {}, agentId: 'a1' });
+
+    expect(result.success).toBe(true);
+    expect(result.metadata?.truncated).toBe(false);
+    expect((result.data as { stdout: string }).stdout.trim()).toBe('hello');
+  });
+});
+
+describe('timeout handling', () => {
+  it('kills command that exceeds timeout', async () => {
+    const config = makeCliConfig({
+      commands: {
+        slow: { exec: 'sleep 60', params: {}, timeout: 0.1 },
+      },
+    });
+
+    const adapter = new CliBackendAdapter('test', config);
+    const result = await adapter.call({ tool: 'test/slow', args: {}, agentId: 'a1' });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/timed out/);
+  }, 10_000);
 });

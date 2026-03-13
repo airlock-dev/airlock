@@ -11,18 +11,25 @@ import { childLogger } from '../../util/logger.js';
 
 const log = childLogger('cli-adapter');
 
-const MAX_OUTPUT_BYTES = 1_048_576; // 1MB per stream
+const DEFAULT_MAX_OUTPUT_BYTES = 131_072; // 128KB per stream
+
+export interface CliAdapterOptions {
+  maxOutputBytes?: number;
+}
 
 export class CliBackendAdapter implements BackendAdapter {
   readonly id: string;
   private commands: Record<string, z.infer<typeof CliCommandConfig>>;
   private shell: string;
   private defaultCwd?: string;
+  private maxOutputBytes: number;
 
   constructor(
     private configKey: string,
-    private config: CliConfig
+    private config: CliConfig,
+    options?: CliAdapterOptions
   ) {
+    this.maxOutputBytes = options?.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
     this.id = `cli:${configKey}`;
     this.shell = config.shell ?? '/bin/sh';
     this.defaultCwd = config.cwd;
@@ -108,7 +115,7 @@ export class CliBackendAdapter implements BackendAdapter {
 
       child.stdout.on('data', (chunk: Buffer) => {
         stdoutBytes += chunk.byteLength;
-        if (stdoutBytes <= MAX_OUTPUT_BYTES) {
+        if (stdoutBytes <= this.maxOutputBytes) {
           stdout += chunk.toString();
         } else if (!stdoutTruncated) {
           stdoutTruncated = true;
@@ -116,7 +123,7 @@ export class CliBackendAdapter implements BackendAdapter {
       });
       child.stderr.on('data', (chunk: Buffer) => {
         stderrBytes += chunk.byteLength;
-        if (stderrBytes <= MAX_OUTPUT_BYTES) {
+        if (stderrBytes <= this.maxOutputBytes) {
           stderr += chunk.toString();
         } else if (!stderrTruncated) {
           stderrTruncated = true;
