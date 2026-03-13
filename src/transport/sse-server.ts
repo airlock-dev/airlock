@@ -14,17 +14,22 @@ function constantTimeEqual(a: string, b: string): boolean {
   return timingSafeEqual(bufA, bufB);
 }
 
+// eslint-disable-next-line @typescript-eslint/require-await
 export async function sseServerPlugin(
   app: FastifyInstance,
   opts: {
     getDeps: (agentId: string) => AgentServerDeps | undefined;
     secret?: string;
-  },
+  }
 ): Promise<void> {
   const { secret } = opts;
   const sessions = new Map<string, { transport: SSEServerTransport; profileId: string }>();
 
-  function checkAgentAuth(request: FastifyRequest, reply: FastifyReply, deps: AgentServerDeps): boolean {
+  function checkAgentAuth(
+    request: FastifyRequest,
+    reply: FastifyReply,
+    deps: AgentServerDeps
+  ): boolean {
     const token = deps.agentConfig.token;
     if (token) {
       const auth = request.headers.authorization ?? '';

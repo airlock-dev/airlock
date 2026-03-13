@@ -12,10 +12,10 @@ export class StdioHitlProvider implements HitlProvider {
 
   constructor(
     private approvalApi: ApprovalApi,
-    private inputStream: Readable = process.stdin as unknown as Readable,
+    private inputStream: Readable = process.stdin as unknown as Readable
   ) {}
 
-  async init(): Promise<void> {
+  init(): Promise<void> {
     this.rl = readline.createInterface({ input: this.inputStream, terminal: false });
     this.rl.on('line', (line) => {
       const parsed = parseApprovalCommand(line);
@@ -30,13 +30,16 @@ export class StdioHitlProvider implements HitlProvider {
       }
     });
     log.info('Stdio HITL provider ready. Type: approve <CODE> or deny <CODE>');
+    return Promise.resolve();
   }
 
-  async notify(requests: HitlNotification[]): Promise<void> {
+  notify(requests: HitlNotification[]): Promise<void> {
     process.stderr.write('\n' + formatBatch(requests) + '\n\n');
+    return Promise.resolve();
   }
 
-  async stop(): Promise<void> {
+  stop(): Promise<void> {
     this.rl?.close();
+    return Promise.resolve();
   }
 }

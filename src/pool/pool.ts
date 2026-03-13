@@ -41,10 +41,13 @@ export class ClientPool {
   }
 
   private connectInBackground(id: string, client: McpClient): void {
-    client.connect().then(() => {
-      log.info({ id }, 'MCP connected (background)');
-      this._onClientReady?.(id);
-    }).catch(() => {});
+    client
+      .connect()
+      .then(() => {
+        log.info({ id }, 'MCP connected (background)');
+        this._onClientReady?.(id);
+      })
+      .catch(() => {});
   }
 
   private createClient(id: string, cfg: McpServerConfig): McpClient {
@@ -80,7 +83,7 @@ export class ClientPool {
       if (!newIds.has(id)) {
         log.info({ id }, 'Removing MCP (no longer in config)');
         const client = this.clients.get(id)!;
-        await client.stop().catch(err => log.error({ err, id }, 'Error stopping removed MCP'));
+        await client.stop().catch((err) => log.error({ err, id }, 'Error stopping removed MCP'));
         this.clients.delete(id);
       }
     }
@@ -121,8 +124,6 @@ export class ClientPool {
 
   async stop(): Promise<void> {
     clearInterval(this.healthTimer);
-    await Promise.allSettled(
-      Array.from(this.clients.values()).map(c => c.stop()),
-    );
+    await Promise.allSettled(Array.from(this.clients.values()).map((c) => c.stop()));
   }
 }

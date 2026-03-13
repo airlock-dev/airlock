@@ -15,9 +15,9 @@ export class AllowlistEngine {
     if (!agent) return 'deny';
 
     // deny > ask > allow > default-deny
-    if (agent.deny.some(p => matches(p, toolName))) return 'deny';
-    if (agent.ask.some(p => matches(p, toolName))) return 'ask';
-    if (agent.allow.some(p => matches(p, toolName))) return 'allow';
+    if (agent.deny.some((p) => matches(p, toolName))) return 'deny';
+    if (agent.ask.some((p) => matches(p, toolName))) return 'ask';
+    if (agent.allow.some((p) => matches(p, toolName))) return 'allow';
 
     return 'deny'; // fail-closed
   }

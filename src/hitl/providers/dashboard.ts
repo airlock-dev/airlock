@@ -11,12 +11,12 @@ export interface DashboardHitlConfig {
 
 export class DashboardHitlProvider implements HitlProvider {
   private server?: Server;
-  private clients = new Set<{ write: (data: string) => boolean }>();
+  private clients = new Set<{ write: (data: string) => boolean; end: () => void }>();
   private pending = new Map<string, HitlNotification>();
 
   constructor(
     private config: DashboardHitlConfig,
-    private approvalApi: ApprovalApi,
+    private approvalApi: ApprovalApi
   ) {}
 
   async init(): Promise<void> {
@@ -33,7 +33,7 @@ export class DashboardHitlProvider implements HitlProvider {
         res.writeHead(200, {
           'Content-Type': 'text/event-stream',
           'Cache-Control': 'no-cache',
-          'Connection': 'keep-alive',
+          Connection: 'keep-alive',
         });
         this.clients.add(res);
         // Send current pending requests
@@ -77,7 +77,10 @@ export class DashboardHitlProvider implements HitlProvider {
     await new Promise<void>((resolve) => {
       this.server!.on('error', (err: NodeJS.ErrnoException) => {
         if (err.code === 'EADDRINUSE') {
-          log.warn({ port: this.config.port }, 'Dashboard port in use — running without dashboard UI');
+          log.warn(
+            { port: this.config.port },
+            'Dashboard port in use — running without dashboard UI'
+          );
           this.server = undefined;
           resolve();
         } else {
@@ -94,7 +97,11 @@ export class DashboardHitlProvider implements HitlProvider {
 
   async stop(): Promise<void> {
     for (const client of this.clients) {
-      try { (client as any).end(); } catch {}
+      try {
+        client.end();
+      } catch {
+        /* swallow */
+      }
     }
     this.clients.clear();
     await new Promise<void>((resolve) => {
@@ -103,17 +110,22 @@ export class DashboardHitlProvider implements HitlProvider {
     });
   }
 
-  async notify(requests: HitlNotification[]): Promise<void> {
+  notify(requests: HitlNotification[]): Promise<void> {
     for (const req of requests) {
       this.pending.set(req.code, req);
       this.broadcast({ type: 'new', request: req });
     }
+    return Promise.resolve();
   }
 
   private broadcast(data: unknown): void {
     const msg = `data: ${JSON.stringify(data)}\n\n`;
     for (const client of this.clients) {
-      try { client.write(msg); } catch {}
+      try {
+        client.write(msg);
+      } catch {
+        /* swallow */
+      }
     }
   }
 }

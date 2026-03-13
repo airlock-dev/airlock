@@ -26,8 +26,8 @@ export function buildExecTool(): Tool {
     inputSchema: {
       type: 'object' as const,
       properties: {
-        command:    { type: 'string', description: 'Shell command to run' },
-        cwd:        { type: 'string', description: 'Working directory' },
+        command: { type: 'string', description: 'Shell command to run' },
+        cwd: { type: 'string', description: 'Working directory' },
         timeout_ms: { type: 'number', description: 'Timeout in milliseconds' },
       },
       required: ['command'],
@@ -48,9 +48,9 @@ export function evaluateExecCommand(command: string, agentConfig: AgentConfig): 
   if (containsShellInjection(command)) return 'deny';
 
   // Deny takes priority
-  if (agentConfig.exec.deny.some(p => matchesCommand(p, command))) return 'deny';
-  if (agentConfig.exec.ask.some(p => matchesCommand(p, command))) return 'ask';
-  if (agentConfig.exec.allow.some(p => matchesCommand(p, command))) return 'allow';
+  if (agentConfig.exec.deny.some((p) => matchesCommand(p, command))) return 'deny';
+  if (agentConfig.exec.ask.some((p) => matchesCommand(p, command))) return 'ask';
+  if (agentConfig.exec.allow.some((p) => matchesCommand(p, command))) return 'allow';
   return 'deny'; // fail-closed
 }
 
@@ -58,7 +58,7 @@ export async function executeExec(
   command: string,
   agentConfig: AgentConfig,
   cwd?: string,
-  timeoutMs?: number,
+  timeoutMs?: number
 ): Promise<ExecResult> {
   const timeout = timeoutMs ?? agentConfig.exec.default_timeout_ms;
   const start = Date.now();
@@ -101,7 +101,11 @@ export async function executeExec(
       timedOut = true;
       child.kill('SIGTERM');
       setTimeout(() => {
-        try { child.kill('SIGKILL'); } catch {}
+        try {
+          child.kill('SIGKILL');
+        } catch {
+          /* kill may fail — best effort */
+        }
       }, 2000);
     }, timeout);
 

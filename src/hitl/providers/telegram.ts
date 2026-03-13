@@ -17,17 +17,18 @@ export class TelegramHitlProvider implements HitlProvider {
 
   constructor(
     private config: TelegramConfig,
-    private approvalApi: ApprovalApi,
+    private approvalApi: ApprovalApi
   ) {}
 
   private get apiBase(): string {
     return `https://api.telegram.org/bot${this.config.bot_token}`;
   }
 
-  async init(): Promise<void> {
+  init(): Promise<void> {
     this.polling = true;
     this.schedulePoll();
     log.info({ chat_id: this.config.chat_id }, 'Telegram HITL provider started');
+    return Promise.resolve();
   }
 
   async notify(requests: HitlNotification[]): Promise<void> {
@@ -44,18 +45,20 @@ export class TelegramHitlProvider implements HitlProvider {
 
   private schedulePoll(): void {
     if (!this.polling) return;
-    this.pollTimer = setTimeout(() => this.poll(), 1000);
+    this.pollTimer = setTimeout(() => {
+      void this.poll();
+    }, 1000);
     this.pollTimer.unref();
   }
 
   private async poll(): Promise<void> {
     try {
       const res = await fetch(
-        `${this.apiBase}/getUpdates?offset=${this.lastUpdateId + 1}&timeout=25&allowed_updates=["message"]`,
+        `${this.apiBase}/getUpdates?offset=${this.lastUpdateId + 1}&timeout=25&allowed_updates=["message"]`
       );
       if (!res.ok) throw new Error(`getUpdates failed: ${res.status}`);
 
-      const data = await res.json() as { ok: boolean; result: TelegramUpdate[] };
+      const data = (await res.json()) as { ok: boolean; result: TelegramUpdate[] };
       if (data.ok && data.result.length > 0) {
         for (const update of data.result) {
           this.lastUpdateId = Math.max(this.lastUpdateId, update.update_id);
@@ -74,7 +77,10 @@ export class TelegramHitlProvider implements HitlProvider {
 
     // Only process messages from the configured chat
     if (!chatId || String(chatId) !== this.config.chat_id) {
-      log.warn({ chatId, expected: this.config.chat_id }, 'Ignoring message from unauthorized chat');
+      log.warn(
+        { chatId, expected: this.config.chat_id },
+        'Ignoring message from unauthorized chat'
+      );
       return;
     }
 
@@ -90,9 +96,10 @@ export class TelegramHitlProvider implements HitlProvider {
     }
   }
 
-  async stop(): Promise<void> {
+  stop(): Promise<void> {
     this.polling = false;
     clearTimeout(this.pollTimer);
+    return Promise.resolve();
   }
 }
 

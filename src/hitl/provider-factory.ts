@@ -15,10 +15,10 @@ const log = childLogger('hitl-factory');
 
 export function createHitlProvider(
   cfg: HitlProviderConfig | HitlProviderConfig[],
-  approvalApi: ApprovalApi,
+  approvalApi: ApprovalApi
 ): HitlProvider {
   if (Array.isArray(cfg)) {
-    const providers = cfg.map(c => createSingleProvider(c, approvalApi));
+    const providers = cfg.map((c) => createSingleProvider(c, approvalApi));
     return providers.length === 1 ? providers[0] : new CompositeHitlProvider(providers);
   }
   return createSingleProvider(cfg, approvalApi);
@@ -29,12 +29,12 @@ function createSingleProvider(cfg: HitlProviderConfig, approvalApi: ApprovalApi)
     case 'telegram':
       return new TelegramHitlProvider(
         { bot_token: cfg.bot_token, chat_id: cfg.chat_id },
-        approvalApi,
+        approvalApi
       );
     case 'openclaw':
       return new OpenClawHitlProvider(
         { gateway_url: cfg.gateway_url, token: cfg.token, session_key: cfg.session_key },
-        approvalApi,
+        approvalApi
       );
     case 'slack':
       return new SlackHitlProvider({ webhook_url: cfg.webhook_url });
@@ -49,7 +49,10 @@ function createSingleProvider(cfg: HitlProviderConfig, approvalApi: ApprovalApi)
     case 'stdio':
       return new StdioHitlProvider(approvalApi);
     default:
-      log.warn({ type: (cfg as { type: string }).type }, 'Unknown HITL provider type, falling back to stdio');
+      log.warn(
+        { type: (cfg as { type: string }).type },
+        'Unknown HITL provider type, falling back to stdio'
+      );
       return new StdioHitlProvider(approvalApi);
   }
 }

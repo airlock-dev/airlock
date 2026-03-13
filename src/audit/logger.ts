@@ -18,7 +18,7 @@ export class AuditLogger {
   log(entry: Omit<AuditEntry, 'id' | 'ts'>): void {
     let args = entry.args;
     try {
-      const parsed = JSON.parse(args);
+      const parsed = JSON.parse(args) as Record<string, unknown>;
       const redacted = redactFields(parsed, this.redactPatterns);
       args = JSON.stringify(redacted);
     } catch {
@@ -36,13 +36,21 @@ export class AuditLogger {
   }
 
   // HITL queue delegation
-  insertHitl(entry: HitlQueueEntry): void { this.db.insertHitl(entry); }
+  insertHitl(entry: HitlQueueEntry): void {
+    this.db.insertHitl(entry);
+  }
   updateHitlStatus(id: string, status: HitlQueueEntry['status'], reason?: string): void {
     this.db.updateHitlStatus(id, status, reason);
   }
-  getHitlByCode(code: string): HitlQueueEntry | undefined { return this.db.getHitlByCode(code); }
-  getHitlById(id: string): HitlQueueEntry | undefined { return this.db.getHitlById(id); }
-  getPendingHitl(): HitlQueueEntry[] { return this.db.getPendingHitl(); }
+  getHitlByCode(code: string): HitlQueueEntry | undefined {
+    return this.db.getHitlByCode(code);
+  }
+  getHitlById(id: string): HitlQueueEntry | undefined {
+    return this.db.getHitlById(id);
+  }
+  getPendingHitl(): HitlQueueEntry[] {
+    return this.db.getPendingHitl();
+  }
 
   startDailyCleanup(): void {
     this.cleanupTimer = setInterval(() => {

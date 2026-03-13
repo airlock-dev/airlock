@@ -9,9 +9,10 @@ function constantTimeEqual(a: string, b: string): boolean {
   return timingSafeEqual(bufA, bufB);
 }
 
+// eslint-disable-next-line @typescript-eslint/require-await
 export async function auditApiPlugin(
   app: FastifyInstance,
-  opts: { auditLogger: AuditLogger; secret?: string },
+  opts: { auditLogger: AuditLogger; secret?: string }
 ): Promise<void> {
   const { auditLogger, secret } = opts;
 

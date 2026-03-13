@@ -15,7 +15,7 @@ function getKey(agentId: string, toolName: string, per: 'agent' | 'tool'): strin
 
 function pruneWindow(timestamps: number[], windowMs: number, now: number): number[] {
   const cutoff = now - windowMs;
-  const idx = timestamps.findIndex(t => t > cutoff);
+  const idx = timestamps.findIndex((t) => t > cutoff);
   return idx === -1 ? [] : timestamps.slice(idx);
 }
 
@@ -32,7 +32,7 @@ export function rateLimiterMiddleware(opts: RateLimiterOptions): Middleware {
       const retryAfterMs = timestamps[0] + window_ms - now;
       throw new McpError(
         ErrorCode.InvalidRequest,
-        `Rate limit exceeded (${max_requests}/${window_ms}ms). Retry after ${Math.ceil(retryAfterMs)}ms.`,
+        `Rate limit exceeded (${max_requests}/${window_ms}ms). Retry after ${Math.ceil(retryAfterMs)}ms.`
       );
     }
 

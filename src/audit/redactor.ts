@@ -6,7 +6,7 @@ export function redactFields(obj: unknown, fieldPatterns: string[]): unknown {
   if (typeof obj !== 'object') return obj;
 
   if (Array.isArray(obj)) {
-    return obj.map(item => redactFields(item, fieldPatterns));
+    return obj.map((item) => redactFields(item, fieldPatterns));
   }
 
   const result: Record<string, unknown> = {};
@@ -22,5 +22,5 @@ export function redactFields(obj: unknown, fieldPatterns: string[]): unknown {
 
 function shouldRedact(key: string, patterns: string[]): boolean {
   const lower = key.toLowerCase();
-  return patterns.some(p => lower.includes(p.toLowerCase()));
+  return patterns.some((p) => lower.includes(p.toLowerCase()));
 }

@@ -51,14 +51,14 @@ export class Gateway {
     this.hitlEngine = new HitlEngine(
       this.auditLogger,
       this.hitlProvider,
-      this.config.approvals.timeout_ms,
+      this.config.approvals.timeout_ms
     );
 
     // Wire batcher → provider
     this.hitlBatcher.onBatchReady((_agentId, requests) => {
-      void this.hitlProvider.notify(requests).catch(err =>
-        log.error({ err }, 'Failed to send approval notifications'),
-      );
+      void this.hitlProvider
+        .notify(requests)
+        .catch((err) => log.error({ err }, 'Failed to send approval notifications'));
     });
 
     await this.hitlProvider.init();
@@ -69,14 +69,22 @@ export class Gateway {
     this.pool = new ClientPool(mcpConfigs);
     this.pool.onClientReady((id) => {
       log.info({ id }, 'MCP became ready, refreshing tool registry');
-      this.registry.refresh().catch(err => log.error({ err }, 'Failed to refresh registry after MCP ready'));
+      this.registry
+        .refresh()
+        .catch((err) => log.error({ err }, 'Failed to refresh registry after MCP ready'));
     });
     await this.pool.initialize();
 
     // Allowlist + registry
     const builtins = getBuiltinProviders(this.config.providers);
     this.allowlist = new AllowlistEngine(this.config.agents);
-    this.registry = new ToolRegistry(this.pool, this.allowlist, this.config.agents, this.config.security, builtins);
+    this.registry = new ToolRegistry(
+      this.pool,
+      this.allowlist,
+      this.config.agents,
+      this.config.security,
+      builtins
+    );
     await this.registry.refresh();
 
     // HTTP server
@@ -91,7 +99,7 @@ export class Gateway {
       secret,
     });
 
-    this.app.get('/health', async () => {
+    this.app.get('/health', () => {
       const mcpHealth = this.pool.healthCheck();
       const pendingApprovals = this.hitlEngine.getPending().length;
       const uptime = Math.floor((Date.now() - this.startTime) / 1000);

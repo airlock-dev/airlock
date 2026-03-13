@@ -24,7 +24,7 @@ export class HttpMcpClient {
     private url: string,
     private headers?: Record<string, string>,
     private oauth = false,
-    private oauthCallbackPort = 18432,
+    private oauthCallbackPort = 18432
   ) {
     if (this.oauth) {
       this.oauthProvider = new FileOAuthProvider(this.id, this.oauthCallbackPort);
@@ -48,10 +48,7 @@ export class HttpMcpClient {
       transportOpts.authProvider = this.oauthProvider;
     }
 
-    this.transport = new StreamableHTTPClientTransport(
-      new URL(this.url),
-      transportOpts,
-    );
+    this.transport = new StreamableHTTPClientTransport(new URL(this.url), transportOpts);
 
     this.client = new Client({ name: 'airlock', version: '0.1.0' });
 
@@ -59,9 +56,14 @@ export class HttpMcpClient {
       this.ready = false;
       if (!this.stopped && !this.awaitingAuth) {
         const delay = BACKOFF_STEPS[Math.min(this.reconnectAttempt, BACKOFF_STEPS.length - 1)];
-        log.warn({ id: this.id, attempt: this.reconnectAttempt, delay }, 'HTTP MCP disconnected, reconnecting');
+        log.warn(
+          { id: this.id, attempt: this.reconnectAttempt, delay },
+          'HTTP MCP disconnected, reconnecting'
+        );
         this.reconnectAttempt++;
-        setTimeout(() => this.connect().catch(err => log.error({ err, id: this.id }, 'Reconnect failed')), delay);
+        setTimeout(() => {
+          void this.connect().catch((err) => log.error({ err, id: this.id }, 'Reconnect failed'));
+        }, delay);
       }
     };
 
@@ -104,7 +106,9 @@ export class HttpMcpClient {
     return this.client.callTool({ name, arguments: args });
   }
 
-  isReady(): boolean { return this.ready; }
+  isReady(): boolean {
+    return this.ready;
+  }
 
   async stop(): Promise<void> {
     this.stopped = true;

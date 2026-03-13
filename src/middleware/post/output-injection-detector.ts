@@ -29,7 +29,7 @@ export interface OutputInjectionDetectorOptions {
 }
 
 export function outputInjectionDetectorMiddleware(
-  opts: OutputInjectionDetectorOptions = {},
+  opts: OutputInjectionDetectorOptions = {}
 ): Middleware {
   const mode = opts.mode ?? 'detect';
 
@@ -43,16 +43,20 @@ export function outputInjectionDetectorMiddleware(
         if (mode === 'mangle') {
           response.text = response.text.replace(
             new RegExp(pattern.source, pattern.flags + (pattern.flags.includes('g') ? '' : 'g')),
-            '[REDACTED: suspected injection]',
+            '[REDACTED: suspected injection]'
           );
         }
       }
     }
 
     if (flagged) {
-      log.warn({ agentId: ctx.agentId, tool: ctx.toolName, mode }, 'Injection pattern detected in output');
+      log.warn(
+        { agentId: ctx.agentId, tool: ctx.toolName, mode },
+        'Injection pattern detected in output'
+      );
       ctx.deps.auditLogger.log({
-        agent_id: ctx.agentId, tool: ctx.toolName,
+        agent_id: ctx.agentId,
+        tool: ctx.toolName,
         args: JSON.stringify(ctx.args),
         result: 'injection_detected',
       });

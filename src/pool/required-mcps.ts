@@ -8,7 +8,7 @@ const BUILTIN_NAMESPACES = new Set(['http', 'exec']);
  */
 export function requiredMcpsForAgent(
   agentConfig: AgentConfig,
-  availableMcpIds: string[],
+  availableMcpIds: string[]
 ): string[] {
   const available = new Set(availableMcpIds);
   const needed = new Set<string>();

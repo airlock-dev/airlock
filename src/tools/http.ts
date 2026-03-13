@@ -13,18 +13,22 @@ export interface HttpResult {
 }
 
 const HTTP_METHODS = ['get', 'post', 'put', 'patch', 'delete', 'head'] as const;
-type HttpMethod = typeof HTTP_METHODS[number];
+type HttpMethod = (typeof HTTP_METHODS)[number];
 
 export function buildHttpTools(): Tool[] {
-  return HTTP_METHODS.map(method => ({
+  return HTTP_METHODS.map((method) => ({
     name: `http/${method}`,
     description: `HTTP ${method.toUpperCase()} request`,
     inputSchema: {
       type: 'object' as const,
       properties: {
-        url:     { type: 'string', description: 'Full URL' },
-        headers: { type: 'object', description: 'Request headers', additionalProperties: { type: 'string' } },
-        body:    { type: 'string', description: 'Request body (for POST/PUT/PATCH)' },
+        url: { type: 'string', description: 'Full URL' },
+        headers: {
+          type: 'object',
+          description: 'Request headers',
+          additionalProperties: { type: 'string' },
+        },
+        body: { type: 'string', description: 'Request body (for POST/PUT/PATCH)' },
         timeout_ms: { type: 'number', description: 'Timeout in milliseconds (default 30000)' },
       },
       required: ['url'],
@@ -36,7 +40,7 @@ export async function executeHttp(
   method: HttpMethod,
   args: Record<string, unknown>,
   agentConfig: AgentConfig,
-  securityConfig: SecurityConfig,
+  securityConfig: SecurityConfig
 ): Promise<HttpResult> {
   const url = args['url'] as string;
   const headers = (args['headers'] ?? {}) as Record<string, string>;
@@ -75,7 +79,9 @@ export async function executeHttp(
     clearTimeout(timer);
 
     const responseHeaders: Record<string, string> = {};
-    response.headers.forEach((value, key) => { responseHeaders[key] = value; });
+    response.headers.forEach((value, key) => {
+      responseHeaders[key] = value;
+    });
 
     // Stream response with size cap instead of buffering entirely
     let bodyText = '';
@@ -86,7 +92,7 @@ export async function executeHttp(
       let bytesRead = 0;
       const decoder = new TextDecoder();
       while (true) {
-        const { done, value } = await reader.read();
+        const { done, value } = (await reader.read()) as { done: boolean; value: Uint8Array };
         if (done) break;
         bytesRead += value.byteLength;
         if (bytesRead <= maxBytes) {
@@ -99,7 +105,7 @@ export async function executeHttp(
             bodyText += decoder.decode(value.slice(0, usable), { stream: true });
           }
           truncated = true;
-          reader.cancel();
+          void reader.cancel();
           break;
         }
       }
@@ -110,7 +116,7 @@ export async function executeHttp(
   } catch (err) {
     clearTimeout(timer);
     if ((err as Error).name === 'AbortError') {
-      throw new Error(`HTTP request timed out after ${timeoutMs}ms`);
+      throw new Error(`HTTP request timed out after ${timeoutMs}ms`, { cause: err });
     }
     throw err;
   }

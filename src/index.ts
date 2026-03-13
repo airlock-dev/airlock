@@ -8,9 +8,9 @@ import { logger } from './util/logger.js';
 
 const { values } = parseArgs({
   options: {
-    config:  { type: 'string', short: 'c', default: './airlock.yaml' },
+    config: { type: 'string', short: 'c', default: './airlock.yaml' },
     profile: { type: 'string', short: 'p' },
-    help:    { type: 'boolean', short: 'h', default: false },
+    help: { type: 'boolean', short: 'h', default: false },
   },
   allowPositionals: false,
 });
@@ -38,11 +38,11 @@ Examples:
 }
 
 async function main(): Promise<void> {
-  const configPath = values.config!;
-  let config = loadConfig(configPath);
+  const configPath = values.config ?? './airlock.yaml';
+  const config = loadConfig(configPath);
 
   if (values.profile) {
-    await runStdioMode(config, values.profile, configPath).catch(err => {
+    await runStdioMode(config, values.profile, configPath).catch((err) => {
       logger.error({ err }, 'Fatal error in stdio mode');
       process.exit(1);
     });
@@ -54,7 +54,7 @@ async function main(): Promise<void> {
 
   const watcher = new ConfigWatcher(configPath);
   watcher.on('reload', (newConfig) => {
-    gateway.reload(newConfig).catch(err => {
+    gateway.reload(newConfig).catch((err) => {
       logger.error({ err }, 'Failed to apply reloaded config');
     });
   });
@@ -80,7 +80,7 @@ async function main(): Promise<void> {
   await gateway.start();
 }
 
-main().catch(err => {
+main().catch((err) => {
   logger.error({ err }, 'Fatal error');
   process.exit(1);
 });
