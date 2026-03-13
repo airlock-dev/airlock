@@ -12,12 +12,12 @@ providers:
   filesystem:
     type: stdio
     command: npx
-    args: ["-y", "@modelcontextprotocol/server-filesystem", "/home/user/projects"]
+    args: ['-y', '@modelcontextprotocol/server-filesystem', '/home/user/projects']
 
   github:
     type: stdio
     command: npx
-    args: ["-y", "@modelcontextprotocol/server-github"]
+    args: ['-y', '@modelcontextprotocol/server-github']
     env:
       GITHUB_PERSONAL_ACCESS_TOKEN: ${GITHUB_TOKEN}
 
@@ -31,51 +31,51 @@ providers:
   exec: builtin
   http: builtin
 
-# Agent profiles
+# Agents
 agents:
   # Helena: full-access developer agent with approval on destructive ops
   helena:
     allow:
-      - "filesystem/*"
-      - "github/*"
-      - "http/*"
-      - "exec/run"
+      - 'filesystem/*'
+      - 'github/*'
+      - 'http/*'
+      - 'exec/run'
     ask:
-      - "github/create_pr"
-      - "github/merge_pull_request"
-      - "github/delete_branch"
+      - 'github/create_pr'
+      - 'github/merge_pull_request'
+      - 'github/delete_branch'
     exec:
       allow:
-        - "git status"
-        - "git diff*"
-        - "git log*"
-        - "npm test*"
-        - "npm run*"
+        - 'git status'
+        - 'git diff*'
+        - 'git log*'
+        - 'npm test*'
+        - 'npm run*'
       ask:
-        - "git push*"
-        - "git merge*"
+        - 'git push*'
+        - 'git merge*'
       deny:
-        - "sudo*"
-        - "rm -rf*"
+        - 'sudo*'
+        - 'rm -rf*'
     http:
       domain_allowlist:
-        - "api.github.com"
-        - "*.sentry.io"
+        - 'api.github.com'
+        - '*.sentry.io'
 
   # Claude Code: read-only, no approval needed
   claude-code:
     allow:
-      - "filesystem/*"
-      - "github/list*"
-      - "github/get*"
-      - "http/get"
+      - 'filesystem/*'
+      - 'github/list*'
+      - 'github/get*'
+      - 'http/get'
     exec:
       allow:
-        - "git status"
-        - "git diff*"
-        - "npm test"
+        - 'git status'
+        - 'git diff*'
+        - 'npm test'
       deny:
-        - "*"  # deny everything not explicitly allowed
+        - '*' # deny everything not explicitly allowed
 
 # Approval configuration
 approvals:
@@ -90,21 +90,21 @@ approvals:
   #   token: ${OPENCLAW_TOKEN}
   #   session_key: "agent:main:telegram:channel:123456789"
   provider:
-    type: stdio  # prints to stderr for dev/testing
-  timeout_ms: 300000      # 5 minutes
-  batch_window_ms: 10000  # collect requests for 10s before notifying
+    type: stdio # prints to stderr for dev/testing
+  timeout_ms: 300000 # 5 minutes
+  batch_window_ms: 10000 # collect requests for 10s before notifying
 
 # Security defaults
 security:
   blocked_hosts:
     - localhost
     - 127.0.0.1
-    - "::1"
-    - "*.local"
-    - "10.*"
-    - "192.168.*"
-    - "172.16.*"
-  allowed_local: []  # override to allow specific local hosts
+    - '::1'
+    - '*.local'
+    - '10.*'
+    - '192.168.*'
+    - '172.16.*'
+  allowed_local: [] # override to allow specific local hosts
 
 # Audit logging
 audit:

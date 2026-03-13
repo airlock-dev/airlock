@@ -2,7 +2,7 @@
 # Local development config with dashboard approval.
 # Uses the echo MCP server — no tokens or external services needed.
 #
-# Run:  npx tsx src/index.ts --profile dev --config examples/local-dev.yaml
+# Run:  npx tsx src/index.ts --agent dev --config examples/local-dev.yaml
 # Then open http://localhost:4112 to see the approval dashboard.
 #
 # Tools "echo/echo" and "echo/add" are available.
@@ -12,14 +12,14 @@ providers:
   echo:
     type: stdio
     command: npx
-    args: ["tsx", "test/echo-server.ts"]
+    args: ['tsx', 'test/echo-server.ts']
 
 agents:
   dev:
     allow:
-      - "echo/*"
+      - 'echo/*'
     ask:
-      - "echo/add"
+      - 'echo/add'
 
 approvals:
   provider:
@@ -32,10 +32,10 @@ security:
   blocked_hosts:
     - localhost
     - 127.0.0.1
-    - "::1"
+    - '::1'
   allowed_local: []
 
 audit:
-  db_path: ":memory:"
+  db_path: ':memory:'
   retention_days: 1
   redact_fields: []

@@ -20,7 +20,7 @@ Airlock  ←→  HITL (Telegram / Slack / webhook / stdio)
 
 ## Features
 
-- **Per-agent allowlists** — each profile sees only the tools it's allowed to call, presented with namespaced names (`github/create_pr`, `filesystem/read_file`)
+- **Per-agent allowlists** — each agent sees only the tools it's allowed to call, presented with namespaced names (`github/create_pr`, `filesystem/read_file`)
 - **HITL approval** — flag sensitive tools as requiring human sign-off; the agent blocks until you approve or deny
 - **Batched notifications** — requests arriving within a time window are bundled into a single message
 - **Multiple HITL providers** — Telegram, Slack webhook, generic webhook, OpenClaw, or stdio (for dev)
@@ -28,7 +28,8 @@ Airlock  ←→  HITL (Telegram / Slack / webhook / stdio)
 - **Security defaults** — localhost and RFC-1918 ranges blocked for HTTP tools; per-agent domain allowlists
 - **Audit log** — every tool call logged to SQLite with agent, tool, args, result, duration, and HITL outcome
 - **Hot reload** — edit `gateway.yaml` and allowlist/HITL config updates without restarting
-- **Leaner stdio mode** — `--profile` flag runs with no HTTP server and only connects to MCPs the profile actually uses
+- **Composable profiles** — define reusable permission sets (`readonly`, `developer`) that agents inherit via `extends`
+- **Leaner stdio mode** — `--agent` flag runs with no HTTP server and only connects to MCPs the agent actually uses
 
 ## Install
 
@@ -43,7 +44,7 @@ npm install -g airlock-bot
 cp node_modules/airlock-bot/examples/gateway.yaml ./airlock.yaml
 
 # 2. Run in stdio mode for a single agent (e.g. from Claude Code)
-airlock --profile claude-code --config airlock.yaml
+airlock --agent claude-code --config airlock.yaml
 
 # 3. Or run as a full gateway server (SSE on port 4111)
 airlock --config airlock.yaml
@@ -58,7 +59,7 @@ Add Airlock as an MCP server in `~/.claude/settings.json`:
   "mcpServers": {
     "airlock": {
       "command": "airlock",
-      "args": ["--profile", "claude-code", "--config", "/path/to/airlock.yaml"]
+      "args": ["--agent", "claude-code", "--config", "/path/to/airlock.yaml"]
     }
   }
 }
@@ -71,7 +72,7 @@ Or without a global install:
   "mcpServers": {
     "airlock": {
       "command": "npx",
-      "args": ["airlock-bot", "--profile", "claude-code", "--config", "/path/to/airlock.yaml"]
+      "args": ["airlock-bot", "--agent", "claude-code", "--config", "/path/to/airlock.yaml"]
     }
   }
 }
@@ -82,7 +83,7 @@ See [`examples/claude-code-setup.md`](examples/claude-code-setup.md) for a full 
 ## Config
 
 ```yaml
-mcps:
+providers:
   github:
     type: stdio
     command: npx
@@ -90,27 +91,45 @@ mcps:
     env:
       GITHUB_PERSONAL_ACCESS_TOKEN: "${GITHUB_TOKEN}"
 
-agents:
-  helena:
+  exec: builtin
+  http: builtin
+
+# Reusable permission profiles
+profiles:
+  readonly:
+    allow:
+      - github/list*
+      - github/get*
+      - http/get
+
+  developer:
     allow:
       - github/*
       - filesystem/*
-      - http/get
       - exec/run
-    hitl:
+    ask:
       - github/create_pr
       - github/merge_pull_request
-      - exec/run
+
+agents:
+  helena:
+    extends: [readonly, developer]
     exec:
       allow: ["git status", "git diff*", "npm test*"]
-      hitl:  ["git push*"]
+      ask:   ["git push*"]
       deny:  ["sudo *", "rm -rf *"]
       env:
         PATH: "/usr/local/bin:/usr/bin:/bin"
     http:
       domain_allowlist: ["api.github.com", "*.sentry.io"]
 
-hitl:
+  claude-code:
+    extends: [readonly]
+    exec:
+      allow: ["git status", "git diff*", "npm test"]
+      deny: ["*"]
+
+approvals:
   provider:
     type: telegram
     bot_token: "${TELEGRAM_BOT_TOKEN}"
@@ -161,7 +180,7 @@ npm run build                         # TypeScript compile check
 A self-contained test config with an echo MCP server is included — no tokens or external services needed:
 
 ```bash
-npx @modelcontextprotocol/inspector npx tsx src/index.ts -- --profile test --config test/test-gateway.yaml
+npx @modelcontextprotocol/inspector npx tsx src/index.ts -- --agent test --config test/test-gateway.yaml
 ```
 
 Open `http://localhost:6274`, then list tools and call `echo/echo` or `echo/add` through the UI.

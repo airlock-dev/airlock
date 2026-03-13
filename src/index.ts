@@ -9,7 +9,7 @@ import { logger } from './util/logger.js';
 const { values } = parseArgs({
   options: {
     config: { type: 'string', short: 'c', default: './airlock.yaml' },
-    profile: { type: 'string', short: 'p' },
+    agent: { type: 'string', short: 'a' },
     help: { type: 'boolean', short: 'h', default: false },
   },
   allowPositionals: false,
@@ -24,7 +24,7 @@ Usage:
 
 Options:
   -c, --config <path>    Config file path (default: ./airlock.yaml)
-  -p, --profile <name>   Run in stdio mode for the given agent profile
+  -a, --agent <name>     Run in stdio mode for the given agent
   -h, --help             Show this help message
 
 Examples:
@@ -32,7 +32,7 @@ Examples:
   airlock --config /etc/airlock/gateway.yaml
 
   # Connect as a specific agent via stdio (for Claude Code, Cursor, etc.)
-  airlock --profile helena
+  airlock --agent helena
 `);
   process.exit(0);
 }
@@ -41,8 +41,8 @@ async function main(): Promise<void> {
   const configPath = values.config ?? './airlock.yaml';
   const config = loadConfig(configPath);
 
-  if (values.profile) {
-    await runStdioMode(config, values.profile, configPath).catch((err) => {
+  if (values.agent) {
+    await runStdioMode(config, values.agent, configPath).catch((err) => {
       logger.error({ err }, 'Fatal error in stdio mode');
       process.exit(1);
     });
