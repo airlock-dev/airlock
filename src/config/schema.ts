@@ -122,6 +122,7 @@ export type MiddlewareItemConfig = z.infer<typeof MiddlewareItemConfig>;
 
 export const AgentConfig = z.object({
   token: EnvString.optional(),
+  extends: z.array(z.string()).default([]),
   allow: z.array(z.string()).default([]),
   ask: z.array(z.string()).default([]),
   deny: z.array(z.string()).default([]),
@@ -131,6 +132,12 @@ export const AgentConfig = z.object({
   middleware: z.array(MiddlewareItemConfig).optional(),
 });
 export type AgentConfig = z.infer<typeof AgentConfig>;
+
+export const ProfileConfig = z.object({
+  allow: z.array(z.string()).default([]),
+  ask: z.array(z.string()).default([]),
+});
+export type ProfileConfig = z.infer<typeof ProfileConfig>;
 
 export const ApprovalProviderConfig = z.discriminatedUnion('type', [
   z.object({
@@ -239,6 +246,7 @@ export type ServerConfig = z.infer<typeof ServerConfig>;
 
 export const GatewayConfig = z.object({
   providers: z.record(ProviderConfig).default({}),
+  profiles: z.record(ProfileConfig).default({}),
   agents: z.record(AgentConfig).default({}),
   approvals: ApprovalsConfig.default({}),
   security: SecurityConfig.default({}),
