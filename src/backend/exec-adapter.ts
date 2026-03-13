@@ -9,8 +9,8 @@ export class ExecBackendAdapter implements BackendAdapter {
 
   constructor(private agents: Record<string, AgentConfig>) {}
 
-  async listTools(): Promise<Tool[]> {
-    return [buildExecTool()];
+  listTools(): Promise<Tool[]> {
+    return Promise.resolve([buildExecTool()]);
   }
 
   async call(toolCall: ToolCall): Promise<ToolResult> {
@@ -23,9 +23,13 @@ export class ExecBackendAdapter implements BackendAdapter {
       return { success: false, error: `Unknown agent: ${toolCall.agentId}` };
     }
 
-    const command = toolCall.args['command'] as string;
-    const cwd = toolCall.args['cwd'] as string | undefined;
-    const timeoutMs = toolCall.args['timeout_ms'] as number | undefined;
+    const command = toolCall.args['command'];
+    if (typeof command !== 'string') {
+      return { success: false, error: 'Missing or invalid "command" argument' };
+    }
+    const cwd = typeof toolCall.args['cwd'] === 'string' ? toolCall.args['cwd'] : undefined;
+    const timeoutMs =
+      typeof toolCall.args['timeout_ms'] === 'number' ? toolCall.args['timeout_ms'] : undefined;
 
     try {
       const data = await executeExec(command, agent, cwd, timeoutMs);

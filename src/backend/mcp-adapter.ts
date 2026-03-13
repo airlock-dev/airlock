@@ -8,21 +8,28 @@ export class McpBackendAdapter implements BackendAdapter {
 
   constructor(
     private mcpId: string,
-    private pool: ClientPool,
+    private pool: ClientPool
   ) {
     this.id = `mcp:${mcpId}`;
   }
 
   async listTools(): Promise<Tool[]> {
     const tools = await this.pool.listTools(this.mcpId);
-    return tools.map(t => ({
+    return tools.map((t) => ({
       ...t,
       name: `${this.mcpId}/${t.name}`,
     }));
   }
 
   async call(toolCall: ToolCall): Promise<ToolResult> {
-    const originalName = toolCall.tool.slice(this.mcpId.length + 1);
+    const prefix = `${this.mcpId}/`;
+    if (!toolCall.tool.startsWith(prefix)) {
+      return {
+        success: false,
+        error: `Tool "${toolCall.tool}" does not belong to adapter "${this.id}"`,
+      };
+    }
+    const originalName = toolCall.tool.slice(prefix.length);
     try {
       const data = await this.pool.callTool(this.mcpId, originalName, toolCall.args);
       return { success: true, data };

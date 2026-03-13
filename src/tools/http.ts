@@ -12,8 +12,8 @@ export interface HttpResult {
   truncated?: boolean;
 }
 
-const HTTP_METHODS = ['get', 'post', 'put', 'patch', 'delete', 'head'] as const;
-type HttpMethod = (typeof HTTP_METHODS)[number];
+export const HTTP_METHODS = ['get', 'post', 'put', 'patch', 'delete', 'head'] as const;
+export type HttpMethod = (typeof HTTP_METHODS)[number];
 
 export function buildHttpTools(): Tool[] {
   return HTTP_METHODS.map((method) => ({

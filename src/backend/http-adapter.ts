@@ -2,7 +2,9 @@ import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { BackendAdapter } from './types.js';
 import type { ToolCall, ToolResult } from '../types.js';
 import type { AgentConfig, SecurityConfig } from '../config/schema.js';
-import { buildHttpTools, executeHttp } from '../tools/http.js';
+import { buildHttpTools, executeHttp, HTTP_METHODS, type HttpMethod } from '../tools/http.js';
+
+const VALID_METHODS = new Set<string>(HTTP_METHODS);
 
 export class HttpBackendAdapter implements BackendAdapter {
   readonly id = 'builtin:http';
@@ -10,18 +12,18 @@ export class HttpBackendAdapter implements BackendAdapter {
 
   constructor(
     private agents: Record<string, AgentConfig>,
-    private security: SecurityConfig,
+    private security: SecurityConfig
   ) {
     this.tools = buildHttpTools();
   }
 
-  async listTools(): Promise<Tool[]> {
-    return this.tools;
+  listTools(): Promise<Tool[]> {
+    return Promise.resolve(this.tools);
   }
 
   async call(toolCall: ToolCall): Promise<ToolResult> {
-    const match = toolCall.tool.match(/^http\/(get|post|put|patch|delete|head)$/);
-    if (!match) {
+    const method = toolCall.tool.startsWith('http/') ? toolCall.tool.slice(5) : undefined;
+    if (!method || !VALID_METHODS.has(method)) {
       return { success: false, error: `Unknown HTTP tool: ${toolCall.tool}` };
     }
 
@@ -29,10 +31,8 @@ export class HttpBackendAdapter implements BackendAdapter {
     if (!agent) {
       return { success: false, error: `Unknown agent: ${toolCall.agentId}` };
     }
-
-    const method = match[1] as 'get' | 'post' | 'put' | 'patch' | 'delete' | 'head';
     try {
-      const data = await executeHttp(method, toolCall.args, agent, this.security);
+      const data = await executeHttp(method as HttpMethod, toolCall.args, agent, this.security);
       return {
         success: true,
         data,
