@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { CliBackendAdapter } from '../src/backend/cli/adapter.js';
+import { CliParamConfig, GatewayConfig } from '../src/config/schema.js';
 import type { CliConfig } from '../src/config/schema.js';
+import { validateConfig } from '../src/config/loader.js';
 
 function makeCliConfig(overrides: Partial<CliConfig> = {}): CliConfig {
   return {
@@ -153,5 +155,110 @@ describe('CliBackendAdapter', () => {
     expect(schema.required).toEqual(['name']);
     expect(schema.properties).toHaveProperty('name');
     expect(schema.properties).toHaveProperty('verbose');
+  });
+});
+
+describe('CliParamConfig flag validation', () => {
+  it('accepts valid flags', () => {
+    expect(CliParamConfig.parse({ type: 'string', flag: '-n' }).flag).toBe('-n');
+    expect(CliParamConfig.parse({ type: 'boolean', flag: '--verbose' }).flag).toBe('--verbose');
+  });
+
+  it('rejects flags that do not start with a dash', () => {
+    expect(() => CliParamConfig.parse({ type: 'string', flag: 'bad' })).toThrow(/dash/i);
+    expect(() => CliParamConfig.parse({ type: 'string', flag: 'rm -rf /' })).toThrow(/dash/i);
+  });
+
+  it('allows omitting flag entirely', () => {
+    const result = CliParamConfig.parse({ type: 'string' });
+    expect(result.flag).toBeUndefined();
+  });
+});
+
+describe('validateConfig CLI warnings', () => {
+  it('warns on unreachable params (no flag, not positional, not in template)', () => {
+    const config = GatewayConfig.parse({
+      clis: {
+        mycli: {
+          commands: {
+            run: {
+              exec: 'mycli run',
+              params: {
+                orphan: { type: 'string' },
+              },
+            },
+          },
+        },
+      },
+    });
+
+    const diagnostics = validateConfig(config);
+    const warn = diagnostics.find((d) => d.message.includes('orphan'));
+    expect(warn).toBeDefined();
+    expect(warn!.level).toBe('warn');
+    expect(warn!.message).toContain('will be ignored');
+  });
+
+  it('does not warn when param is referenced in template', () => {
+    const config = GatewayConfig.parse({
+      clis: {
+        mycli: {
+          commands: {
+            run: {
+              exec: 'mycli run {name}',
+              params: {
+                name: { type: 'string' },
+              },
+            },
+          },
+        },
+      },
+    });
+
+    const diagnostics = validateConfig(config);
+    const warn = diagnostics.find((d) => d.message.includes('name'));
+    expect(warn).toBeUndefined();
+  });
+
+  it('does not warn when param has a flag', () => {
+    const config = GatewayConfig.parse({
+      clis: {
+        mycli: {
+          commands: {
+            run: {
+              exec: 'mycli run',
+              params: {
+                verbose: { type: 'boolean', flag: '--verbose' },
+              },
+            },
+          },
+        },
+      },
+    });
+
+    const diagnostics = validateConfig(config);
+    const warn = diagnostics.find((d) => d.message.includes('verbose'));
+    expect(warn).toBeUndefined();
+  });
+
+  it('does not warn when param is positional', () => {
+    const config = GatewayConfig.parse({
+      clis: {
+        mycli: {
+          commands: {
+            run: {
+              exec: 'mycli run',
+              params: {
+                file: { type: 'string', positional: true },
+              },
+            },
+          },
+        },
+      },
+    });
+
+    const diagnostics = validateConfig(config);
+    const warn = diagnostics.find((d) => d.message.includes('file'));
+    expect(warn).toBeUndefined();
   });
 });

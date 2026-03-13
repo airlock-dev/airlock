@@ -166,6 +166,31 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
     }
   }
 
+  // Validate CLI configs
+  for (const [cliId, cli] of Object.entries(config.clis)) {
+    for (const [cmdName, cmd] of Object.entries(cli.commands)) {
+      const templateParams = new Set<string>();
+      cmd.exec.replace(/\{(\w+)\}/g, (_, name: string) => {
+        templateParams.add(name);
+        return '';
+      });
+
+      for (const [paramName, param] of Object.entries(cmd.params)) {
+        const inTemplate = templateParams.has(paramName);
+        const hasFlag = !!param.flag;
+        const isPositional = param.positional;
+
+        if (!inTemplate && !hasFlag && !isPositional) {
+          diagnostics.push({
+            level: 'warn',
+            message: `clis.${cliId}.commands.${cmdName}: param "${paramName}" has no flag, is not positional, and is not referenced in exec template — it will be ignored at runtime.`,
+            suggestion: `Add a "flag" (e.g. "--${paramName}"), set "positional: true", or reference it as {${paramName}} in the exec string.`,
+          });
+        }
+      }
+    }
+  }
+
   return diagnostics;
 }
 

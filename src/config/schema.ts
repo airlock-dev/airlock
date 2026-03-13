@@ -248,7 +248,7 @@ export type ServerConfig = z.infer<typeof ServerConfig>;
 
 export const CliParamConfig = z.object({
   type: z.enum(['string', 'number', 'boolean']),
-  flag: z.string().optional(),
+  flag: z.string().regex(/^-/, 'Flag must start with a dash (e.g. -n, --verbose)').optional(),
   positional: z.boolean().default(false),
   required: z.boolean().default(false),
   default: z.union([z.string(), z.number(), z.boolean()]).optional(),
