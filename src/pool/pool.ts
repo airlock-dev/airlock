@@ -15,7 +15,10 @@ export class ClientPool {
   private healthTimer?: NodeJS.Timeout;
   private _onClientReady?: (id: string) => void;
 
-  constructor(private mcps: Record<string, McpServerConfig>) {}
+  constructor(
+    private mcps: Record<string, McpServerConfig>,
+    private options?: { stdioStderr?: 'inherit' | 'ignore' | 'pipe' }
+  ) {}
 
   onClientReady(cb: (id: string) => void): void {
     this._onClientReady = cb;
@@ -53,7 +56,7 @@ export class ClientPool {
   private createClient(id: string, cfg: McpServerConfig): McpClient {
     switch (cfg.type) {
       case 'stdio':
-        return new StdioMcpClient(id, cfg.command, cfg.args, cfg.env);
+        return new StdioMcpClient(id, cfg.command, cfg.args, cfg.env, this.options?.stdioStderr);
       case 'sse':
         return new SseMcpClient(id, cfg.url, cfg.headers);
       case 'http':
@@ -105,6 +108,10 @@ export class ClientPool {
       result[id] = client.isReady() ? 'ok' : 'down';
     }
     return result;
+  }
+
+  getServerInfo(mcpId: string): { name: string; version: string } | undefined {
+    return this.clients.get(mcpId)?.getServerInfo();
   }
 
   getMcpIds(): string[] {

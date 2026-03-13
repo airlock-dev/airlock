@@ -39,6 +39,7 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsx src/index.ts",
+    "configure-agent": "tsx scripts/configure-agent.ts",
     "test": "vitest",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src",
