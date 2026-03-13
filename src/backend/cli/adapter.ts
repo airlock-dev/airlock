@@ -1,37 +1,49 @@
 import { spawn } from 'child_process';
 import { readFileSync } from 'fs';
 import { parse as parseYaml } from 'yaml';
+import { z } from 'zod';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { BackendAdapter } from '../types.js';
 import type { ToolCall, ToolResult } from '../../types.js';
-import type { CliConfig, CliCommandConfig } from '../../config/schema.js';
+import { CliCommandConfig, type CliConfig } from '../../config/schema.js';
 import { buildCommand } from './builder.js';
 import { childLogger } from '../../util/logger.js';
 
 const log = childLogger('cli-adapter');
 
+const MAX_OUTPUT_BYTES = 1_048_576; // 1MB per stream
+
 export class CliBackendAdapter implements BackendAdapter {
   readonly id: string;
-  private commands: Record<string, CliCommandConfig>;
+  private commands: Record<string, z.infer<typeof CliCommandConfig>>;
   private shell: string;
   private defaultCwd?: string;
 
   constructor(
     private configKey: string,
-    private config: CliConfig,
+    private config: CliConfig
   ) {
     this.id = `cli:${configKey}`;
     this.shell = config.shell ?? '/bin/sh';
     this.defaultCwd = config.cwd;
 
-    // Merge discovered commands with inline commands
+    // Merge discovered commands with inline commands (inline takes precedence)
     this.commands = { ...config.commands };
     if (config.discovered) {
       try {
         const raw = readFileSync(config.discovered, 'utf-8');
-        const parsed = parseYaml(raw);
-        if (parsed?.commands && typeof parsed.commands === 'object') {
-          this.commands = { ...parsed.commands, ...this.commands }; // inline takes precedence
+        const parsed: unknown = parseYaml(raw);
+        const obj = parsed as Record<string, unknown> | null;
+        if (obj?.commands && typeof obj.commands === 'object') {
+          const validated = z.record(CliCommandConfig).safeParse(obj.commands);
+          if (validated.success) {
+            this.commands = { ...validated.data, ...this.commands };
+          } else {
+            log.warn(
+              { err: validated.error, path: config.discovered },
+              'Discovered CLI config has invalid commands, skipping'
+            );
+          }
         }
       } catch (err) {
         log.warn({ err, path: config.discovered }, 'Failed to load discovered CLI config');
@@ -39,16 +51,25 @@ export class CliBackendAdapter implements BackendAdapter {
     }
   }
 
-  async listTools(): Promise<Tool[]> {
-    return Object.entries(this.commands).map(([name, cmd]) => ({
-      name: `${this.configKey}/${name}`,
-      description: cmd.description ?? `CLI command: ${cmd.exec}`,
-      inputSchema: this.buildInputSchema(cmd),
-    }));
+  listTools(): Promise<Tool[]> {
+    return Promise.resolve(
+      Object.entries(this.commands).map(([name, cmd]) => ({
+        name: `${this.configKey}/${name}`,
+        description: cmd.description ?? `CLI command: ${cmd.exec}`,
+        inputSchema: this.buildInputSchema(cmd),
+      }))
+    );
   }
 
   async call(toolCall: ToolCall): Promise<ToolResult> {
-    const commandName = toolCall.tool.slice(this.configKey.length + 1);
+    const prefix = `${this.configKey}/`;
+    if (!toolCall.tool.startsWith(prefix)) {
+      return {
+        success: false,
+        error: `Tool "${toolCall.tool}" does not belong to adapter "${this.id}"`,
+      };
+    }
+    const commandName = toolCall.tool.slice(prefix.length);
     const cmdConfig = this.commands[commandName];
 
     if (!cmdConfig) {
@@ -79,29 +100,57 @@ export class CliBackendAdapter implements BackendAdapter {
 
       let stdout = '';
       let stderr = '';
+      let stdoutBytes = 0;
+      let stderrBytes = 0;
+      let stdoutTruncated = false;
+      let stderrTruncated = false;
       let timedOut = false;
 
-      child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
-      child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
+      child.stdout.on('data', (chunk: Buffer) => {
+        stdoutBytes += chunk.byteLength;
+        if (stdoutBytes <= MAX_OUTPUT_BYTES) {
+          stdout += chunk.toString();
+        } else if (!stdoutTruncated) {
+          stdoutTruncated = true;
+        }
+      });
+      child.stderr.on('data', (chunk: Buffer) => {
+        stderrBytes += chunk.byteLength;
+        if (stderrBytes <= MAX_OUTPUT_BYTES) {
+          stderr += chunk.toString();
+        } else if (!stderrTruncated) {
+          stderrTruncated = true;
+        }
+      });
 
       const timer = setTimeout(() => {
         timedOut = true;
         child.kill('SIGTERM');
         setTimeout(() => {
-          try { child.kill('SIGKILL'); } catch {}
+          try {
+            child.kill('SIGKILL');
+          } catch {
+            // process may have already exited
+          }
         }, 2000);
       }, timeoutMs);
 
       child.on('close', (code) => {
         clearTimeout(timer);
+        const truncated = stdoutTruncated || stderrTruncated;
         if (timedOut) {
-          resolve({ success: false, error: `Command timed out after ${timeoutMs}ms`, metadata: { duration_ms: timeoutMs } });
+          resolve({
+            success: false,
+            error: `Command timed out after ${timeoutMs}ms`,
+            metadata: { duration_ms: timeoutMs, truncated },
+          });
           return;
         }
         resolve({
           success: code === 0,
           data: { exit_code: code, stdout, stderr },
           error: code !== 0 ? `Exit code ${code}: ${stderr.trim()}` : undefined,
+          metadata: { truncated },
         });
       });
 
@@ -120,9 +169,15 @@ export class CliBackendAdapter implements BackendAdapter {
       const prop: Record<string, unknown> = {};
 
       switch (param.type) {
-        case 'number': prop.type = 'number'; break;
-        case 'boolean': prop.type = 'boolean'; break;
-        default: prop.type = 'string'; break;
+        case 'number':
+          prop.type = 'number';
+          break;
+        case 'boolean':
+          prop.type = 'boolean';
+          break;
+        default:
+          prop.type = 'string';
+          break;
       }
 
       if (param.description) prop.description = param.description;

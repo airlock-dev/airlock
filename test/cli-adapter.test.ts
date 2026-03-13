@@ -34,7 +34,7 @@ describe('CliBackendAdapter', () => {
     const tools = await adapter.listTools();
 
     expect(tools).toHaveLength(2);
-    expect(tools.map(t => t.name)).toEqual(['git/status', 'git/log']);
+    expect(tools.map((t) => t.name)).toEqual(['git/status', 'git/log']);
     expect(tools[1].inputSchema.properties).toHaveProperty('count');
   });
 
@@ -60,6 +60,17 @@ describe('CliBackendAdapter', () => {
 
     expect(result.success).toBe(true);
     expect((result.data as { stdout: string }).stdout.trim()).toBe('hello world');
+  });
+
+  it('rejects tools with wrong prefix', async () => {
+    const adapter = new CliBackendAdapter('git', makeCliConfig());
+    const result = await adapter.call({
+      tool: 'other/status',
+      args: {},
+      agentId: 'agent1',
+    });
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('does not belong to adapter');
   });
 
   it('returns error for unknown command', async () => {
