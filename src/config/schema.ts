@@ -269,6 +269,7 @@ export const CliConfig = z.object({
   discovered: z.string().optional(),
   shell: z.string().optional(),
   cwd: z.string().optional(),
+  max_output_bytes: z.number().default(30_000),
   commands: z.record(CliCommandConfig).default({}),
 });
 export type CliConfig = z.infer<typeof CliConfig>;

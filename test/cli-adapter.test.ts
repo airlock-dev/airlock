@@ -10,6 +10,7 @@ import { validateConfig } from '../src/config/loader.js';
 function makeCliConfig(overrides: Partial<CliConfig> = {}): CliConfig {
   return {
     commands: {},
+    max_output_bytes: 30_000,
     ...overrides,
   };
 }

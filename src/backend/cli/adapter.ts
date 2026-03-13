@@ -11,8 +11,6 @@ import { childLogger } from '../../util/logger.js';
 
 const log = childLogger('cli-adapter');
 
-const DEFAULT_MAX_OUTPUT_BYTES = 131_072; // 128KB per stream
-
 export interface CliAdapterOptions {
   maxOutputBytes?: number;
 }
@@ -29,7 +27,7 @@ export class CliBackendAdapter implements BackendAdapter {
     private config: CliConfig,
     options?: CliAdapterOptions
   ) {
-    this.maxOutputBytes = options?.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
+    this.maxOutputBytes = options?.maxOutputBytes ?? config.max_output_bytes;
     this.id = `cli:${configKey}`;
     this.shell = config.shell ?? '/bin/sh';
     this.defaultCwd = config.cwd;
