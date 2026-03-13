@@ -1,0 +1,103 @@
+# yaml-language-server: $schema=../schema.json
+# Composable profiles — define reusable permission sets, then mix them into agents.
+#
+# Profiles are union-merged: an agent that extends [readonly, github-write]
+# gets all allow/ask patterns from both profiles, plus its own.
+# Precedence still applies: deny > ask > allow > default-deny.
+#
+# Run:  npx tsx src/index.ts --agent helena --config examples/profiles.yaml
+
+providers:
+  filesystem:
+    type: stdio
+    command: npx
+    args: ['-y', '@modelcontextprotocol/server-filesystem', '/home/user/projects']
+
+  github:
+    type: stdio
+    command: npx
+    args: ['-y', '@modelcontextprotocol/server-github']
+    env:
+      GITHUB_PERSONAL_ACCESS_TOKEN: ${GITHUB_TOKEN}
+
+  exec: builtin
+  http: builtin
+
+# Reusable permission sets
+profiles:
+  readonly:
+    allow:
+      - 'filesystem/read*'
+      - 'filesystem/list*'
+      - 'github/list*'
+      - 'github/get*'
+      - 'http/get'
+    ask: []
+
+  github-write:
+    allow:
+      - 'github/create_issue'
+      - 'github/create_pr'
+    ask:
+      - 'github/delete_branch'
+      - 'github/merge_pull_request'
+
+  full-fs:
+    allow:
+      - 'filesystem/*'
+    ask: []
+
+# Agents compose profiles with their own overrides
+agents:
+  # Read-only reviewer — gets readonly profile, nothing else
+  reviewer:
+    extends: [readonly]
+
+  # Developer — reads everything, writes to GitHub with approval on destructive ops
+  helena:
+    extends: [readonly, github-write, full-fs]
+    allow:
+      - 'exec/run'
+    exec:
+      allow:
+        - 'git status'
+        - 'git diff*'
+        - 'git log*'
+        - 'npm test*'
+      ask:
+        - 'git push*'
+      deny:
+        - 'sudo*'
+        - 'rm -rf*'
+    http:
+      domain_allowlist:
+        - 'api.github.com'
+
+  # Claude Code — readonly plus filesystem, no approval needed
+  claude-code:
+    extends: [readonly, full-fs]
+    exec:
+      allow:
+        - 'git status'
+        - 'git diff*'
+        - 'npm test'
+      deny:
+        - '*'
+
+approvals:
+  provider:
+    type: stdio
+  timeout_ms: 300000
+  batch_window_ms: 10000
+
+security:
+  blocked_hosts:
+    - localhost
+    - 127.0.0.1
+    - '::1'
+  allowed_local: []
+
+audit:
+  db_path: ':memory:'
+  retention_days: 1
+  redact_fields: []

@@ -20,7 +20,7 @@ describe('integration: stdio child process', () => {
   beforeAll(async () => {
     transport = new StdioClientTransport({
       command: 'npx',
-      args: ['tsx', 'src/index.ts', '--profile', 'test', '--config', CONFIG],
+      args: ['tsx', 'src/index.ts', '--agent', 'test', '--config', CONFIG],
       cwd: ROOT,
     });
 
@@ -34,7 +34,7 @@ describe('integration: stdio child process', () => {
 
   it('lists tools from the downstream echo server', async () => {
     const { tools } = await client.listTools();
-    const names = tools.map(t => t.name);
+    const names = tools.map((t) => t.name);
 
     expect(names).toContain('echo/echo');
     expect(names).toContain('echo/add');
@@ -42,7 +42,7 @@ describe('integration: stdio child process', () => {
 
   it('tools have proper input schemas', async () => {
     const { tools } = await client.listTools();
-    const echo = tools.find(t => t.name === 'echo/echo');
+    const echo = tools.find((t) => t.name === 'echo/echo');
 
     expect(echo).toBeDefined();
     expect(echo!.inputSchema).toEqual({
@@ -74,13 +74,11 @@ describe('integration: stdio child process', () => {
 
   it('rejects tools not in the allowlist', async () => {
     await expect(
-      client.callTool({ name: 'http/get', arguments: { url: 'http://example.com' } }),
+      client.callTool({ name: 'http/get', arguments: { url: 'http://example.com' } })
     ).rejects.toThrow();
   });
 
   it('rejects completely unknown tools', async () => {
-    await expect(
-      client.callTool({ name: 'nope/doesnt_exist', arguments: {} }),
-    ).rejects.toThrow();
+    await expect(client.callTool({ name: 'nope/doesnt_exist', arguments: {} })).rejects.toThrow();
   });
 });

@@ -1,6 +1,7 @@
 import { readFileSync } from 'fs';
 import { parse as parseYaml } from 'yaml';
 import { GatewayConfig, getBuiltinProviders } from './schema.js';
+import { applyProfiles } from './profiles.js';
 import { matches } from '../allowlist/pattern.js';
 import { childLogger } from '../util/logger.js';
 import type { z } from 'zod';
@@ -42,6 +43,7 @@ export function loadConfig(path: string): Config {
         errors.map((e) => `  - ${e.agent ? `[${e.agent}] ` : ''}${e.message}`).join('\n')
     );
   }
+  applyProfiles(result.data);
   return result.data;
 }
 
@@ -50,7 +52,21 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
   const providerNames = new Set(Object.keys(config.providers));
   const builtins = getBuiltinProviders(config.providers);
 
+  const profileNames = new Set(Object.keys(config.profiles));
+
   for (const [agentId, agent] of Object.entries(config.agents)) {
+    // Check for unknown profile references
+    for (const ref of agent.extends) {
+      if (!profileNames.has(ref)) {
+        diagnostics.push({
+          level: 'error',
+          agent: agentId,
+          message: `extends references unknown profile "${ref}".`,
+          suggestion: `Add "${ref}" to your profiles block, or check for typos.`,
+        });
+      }
+    }
+
     // Collect all referenced namespaces from allow/ask/deny
     const allPatterns = [...agent.allow, ...agent.ask, ...agent.deny];
     const referencedNamespaces = new Set<string>();
