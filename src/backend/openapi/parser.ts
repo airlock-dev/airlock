@@ -27,29 +27,40 @@ function generateToolName(method: string, path: string, operationId?: string): s
     return operationId.replace(/[^a-zA-Z0-9_]/g, '_');
   }
   // Strip common prefixes
-  let cleanPath = path.replace(/^\/(v\d+|api)\//i, '/');
+  const cleanPath = path.replace(/^\/(v\d+|api)\//i, '/');
   // Convert path to name: /pets/{petId} -> pets_by_petId
-  const parts = cleanPath.split('/').filter(Boolean).map(p => {
-    if (p.startsWith('{') && p.endsWith('}')) {
-      return 'by_' + p.slice(1, -1);
-    }
-    return p;
-  });
+  const parts = cleanPath
+    .split('/')
+    .filter(Boolean)
+    .map((p) => {
+      if (p.startsWith('{') && p.endsWith('}')) {
+        return 'by_' + p.slice(1, -1);
+      }
+      return p;
+    });
   return `${method}_${parts.join('_')}`;
+}
+
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function matchesFilter(method: string, path: string, filters: string[]): boolean {
   const entry = `${method.toUpperCase()} ${path}`;
-  return filters.some(f => {
+  return filters.some((f) => {
     if (f.includes('*')) {
-      const regex = new RegExp('^' + f.replace(/\*/g, '.*') + '$');
+      // Split on *, escape each literal segment, rejoin with .*
+      const pattern = f.split('*').map(escapeRegex).join('.*');
+      const regex = new RegExp('^' + pattern + '$');
       return regex.test(entry);
     }
     return entry === f;
   });
 }
 
-function schemaToJsonSchema(schema: OpenAPIV3.SchemaObject | OpenAPIV3.ReferenceObject | undefined): Record<string, unknown> {
+function schemaToJsonSchema(
+  schema: OpenAPIV3.SchemaObject | OpenAPIV3.ReferenceObject | undefined
+): Record<string, unknown> {
   if (!schema) return { type: 'string' };
   if ('$ref' in schema) return { type: 'string' }; // should be dereferenced already
   const result: Record<string, unknown> = {};
@@ -62,9 +73,9 @@ function schemaToJsonSchema(schema: OpenAPIV3.SchemaObject | OpenAPIV3.Reference
 
 export async function parseOpenApiSpec(
   specPath: string,
-  options?: { include?: string[]; exclude?: string[]; baseUrlOverride?: string },
+  options?: { include?: string[]; exclude?: string[]; baseUrlOverride?: string }
 ): Promise<ParsedApi> {
-  const api = await SwaggerParser.dereference(specPath) as OpenAPIV3.Document;
+  const api = await SwaggerParser.dereference(specPath);
 
   if (!isV3Document(api)) {
     throw new Error('Only OpenAPI 3.x specs are supported');
@@ -82,7 +93,9 @@ export async function parseOpenApiSpec(
     if (!pathItem) continue;
 
     for (const method of ['get', 'post', 'put', 'patch', 'delete'] as const) {
-      const operation = (pathItem as Record<string, unknown>)[method] as OpenAPIV3.OperationObject | undefined;
+      const operation = (pathItem as Record<string, unknown>)[method] as
+        | OpenAPIV3.OperationObject
+        | undefined;
       if (!operation) continue;
 
       // Apply include/exclude filters

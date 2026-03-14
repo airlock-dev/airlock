@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import { writeFileSync, mkdtempSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -42,17 +42,13 @@ const PETSTORE_SPEC = {
       get: {
         operationId: 'getPet',
         summary: 'Get a pet by ID',
-        parameters: [
-          { name: 'petId', in: 'path', required: true, schema: { type: 'string' } },
-        ],
+        parameters: [{ name: 'petId', in: 'path', required: true, schema: { type: 'string' } }],
         responses: { '200': { description: 'OK' } },
       },
       delete: {
         operationId: 'deletePet',
         summary: 'Delete a pet',
-        parameters: [
-          { name: 'petId', in: 'path', required: true, schema: { type: 'string' } },
-        ],
+        parameters: [{ name: 'petId', in: 'path', required: true, schema: { type: 'string' } }],
         responses: { '204': { description: 'Deleted' } },
       },
     },
@@ -61,61 +57,58 @@ const PETSTORE_SPEC = {
 
 describe('parseOpenApiSpec()', () => {
   let dir: string;
-  let specPath: string;
 
   function writeSpec(spec: unknown = PETSTORE_SPEC): string {
     dir = mkdtempSync(join(tmpdir(), 'openapi-test-'));
-    specPath = join(dir, 'spec.json');
+    const specPath = join(dir, 'spec.json');
     writeFileSync(specPath, JSON.stringify(spec));
     return specPath;
   }
+
+  afterEach(() => {
+    if (dir) {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 
   it('parses operations with operationId-based names', async () => {
     const path = writeSpec();
     const result = await parseOpenApiSpec(path);
 
     expect(result.baseUrl).toBe('https://petstore.example.com/v1');
-    const names = result.operations.map(op => op.name);
+    const names = result.operations.map((op) => op.name);
     expect(names).toContain('listPets');
     expect(names).toContain('createPet');
     expect(names).toContain('getPet');
     expect(names).toContain('deletePet');
-
-    rmSync(dir, { recursive: true });
   });
 
   it('extracts path params', async () => {
     const path = writeSpec();
     const result = await parseOpenApiSpec(path);
 
-    const getPet = result.operations.find(op => op.name === 'getPet')!;
+    const getPet = result.operations.find((op) => op.name === 'getPet')!;
     expect(getPet.pathParams).toEqual(['petId']);
     expect(getPet.inputSchema.properties).toHaveProperty('petId');
-
-    rmSync(dir, { recursive: true });
   });
 
   it('extracts query params', async () => {
     const path = writeSpec();
     const result = await parseOpenApiSpec(path);
 
-    const listPets = result.operations.find(op => op.name === 'listPets')!;
+    const listPets = result.operations.find((op) => op.name === 'listPets')!;
     expect(listPets.queryParams).toEqual(['limit']);
-
-    rmSync(dir, { recursive: true });
   });
 
   it('extracts request body schema', async () => {
     const path = writeSpec();
     const result = await parseOpenApiSpec(path);
 
-    const createPet = result.operations.find(op => op.name === 'createPet')!;
+    const createPet = result.operations.find((op) => op.name === 'createPet')!;
     expect(createPet.hasBody).toBe(true);
     expect(createPet.inputSchema.properties).toHaveProperty('name');
     expect(createPet.inputSchema.properties).toHaveProperty('tag');
     expect(createPet.inputSchema.required).toContain('name');
-
-    rmSync(dir, { recursive: true });
   });
 
   it('applies include filter', async () => {
@@ -124,19 +117,15 @@ describe('parseOpenApiSpec()', () => {
 
     expect(result.operations).toHaveLength(1);
     expect(result.operations[0].name).toBe('listPets');
-
-    rmSync(dir, { recursive: true });
   });
 
   it('applies exclude filter', async () => {
     const path = writeSpec();
     const result = await parseOpenApiSpec(path, { exclude: ['DELETE *'] });
 
-    const names = result.operations.map(op => op.name);
+    const names = result.operations.map((op) => op.name);
     expect(names).not.toContain('deletePet');
     expect(names).toContain('listPets');
-
-    rmSync(dir, { recursive: true });
   });
 
   it('uses base_url override', async () => {
@@ -144,8 +133,6 @@ describe('parseOpenApiSpec()', () => {
     const result = await parseOpenApiSpec(path, { baseUrlOverride: 'https://custom.api.com' });
 
     expect(result.baseUrl).toBe('https://custom.api.com');
-
-    rmSync(dir, { recursive: true });
   });
 
   it('generates method+path name when no operationId', async () => {
@@ -156,7 +143,9 @@ describe('parseOpenApiSpec()', () => {
         '/users/{userId}': {
           get: {
             summary: 'Get user',
-            parameters: [{ name: 'userId', in: 'path', required: true, schema: { type: 'string' } }],
+            parameters: [
+              { name: 'userId', in: 'path', required: true, schema: { type: 'string' } },
+            ],
             responses: { '200': { description: 'OK' } },
           },
         },
@@ -166,7 +155,5 @@ describe('parseOpenApiSpec()', () => {
     const result = await parseOpenApiSpec(path);
 
     expect(result.operations[0].name).toBe('get_users_by_userId');
-
-    rmSync(dir, { recursive: true });
   });
 });
