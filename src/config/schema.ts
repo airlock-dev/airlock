@@ -274,10 +274,30 @@ export const CliConfig = z.object({
 });
 export type CliConfig = z.infer<typeof CliConfig>;
 
+// --- OpenAPI backend config ---
+
+export const ApiAuthConfig = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('bearer'), token: EnvString }),
+  z.object({ type: z.literal('header'), name: z.string(), value: EnvString }),
+]);
+export type ApiAuthConfig = z.infer<typeof ApiAuthConfig>;
+
+export const ApiConfig = z.object({
+  spec: z.string(),
+  base_url: z.string().optional(),
+  auth: ApiAuthConfig.optional(),
+  include: z.array(z.string()).optional(),
+  exclude: z.array(z.string()).optional(),
+  timeout_ms: z.number().default(30000),
+  max_response_bytes: z.number().default(1048576),
+});
+export type ApiConfig = z.infer<typeof ApiConfig>;
+
 export const GatewayConfig = z.object({
   providers: z.record(ProviderConfig).default({}),
   profiles: z.record(ProfileConfig).default({}),
   clis: z.record(CliConfig).default({}),
+  apis: z.record(ApiConfig).default({}),
   agents: z.record(AgentConfig).default({}),
   approvals: ApprovalsConfig.default({}),
   security: SecurityConfig.default({}),
