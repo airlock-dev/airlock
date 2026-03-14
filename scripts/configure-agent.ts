@@ -28,8 +28,7 @@ import { execSync } from 'child_process';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { ClientPool } from '../src/pool/pool.js';
-import { getMcpConfigs } from '../src/config/schema.js';
-import type { GatewayConfig } from '../src/config/schema.js';
+import { getMcpConfigs, GatewayConfig } from '../src/config/schema.js';
 
 // ── CLI args ─────────────────────────────────────────────────────────────────
 
@@ -237,7 +236,7 @@ function render(
       }
       out.write(`   ${DIM}${'╌'.repeat(55)}${RESET}\n`);
     } else {
-      const { entry, entryIdx } = row;
+      const { entry } = row;
       const isCurEntry = isSel;
       const dColor = decisionColor(entry.decision);
       const prefix = isCurEntry ? `${BOLD}${YELLOW} ▸ ` : `   `;
@@ -263,8 +262,6 @@ function render(
             : entry.description;
         out.write(`       ${DIM}${desc}${RESET}\n`);
       }
-      // suppress unused var warning
-      void entryIdx;
     }
   }
 
@@ -290,7 +287,8 @@ function render(
 async function main(): Promise<void> {
   // Load config
   const raw = readFileSync(values.config!, 'utf8');
-  const parsed = parseYaml(raw) as GatewayConfig;
+  const parsedYaml: unknown = parseYaml(raw);
+  const parsed = GatewayConfig.parse(parsedYaml);
   const providers = parsed.providers ?? {};
   const mcpConfigs = getMcpConfigs(providers);
 
@@ -361,14 +359,6 @@ async function main(): Promise<void> {
   let done = false;
   let quit = false;
 
-  // Helper: get provider for a given row index
-  function providerOfRow(rows: Row[], idx: number): string | undefined {
-    const row = rows[idx];
-    if (!row) return undefined;
-    if (row.type === 'header') return row.provider;
-    return row.entry.namespacedName.split('/')[0];
-  }
-
   // Helper: apply decision to all entries in a provider
   function bulkSetProvider(provider: string, decision: Decision): void {
     for (const e of entries) {
@@ -419,10 +409,6 @@ async function main(): Promise<void> {
         if (key === 's') currentRow.entry.decision = 'ask';
         if (key === 'd') currentRow.entry.decision = 'deny';
       }
-
-      // Resolve rowIdx against the potentially stale provider for rebuildRows
-      const provider = providerOfRow(rows, rowIdx);
-      void provider; // used above
 
       render(entries, serverInfoMap, rowIdx, values.agent!);
     });
