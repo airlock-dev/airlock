@@ -22,6 +22,9 @@ interface FigSpec {
 }
 
 export async function fetchFigSpec(tool: string): Promise<FigSpec | null> {
+  // Validate tool name to prevent path traversal in URL
+  if (!/^[a-zA-Z0-9_-]+$/.test(tool)) return null;
+
   const url = `https://raw.githubusercontent.com/withfig/autocomplete/master/src/${tool}.ts`;
   try {
     const response = await fetch(url);
@@ -35,11 +38,14 @@ export async function fetchFigSpec(tool: string): Promise<FigSpec | null> {
 }
 
 function parseFigTypeScript(source: string, toolName: string): FigSpec | null {
-  // Fig specs export a const spec: Fig.Spec = { ... }
-  // We do a best-effort extraction of the JSON-like object
+  // Best-effort extraction: strip TS syntax and parse the object literal as JSON.
+  // This works for simple specs but will silently return null for specs that use
+  // template literals, function calls, spread operators, or complex TS features.
   try {
     // Find the main object after "const completionSpec"
-    const match = source.match(/const\s+completionSpec\s*(?::\s*\w+(?:\.\w+)*)?\s*=\s*(\{[\s\S]*\})\s*;?\s*$/m);
+    const match = source.match(
+      /const\s+completionSpec\s*(?::\s*\w+(?:\.\w+)*)?\s*=\s*(\{[\s\S]*\})\s*;?\s*$/m
+    );
     if (!match) return null;
 
     let objStr = match[1];
@@ -53,12 +59,12 @@ function parseFigTypeScript(source: string, toolName: string): FigSpec | null {
     objStr = objStr.replace(/\/\/.*$/gm, '');
 
     // This is best-effort — many Fig specs won't parse cleanly
-    const parsed = JSON.parse(objStr);
+    const parsed = JSON.parse(objStr) as Record<string, unknown>;
     return {
       name: toolName,
-      description: parsed.description,
-      options: parsed.options,
-      subcommands: parsed.subcommands,
+      description: parsed.description as string | undefined,
+      options: parsed.options as FigOption[] | undefined,
+      subcommands: parsed.subcommands as FigSubcommand[] | undefined,
     };
   } catch {
     return null;
@@ -77,7 +83,7 @@ export function figSpecToCommands(spec: FigSpec): Record<string, CliCommandConfi
 
     for (const opt of sub.options ?? []) {
       const optNames = Array.isArray(opt.name) ? opt.name : [opt.name];
-      const longName = optNames.find(n => n.startsWith('--')) ?? optNames[0];
+      const longName = optNames.find((n) => n.startsWith('--')) ?? optNames[0];
       const paramName = longName.replace(/^-+/, '').replace(/-/g, '_');
 
       const hasArgs = opt.args && (!Array.isArray(opt.args) || opt.args.length > 0);

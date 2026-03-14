@@ -1,11 +1,11 @@
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import type { CliCommandConfig, CliParamConfig } from '../../config/schema.js';
 
 interface DiscoveredCommands {
   [name: string]: CliCommandConfig;
 }
 
-interface ParsedFlag {
+export interface ParsedFlag {
   name: string;
   flag: string;
   type: 'string' | 'number' | 'boolean';
@@ -14,8 +14,14 @@ interface ParsedFlag {
 }
 
 function runHelp(command: string): string {
+  // Split "docker container ls" into ["docker", "container", "ls", "--help"]
+  // Using execFileSync avoids shell injection — the first element is the binary,
+  // the rest are passed as arguments directly (no shell interpretation).
+  const parts = command.split(/\s+/);
+  const bin = parts[0];
+  const args = [...parts.slice(1), '--help'];
   try {
-    return execSync(`${command} --help 2>&1`, {
+    return execFileSync(bin, args, {
       timeout: 10000,
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -29,7 +35,7 @@ function runHelp(command: string): string {
   }
 }
 
-function inferType(flag: string, description: string): 'string' | 'number' | 'boolean' {
+export function inferType(flag: string, description: string): 'string' | 'number' | 'boolean' {
   const lower = description.toLowerCase();
   // Boolean indicators: no argument expected
   if (/\b(enable|disable|verbose|quiet|force|dry-run|no-)\b/.test(lower)) return 'boolean';
@@ -40,10 +46,11 @@ function inferType(flag: string, description: string): 'string' | 'number' | 'bo
   return 'string';
 }
 
-function parseFlags(helpText: string): ParsedFlag[] {
+export function parseFlags(helpText: string): ParsedFlag[] {
   const flags: ParsedFlag[] = [];
 
-  const longFlagRegex = /^\s{2,}(?:(-\w),\s*)?(--[\w-]+)(?:[= ]\s*(?:<(\w+)>|\[(\w+)\]|(\w+)))?\s{2,}(.+)/gm;
+  const longFlagRegex =
+    /^\s{2,}(?:(-\w),\s*)?(--[\w-]+)(?:[= ]\s*(?:<(\w+)>|\[(\w+)\]|(\w+)))?\s{2,}(.+)/gm;
 
   let match;
   while ((match = longFlagRegex.exec(helpText)) !== null) {
@@ -67,7 +74,7 @@ function parseFlags(helpText: string): ParsedFlag[] {
   return flags;
 }
 
-function parseSubcommands(helpText: string): string[] {
+export function parseSubcommands(helpText: string): string[] {
   const subcommands: string[] = [];
   // Look for lines under "Commands:", "Available Commands:", "COMMANDS:", etc.
   const sectionRegex = /(?:commands|subcommands|available commands):\s*\n((?:\s{2,}\S.*\n?)*)/gi;
@@ -85,10 +92,10 @@ function parseSubcommands(helpText: string): string[] {
   return subcommands;
 }
 
-export async function discoverCli(
+export function discoverCli(
   command: string,
-  options?: { maxDepth?: number; include?: string[]; exclude?: string[] },
-): Promise<DiscoveredCommands> {
+  options?: { maxDepth?: number; include?: string[]; exclude?: string[] }
+): DiscoveredCommands {
   const maxDepth = options?.maxDepth ?? 2;
   const include = options?.include ? new Set(options.include) : undefined;
   const exclude = options?.exclude ? new Set(options.exclude) : undefined;

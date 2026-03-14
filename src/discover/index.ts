@@ -31,7 +31,7 @@ export async function handleDiscoverCli(options: DiscoverCliOptions): Promise<vo
     if (!spec) {
       console.error(`No Fig spec found for "${options.tool}". Falling back to --help parsing.`);
       strategy = 'help-text';
-      commands = await discoverCli(options.tool, {
+      commands = discoverCli(options.tool, {
         maxDepth: options.maxDepth,
         include: options.include,
         exclude: options.exclude,
@@ -41,7 +41,7 @@ export async function handleDiscoverCli(options: DiscoverCliOptions): Promise<vo
     }
   } else {
     strategy = 'help-text';
-    commands = await discoverCli(options.tool, {
+    commands = discoverCli(options.tool, {
       maxDepth: options.maxDepth,
       include: options.include,
       exclude: options.exclude,
