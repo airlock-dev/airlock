@@ -13,7 +13,8 @@ import type { AgentServerDeps } from './transport/agent-server.js';
 import type { Config } from './config/loader.js';
 import type { HitlProvider, ApprovalApi } from './hitl/providers/types.js';
 import { createHitlProvider } from './hitl/provider-factory.js';
-import { getMcpConfigs, getBuiltinProviders } from './config/schema.js';
+import { getMcpConfigs } from './config/schema.js';
+import { buildAdapters } from './backend/factory.js';
 import { childLogger } from './util/logger.js';
 
 const log = childLogger('gateway');
@@ -75,16 +76,12 @@ export class Gateway {
     });
     await this.pool.initialize();
 
+    // Build adapters from config (MCP, builtins, CLIs, APIs)
+    const adapters = buildAdapters(this.config, this.pool);
+
     // Allowlist + registry
-    const builtins = getBuiltinProviders(this.config.providers);
     this.allowlist = new AllowlistEngine(this.config.agents);
-    this.registry = new ToolRegistry(
-      this.pool,
-      this.allowlist,
-      this.config.agents,
-      this.config.security,
-      builtins
-    );
+    this.registry = new ToolRegistry(adapters, this.allowlist, this.config.agents);
     await this.registry.refresh();
 
     // HTTP server
@@ -133,10 +130,12 @@ export class Gateway {
     log.info('Reloading gateway config');
     this.config = newConfig;
     const mcpConfigs = getMcpConfigs(newConfig.providers);
-    const builtins = getBuiltinProviders(newConfig.providers);
     await this.pool.reload(mcpConfigs);
     this.allowlist.reload(newConfig.agents);
-    this.registry.reloadAgents(newConfig.agents, newConfig.security, builtins);
+    this.registry.reloadAgents(newConfig.agents);
+    // Rebuild adapters to pick up new CLIs/APIs
+    const adapters = buildAdapters(newConfig, this.pool);
+    this.registry.setAdapters(adapters);
     await this.registry.refresh();
     log.info('Config reloaded: providers, allowlist, registry, and agent configs updated');
   }
@@ -144,6 +143,7 @@ export class Gateway {
   async stop(): Promise<void> {
     log.info('Stopping Airlock gateway');
     await this.app?.close();
+    await this.registry?.stopAll();
     await this.pool?.stop();
     await this.hitlProvider?.stop();
     this.auditLogger?.stop();

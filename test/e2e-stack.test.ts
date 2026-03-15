@@ -28,34 +28,37 @@ import { HitlEngine } from '../src/hitl/engine.js';
 import { HitlBatcher } from '../src/hitl/batcher.js';
 import type { AgentConfig, SecurityConfig } from '../src/config/schema.js';
 import type { AuditLogger } from '../src/audit/logger.js';
-import type { HealthStatus } from '../src/pool/pool.js';
+import type { BackendAdapter } from '../src/backend/types.js';
+import type { ToolCall, ToolResult } from '../src/types.js';
+import { ExecBackendAdapter } from '../src/backend/exec-adapter.js';
+import { HttpBackendAdapter } from '../src/backend/http-adapter.js';
 
-// ─── FakePool ─────────────────────────────────────────────────────────────────
-// Satisfies the interface ToolRegistry expects without touching production pool code.
+// ─── FakeAdapter ──────────────────────────────────────────────────────────────
+// Wraps a connected MCP SDK Client as a BackendAdapter for testing.
 
-class FakePool {
+class FakeAdapter implements BackendAdapter {
+  readonly id: string;
+
   constructor(
     private mcpId: string,
-    private client: Client,
-  ) {}
-
-  getMcpIds(): string[] {
-    return [this.mcpId];
+    private client: Client
+  ) {
+    this.id = `mcp:${mcpId}`;
   }
 
-  async listTools(mcpId: string): Promise<Tool[]> {
-    if (mcpId !== this.mcpId) throw new Error(`Unknown MCP: ${mcpId}`);
+  async listTools(): Promise<Tool[]> {
     const result = await this.client.listTools();
-    return result.tools;
+    return result.tools.map((t) => ({ ...t, name: `${this.mcpId}/${t.name}` }));
   }
 
-  async callTool(mcpId: string, toolName: string, args: Record<string, unknown>): Promise<unknown> {
-    if (mcpId !== this.mcpId) throw new Error(`Unknown MCP: ${mcpId}`);
-    return this.client.callTool({ name: toolName, arguments: args });
-  }
-
-  healthCheck(): Record<string, HealthStatus> {
-    return { [this.mcpId]: 'ok' };
+  async call(toolCall: ToolCall): Promise<ToolResult> {
+    const originalName = toolCall.tool.slice(this.mcpId.length + 1);
+    try {
+      const data = await this.client.callTool({ name: originalName, arguments: toolCall.args });
+      return { success: true, data };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
   }
 
   async stop(): Promise<void> {}
@@ -111,11 +114,16 @@ async function buildStack(agentConfig: AgentConfig = makeAgentConfig()): Promise
   await downstream.connect(downstreamTransport);
   await poolClient.connect(poolClientTransport);
 
-  // 2. Real registry wired to the fake pool
-  const pool = new FakePool('tools', poolClient);
+  // 2. Real registry wired to adapters
+  const adapter = new FakeAdapter('tools', poolClient);
   const agents = { agent: agentConfig };
   const allowlist = new AllowlistEngine(agents);
-  const registry = new ToolRegistry(pool as never, allowlist, agents, SECURITY, new Set(['http', 'exec']));
+  const adapters: BackendAdapter[] = [
+    adapter,
+    new ExecBackendAdapter(agents),
+    new HttpBackendAdapter(agents, SECURITY),
+  ];
+  const registry = new ToolRegistry(adapters, allowlist, agents);
   await registry.refresh();
 
   // 3. Real HITL engine + batcher
@@ -155,12 +163,17 @@ async function buildStack(agentConfig: AgentConfig = makeAgentConfig()): Promise
 
 describe('e2e: list_tools', () => {
   let stack: StackFixture;
-  beforeEach(async () => { stack = await buildStack(); });
-  afterEach(async () => { await stack.teardown(); vi.restoreAllMocks(); });
+  beforeEach(async () => {
+    stack = await buildStack();
+  });
+  afterEach(async () => {
+    await stack.teardown();
+    vi.restoreAllMocks();
+  });
 
   it('returns downstream tools namespaced as tools/<name>', async () => {
     const { tools } = await stack.testClient.listTools();
-    const names = tools.map(t => t.name);
+    const names = tools.map((t) => t.name);
     expect(names).toContain('tools/echo');
     expect(names).toContain('tools/add');
   });
@@ -169,7 +182,7 @@ describe('e2e: list_tools', () => {
     const config = makeAgentConfig({ allow: ['tools/*', 'http/*', 'exec/run'] });
     const s = await buildStack(config);
     const { tools } = await s.testClient.listTools();
-    const names = tools.map(t => t.name);
+    const names = tools.map((t) => t.name);
     expect(names).toContain('http/get');
     expect(names).toContain('exec/run');
     await s.teardown();
@@ -179,7 +192,7 @@ describe('e2e: list_tools', () => {
     const restrictedConfig = makeAgentConfig({ allow: ['tools/echo'] });
     const s = await buildStack(restrictedConfig);
     const { tools } = await s.testClient.listTools();
-    const names = tools.map(t => t.name);
+    const names = tools.map((t) => t.name);
     expect(names).toContain('tools/echo');
     expect(names).not.toContain('tools/add');
     await s.teardown();
@@ -188,8 +201,13 @@ describe('e2e: list_tools', () => {
 
 describe('e2e: call_tool — downstream routing', () => {
   let stack: StackFixture;
-  beforeEach(async () => { stack = await buildStack(); });
-  afterEach(async () => { await stack.teardown(); vi.restoreAllMocks(); });
+  beforeEach(async () => {
+    stack = await buildStack();
+  });
+  afterEach(async () => {
+    await stack.teardown();
+    vi.restoreAllMocks();
+  });
 
   it('routes tools/echo through to the downstream server', async () => {
     const result = await stack.testClient.callTool({
@@ -213,21 +231,21 @@ describe('e2e: call_tool — downstream routing', () => {
   it('rejects a tool not in the allowlist', async () => {
     // tools/add is allowed but let's call something that isn't
     await expect(
-      stack.testClient.callTool({ name: 'slack/send_message', arguments: {} }),
+      stack.testClient.callTool({ name: 'slack/send_message', arguments: {} })
     ).rejects.toThrow('Tool not available');
   });
 
   it('audit logger records successful downstream calls', async () => {
     await stack.testClient.callTool({ name: 'tools/echo', arguments: { message: 'audit me' } });
     expect(stack.auditLogger.log).toHaveBeenCalledWith(
-      expect.objectContaining({ result: 'success', tool: 'tools/echo', agent_id: 'agent' }),
+      expect.objectContaining({ result: 'success', tool: 'tools/echo', agent_id: 'agent' })
     );
   });
 
   it('audit logger records denied calls', async () => {
     await stack.testClient.callTool({ name: 'slack/send_message', arguments: {} }).catch(() => {});
     expect(stack.auditLogger.log).toHaveBeenCalledWith(
-      expect.objectContaining({ result: 'denied', tool: 'slack/send_message' }),
+      expect.objectContaining({ result: 'denied', tool: 'slack/send_message' })
     );
   });
 });
@@ -242,7 +260,7 @@ describe('e2e: call_tool — HITL gate with real downstream', () => {
       arguments: { message: 'needs approval' },
     });
 
-    await new Promise(r => setTimeout(r, 20));
+    await new Promise((r) => setTimeout(r, 20));
 
     const pending = stack.hitlEngine.getPending();
     expect(pending).toHaveLength(1);
@@ -255,7 +273,7 @@ describe('e2e: call_tool — HITL gate with real downstream', () => {
     expect(outer.content[0].text).toBe('needs approval');
 
     expect(stack.auditLogger.log).toHaveBeenCalledWith(
-      expect.objectContaining({ result: 'success', tool: 'tools/echo' }),
+      expect.objectContaining({ result: 'success', tool: 'tools/echo' })
     );
 
     await stack.teardown();
@@ -270,12 +288,12 @@ describe('e2e: call_tool — HITL gate with real downstream', () => {
       arguments: { a: 1, b: 2 },
     });
 
-    await new Promise(r => setTimeout(r, 20));
+    await new Promise((r) => setTimeout(r, 20));
     stack.hitlEngine.deny(stack.hitlEngine.getPending()[0].code, 'not now');
 
     await expect(callPromise).rejects.toThrow('denied');
     expect(stack.auditLogger.log).toHaveBeenCalledWith(
-      expect.objectContaining({ result: 'hitl_denied' }),
+      expect.objectContaining({ result: 'hitl_denied' })
     );
 
     await stack.teardown();
@@ -301,7 +319,7 @@ describe('e2e: exec/run — per-command policy', () => {
     expect(parsed.exit_code).toBe(0);
 
     expect(stack.auditLogger.log).toHaveBeenCalledWith(
-      expect.objectContaining({ result: 'success', tool: 'exec/run' }),
+      expect.objectContaining({ result: 'success', tool: 'exec/run' })
     );
     await stack.teardown();
   });
@@ -314,11 +332,11 @@ describe('e2e: exec/run — per-command policy', () => {
     const stack = await buildStack(config);
 
     await expect(
-      stack.testClient.callTool({ name: 'exec/run', arguments: { command: 'rm -rf /tmp/test' } }),
+      stack.testClient.callTool({ name: 'exec/run', arguments: { command: 'rm -rf /tmp/test' } })
     ).rejects.toThrow('denied');
 
     expect(stack.auditLogger.log).toHaveBeenCalledWith(
-      expect.objectContaining({ result: 'denied', tool: 'exec/run' }),
+      expect.objectContaining({ result: 'denied', tool: 'exec/run' })
     );
     await stack.teardown();
   });
@@ -331,7 +349,7 @@ describe('e2e: exec/run — per-command policy', () => {
     const stack = await buildStack(config);
 
     await expect(
-      stack.testClient.callTool({ name: 'exec/run', arguments: { command: 'rm -rf /' } }),
+      stack.testClient.callTool({ name: 'exec/run', arguments: { command: 'rm -rf /' } })
     ).rejects.toThrow('denied');
     await stack.teardown();
   });
@@ -344,7 +362,7 @@ describe('e2e: exec/run — per-command policy', () => {
     const stack = await buildStack(config);
 
     await expect(
-      stack.testClient.callTool({ name: 'exec/run', arguments: { command: 'cat /etc/passwd' } }),
+      stack.testClient.callTool({ name: 'exec/run', arguments: { command: 'cat /etc/passwd' } })
     ).rejects.toThrow('denied');
     await stack.teardown();
   });
@@ -357,7 +375,10 @@ describe('e2e: exec/run — per-command policy', () => {
     const stack = await buildStack(config);
 
     await expect(
-      stack.testClient.callTool({ name: 'exec/run', arguments: { command: 'echo hello; rm -rf /' } }),
+      stack.testClient.callTool({
+        name: 'exec/run',
+        arguments: { command: 'echo hello; rm -rf /' },
+      })
     ).rejects.toThrow('denied');
     await stack.teardown();
   });
@@ -365,7 +386,13 @@ describe('e2e: exec/run — per-command policy', () => {
   it('HITL APPROVE: command matching hitl pattern blocks, then executes on approve', async () => {
     const config = makeAgentConfig({
       allow: ['exec/run'],
-      exec: { allow: ['echo*'], ask: ['echo secret*'], deny: [], env: {}, default_timeout_ms: 5000 },
+      exec: {
+        allow: ['echo*'],
+        ask: ['echo secret*'],
+        deny: [],
+        env: {},
+        default_timeout_ms: 5000,
+      },
     });
     const stack = await buildStack(config);
 
@@ -374,7 +401,7 @@ describe('e2e: exec/run — per-command policy', () => {
       arguments: { command: 'echo secret-data' },
     });
 
-    await new Promise(r => setTimeout(r, 20));
+    await new Promise((r) => setTimeout(r, 20));
     const pending = stack.hitlEngine.getPending();
     expect(pending).toHaveLength(1);
     expect(pending[0].tool).toBe('exec/run');
@@ -385,7 +412,7 @@ describe('e2e: exec/run — per-command policy', () => {
     expect(parsed.stdout.trim()).toBe('secret-data');
 
     expect(stack.auditLogger.log).toHaveBeenCalledWith(
-      expect.objectContaining({ result: 'success', tool: 'exec/run' }),
+      expect.objectContaining({ result: 'success', tool: 'exec/run' })
     );
     await stack.teardown();
   });
@@ -393,7 +420,13 @@ describe('e2e: exec/run — per-command policy', () => {
   it('HITL DENY: command matching hitl pattern blocks, then errors on deny', async () => {
     const config = makeAgentConfig({
       allow: ['exec/run'],
-      exec: { allow: ['echo*'], ask: ['echo danger*'], deny: [], env: {}, default_timeout_ms: 5000 },
+      exec: {
+        allow: ['echo*'],
+        ask: ['echo danger*'],
+        deny: [],
+        env: {},
+        default_timeout_ms: 5000,
+      },
     });
     const stack = await buildStack(config);
 
@@ -402,25 +435,25 @@ describe('e2e: exec/run — per-command policy', () => {
       arguments: { command: 'echo danger-zone' },
     });
 
-    await new Promise(r => setTimeout(r, 20));
+    await new Promise((r) => setTimeout(r, 20));
     stack.hitlEngine.deny(stack.hitlEngine.getPending()[0].code, 'nope');
 
     await expect(callPromise).rejects.toThrow('denied');
     expect(stack.auditLogger.log).toHaveBeenCalledWith(
-      expect.objectContaining({ result: 'hitl_denied' }),
+      expect.objectContaining({ result: 'hitl_denied' })
     );
     await stack.teardown();
   });
 
   it('exec/run blocked at allowlist level when not in agent allow list', async () => {
     const config = makeAgentConfig({
-      allow: ['tools/*'],  // exec/run NOT allowed
+      allow: ['tools/*'], // exec/run NOT allowed
       exec: { allow: ['echo*'], ask: [], deny: [], env: {}, default_timeout_ms: 5000 },
     });
     const stack = await buildStack(config);
 
     await expect(
-      stack.testClient.callTool({ name: 'exec/run', arguments: { command: 'echo hi' } }),
+      stack.testClient.callTool({ name: 'exec/run', arguments: { command: 'echo hi' } })
     ).rejects.toThrow('Tool not available');
     await stack.teardown();
   });
@@ -435,7 +468,7 @@ describe('e2e: http/* — security and policy', () => {
     const stack = await buildStack(config);
 
     await expect(
-      stack.testClient.callTool({ name: 'http/get', arguments: { url: 'http://example.com' } }),
+      stack.testClient.callTool({ name: 'http/get', arguments: { url: 'http://example.com' } })
     ).rejects.toThrow('Tool not available');
     await stack.teardown();
   });
@@ -445,11 +478,11 @@ describe('e2e: http/* — security and policy', () => {
     const stack = await buildStack(config);
 
     await expect(
-      stack.testClient.callTool({ name: 'http/get', arguments: { url: 'http://localhost/api' } }),
+      stack.testClient.callTool({ name: 'http/get', arguments: { url: 'http://localhost/api' } })
     ).rejects.toThrow();
 
     expect(stack.auditLogger.log).toHaveBeenCalledWith(
-      expect.objectContaining({ result: 'error', tool: 'http/get' }),
+      expect.objectContaining({ result: 'error', tool: 'http/get' })
     );
     await stack.teardown();
   });
@@ -459,7 +492,7 @@ describe('e2e: http/* — security and policy', () => {
     const stack = await buildStack(config);
 
     await expect(
-      stack.testClient.callTool({ name: 'http/get', arguments: { url: 'http://127.0.0.1:8080/x' } }),
+      stack.testClient.callTool({ name: 'http/get', arguments: { url: 'http://127.0.0.1:8080/x' } })
     ).rejects.toThrow();
     await stack.teardown();
   });
@@ -469,7 +502,10 @@ describe('e2e: http/* — security and policy', () => {
     const stack = await buildStack(config);
 
     await expect(
-      stack.testClient.callTool({ name: 'http/get', arguments: { url: 'http://10.0.0.1/internal' } }),
+      stack.testClient.callTool({
+        name: 'http/get',
+        arguments: { url: 'http://10.0.0.1/internal' },
+      })
     ).rejects.toThrow();
     await stack.teardown();
   });
@@ -482,11 +518,11 @@ describe('e2e: http/* — security and policy', () => {
     const stack = await buildStack(config);
 
     await expect(
-      stack.testClient.callTool({ name: 'http/get', arguments: { url: 'http://evil.com/steal' } }),
+      stack.testClient.callTool({ name: 'http/get', arguments: { url: 'http://evil.com/steal' } })
     ).rejects.toThrow();
 
     expect(stack.auditLogger.log).toHaveBeenCalledWith(
-      expect.objectContaining({ result: 'error', tool: 'http/get' }),
+      expect.objectContaining({ result: 'error', tool: 'http/get' })
     );
     await stack.teardown();
   });
@@ -496,7 +532,7 @@ describe('e2e: http/* — security and policy', () => {
     const stack = await buildStack(config);
 
     await expect(
-      stack.testClient.callTool({ name: 'http/get', arguments: { url: 'not-a-url' } }),
+      stack.testClient.callTool({ name: 'http/get', arguments: { url: 'not-a-url' } })
     ).rejects.toThrow();
     await stack.teardown();
   });
@@ -514,7 +550,7 @@ describe('e2e: http/* — security and policy', () => {
       arguments: { url: 'http://httpbin.org/post', body: '{"test":1}' },
     });
 
-    await new Promise(r => setTimeout(r, 20));
+    await new Promise((r) => setTimeout(r, 20));
     const pending = stack.hitlEngine.getPending();
     expect(pending).toHaveLength(1);
     expect(pending[0].tool).toBe('http/post');
@@ -540,12 +576,12 @@ describe('e2e: http/* — security and policy', () => {
       arguments: { url: 'http://example.com' },
     });
 
-    await new Promise(r => setTimeout(r, 20));
+    await new Promise((r) => setTimeout(r, 20));
     stack.hitlEngine.deny(stack.hitlEngine.getPending()[0].code, 'not allowed');
 
     await expect(callPromise).rejects.toThrow('denied');
     expect(stack.auditLogger.log).toHaveBeenCalledWith(
-      expect.objectContaining({ result: 'hitl_denied', tool: 'http/get' }),
+      expect.objectContaining({ result: 'hitl_denied', tool: 'http/get' })
     );
     await stack.teardown();
   });
@@ -555,7 +591,7 @@ describe('e2e: http/* — security and policy', () => {
     const stack = await buildStack(config);
 
     const { tools } = await stack.testClient.listTools();
-    const names = tools.map(t => t.name);
+    const names = tools.map((t) => t.name);
     expect(names).not.toContain('http/get');
     expect(names).not.toContain('http/post');
     await stack.teardown();
@@ -566,7 +602,7 @@ describe('e2e: http/* — security and policy', () => {
     const stack = await buildStack(config);
 
     const { tools } = await stack.testClient.listTools();
-    const names = tools.map(t => t.name);
+    const names = tools.map((t) => t.name);
     expect(names).toContain('http/get');
     expect(names).toContain('http/head');
     expect(names).not.toContain('http/post');
@@ -587,7 +623,7 @@ describe('e2e: external MCP — HITL wildcard patterns', () => {
       arguments: { a: 1, b: 2 },
     });
 
-    await new Promise(r => setTimeout(r, 20));
+    await new Promise((r) => setTimeout(r, 20));
     const pending = stack.hitlEngine.getPending();
     expect(pending).toHaveLength(1);
 
@@ -617,7 +653,7 @@ describe('e2e: external MCP — HITL wildcard patterns', () => {
       arguments: { a: 10, b: 20 },
     });
 
-    await new Promise(r => setTimeout(r, 20));
+    await new Promise((r) => setTimeout(r, 20));
     expect(stack.hitlEngine.getPending()).toHaveLength(1);
 
     stack.hitlEngine.approve(stack.hitlEngine.getPending()[0].code);
@@ -642,16 +678,27 @@ describe('e2e: external MCP — HITL wildcard patterns', () => {
     await downstream.connect(downstreamTransport);
     await poolClient.connect(poolClientTransport);
 
-    const pool = new FakePool('tools', poolClient);
+    const fakeAdapter = new FakeAdapter('tools', poolClient);
     const agents = { agent: config };
     const allowlist = new AllowlistEngine(agents);
-    const registry = new ToolRegistry(pool as never, allowlist, agents, SECURITY, new Set(['http', 'exec']));
+    const adapters2: BackendAdapter[] = [
+      fakeAdapter,
+      new ExecBackendAdapter(agents),
+      new HttpBackendAdapter(agents, SECURITY),
+    ];
+    const registry = new ToolRegistry(adapters2, allowlist, agents);
     await registry.refresh();
 
     const hitlBatcher = new HitlBatcher(50);
     const server = createAgentServer({
-      agentId: 'agent', agentConfig: config, registry, allowlist,
-      hitlEngine, hitlBatcher, hitlProvider: provider as never, auditLogger,
+      agentId: 'agent',
+      agentConfig: config,
+      registry,
+      allowlist,
+      hitlEngine,
+      hitlBatcher,
+      hitlProvider: provider as never,
+      auditLogger,
     });
     const [testClientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     await connectAgentServer(server, serverTransport);
@@ -668,7 +715,7 @@ describe('e2e: external MCP — HITL wildcard patterns', () => {
 
     await expect(callPromise).rejects.toThrow('timed out');
     expect(auditLogger.log).toHaveBeenCalledWith(
-      expect.objectContaining({ result: 'hitl_timeout', tool: 'tools/echo' }),
+      expect.objectContaining({ result: 'hitl_timeout', tool: 'tools/echo' })
     );
 
     await testClient.close();
@@ -681,9 +728,15 @@ describe('e2e: external MCP — HITL wildcard patterns', () => {
 describe('e2e: mixed policy — allow + ask + deny across tool types', () => {
   it('agent with mixed policy: MCP allowed, exec approval-gated, http blocked', async () => {
     const config = makeAgentConfig({
-      allow: ['tools/echo', 'exec/run'],  // no http/*
+      allow: ['tools/echo', 'exec/run'], // no http/*
       ask: [],
-      exec: { allow: ['echo*'], ask: ['echo deploy*'], deny: ['rm*'], env: {}, default_timeout_ms: 5000 },
+      exec: {
+        allow: ['echo*'],
+        ask: ['echo deploy*'],
+        deny: ['rm*'],
+        env: {},
+        default_timeout_ms: 5000,
+      },
     });
     const stack = await buildStack(config);
 
@@ -708,7 +761,7 @@ describe('e2e: mixed policy — allow + ask + deny across tool types', () => {
       name: 'exec/run',
       arguments: { command: 'echo deploy-prod' },
     });
-    await new Promise(r => setTimeout(r, 20));
+    await new Promise((r) => setTimeout(r, 20));
     expect(stack.hitlEngine.getPending()).toHaveLength(1);
     stack.hitlEngine.approve(stack.hitlEngine.getPending()[0].code);
     const deployResult = await deployPromise;
@@ -717,17 +770,17 @@ describe('e2e: mixed policy — allow + ask + deny across tool types', () => {
 
     // exec — denied command blocked
     await expect(
-      stack.testClient.callTool({ name: 'exec/run', arguments: { command: 'rm -rf /tmp' } }),
+      stack.testClient.callTool({ name: 'exec/run', arguments: { command: 'rm -rf /tmp' } })
     ).rejects.toThrow('denied');
 
     // http — not in allowlist, rejected at tool level
     await expect(
-      stack.testClient.callTool({ name: 'http/get', arguments: { url: 'http://example.com' } }),
+      stack.testClient.callTool({ name: 'http/get', arguments: { url: 'http://example.com' } })
     ).rejects.toThrow('Tool not available');
 
     // MCP tool not in allowlist — blocked
     await expect(
-      stack.testClient.callTool({ name: 'tools/add', arguments: { a: 1, b: 2 } }),
+      stack.testClient.callTool({ name: 'tools/add', arguments: { a: 1, b: 2 } })
     ).rejects.toThrow('Tool not available');
 
     await stack.teardown();

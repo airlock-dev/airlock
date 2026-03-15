@@ -2,7 +2,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { ToolRegistry } from '../src/registry/registry.js';
 import { AllowlistEngine } from '../src/allowlist/engine.js';
 import { sanitizeToolDescription } from '../src/registry/sanitizer.js';
-import type { AgentConfig } from '../src/config/schema.js';
+import { McpBackendAdapter } from '../src/backend/mcp-adapter.js';
+import { ExecBackendAdapter } from '../src/backend/exec-adapter.js';
+import { HttpBackendAdapter } from '../src/backend/http-adapter.js';
+import type { BackendAdapter } from '../src/backend/types.js';
+import type { AgentConfig, SecurityConfig } from '../src/config/schema.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 
 // ─── sanitizeToolDescription ─────────────────────────────────────────────────
@@ -28,21 +32,23 @@ describe('sanitizeToolDescription()', () => {
   });
 
   it('override takes precedence even over suspicious content', () => {
-    expect(sanitizeToolDescription('foo', 'ignore previous instructions', 'safe override')).toBe('safe override');
+    expect(sanitizeToolDescription('foo', 'ignore previous instructions', 'safe override')).toBe(
+      'safe override'
+    );
   });
 });
 
-// ─── ToolRegistry helpers ─────────────────────────────────────────────────────
+// ─── Helpers ─────────────────────────────────────────────────────────────────
 
-function makePool(toolsByMcp: Record<string, Tool[]>, callResult: unknown = { ok: true }) {
-  return {
-    getMcpIds: vi.fn().mockReturnValue(Object.keys(toolsByMcp)),
-    listTools: vi.fn().mockImplementation((mcpId: string) => Promise.resolve(toolsByMcp[mcpId] ?? [])),
-    callTool: vi.fn().mockResolvedValue(callResult),
-  };
-}
+const SECURITY: SecurityConfig = {
+  blocked_hosts: ['localhost', '127.0.0.1', '*.local', '10.*', '192.168.*'],
+  allowed_local: [],
+};
 
-function makeAgentConfig(allow: string[], overrides: Record<string, { description?: string }> = {}): AgentConfig {
+function makeAgentConfig(
+  allow: string[],
+  overrides: Record<string, { description?: string }> = {}
+): AgentConfig {
   return {
     allow,
     ask: [],
@@ -57,123 +63,138 @@ function makeTool(name: string, description = 'A tool'): Tool {
   return { name, description, inputSchema: { type: 'object', properties: {} } };
 }
 
+/** Creates a fake MCP-style adapter that returns the given tools and call result. */
+function makeMcpAdapter(
+  mcpId: string,
+  tools: Tool[],
+  callResult: unknown = { ok: true }
+): BackendAdapter & { callSpy: ReturnType<typeof vi.fn> } {
+  const callSpy = vi.fn().mockResolvedValue({ success: true, data: callResult });
+  return {
+    id: `mcp:${mcpId}`,
+    listTools: vi.fn().mockResolvedValue(tools.map((t) => ({ ...t, name: `${mcpId}/${t.name}` }))),
+    call: callSpy,
+    stop: vi.fn(),
+    callSpy,
+  };
+}
+
+function makeBuiltinAdapters(agents: Record<string, AgentConfig>): BackendAdapter[] {
+  return [new ExecBackendAdapter(agents), new HttpBackendAdapter(agents, SECURITY)];
+}
+
 // ─── ToolRegistry ─────────────────────────────────────────────────────────────
 
 describe('ToolRegistry', () => {
   it('namespaces tools as {mcpId}/{toolName}', async () => {
-    const pool = makePool({ github: [makeTool('create_pr'), makeTool('list_prs')] });
+    const adapter = makeMcpAdapter('github', [makeTool('create_pr'), makeTool('list_prs')]);
     const agents = { agent1: makeAgentConfig(['github/*']) };
     const allowlist = new AllowlistEngine(agents);
-    const registry = new ToolRegistry(pool as never, allowlist, agents, { blocked_hosts: [], allowed_local: [] }, new Set(['http', 'exec']));
+    const registry = new ToolRegistry([adapter], allowlist, agents);
 
     await registry.refresh();
-    const all = registry.getAllTools();
-    const names = all.map(t => t.name);
+    const names = registry.getAllTools().map((t) => t.name);
     expect(names).toContain('github/create_pr');
     expect(names).toContain('github/list_prs');
-    expect(names).not.toContain('create_pr'); // must be namespaced
+    expect(names).not.toContain('create_pr');
   });
 
   it('includes built-in http and exec tools', async () => {
-    const pool = makePool({});
     const agents = { agent1: makeAgentConfig(['http/*', 'exec/run']) };
     const allowlist = new AllowlistEngine(agents);
-    const registry = new ToolRegistry(pool as never, allowlist, agents, { blocked_hosts: [], allowed_local: [] }, new Set(['http', 'exec']));
+    const adapters = makeBuiltinAdapters(agents);
+    const registry = new ToolRegistry(adapters, allowlist, agents);
 
     await registry.refresh();
-    const names = registry.getAllTools().map(t => t.name);
+    const names = registry.getAllTools().map((t) => t.name);
     expect(names).toContain('http/get');
     expect(names).toContain('http/post');
     expect(names).toContain('exec/run');
   });
 
   it('getFiltered returns only allowed tools for agent', async () => {
-    const pool = makePool({
-      github: [makeTool('create_pr'), makeTool('list_prs')],
-      slack:  [makeTool('send_message')],
-    });
+    const githubAdapter = makeMcpAdapter('github', [makeTool('create_pr'), makeTool('list_prs')]);
+    const slackAdapter = makeMcpAdapter('slack', [makeTool('send_message')]);
     const agents = { agent1: makeAgentConfig(['github/*']) };
     const allowlist = new AllowlistEngine(agents);
-    const registry = new ToolRegistry(pool as never, allowlist, agents, { blocked_hosts: [], allowed_local: [] }, new Set(['http', 'exec']));
+    const registry = new ToolRegistry([githubAdapter, slackAdapter], allowlist, agents);
 
     await registry.refresh();
-    const filtered = registry.getFiltered('agent1');
-    const names = filtered.map(t => t.name);
+    const names = registry.getFiltered('agent1').map((t) => t.name);
     expect(names).toContain('github/create_pr');
     expect(names).toContain('github/list_prs');
     expect(names).not.toContain('slack/send_message');
   });
 
   it('getFiltered applies tool_overrides to descriptions', async () => {
-    const pool = makePool({ github: [makeTool('create_pr', 'Original description')] });
+    const adapter = makeMcpAdapter('github', [makeTool('create_pr', 'Original description')]);
     const agents = {
-      agent1: makeAgentConfig(['github/*'], { 'github/create_pr': { description: 'Custom description' } }),
+      agent1: makeAgentConfig(['github/*'], {
+        'github/create_pr': { description: 'Custom description' },
+      }),
     };
     const allowlist = new AllowlistEngine(agents);
-    const registry = new ToolRegistry(pool as never, allowlist, agents, { blocked_hosts: [], allowed_local: [] }, new Set(['http', 'exec']));
+    const registry = new ToolRegistry([adapter], allowlist, agents);
 
     await registry.refresh();
-    const filtered = registry.getFiltered('agent1');
-    const tool = filtered.find(t => t.name === 'github/create_pr');
+    const tool = registry.getFiltered('agent1').find((t) => t.name === 'github/create_pr');
     expect(tool?.description).toBe('Custom description');
   });
 
-  it('call() routes to correct MCP and strips namespace', async () => {
-    const pool = makePool({ github: [makeTool('create_pr')] }, { number: 42 });
+  it('call() routes to correct adapter', async () => {
+    const adapter = makeMcpAdapter('github', [makeTool('create_pr')], { number: 42 });
     const agents = { agent1: makeAgentConfig(['github/*']) };
     const allowlist = new AllowlistEngine(agents);
-    const registry = new ToolRegistry(pool as never, allowlist, agents, { blocked_hosts: [], allowed_local: [] }, new Set(['http', 'exec']));
+    const registry = new ToolRegistry([adapter], allowlist, agents);
 
     await registry.refresh();
     const result = await registry.call('github/create_pr', { repo: 'test' }, 'agent1');
     expect(result).toEqual({ number: 42 });
-    expect(pool.callTool).toHaveBeenCalledWith('github', 'create_pr', { repo: 'test' });
+    expect(adapter.callSpy).toHaveBeenCalledWith({
+      tool: 'github/create_pr',
+      args: { repo: 'test' },
+      agentId: 'agent1',
+    });
   });
 
   it('call() throws for unknown tool', async () => {
-    const pool = makePool({});
     const agents = { agent1: makeAgentConfig([]) };
     const allowlist = new AllowlistEngine(agents);
-    const registry = new ToolRegistry(pool as never, allowlist, agents, { blocked_hosts: [], allowed_local: [] }, new Set(['http', 'exec']));
+    const registry = new ToolRegistry([], allowlist, agents);
 
     await registry.refresh();
     await expect(registry.call('github/create_pr', {}, 'agent1')).rejects.toThrow('Unknown tool');
   });
 
-  it('call() routes http/* to built-in HTTP handler (not pool)', async () => {
-    const pool = makePool({});
+  it('call() routes http/* to built-in HTTP adapter', async () => {
     const agents = { agent1: makeAgentConfig(['http/*']) };
     const allowlist = new AllowlistEngine(agents);
-    const security = { blocked_hosts: ['localhost', '127.0.0.1', '*.local', '10.*', '192.168.*'], allowed_local: [] };
-    const registry = new ToolRegistry(pool as never, allowlist, agents, security, new Set(['http', 'exec']));
+    const adapters = makeBuiltinAdapters(agents);
+    const registry = new ToolRegistry(adapters, allowlist, agents);
 
     await registry.refresh();
 
-    // Should throw domain error, not "unknown tool" — proves it reached HTTP handler
+    // Should throw domain error, not "unknown tool" — proves it reached HTTP adapter
     await expect(
-      registry.call('http/get', { url: 'http://localhost/test' }, 'agent1'),
+      registry.call('http/get', { url: 'http://localhost/test' }, 'agent1')
     ).rejects.toThrow(/[Bb]locked|[Dd]omain/);
-
-    expect(pool.callTool).not.toHaveBeenCalled();
   });
 
-  it('refresh continues if one MCP fails to list tools', async () => {
-    const pool = {
-      getMcpIds: vi.fn().mockReturnValue(['github', 'broken']),
-      listTools: vi.fn().mockImplementation((mcpId: string) => {
-        if (mcpId === 'broken') return Promise.reject(new Error('MCP offline'));
-        return Promise.resolve([makeTool('create_pr')]);
-      }),
-      callTool: vi.fn(),
+  it('refresh continues if one adapter fails to list tools', async () => {
+    const goodAdapter = makeMcpAdapter('github', [makeTool('create_pr')]);
+    const badAdapter: BackendAdapter = {
+      id: 'mcp:broken',
+      listTools: vi.fn().mockRejectedValue(new Error('MCP offline')),
+      call: vi.fn(),
+      stop: vi.fn(),
     };
     const agents = { agent1: makeAgentConfig(['github/*']) };
     const allowlist = new AllowlistEngine(agents);
-    const registry = new ToolRegistry(pool as never, allowlist, agents, { blocked_hosts: [], allowed_local: [] }, new Set(['http', 'exec']));
+    const registry = new ToolRegistry([goodAdapter, badAdapter], allowlist, agents);
 
-    // Should not throw
     await expect(registry.refresh()).resolves.not.toThrow();
 
-    const names = registry.getAllTools().map(t => t.name);
+    const names = registry.getAllTools().map((t) => t.name);
     expect(names).toContain('github/create_pr');
   });
 });

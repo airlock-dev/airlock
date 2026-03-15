@@ -10,7 +10,8 @@ import { runStdioServer } from './transport/stdio-server.js';
 import { ConfigWatcher } from './config/watcher.js';
 import type { Config } from './config/loader.js';
 import type { ApprovalApi } from './hitl/providers/types.js';
-import { getMcpConfigs, getBuiltinProviders } from './config/schema.js';
+import { getMcpConfigs } from './config/schema.js';
+import { buildAdapters } from './backend/factory.js';
 import { childLogger } from './util/logger.js';
 
 const log = childLogger('stdio-mode');
@@ -78,7 +79,6 @@ export async function runStdioMode(
     'Connecting to required MCPs only'
   );
 
-  const builtins = getBuiltinProviders(config.providers);
   const pool = new ClientPool(filteredMcps);
   pool.onClientReady((id) => {
     log.info({ id }, 'MCP became ready, refreshing tool registry');
@@ -88,8 +88,11 @@ export async function runStdioMode(
   });
   await pool.initialize();
 
+  // Build adapters from config (MCP, builtins, CLIs, APIs)
+  const adapters = buildAdapters(config, pool);
+
   const allowlist = new AllowlistEngine(config.agents);
-  const registry = new ToolRegistry(pool, allowlist, config.agents, config.security, builtins);
+  const registry = new ToolRegistry(adapters, allowlist, config.agents);
   await registry.refresh();
 
   // Hot reload — allowlists, agent config, security (not MCP connections or approval provider)
@@ -100,12 +103,13 @@ export async function runStdioMode(
         currentAgentConfig = newConfig.agents[agentId];
       }
       const newMcpConfigs = getMcpConfigs(newConfig.providers);
-      const newBuiltins = getBuiltinProviders(newConfig.providers);
       pool
         .reload(newMcpConfigs)
         .then(() => {
           allowlist.reload(newConfig.agents);
-          registry.reloadAgents(newConfig.agents, newConfig.security, newBuiltins);
+          registry.reloadAgents(newConfig.agents);
+          const newAdapters = buildAdapters(newConfig, pool);
+          registry.setAdapters(newAdapters);
           return registry.refresh();
         })
         .then(() => {
@@ -125,6 +129,7 @@ export async function runStdioMode(
     log.info('Shutting down stdio mode');
     try {
       watcher.stop();
+      await registry.stopAll();
       await pool.stop();
       await hitlProvider.stop();
       auditLogger.stop();
