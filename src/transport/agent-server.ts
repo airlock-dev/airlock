@@ -75,6 +75,19 @@ export function createAgentServer(deps: AgentServerDeps): Server {
       throw new Error('Middleware chain did not terminate — missing execute middleware');
     });
 
+    // Pass through downstream MCP response shape (content, structuredContent, isError)
+    // if the result looks like a CallToolResult. Otherwise wrap as text.
+    const result = response.result as Record<string, unknown> | undefined;
+    if (result && Array.isArray(result.content)) {
+      return {
+        content: result.content as Array<{ type: string; text: string }>,
+        ...(result.structuredContent !== undefined
+          ? { structuredContent: result.structuredContent }
+          : {}),
+        ...(result.isError ? { isError: true } : {}),
+      };
+    }
+
     return {
       content: [{ type: 'text', text: response.text }],
     };

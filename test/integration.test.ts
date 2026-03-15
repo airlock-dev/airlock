@@ -58,8 +58,9 @@ describe('integration: stdio child process', () => {
       arguments: { message: 'hello from integration test' },
     });
 
-    const outer = JSON.parse((result.content as { type: string; text: string }[])[0].text);
-    expect(outer.content[0].text).toBe('hello from integration test');
+    expect((result.content as { type: string; text: string }[])[0].text).toBe(
+      'hello from integration test'
+    );
   });
 
   it('calls echo/add and gets the sum', async () => {
@@ -68,8 +69,7 @@ describe('integration: stdio child process', () => {
       arguments: { a: 17, b: 25 },
     });
 
-    const outer = JSON.parse((result.content as { type: string; text: string }[])[0].text);
-    expect(outer.content[0].text).toBe('42');
+    expect((result.content as { type: string; text: string }[])[0].text).toBe('42');
   });
 
   it('rejects tools not in the allowlist', async () => {
