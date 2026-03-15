@@ -23,12 +23,12 @@ export const McpServerConfig = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('sse'),
     url: z.string().url(),
-    headers: z.record(z.string()).optional(),
+    headers: z.record(EnvString).optional(),
   }),
   z.object({
     type: z.literal('http'),
     url: z.string().url(),
-    headers: z.record(z.string()).optional(),
+    headers: z.record(EnvString).optional(),
     oauth: z.boolean().default(false),
     oauth_callback_port: z.number().int().min(1).max(65535).default(18432),
   }),
