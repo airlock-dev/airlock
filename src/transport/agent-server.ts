@@ -11,6 +11,7 @@ import type { AgentConfig, SecurityConfig } from '../config/schema.js';
 import type { Middleware, ToolCallContext } from '../middleware/types.js';
 import { buildMiddlewareChain } from '../middleware/chain-builder.js';
 import { generateId } from '../util/id.js';
+import { VERSION } from '../version.js';
 
 export interface AgentServerDeps {
   agentId: string;
@@ -41,7 +42,7 @@ export function createAgentServer(deps: AgentServerDeps): Server {
       securityConfig: deps.securityConfig ?? { blocked_hosts: [], allowed_local: [] },
     });
 
-  const server = new Server({ name: 'airlock', version: '0.1.0' }, { capabilities: { tools: {} } });
+  const server = new Server({ name: 'airlock', version: VERSION }, { capabilities: { tools: {} } });
 
   server.setRequestHandler(ListToolsRequestSchema, () => {
     const tools = registry.getFiltered(agentId);

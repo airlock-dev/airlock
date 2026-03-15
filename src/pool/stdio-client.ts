@@ -2,6 +2,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { childLogger } from '../util/logger.js';
+import { VERSION } from '../version.js';
 
 const log = childLogger('stdio-client');
 
@@ -30,7 +31,7 @@ export class StdioMcpClient {
       stderr: this.stderr,
     });
 
-    this.client = new Client({ name: 'airlock', version: '0.1.0' });
+    this.client = new Client({ name: 'airlock', version: VERSION });
 
     this.transport.onclose = () => {
       this.ready = false;
