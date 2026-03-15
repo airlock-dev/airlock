@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.2](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.1...airlock-bot-v0.2.2) (2026-03-15)
+
+
+### Features
+
+* wire configure-agent as a CLI subcommand ([#14](https://github.com/airlock-dev/airlock/issues/14)) ([ecb3d7a](https://github.com/airlock-dev/airlock/commit/ecb3d7ab523a2440d63e6f95b579fc037b3b9362))
+
+
+### Bug Fixes
+
+* read MCP server version from package.json instead of hardcoding ([#16](https://github.com/airlock-dev/airlock/issues/16)) ([e06c707](https://github.com/airlock-dev/airlock/commit/e06c707fa58e373af61b139378b1f1e7e83b57da))
+
 ## [0.2.1](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.0...airlock-bot-v0.2.1) (2026-03-15)
 
 
