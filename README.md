@@ -88,7 +88,7 @@ airlock --config airlock.yaml
 
 ## Claude Code setup
 
-Add Airlock as an MCP server in `~/.claude/settings.json`:
+Add Airlock as an MCP server in `~/.claude/mcp.json`:
 
 ```json
 {
@@ -308,7 +308,8 @@ All management endpoints require `Authorization: Bearer <api_secret>` when `serv
 ```bash
 npm test                              # unit + integration tests
 npm test -- test/integration.test.ts  # just the integration test (real child process)
-npm run build                         # TypeScript compile check
+npm run typecheck                     # TypeScript type check (no emit)
+npm run build                         # Full build to dist/
 ```
 
 ### Interactive testing with MCP Inspector

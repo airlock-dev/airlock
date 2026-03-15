@@ -1,21 +1,22 @@
 # OpenClaw Provider Setup
 
-The `openclaw` HITL provider delivers approval requests to your OpenClaw session
+The `openclaw` approval provider delivers approval requests to your OpenClaw session
 (Telegram, Discord, etc.) and listens for replies.
 
 ## Configuration
 
 ```yaml
-hitl:
+approvals:
   provider:
     type: openclaw
     gateway_url: ws://localhost:18789
     token: ${OPENCLAW_TOKEN}
-    session_key: "agent:main:telegram:channel:YOUR_CHAT_ID"
+    session_key: 'agent:main:telegram:channel:YOUR_CHAT_ID'
     # or just "main" for the default session
 ```
 
 Set `OPENCLAW_TOKEN` in your environment:
+
 ```sh
 export OPENCLAW_TOKEN=your-openclaw-bearer-token
 ```
@@ -24,7 +25,7 @@ export OPENCLAW_TOKEN=your-openclaw-bearer-token
 
 1. When Airlock needs approval, it sends a `chat.send` RPC over WebSocket to OpenClaw.
 2. OpenClaw delivers the message to your configured channel (Telegram, Discord, etc.).
-3. You reply with: `hitl approve A1B2C3` or `hitl deny A1B2C3`
+3. You reply with: `approve A1B2C3` or `deny A1B2C3`
 4. Airlock's WebSocket listener picks up the reply and resolves the pending request.
 
 ## Session Key Format
