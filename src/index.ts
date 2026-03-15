@@ -5,12 +5,18 @@ import { ConfigWatcher } from './config/watcher.js';
 import { Gateway } from './gateway.js';
 import { runStdioMode } from './stdio-mode.js';
 import { runDiscover } from './discover/cli.js';
+import { runConfigureAgent } from './configure-agent/cli.js';
 import { logger } from './util/logger.js';
 
-// Handle `airlock discover ...` subcommand before parseArgs
+// Handle subcommands before parseArgs
 const subcommand = process.argv[2];
 if (subcommand === 'discover') {
   runDiscover(process.argv.slice(3)).catch((err) => {
+    console.error(err instanceof Error ? err.message : String(err));
+    process.exit(1);
+  });
+} else if (subcommand === 'configure-agent') {
+  runConfigureAgent(process.argv.slice(3)).catch((err) => {
     console.error(err instanceof Error ? err.message : String(err));
     process.exit(1);
   });
@@ -35,6 +41,7 @@ airlock — permissions-aware MCP gateway
 Usage:
   airlock [options]
   airlock discover <cli|api> [options]
+  airlock configure-agent [options]
 
 Options:
   -c, --config <path>    Config file path (default: ./airlock.yaml)
@@ -44,6 +51,7 @@ Options:
 Subcommands:
   discover cli <tool>    Auto-discover CLI commands from --help or Fig specs
   discover api <spec>    Auto-discover API endpoints from an OpenAPI spec
+  configure-agent        Interactive TUI to build allow/ask/deny lists
 
 Examples:
   # Start full gateway server
@@ -57,6 +65,9 @@ Examples:
 
   # Discover API endpoints
   airlock discover api ./petstore.json --output petstore-api.yaml
+
+  # Interactively configure agent permissions
+  airlock configure-agent --config ./airlock.yaml --agent my-agent
 `);
     process.exit(0);
   }

@@ -1,0 +1,477 @@
+import { parseArgs } from 'util';
+import { readFileSync, writeFileSync, copyFileSync, openSync } from 'fs';
+import { ReadStream } from 'tty';
+import { execSync } from 'child_process';
+import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
+import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import { ClientPool } from '../pool/pool.js';
+import { getMcpConfigs, GatewayConfig } from '../config/schema.js';
+
+// ── Types ─────────────────────────────────────────────────────────────────────
+
+type Decision = 'allow' | 'ask' | 'deny';
+
+interface ToolEntry {
+  namespacedName: string;
+  description: string;
+  annotations: NonNullable<Tool['annotations']>;
+  decision: Decision;
+}
+
+interface ServerInfo {
+  name: string;
+  version: string;
+}
+
+// ── Annotation helpers ────────────────────────────────────────────────────────
+
+function defaultDecision(annotations: NonNullable<Tool['annotations']>): Decision {
+  if (annotations.destructiveHint || annotations.openWorldHint) return 'ask';
+  return 'allow';
+}
+
+function annotationBadges(a: NonNullable<Tool['annotations']>): string {
+  const tags: string[] = [];
+  if (a.readOnlyHint) tags.push('readonly');
+  if (a.destructiveHint) tags.push('destructive');
+  if (a.idempotentHint) tags.push('idempotent');
+  if (a.openWorldHint) tags.push('open-world');
+  return tags.length ? `[${tags.join(', ')}]` : '';
+}
+
+// ── ANSI helpers ─────────────────────────────────────────────────────────────
+
+const ESC = '\x1b[';
+const RESET = `${ESC}0m`;
+const BOLD = `${ESC}1m`;
+const DIM = `${ESC}2m`;
+const GREEN = `${ESC}32m`;
+const YELLOW = `${ESC}33m`;
+const RED = `${ESC}31m`;
+const CYAN = `${ESC}36m`;
+const BLUE = `${ESC}34m`;
+
+function decisionColor(d: Decision): string {
+  if (d === 'allow') return GREEN;
+  if (d === 'ask') return YELLOW;
+  return RED;
+}
+
+function decisionLabel(d: Decision): string {
+  if (d === 'allow') return 'allow';
+  if (d === 'ask') return 'ask  ';
+  return 'deny ';
+}
+
+// ── YAML output ───────────────────────────────────────────────────────────────
+
+function renderYaml(agentName: string, entries: ToolEntry[]): string {
+  const lines: string[] = [`agents:`, `  ${agentName}:`];
+
+  const renderList = (key: string, decision: Decision) => {
+    const matching = entries.filter((e) => e.decision === decision);
+    if (matching.length === 0) {
+      lines.push(`    ${key}: []`);
+      return;
+    }
+    lines.push(`    ${key}:`);
+    let lastProvider = '';
+    for (const e of matching) {
+      const p = e.namespacedName.split('/')[0];
+      if (p !== lastProvider) {
+        lines.push(`      # ${p}`);
+        lastProvider = p;
+      }
+      lines.push(`      - "${e.namespacedName}"`);
+    }
+  };
+
+  renderList('allow', 'allow');
+  renderList('ask', 'ask');
+  renderList('deny', 'deny');
+
+  return lines.join('\n');
+}
+
+// ── TUI row model ─────────────────────────────────────────────────────────────
+
+type Row =
+  | {
+      type: 'header';
+      provider: string;
+      serverInfo?: ServerInfo;
+      total: number;
+      allow: number;
+      ask: number;
+      deny: number;
+    }
+  | { type: 'entry'; entry: ToolEntry; entryIdx: number };
+
+function buildRows(entries: ToolEntry[], serverInfoMap: Map<string, ServerInfo>): Row[] {
+  const rows: Row[] = [];
+  const providerOrder: string[] = [];
+  const groups = new Map<string, number[]>();
+
+  for (let i = 0; i < entries.length; i++) {
+    const p = entries[i].namespacedName.split('/')[0];
+    if (!groups.has(p)) {
+      groups.set(p, []);
+      providerOrder.push(p);
+    }
+    groups.get(p)!.push(i);
+  }
+
+  for (const p of providerOrder) {
+    const indices = groups.get(p)!;
+    const counts = { allow: 0, ask: 0, deny: 0 };
+    for (const i of indices) counts[entries[i].decision]++;
+    rows.push({
+      type: 'header',
+      provider: p,
+      serverInfo: serverInfoMap.get(p),
+      total: indices.length,
+      ...counts,
+    });
+    for (const i of indices) rows.push({ type: 'entry', entry: entries[i], entryIdx: i });
+  }
+
+  return rows;
+}
+
+// ── TUI ───────────────────────────────────────────────────────────────────────
+
+function render(
+  entries: ToolEntry[],
+  serverInfoMap: Map<string, ServerInfo>,
+  rowIdx: number,
+  agentName: string
+): void {
+  const out = process.stdout;
+  out.write(`${ESC}H${ESC}2J`);
+
+  out.write(`\n${BOLD}${CYAN}  Airlock — Configure Agent: ${agentName}${RESET}\n`);
+  out.write(`${DIM}  ${'─'.repeat(70)}${RESET}\n`);
+  out.write(
+    `${DIM}  [a] allow  [s] ask  [d] deny  [j/k] navigate  [enter] confirm  [q] quit${RESET}\n`
+  );
+  out.write(`${DIM}  on a provider header, a/s/d applies to all tools in that provider${RESET}\n`);
+  out.write(`${DIM}  ${'─'.repeat(70)}${RESET}\n\n`);
+
+  const rows = buildRows(entries, serverInfoMap);
+
+  const visible = 28;
+  const start = Math.max(0, Math.min(rowIdx - Math.floor(visible / 2), rows.length - visible));
+  const slice = rows.slice(start, start + visible);
+
+  for (let i = 0; i < slice.length; i++) {
+    const row = slice[i];
+    const absIdx = start + i;
+    const isSel = absIdx === rowIdx;
+
+    if (row.type === 'header') {
+      const summary = `${GREEN}${row.allow}✓${RESET} ${YELLOW}${row.ask}?${RESET} ${RED}${row.deny}✗${RESET}`;
+      const selMark = isSel ? `${BOLD}${YELLOW}▸ ` : `  `;
+      const nameStr = `${BOLD}${BLUE}${row.provider}${RESET}`;
+      const serverStr = row.serverInfo
+        ? `${DIM}${row.serverInfo.name} v${row.serverInfo.version}${RESET}`
+        : '';
+      out.write(
+        `\n ${selMark}${nameStr}  ${DIM}(${row.total} tools)${RESET}  ${summary}${serverStr ? `  ${serverStr}` : ''}\n`
+      );
+      if (isSel) {
+        out.write(
+          `   ${DIM}↳ press a/s/d to set all ${row.total} tools in this provider${RESET}\n`
+        );
+      }
+      out.write(`   ${DIM}${'╌'.repeat(55)}${RESET}\n`);
+    } else {
+      const { entry } = row;
+      const isCurEntry = isSel;
+      const dColor = decisionColor(entry.decision);
+      const prefix = isCurEntry ? `${BOLD}${YELLOW} ▸ ` : `   `;
+      const toolName = entry.namespacedName.split('/').slice(1).join('/');
+      const namePart = `${isCurEntry ? BOLD : ''}${toolName}${RESET}`;
+      const badge = annotationBadges(entry.annotations);
+      const badgeColor = entry.annotations.destructiveHint
+        ? RED
+        : entry.annotations.openWorldHint
+          ? YELLOW
+          : entry.annotations.readOnlyHint
+            ? GREEN
+            : DIM;
+
+      out.write(
+        `${prefix}${dColor}[${decisionLabel(entry.decision)}]${RESET}  ${namePart}  ${badge ? `${badgeColor}${badge}${RESET}` : ''}\n`
+      );
+
+      if (isCurEntry && entry.description) {
+        const desc =
+          entry.description.length > 110
+            ? entry.description.slice(0, 110) + '…'
+            : entry.description;
+        out.write(`       ${DIM}${desc}${RESET}\n`);
+      }
+    }
+  }
+
+  if (rows.length > visible) {
+    const above = start;
+    const below = rows.length - (start + visible);
+    const parts: string[] = [];
+    if (above > 0) parts.push(`↑ ${above} above`);
+    if (below > 0) parts.push(`↓ ${below} below`);
+    out.write(`\n${DIM}  ${parts.join('  ')}${RESET}\n`);
+  }
+
+  out.write(
+    `\n${DIM}  ${entries.filter((e) => e.decision === 'allow').length} allow  ` +
+      `${entries.filter((e) => e.decision === 'ask').length} ask  ` +
+      `${entries.filter((e) => e.decision === 'deny').length} deny  ` +
+      `/ ${entries.length} total${RESET}\n`
+  );
+}
+
+// ── Help ──────────────────────────────────────────────────────────────────────
+
+const HELP = `
+airlock configure-agent — build allow/ask/deny lists from live MCP tools
+
+Usage:
+  airlock configure-agent [options]
+
+Options:
+  -c, --config <path>   Airlock config file (default: ./airlock.yaml)
+  -a, --agent  <name>   Agent name to use in output (default: agent)
+  -v, --verbose         Show MCP server output (default: suppressed)
+  -h, --help            Show this help
+`;
+
+// ── Entry point ───────────────────────────────────────────────────────────────
+
+export async function runConfigureAgent(argv: string[]): Promise<void> {
+  const { values } = parseArgs({
+    args: argv,
+    options: {
+      config: { type: 'string', short: 'c', default: './airlock.yaml' },
+      agent: { type: 'string', short: 'a', default: 'agent' },
+      verbose: { type: 'boolean', short: 'v', default: false },
+      help: { type: 'boolean', short: 'h', default: false },
+    },
+    allowPositionals: false,
+  });
+
+  if (values.help) {
+    console.log(HELP);
+    process.exit(0);
+  }
+
+  // Load config
+  const raw = readFileSync(values.config, 'utf8');
+  const parsedYaml: unknown = parseYaml(raw);
+  const parsed = GatewayConfig.parse(parsedYaml);
+  const providers = parsed.providers ?? {};
+  const mcpConfigs = getMcpConfigs(providers);
+
+  if (Object.keys(mcpConfigs).length === 0) {
+    console.error('No MCP providers found in config.');
+    process.exit(1);
+  }
+
+  process.stdout.write(`\nConnecting to ${Object.keys(mcpConfigs).length} provider(s)…\n`);
+
+  const pool = new ClientPool(mcpConfigs, {
+    stdioStderr: values.verbose ? 'inherit' : 'ignore',
+  });
+  const connectPromise = pool.initialize();
+  const timeout = new Promise<void>((resolve) => setTimeout(resolve, 15_000));
+  await Promise.race([connectPromise, timeout]);
+
+  const entries: ToolEntry[] = [];
+  const serverInfoMap = new Map<string, ServerInfo>();
+
+  for (const mcpId of Object.keys(mcpConfigs)) {
+    process.stdout.write(`  ${mcpId}: `);
+    try {
+      const tools = await Promise.race([
+        pool.listTools(mcpId),
+        new Promise<Tool[]>((_, reject) => setTimeout(() => reject(new Error('timeout')), 10_000)),
+      ]);
+      const info = pool.getServerInfo(mcpId);
+      if (info) serverInfoMap.set(mcpId, info);
+      const infoStr = info ? `${DIM}${info.name} v${info.version}${RESET}  ` : '';
+      process.stdout.write(`${infoStr}${GREEN}${tools.length} tools${RESET}\n`);
+      for (const tool of tools) {
+        const annotations = tool.annotations ?? {};
+        entries.push({
+          namespacedName: `${mcpId}/${tool.name}`,
+          description: tool.description ?? '',
+          annotations,
+          decision: defaultDecision(annotations),
+        });
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      process.stdout.write(`${RED}failed (${msg})${RESET}\n`);
+    }
+  }
+
+  if (entries.length === 0) {
+    console.error('\nNo tools found. Check that your providers are reachable.');
+    await pool.stop();
+    process.exit(1);
+  }
+
+  process.stdout.write(`\n${BOLD}Found ${entries.length} tools.${RESET} Press any key to start…`);
+
+  const ttyFd = openSync('/dev/tty', 'r+');
+  const tty = new ReadStream(ttyFd);
+  tty.setEncoding('utf8');
+
+  await new Promise<void>((resolve) => {
+    tty.setRawMode(true);
+    tty.once('data', () => resolve());
+    tty.resume();
+  });
+
+  process.stdout.write('\x1b[?1049h');
+
+  let rowIdx = 0;
+  let done = false;
+  let quit = false;
+
+  function bulkSetProvider(provider: string, decision: Decision): void {
+    for (const e of entries) {
+      if (e.namespacedName.split('/')[0] === provider) e.decision = decision;
+    }
+  }
+
+  render(entries, serverInfoMap, rowIdx, values.agent);
+
+  await new Promise<void>((resolve) => {
+    tty.on('data', (key: string) => {
+      if (done) return;
+
+      if (key === '\x03' || key === 'q') {
+        quit = true;
+        done = true;
+        process.stdout.write('\x1b[?1049l');
+        tty.setRawMode(false);
+        tty.destroy();
+        resolve();
+        return;
+      }
+
+      if (key === '\r' || key === '\n') {
+        done = true;
+        process.stdout.write('\x1b[?1049l');
+        tty.setRawMode(false);
+        tty.destroy();
+        resolve();
+        return;
+      }
+
+      const rows = buildRows(entries, serverInfoMap);
+      const maxIdx = rows.length - 1;
+
+      if (key === 'j' || key === `${ESC}B`) rowIdx = Math.min(rowIdx + 1, maxIdx);
+      if (key === 'k' || key === `${ESC}A`) rowIdx = Math.max(rowIdx - 1, 0);
+
+      const currentRow = rows[rowIdx];
+      if (currentRow?.type === 'header') {
+        if (key === 'a') bulkSetProvider(currentRow.provider, 'allow');
+        if (key === 's') bulkSetProvider(currentRow.provider, 'ask');
+        if (key === 'd') bulkSetProvider(currentRow.provider, 'deny');
+      } else if (currentRow?.type === 'entry') {
+        if (key === 'a') currentRow.entry.decision = 'allow';
+        if (key === 's') currentRow.entry.decision = 'ask';
+        if (key === 'd') currentRow.entry.decision = 'deny';
+      }
+
+      render(entries, serverInfoMap, rowIdx, values.agent);
+    });
+  });
+
+  await pool.stop();
+
+  if (quit) {
+    console.log('Aborted.');
+    process.exit(0);
+  }
+
+  const yaml = renderYaml(values.agent, entries);
+
+  // ── Action picker ───────────────────────────────────────────────────────────
+  process.stdout.write(`\n${BOLD}${CYAN}What would you like to do?${RESET}\n`);
+  process.stdout.write(
+    `  ${BOLD}[e]${RESET} edit config directly  ${DIM}(backs up original to .bak)${RESET}\n`
+  );
+  process.stdout.write(`  ${BOLD}[c]${RESET} copy to clipboard\n`);
+  process.stdout.write(`  ${BOLD}[p]${RESET} print to stdout\n`);
+  process.stdout.write(`  ${BOLD}[q]${RESET} abort\n\n`);
+  process.stdout.write(`> `);
+
+  const ttyFd2 = openSync('/dev/tty', 'r+');
+  const tty2 = new ReadStream(ttyFd2);
+  tty2.setEncoding('utf8');
+
+  const action = await new Promise<string>((resolve) => {
+    tty2.setRawMode(true);
+    tty2.resume();
+    tty2.once('data', (key: string) => {
+      tty2.setRawMode(false);
+      tty2.destroy();
+      resolve(key);
+    });
+  });
+
+  process.stdout.write('\n');
+
+  if (action === 'q' || action === '\x03') {
+    console.log('Aborted.');
+    process.exit(0);
+  }
+
+  if (action === 'p') {
+    console.log(`\n${BOLD}${CYAN}# Paste into your airlock.yaml:${RESET}\n`);
+    console.log(yaml);
+    console.log();
+    process.exit(0);
+  }
+
+  if (action === 'c') {
+    const clipCmd = process.platform === 'darwin' ? 'pbcopy' : 'xclip -selection clipboard';
+    try {
+      execSync(clipCmd, { input: yaml });
+      console.log(`${GREEN}✓ Copied to clipboard.${RESET}`);
+    } catch {
+      console.error(`Could not copy to clipboard. Here is the YAML:\n`);
+      console.log(yaml);
+    }
+    process.exit(0);
+  }
+
+  if (action === 'e') {
+    const configPath = values.config;
+    const backupPath = configPath.replace(/\.ya?ml$/i, '') + '.bak';
+    copyFileSync(configPath, backupPath);
+
+    const doc = parseYaml(readFileSync(configPath, 'utf8')) as Record<string, unknown>;
+    const agents = (doc.agents ?? {}) as Record<string, unknown>;
+    agents[values.agent] = {
+      allow: entries.filter((e) => e.decision === 'allow').map((e) => e.namespacedName),
+      ask: entries.filter((e) => e.decision === 'ask').map((e) => e.namespacedName),
+      deny: entries.filter((e) => e.decision === 'deny').map((e) => e.namespacedName),
+    };
+    doc.agents = agents;
+    writeFileSync(configPath, stringifyYaml(doc));
+
+    console.log(`${GREEN}✓ Updated ${configPath}${RESET}`);
+    console.log(`${DIM}  Original backed up to ${backupPath}${RESET}`);
+    process.exit(0);
+  }
+
+  // fallback
+  console.log(`\n${BOLD}${CYAN}# Paste into your airlock.yaml:${RESET}\n`);
+  console.log(yaml);
+  console.log();
+}
