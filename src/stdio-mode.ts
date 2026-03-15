@@ -80,12 +80,6 @@ export async function runStdioMode(
   );
 
   const pool = new ClientPool(filteredMcps);
-  pool.onClientReady((id) => {
-    log.info({ id }, 'MCP became ready, refreshing tool registry');
-    registry
-      .refresh()
-      .catch((err) => log.error({ err }, 'Failed to refresh registry after MCP ready'));
-  });
   await pool.initialize();
 
   // Build adapters from config (MCP, builtins, CLIs, APIs)
@@ -94,6 +88,14 @@ export async function runStdioMode(
   const allowlist = new AllowlistEngine(config.agents);
   const registry = new ToolRegistry(adapters, allowlist, config.agents);
   await registry.refresh();
+
+  // Register callback for late-connecting MCPs (after registry exists)
+  pool.onClientReady((id) => {
+    log.info({ id }, 'MCP became ready, refreshing tool registry');
+    registry
+      .refresh()
+      .catch((err) => log.error({ err }, 'Failed to refresh registry after MCP ready'));
+  });
 
   // Hot reload — allowlists, agent config, security (not MCP connections or approval provider)
   const watcher = new ConfigWatcher(configPath);
