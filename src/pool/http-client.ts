@@ -4,6 +4,7 @@ import { UnauthorizedError } from '@modelcontextprotocol/sdk/client/auth.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { FileOAuthProvider } from './oauth-provider.js';
 import { childLogger } from '../util/logger.js';
+import { VERSION } from '../version.js';
 
 const log = childLogger('http-client');
 
@@ -50,7 +51,7 @@ export class HttpMcpClient {
 
     this.transport = new StreamableHTTPClientTransport(new URL(this.url), transportOpts);
 
-    this.client = new Client({ name: 'airlock', version: '0.1.0' });
+    this.client = new Client({ name: 'airlock', version: VERSION });
 
     this.transport.onclose = () => {
       this.ready = false;
@@ -80,7 +81,7 @@ export class HttpMcpClient {
           const code = await this.oauthProvider.waitForAuthCode();
           await this.transport.finishAuth(code);
 
-          this.client = new Client({ name: 'airlock', version: '0.1.0' });
+          this.client = new Client({ name: 'airlock', version: VERSION });
           await this.client.connect(this.transport);
           this.reconnectAttempt = 0;
           this.ready = true;
