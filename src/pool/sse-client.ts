@@ -64,6 +64,10 @@ export class SseMcpClient {
     return this.client.callTool({ name, arguments: args });
   }
 
+  getServerInfo(): { name: string; version: string } | undefined {
+    return this.client?.getServerVersion();
+  }
+
   isReady(): boolean {
     return this.ready;
   }

@@ -18,7 +18,8 @@ export class StdioMcpClient {
     private id: string,
     private command: string,
     private args: string[],
-    private env?: Record<string, string>
+    private env?: Record<string, string>,
+    private stderr?: 'inherit' | 'ignore' | 'pipe'
   ) {}
 
   async connect(): Promise<void> {
@@ -26,6 +27,7 @@ export class StdioMcpClient {
       command: this.command,
       args: this.args,
       env: this.env,
+      stderr: this.stderr,
     });
 
     this.client = new Client({ name: 'airlock', version: '0.1.0' });
@@ -65,6 +67,10 @@ export class StdioMcpClient {
   async callTool(name: string, args: Record<string, unknown>): Promise<unknown> {
     if (!this.client || !this.ready) throw new Error(`MCP ${this.id} not connected`);
     return this.client.callTool({ name, arguments: args });
+  }
+
+  getServerInfo(): { name: string; version: string } | undefined {
+    return this.client?.getServerVersion();
   }
 
   isReady(): boolean {
