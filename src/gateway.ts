@@ -68,12 +68,6 @@ export class Gateway {
     // MCP pool — only connect to actual MCP servers, not builtins
     const mcpConfigs = getMcpConfigs(this.config.providers);
     this.pool = new ClientPool(mcpConfigs);
-    this.pool.onClientReady((id) => {
-      log.info({ id }, 'MCP became ready, refreshing tool registry');
-      this.registry
-        .refresh()
-        .catch((err) => log.error({ err }, 'Failed to refresh registry after MCP ready'));
-    });
     await this.pool.initialize();
 
     // Build adapters from config (MCP, builtins, CLIs, APIs)
@@ -83,6 +77,14 @@ export class Gateway {
     this.allowlist = new AllowlistEngine(this.config.agents);
     this.registry = new ToolRegistry(adapters, this.allowlist, this.config.agents);
     await this.registry.refresh();
+
+    // Register callback for late-connecting MCPs (after registry exists)
+    this.pool.onClientReady((id) => {
+      log.info({ id }, 'MCP became ready, refreshing tool registry');
+      this.registry
+        .refresh()
+        .catch((err) => log.error({ err }, 'Failed to refresh registry after MCP ready'));
+    });
 
     // HTTP server
     this.app = Fastify({ logger: false });
