@@ -215,8 +215,7 @@ describe('e2e: call_tool — downstream routing', () => {
       arguments: { message: 'hello airlock' },
     });
     // result is the raw CallToolResult from the downstream server wrapped in AgentServer
-    const outer = JSON.parse((result.content[0] as { text: string }).text);
-    expect(outer.content[0].text).toBe('hello airlock');
+    expect((result.content[0] as { type: string; text: string }).text).toBe('hello airlock');
   });
 
   it('routes tools/add and returns the sum', async () => {
@@ -224,8 +223,7 @@ describe('e2e: call_tool — downstream routing', () => {
       name: 'tools/add',
       arguments: { a: 7, b: 13 },
     });
-    const outer = JSON.parse((result.content[0] as { text: string }).text);
-    expect(outer.content[0].text).toBe('20');
+    expect((result.content[0] as { type: string; text: string }).text).toBe('20');
   });
 
   it('rejects a tool not in the allowlist', async () => {
@@ -269,8 +267,7 @@ describe('e2e: call_tool — HITL gate with real downstream', () => {
     stack.hitlEngine.approve(pending[0].code);
 
     const result = await callPromise;
-    const outer = JSON.parse((result.content[0] as { text: string }).text);
-    expect(outer.content[0].text).toBe('needs approval');
+    expect((result.content[0] as { type: string; text: string }).text).toBe('needs approval');
 
     expect(stack.auditLogger.log).toHaveBeenCalledWith(
       expect.objectContaining({ result: 'success', tool: 'tools/echo' })
@@ -629,8 +626,7 @@ describe('e2e: external MCP — HITL wildcard patterns', () => {
 
     stack.hitlEngine.approve(pending[0].code);
     const result = await callPromise;
-    const outer = JSON.parse((result.content[0] as { text: string }).text);
-    expect(outer.content[0].text).toBe('3');
+    expect((result.content[0] as { type: string; text: string }).text).toBe('3');
     await stack.teardown();
   });
 
@@ -643,8 +639,7 @@ describe('e2e: external MCP — HITL wildcard patterns', () => {
       name: 'tools/echo',
       arguments: { message: 'no hitl needed' },
     });
-    const echoOuter = JSON.parse((echoResult.content[0] as { text: string }).text);
-    expect(echoOuter.content[0].text).toBe('no hitl needed');
+    expect((echoResult.content[0] as { type: string; text: string }).text).toBe('no hitl needed');
     expect(stack.hitlEngine.getPending()).toHaveLength(0);
 
     // tools/add should require HITL
@@ -658,8 +653,7 @@ describe('e2e: external MCP — HITL wildcard patterns', () => {
 
     stack.hitlEngine.approve(stack.hitlEngine.getPending()[0].code);
     const addResult = await addPromise;
-    const addOuter = JSON.parse((addResult.content[0] as { text: string }).text);
-    expect(addOuter.content[0].text).toBe('30');
+    expect((addResult.content[0] as { type: string; text: string }).text).toBe('30');
     await stack.teardown();
   });
 
@@ -745,8 +739,7 @@ describe('e2e: mixed policy — allow + ask + deny across tool types', () => {
       name: 'tools/echo',
       arguments: { message: 'allowed' },
     });
-    const echoOuter = JSON.parse((echoResult.content[0] as { text: string }).text);
-    expect(echoOuter.content[0].text).toBe('allowed');
+    expect((echoResult.content[0] as { type: string; text: string }).text).toBe('allowed');
 
     // exec — allowed command passes through
     const execResult = await stack.testClient.callTool({
