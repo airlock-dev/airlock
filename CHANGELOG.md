@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.2.3](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.2...airlock-bot-v0.2.3) (2026-03-15)
+
+
+### Bug Fixes
+
+* pass through downstream MCP response shape instead of re-wrapping ([#19](https://github.com/airlock-dev/airlock/issues/19)) ([a695ace](https://github.com/airlock-dev/airlock/commit/a695acead17625fa91b1a1df61d1a352177a4ed3))
+* register onClientReady after registry is initialized ([#17](https://github.com/airlock-dev/airlock/issues/17)) ([c4e1380](https://github.com/airlock-dev/airlock/commit/c4e1380d2c7ec0d7bde65eea60dd45921f8b75f2))
+* substitute env vars in SSE and HTTP provider headers ([#21](https://github.com/airlock-dev/airlock/issues/21)) ([1ed6907](https://github.com/airlock-dev/airlock/commit/1ed690753065ac7873078f6fd0dc088963fde566))
+
 ## [0.2.2](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.1...airlock-bot-v0.2.2) (2026-03-15)
 
 
