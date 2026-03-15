@@ -13,10 +13,7 @@
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import {
-  ListToolsRequestSchema,
-  CallToolRequestSchema,
-} from '@modelcontextprotocol/sdk/types.js';
+import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 
 export const DOWNSTREAM_TOOLS: Tool[] = [
@@ -41,12 +38,38 @@ export const DOWNSTREAM_TOOLS: Tool[] = [
       required: ['a', 'b'],
     },
   },
+  {
+    name: 'multi_content',
+    description: 'Returns multiple content items',
+    inputSchema: {
+      type: 'object',
+      properties: { message: { type: 'string' } },
+      required: ['message'],
+    },
+  },
+  {
+    name: 'error_tool',
+    description: 'Always returns an error',
+    inputSchema: {
+      type: 'object',
+      properties: {},
+    },
+  },
+  {
+    name: 'json_tool',
+    description: 'Returns JSON data as text',
+    inputSchema: {
+      type: 'object',
+      properties: { key: { type: 'string' } },
+      required: ['key'],
+    },
+  },
 ];
 
 export function createDownstreamServer(): Server {
   const server = new Server(
     { name: 'echo-mcp', version: '0.0.1' },
-    { capabilities: { tools: {} } },
+    { capabilities: { tools: {} } }
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
@@ -62,6 +85,24 @@ export function createDownstreamServer(): Server {
       const result = Number(args['a']) + Number(args['b']);
       return { content: [{ type: 'text', text: String(result) }] };
     }
+    if (req.params.name === 'multi_content') {
+      return {
+        content: [
+          { type: 'text', text: `Message: ${String(args['message'] ?? '')}` },
+          { type: 'text', text: 'Second content item' },
+        ],
+      };
+    }
+    if (req.params.name === 'error_tool') {
+      return {
+        content: [{ type: 'text', text: 'Something went wrong' }],
+        isError: true,
+      };
+    }
+    if (req.params.name === 'json_tool') {
+      const data = { key: String(args['key'] ?? ''), nested: { count: 42, items: [1, 2, 3] } };
+      return { content: [{ type: 'text', text: JSON.stringify(data) }] };
+    }
     throw new Error(`Unknown tool: ${req.params.name}`);
   });
 
@@ -69,10 +110,9 @@ export function createDownstreamServer(): Server {
 }
 
 // Run as standalone stdio server when executed directly
-const isMain = process.argv[1] && (
-  process.argv[1].endsWith('/echo-server.ts') ||
-  process.argv[1].endsWith('/echo-server.js')
-);
+const isMain =
+  process.argv[1] &&
+  (process.argv[1].endsWith('/echo-server.ts') || process.argv[1].endsWith('/echo-server.js'));
 
 if (isMain) {
   const server = createDownstreamServer();
