@@ -1,71 +1,44 @@
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
-import type { ClientPool } from '../pool/pool.js';
+import type { BackendAdapter } from '../backend/types.js';
 import type { AllowlistEngine } from '../allowlist/engine.js';
-import type { AgentConfig, SecurityConfig } from '../config/schema.js';
+import type { AgentConfig } from '../config/schema.js';
 import { sanitizeToolDescription } from './sanitizer.js';
-import { buildHttpTools, executeHttp } from '../tools/http.js';
-import { buildExecTool } from '../tools/exec.js';
 import { childLogger } from '../util/logger.js';
 
 const log = childLogger('registry');
 
 export class ToolRegistry {
-  private toolIndex = new Map<string, { mcpId: string; originalName: string }>();
   private cachedTools: Tool[] = [];
-  private builtinTools: Tool[] = [];
 
   constructor(
-    private pool: ClientPool,
+    private adapters: BackendAdapter[],
     private allowlist: AllowlistEngine,
-    private agents: Record<string, AgentConfig>,
-    private security: SecurityConfig,
-    private builtins: Set<string> = new Set()
-  ) {
-    this.rebuildBuiltins();
-  }
+    private agents: Record<string, AgentConfig>
+  ) {}
 
-  private rebuildBuiltins(): void {
-    this.builtinTools = [];
-    if (this.builtins.has('http')) this.builtinTools.push(...buildHttpTools());
-    if (this.builtins.has('exec')) this.builtinTools.push(buildExecTool());
-  }
-
-  reloadAgents(
-    agents: Record<string, AgentConfig>,
-    security: SecurityConfig,
-    builtins?: Set<string>
-  ): void {
+  reloadAgents(agents: Record<string, AgentConfig>): void {
     this.agents = agents;
-    this.security = security;
-    if (builtins) {
-      this.builtins = builtins;
-      this.rebuildBuiltins();
-    }
+  }
+
+  setAdapters(adapters: BackendAdapter[]): void {
+    this.adapters = adapters;
   }
 
   async refresh(): Promise<void> {
     const tools: Tool[] = [];
 
-    for (const mcpId of this.pool.getMcpIds()) {
+    for (const adapter of this.adapters) {
       try {
-        const mcpTools = await this.pool.listTools(mcpId);
-        for (const tool of mcpTools) {
-          const namespacedName = `${mcpId}/${tool.name}`;
-          this.toolIndex.set(namespacedName, { mcpId, originalName: tool.name });
+        const adapterTools = await adapter.listTools();
+        for (const tool of adapterTools) {
           tools.push({
             ...tool,
-            name: namespacedName,
-            description: sanitizeToolDescription(namespacedName, tool.description),
+            description: sanitizeToolDescription(tool.name, tool.description),
           });
         }
       } catch (err) {
-        log.warn({ err, mcpId }, 'Failed to list tools from MCP');
+        log.warn({ err, adapterId: adapter.id }, 'Failed to list tools from adapter');
       }
-    }
-
-    // Register builtins
-    for (const tool of this.builtinTools) {
-      tools.push(tool);
     }
 
     this.cachedTools = tools;
@@ -89,28 +62,37 @@ export class ToolRegistry {
     args: Record<string, unknown>,
     agentId: string
   ): Promise<unknown> {
-    // Built-in HTTP tools
-    const httpMatch = namespacedName.match(/^http\/(get|post|put|patch|delete|head)$/);
-    if (httpMatch) {
-      const method = httpMatch[1] as 'get' | 'post' | 'put' | 'patch' | 'delete' | 'head';
-      const agent = this.agents[agentId];
-      if (!agent) throw new Error(`Unknown agent: ${agentId}`);
-      return executeHttp(method, args, agent, this.security);
+    // Find the adapter that owns this tool by matching its prefix
+    for (const adapter of this.adapters) {
+      const prefix = getAdapterPrefix(adapter);
+      if (prefix && namespacedName.startsWith(prefix)) {
+        const result = await adapter.call({ tool: namespacedName, args, agentId });
+        if (!result.success) {
+          throw new Error(result.error ?? 'Tool call failed');
+        }
+        return result.data;
+      }
     }
 
-    // Built-in exec tool — caller handles exec logic before calling here
-    if (namespacedName === 'exec/run') {
-      throw new Error('exec/run must be handled by the gateway pipeline, not called directly');
-    }
-
-    // Downstream MCP tools
-    const entry = this.toolIndex.get(namespacedName);
-    if (!entry) throw new Error(`Unknown tool: ${namespacedName}`);
-
-    return this.pool.callTool(entry.mcpId, entry.originalName, args);
+    throw new Error(`Unknown tool: ${namespacedName}`);
   }
 
   getAllTools(): Tool[] {
     return this.cachedTools;
   }
+
+  async stopAll(): Promise<void> {
+    await Promise.allSettled(this.adapters.map((a) => a.stop()));
+  }
+}
+
+/** Map adapter ID conventions to the tool name prefix they own. */
+function getAdapterPrefix(adapter: BackendAdapter): string | null {
+  const id = adapter.id;
+  if (id.startsWith('mcp:')) return id.slice(4) + '/';
+  if (id === 'builtin:exec') return 'exec/';
+  if (id === 'builtin:http') return 'http/';
+  if (id.startsWith('cli:')) return id.slice(4) + '/';
+  if (id.startsWith('api:')) return id.slice(4) + '/';
+  return null;
 }

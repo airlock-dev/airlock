@@ -1,5 +1,4 @@
 import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
-import { executeExec } from '../../tools/exec.js';
 import type { Middleware, ToolCallResponse } from '../types.js';
 
 export function executeMiddleware(): Middleware {
@@ -7,16 +6,7 @@ export function executeMiddleware(): Middleware {
     const { registry, auditLogger } = ctx.deps;
 
     try {
-      let callResult: unknown;
-
-      if (ctx.toolName === 'exec/run') {
-        const command = ctx.args['command'] as string;
-        const cwd = ctx.args['cwd'] as string | undefined;
-        const timeoutMs = ctx.args['timeout_ms'] as number | undefined;
-        callResult = await executeExec(command, ctx.agentConfig, cwd, timeoutMs);
-      } else {
-        callResult = await registry.call(ctx.toolName, ctx.args, ctx.agentId);
-      }
+      const callResult = await registry.call(ctx.toolName, ctx.args, ctx.agentId);
 
       const duration = Date.now() - ctx.startedAt;
       auditLogger.log({
