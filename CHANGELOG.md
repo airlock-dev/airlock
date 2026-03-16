@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.10](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.9...airlock-bot-v0.2.10) (2026-03-16)
+
+
+### Bug Fixes
+
+* force exit after 3s if graceful shutdown hangs ([#41](https://github.com/airlock-dev/airlock/issues/41)) ([fe96703](https://github.com/airlock-dev/airlock/commit/fe967034da8580768cab7e7c48b377a3fb2c240f))
+
 ## [0.2.9](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.8...airlock-bot-v0.2.9) (2026-03-16)
 
 
