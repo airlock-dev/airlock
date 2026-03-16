@@ -1,0 +1,29 @@
+import Foundation
+
+enum Constants {
+    static let defaultDashboardURL = "http://127.0.0.1:4112"
+    static let sseEventsPath = "/events"
+    static let approvePath = "/approve"
+    static let denyPath = "/deny"
+
+    enum UserDefaultsKeys {
+        static let dashboardURL = "dashboardURL"
+        static let soundEnabled = "soundEnabled"
+    }
+
+    enum NotificationCategory {
+        static let approvalRequest = "APPROVAL_REQUEST"
+        static let approveAction = "APPROVE_ACTION"
+        static let denyAction = "DENY_ACTION"
+    }
+
+    static let maxResolvedRequests = 20
+    static let popoverWidth: CGFloat = 360
+    static let popoverMaxHeight: CGFloat = 500
+
+    enum Reconnect {
+        static let initialDelay: TimeInterval = 1.0
+        static let maxDelay: TimeInterval = 30.0
+        static let multiplier: Double = 2.0
+    }
+}
