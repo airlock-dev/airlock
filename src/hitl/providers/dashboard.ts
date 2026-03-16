@@ -139,7 +139,14 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #0d1117; color: #c9d1d9; padding: 20px; }
-  h1 { font-size: 18px; margin-bottom: 16px; color: #58a6ff; }
+  header { display: flex; align-items: center; margin-bottom: 16px; gap: 12px; }
+  h1 { font-size: 18px; color: #58a6ff; }
+  .settings-btn { background: none; border: 1px solid #30363d; border-radius: 6px; color: #8b949e; cursor: pointer; padding: 4px 8px; font-size: 12px; }
+  .settings-btn:hover { border-color: #58a6ff; color: #c9d1d9; }
+  #settings { display: none; background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 12px 16px; margin-bottom: 12px; }
+  #settings.open { display: block; }
+  #settings label { display: flex; align-items: center; gap: 8px; font-size: 13px; color: #c9d1d9; cursor: pointer; margin-bottom: 6px; }
+  #settings label:last-child { margin-bottom: 0; }
   #empty { color: #484f58; font-style: italic; }
   .card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; margin-bottom: 12px; }
   .card.approved { border-color: #238636; opacity: 0.5; }
@@ -160,12 +167,28 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
 </style>
 </head>
 <body>
-<h1>Airlock Approvals</h1>
+<header>
+  <h1>Airlock Approvals</h1>
+  <button class="settings-btn" onclick="document.getElementById('settings').classList.toggle('open')">Settings</button>
+</header>
+<div id="settings">
+  <label><input type="checkbox" id="notifs" checked> Browser notifications</label>
+  <label><input type="checkbox" id="sound" checked> Sound</label>
+</div>
 <div id="list"><div id="empty">No pending requests</div></div>
 <script>
 const list = document.getElementById('list');
 const empty = document.getElementById('empty');
 const cards = new Map();
+
+// Settings — persisted in localStorage
+const notifsEl = document.getElementById('notifs');
+const soundEl = document.getElementById('sound');
+
+notifsEl.checked = localStorage.getItem('airlock:notifs') !== 'false';
+soundEl.checked = localStorage.getItem('airlock:sound') !== 'false';
+notifsEl.onchange = () => localStorage.setItem('airlock:notifs', notifsEl.checked);
+soundEl.onchange = () => localStorage.setItem('airlock:sound', soundEl.checked);
 
 function render(req) {
   const el = document.createElement('div');
@@ -205,10 +228,11 @@ es.onmessage = (e) => {
   const msg = JSON.parse(e.data);
   if (msg.type === 'new') {
     render(msg.request);
-    if (Notification.permission === 'granted') {
-      new Notification('Airlock: ' + msg.request.tool, {
+    if (notifsEl.checked && Notification.permission === 'granted') {
+      const n = new Notification('Airlock: ' + msg.request.tool, {
         body: 'agent: ' + msg.request.agentId + '\\n' + msg.request.code,
         tag: msg.request.code,
+        silent: !soundEl.checked,
       });
     }
   }
