@@ -43,7 +43,7 @@ function createSingleProvider(cfg: HitlProviderConfig, approvalApi: ApprovalApi)
     case 'tui':
       return new TuiHitlProvider(approvalApi);
     case 'macos':
-      return new MacosHitlProvider(approvalApi);
+      return new MacosHitlProvider(approvalApi, { sound: cfg.sound });
     case 'dashboard':
       return new DashboardHitlProvider({ port: cfg.port }, approvalApi);
     case 'stdio':

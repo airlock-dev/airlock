@@ -165,6 +165,7 @@ export const ApprovalProviderConfig = z.discriminatedUnion('type', [
   }),
   z.object({
     type: z.literal('macos'),
+    sound: z.string().optional(), // macOS sound name, e.g. "Submarine", "Glass", "Ping"
   }),
   z.object({
     type: z.literal('dashboard'),
@@ -184,7 +185,7 @@ export const ApprovalsConfig = z.object({
     .union([ApprovalProviderConfig, z.array(ApprovalProviderConfig).min(1)])
     .default({ type: 'stdio' }),
   timeout_ms: z.number().int().min(1000).default(300000), // 5 minutes
-  batch_window_ms: z.number().int().min(0).default(10000),
+  batch_window_ms: z.number().int().min(0).default(0),
 });
 export type ApprovalsConfig = z.infer<typeof ApprovalsConfig>;
 
