@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.5](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.4...airlock-bot-v0.2.5) (2026-03-16)
+
+
+### Features
+
+* add tilde expansion for config paths and --pretty log output ([#26](https://github.com/airlock-dev/airlock/issues/26)) ([0809d41](https://github.com/airlock-dev/airlock/commit/0809d416e5f610cb967355bfa3738dc71c7202c4))
+
 ## [0.2.4](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.3...airlock-bot-v0.2.4) (2026-03-16)
 
 
