@@ -3,8 +3,10 @@ name: CI
 on:
   push:
     branches: [main]
+    paths-ignore: [macos-companion/**]
   pull_request:
     branches: [main]
+    paths-ignore: [macos-companion/**]
 
 permissions:
   contents: read
