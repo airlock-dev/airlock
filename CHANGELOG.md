@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.4](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.3...airlock-bot-v0.2.4) (2026-03-16)
+
+
+### Bug Fixes
+
+* escape AppleScript strings and improve macOS approval dialog ([#24](https://github.com/airlock-dev/airlock/issues/24)) ([cbfd071](https://github.com/airlock-dev/airlock/commit/cbfd071c3afa2b3aea7071608d618bc0c5b8044b))
+
 ## [0.2.3](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.2...airlock-bot-v0.2.3) (2026-03-15)
 
 
