@@ -129,6 +129,8 @@ export async function runStdioMode(
   // Graceful shutdown
   const shutdown = async () => {
     log.info('Shutting down stdio mode');
+    const forceExit = setTimeout(() => process.exit(0), 3000);
+    forceExit.unref();
     try {
       watcher.stop();
       await registry.stopAll();
