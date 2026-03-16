@@ -11,7 +11,7 @@ let package = Package(
         .executableTarget(
             name: "AirlockCompanion",
             path: "AirlockCompanion",
-            exclude: ["Info.plist"]
+            exclude: ["Info.plist", "Entitlements.plist", "AppIcon.icns"]
         ),
         .testTarget(
             name: "AirlockCompanionTests",

@@ -40,11 +40,14 @@ jobs:
         run: swift scripts/generate-icon.swift AirlockCompanion
 
       - name: Create .app bundle
+        env:
+          VERSION: ${{ github.ref_name }}
         run: |
           APP_DIR=.build/AirlockCompanion.app
           CONTENTS=$APP_DIR/Contents
           MACOS=$CONTENTS/MacOS
           RESOURCES=$CONTENTS/Resources
+          APP_VERSION=${VERSION#companion-v}
 
           rm -rf "$APP_DIR"
           mkdir -p "$MACOS" "$RESOURCES"
@@ -52,7 +55,7 @@ jobs:
           cp .build/arm64-apple-macosx/release/AirlockCompanion "$MACOS/AirlockCompanion"
           cp AirlockCompanion/AppIcon.icns "$RESOURCES/AppIcon.icns"
 
-          cat > "$CONTENTS/Info.plist" << 'PLIST'
+          cat > "$CONTENTS/Info.plist" << PLIST
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0">
@@ -64,9 +67,9 @@ jobs:
               <key>CFBundleIdentifier</key>
               <string>bot.airlock.companion</string>
               <key>CFBundleVersion</key>
-              <string>${GITHUB_REF_NAME#companion-v}</string>
+              <string>${APP_VERSION}</string>
               <key>CFBundleShortVersionString</key>
-              <string>${GITHUB_REF_NAME#companion-v}</string>
+              <string>${APP_VERSION}</string>
               <key>CFBundleExecutable</key>
               <string>AirlockCompanion</string>
               <key>CFBundlePackageType</key>
@@ -99,20 +102,39 @@ jobs:
           APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          # Create zip for notarization
+          # Create zip for notarization submission
           ditto -c -k --keepParent .build/AirlockCompanion.app .build/AirlockCompanion-notarize.zip
 
-          # Submit for notarization
           xcrun notarytool submit .build/AirlockCompanion-notarize.zip \
             --apple-id "$APPLE_ID" \
             --password "$APPLE_ID_PASSWORD" \
             --team-id "$APPLE_TEAM_ID" \
             --wait
 
-          # Staple the notarization ticket
           xcrun stapler staple .build/AirlockCompanion.app
 
-      - name: Create release archive
+      - name: Create DMG
+        run: |
+          DMG_DIR=$RUNNER_TEMP/dmg-staging
+          mkdir -p "$DMG_DIR"
+
+          # Copy app into staging
+          cp -R .build/AirlockCompanion.app "$DMG_DIR/"
+
+          # Create symlink to Applications
+          ln -s /Applications "$DMG_DIR/Applications"
+
+          # Create DMG
+          hdiutil create -volname "Airlock Companion" \
+            -srcfolder "$DMG_DIR" \
+            -ov -format UDZO \
+            .build/AirlockCompanion.dmg
+
+          # Sign the DMG too
+          codesign --force --sign "Developer ID Application: ${{ secrets.APPLE_TEAM_NAME }}" \
+            .build/AirlockCompanion.dmg
+
+      - name: Create zip archive
         run: |
           cd .build
           ditto -c -k --keepParent AirlockCompanion.app AirlockCompanion.zip
@@ -120,13 +142,65 @@ jobs:
       - name: Upload to GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ github.ref_name }}
         run: |
-          VERSION=${GITHUB_REF_NAME#companion-v}
-          gh release create "$GITHUB_REF_NAME" \
-            --title "Airlock Companion v$VERSION" \
+          APP_VERSION=${VERSION#companion-v}
+          gh release create "$VERSION" \
+            --title "Airlock Companion v$APP_VERSION" \
             --notes "macOS companion app for Airlock HITL approvals.
 
-          Download \`AirlockCompanion.zip\`, unzip, and drag to Applications.
+          **Install:**
+          - **DMG** (recommended): Download \`AirlockCompanion.dmg\`, open, drag to Applications
+          - **Zip**: Download \`AirlockCompanion.zip\`, unzip, move to Applications
+          - **Homebrew**: \`brew install airlock-dev/tap/airlock-companion\`
 
           Requires macOS 14+." \
+            .build/AirlockCompanion.dmg \
             .build/AirlockCompanion.zip
+
+      - name: Generate app token for tap repo
+        uses: actions/create-github-app-token@v2
+        id: app-token
+        with:
+          app-id: ${{ vars.RELEASE_BOT_APP_ID }}
+          private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
+          repositories: homebrew-tap
+
+      - name: Update Homebrew tap
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          APP_VERSION=${VERSION#companion-v}
+          SHA256=$(shasum -a 256 .build/AirlockCompanion.zip | awk '{print $1}')
+
+          # Clone tap repo using the release bot app token
+          cd $RUNNER_TEMP
+          git clone https://x-access-token:${{ steps.app-token.outputs.token }}@github.com/airlock-dev/homebrew-tap.git
+          cd homebrew-tap
+
+          # Update cask
+          cat > Casks/airlock-companion.rb << CASK
+          cask "airlock-companion" do
+            version "${APP_VERSION}"
+            sha256 "${SHA256}"
+
+            url "https://github.com/airlock-dev/airlock/releases/download/companion-v#{version}/AirlockCompanion.zip"
+            name "Airlock Companion"
+            desc "macOS menu bar companion for Airlock HITL approvals"
+            homepage "https://airlock.bot"
+
+            depends_on macos: ">= :sonoma"
+
+            app "AirlockCompanion.app"
+
+            zap trash: [
+              "~/Library/Preferences/bot.airlock.companion.plist",
+            ]
+          end
+          CASK
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Casks/airlock-companion.rb
+          git commit -m "Update airlock-companion to v${APP_VERSION}"
+          git push

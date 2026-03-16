@@ -39,10 +39,11 @@ final class SSEClient: ObservableObject {
         let currentBaseURL = baseURL
 
         streamTask = Task.detached { [weak self] in
+            let weakSelf = self
             var reconnectDelay = Constants.Reconnect.initialDelay
 
             while !Task.isCancelled {
-                await MainActor.run { self?.connectionState = .connecting }
+                await MainActor.run { weakSelf?.connectionState = .connecting }
 
                 do {
                     guard let sseURL = URL(string: currentBaseURL + Constants.sseEventsPath),
@@ -62,7 +63,7 @@ final class SSEClient: ObservableObject {
                     }
 
                     // Server is up — mark as connected and start SSE stream
-                    await MainActor.run { self?.connectionState = .connected }
+                    await MainActor.run { weakSelf?.connectionState = .connected }
                     reconnectDelay = Constants.Reconnect.initialDelay
 
                     // Use delegate-based streaming since URLSession.bytes(for:)
@@ -102,11 +103,11 @@ final class SSEClient: ObservableObject {
                     session.invalidateAndCancel()
 
                     if !Task.isCancelled {
-                        await MainActor.run { self?.connectionState = .disconnected(nil) }
+                        await MainActor.run { weakSelf?.connectionState = .disconnected(nil) }
                     }
                 } catch {
                     if Task.isCancelled { break }
-                    await MainActor.run { self?.connectionState = .disconnected(error.localizedDescription) }
+                    await MainActor.run { weakSelf?.connectionState = .disconnected(error.localizedDescription) }
                 }
 
                 if Task.isCancelled { break }
