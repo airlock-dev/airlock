@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.8](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.7...airlock-bot-v0.2.8) (2026-03-16)
+
+
+### Features
+
+* macOS companion menu bar app for HITL approvals ([#33](https://github.com/airlock-dev/airlock/issues/33)) ([46a58cb](https://github.com/airlock-dev/airlock/commit/46a58cb3273962a38b2ab0f7a3138601464ad1c4))
+
+
+### Bug Fixes
+
+* **sse:** prevent session drops and stream encoding errors ([#35](https://github.com/airlock-dev/airlock/issues/35)) ([222fa83](https://github.com/airlock-dev/airlock/commit/222fa8368ecac717332d00c1701d4748adf27787))
+
 ## [0.2.7](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.6...airlock-bot-v0.2.7) (2026-03-16)
 
 
