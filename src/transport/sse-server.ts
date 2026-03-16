@@ -25,6 +25,16 @@ export async function sseServerPlugin(
   const { secret } = opts;
   const sessions = new Map<string, { transport: SSEServerTransport; profileId: string }>();
 
+  // Don't parse request bodies — handlePostMessage reads the raw stream
+  // and fails with "stream encoding should not be set" if Fastify parses first.
+  app.removeAllContentTypeParsers();
+  app.addContentTypeParser(
+    '*',
+    (_req: FastifyRequest, _payload: unknown, done: (err: null) => void) => {
+      done(null);
+    }
+  );
+
   function checkAgentAuth(
     request: FastifyRequest,
     reply: FastifyReply,
@@ -89,8 +99,10 @@ export async function sseServerPlugin(
     const server = createAgentServer(deps);
     await connectAgentServer(server, transport);
 
-    // Clean up when client disconnects
-    request.raw.on('close', () => {
+    // Clean up when client disconnects — listen on the response socket,
+    // not the request, because request 'close' fires immediately on GET
+    // once the body is consumed (which is instant for GET requests).
+    reply.raw.on('close', () => {
       sessions.delete(transport.sessionId);
       transport.close().catch(() => {});
     });
