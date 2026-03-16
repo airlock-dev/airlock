@@ -6,6 +6,7 @@ import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { ClientPool } from '../pool/pool.js';
 import { getMcpConfigs, GatewayConfig } from '../config/schema.js';
+import { checkSuspiciousPatterns, SUSPICIOUS_PATTERNS } from '../registry/sanitizer.js';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -16,6 +17,7 @@ interface ToolEntry {
   description: string;
   annotations: NonNullable<Tool['annotations']>;
   decision: Decision;
+  suspiciousPatterns: string[];
 }
 
 interface ServerInfo {
@@ -25,7 +27,11 @@ interface ServerInfo {
 
 // ── Annotation helpers ────────────────────────────────────────────────────────
 
-function defaultDecision(annotations: NonNullable<Tool['annotations']>): Decision {
+function defaultDecision(
+  annotations: NonNullable<Tool['annotations']>,
+  suspiciousPatterns?: string[]
+): Decision {
+  if (suspiciousPatterns && suspiciousPatterns.length > 0) return 'deny';
   if (annotations.destructiveHint || annotations.openWorldHint) return 'ask';
   return 'allow';
 }
@@ -93,6 +99,42 @@ function renderYaml(agentName: string, entries: ToolEntry[]): string {
   return lines.join('\n');
 }
 
+// ── Terminal measurement ──────────────────────────────────────────────────────
+
+/** Strip ANSI escape sequences to get the visible character length. */
+function visibleLength(s: string): number {
+  // eslint-disable-next-line no-control-regex
+  return s.replace(/\x1b\[[0-9;]*m/g, '').length;
+}
+
+/** How many terminal rows a line occupies (accounts for wrapping). */
+function terminalRows(line: string, termCols: number): number {
+  const len = visibleLength(line);
+  if (len === 0) return 1;
+  return Math.ceil(len / termCols);
+}
+
+// ── Word wrap helper ──────────────────────────────────────────────────────────
+
+function wordWrap(text: string, width: number): string[] {
+  const lines: string[] = [];
+  for (const paragraph of text.split('\n')) {
+    if (paragraph.length <= width) {
+      lines.push(paragraph);
+      continue;
+    }
+    let remaining = paragraph;
+    while (remaining.length > width) {
+      let breakAt = remaining.lastIndexOf(' ', width);
+      if (breakAt <= 0) breakAt = width;
+      lines.push(remaining.slice(0, breakAt));
+      remaining = remaining.slice(breakAt).trimStart();
+    }
+    if (remaining) lines.push(remaining);
+  }
+  return lines;
+}
+
 // ── TUI row model ─────────────────────────────────────────────────────────────
 
 type Row =
@@ -140,6 +182,114 @@ function buildRows(entries: ToolEntry[], serverInfoMap: Map<string, ServerInfo>)
 
 // ── TUI ───────────────────────────────────────────────────────────────────────
 
+function renderInspect(entry: ToolEntry, inspectScroll: number): void {
+  const out = process.stdout;
+  out.write(`${ESC}H${ESC}2J`);
+
+  const dColor = decisionColor(entry.decision);
+  out.write(`\n${BOLD}${CYAN}  Inspect: ${entry.namespacedName}${RESET}\n`);
+  out.write(`${DIM}  ${'─'.repeat(70)}${RESET}\n`);
+  out.write(`${DIM}  [j/k] scroll  [i/esc] back  [a] allow  [s] ask  [d] deny${RESET}\n`);
+  out.write(`${DIM}  ${'─'.repeat(70)}${RESET}\n\n`);
+
+  // Status line
+  const badge = annotationBadges(entry.annotations);
+  out.write(
+    `  ${dColor}${BOLD}${decisionLabel(entry.decision).trim()}${RESET}  ${badge ? `${DIM}${badge}${RESET}  ` : ''}`
+  );
+  if (entry.suspiciousPatterns.length > 0) {
+    out.write(`${RED}⚠ injection${RESET}`);
+  }
+  out.write('\n\n');
+
+  // Build wrapped + highlighted lines
+  const wrapped = wordWrap(entry.description || '(no description)', 72);
+  const lines: string[] = [];
+  for (const line of wrapped) {
+    let highlighted = line;
+    for (const pattern of SUSPICIOUS_PATTERNS) {
+      highlighted = highlighted.replace(pattern, (match) => `${RED}${BOLD}${match}${RESET}${DIM}`);
+    }
+    lines.push(highlighted);
+  }
+
+  // Scrollable viewport — reserve lines for header (7) and footer (3)
+  const termRows = process.stdout.rows || 40;
+  const viewportHeight = termRows - 10;
+  const maxScroll = Math.max(0, lines.length - viewportHeight);
+  const scroll = Math.min(inspectScroll, maxScroll);
+  const visible = lines.slice(scroll, scroll + viewportHeight);
+
+  for (const line of visible) {
+    out.write(`  ${DIM}${line}${RESET}\n`);
+  }
+
+  // Scroll indicator
+  if (lines.length > viewportHeight) {
+    const parts: string[] = [];
+    if (scroll > 0) parts.push(`↑ ${scroll} above`);
+    const below = lines.length - scroll - viewportHeight;
+    if (below > 0) parts.push(`↓ ${below} below`);
+    out.write(`\n${DIM}  ${parts.join('  ')}${RESET}\n`);
+  }
+}
+
+/** Render a row into output lines (no trailing \n). */
+function renderRow(row: Row, isSel: boolean): string[] {
+  const lines: string[] = [];
+
+  if (row.type === 'header') {
+    const summary = `${GREEN}${row.allow}✓${RESET} ${YELLOW}${row.ask}?${RESET} ${RED}${row.deny}✗${RESET}`;
+    const selMark = isSel ? `${BOLD}${YELLOW}▸ ` : `  `;
+    const nameStr = `${BOLD}${BLUE}${row.provider}${RESET}`;
+    const serverStr = row.serverInfo
+      ? `${DIM}${row.serverInfo.name} v${row.serverInfo.version}${RESET}`
+      : '';
+    lines.push(''); // blank line before header
+    lines.push(
+      ` ${selMark}${nameStr}  ${DIM}(${row.total} tools)${RESET}  ${summary}${serverStr ? `  ${serverStr}` : ''}`
+    );
+    if (isSel) {
+      lines.push(`   ${DIM}↳ press a/s/d to set all ${row.total} tools in this provider${RESET}`);
+    }
+    lines.push(`   ${DIM}${'╌'.repeat(55)}${RESET}`);
+  } else {
+    const { entry } = row;
+    const dColor = decisionColor(entry.decision);
+    const prefix = isSel ? `${BOLD}${YELLOW} ▸ ` : `   `;
+    const toolName = entry.namespacedName.split('/').slice(1).join('/');
+    const namePart = `${isSel ? BOLD : ''}${toolName}${RESET}`;
+    const badge = annotationBadges(entry.annotations);
+    const badgeColor = entry.annotations.destructiveHint
+      ? RED
+      : entry.annotations.openWorldHint
+        ? YELLOW
+        : entry.annotations.readOnlyHint
+          ? GREEN
+          : DIM;
+    const injectionBadge = entry.suspiciousPatterns.length > 0 ? `  ${RED}⚠ injection${RESET}` : '';
+
+    lines.push(
+      `${prefix}${dColor}[${decisionLabel(entry.decision)}]${RESET}  ${namePart}  ${badge ? `${badgeColor}${badge}${RESET}` : ''}${injectionBadge}`
+    );
+
+    if (isSel && entry.description) {
+      const descIndent = 7; // "       "
+      const termCols = process.stdout.columns || 80;
+      const maxDesc = Math.max(20, termCols - descIndent - 1);
+      // Collapse newlines so the description stays on one terminal line
+      const flat = entry.description.replace(/\s*\n\s*/g, ' ');
+      const desc = flat.length > maxDesc ? flat.slice(0, maxDesc) + '…' : flat;
+      lines.push(`       ${DIM}${desc}${RESET}`);
+      if (entry.suspiciousPatterns.length > 0) {
+        lines.push(`       ${RED}⚠ suspicious patterns — press [i] to inspect${RESET}`);
+      }
+    }
+  }
+
+  return lines;
+}
+
 function render(
   entries: ToolEntry[],
   serverInfoMap: Map<string, ServerInfo>,
@@ -147,88 +297,111 @@ function render(
   agentName: string
 ): void {
   const out = process.stdout;
+  const termHeight = process.stdout.rows || 40;
+  const termCols = process.stdout.columns || 80;
   out.write(`${ESC}H${ESC}2J`);
 
-  out.write(`\n${BOLD}${CYAN}  Airlock — Configure Agent: ${agentName}${RESET}\n`);
-  out.write(`${DIM}  ${'─'.repeat(70)}${RESET}\n`);
-  out.write(
-    `${DIM}  [a] allow  [s] ask  [d] deny  [j/k] navigate  [enter] confirm  [q] quit${RESET}\n`
-  );
-  out.write(`${DIM}  on a provider header, a/s/d applies to all tools in that provider${RESET}\n`);
-  out.write(`${DIM}  ${'─'.repeat(70)}${RESET}\n\n`);
-
+  // Check if current row has suspicious patterns for highlighting the [i] hint
   const rows = buildRows(entries, serverInfoMap);
+  const currentRow = rows[rowIdx];
+  const currentHasSuspicious =
+    currentRow?.type === 'entry' && currentRow.entry.suspiciousPatterns.length > 0;
+  const inspectHint = currentHasSuspicious
+    ? `${RED}${BOLD}[i] inspect${RESET}`
+    : `${DIM}[i] inspect${RESET}`;
 
-  const visible = 28;
-  const start = Math.max(0, Math.min(rowIdx - Math.floor(visible / 2), rows.length - visible));
-  const slice = rows.slice(start, start + visible);
+  // Header (6 lines: blank, title, rule, keys, hint, rule+blank)
+  const headerLines = [
+    '',
+    `${BOLD}${CYAN}  Airlock — Configure Agent: ${agentName}${RESET}`,
+    `${DIM}  ${'─'.repeat(70)}${RESET}`,
+    `${DIM}  [a] allow  [s] ask  [d] deny  [j/k] move  [{/}] section  ${inspectHint}${DIM}  [enter] confirm  [q] quit${RESET}`,
+    `${DIM}  on a provider header, a/s/d applies to all tools in that provider${RESET}`,
+    `${DIM}  ${'─'.repeat(70)}${RESET}`,
+  ];
 
-  for (let i = 0; i < slice.length; i++) {
-    const row = slice[i];
-    const absIdx = start + i;
-    const isSel = absIdx === rowIdx;
+  // Footer (3 lines: blank, scroll indicator, summary)
+  const footerScrollParts: string[] = [];
+  const summaryLine =
+    `${DIM}  ${entries.filter((e) => e.decision === 'allow').length} allow  ` +
+    `${entries.filter((e) => e.decision === 'ask').length} ask  ` +
+    `${entries.filter((e) => e.decision === 'deny').length} deny  ` +
+    `/ ${entries.length} total${RESET}`;
 
-    if (row.type === 'header') {
-      const summary = `${GREEN}${row.allow}✓${RESET} ${YELLOW}${row.ask}?${RESET} ${RED}${row.deny}✗${RESET}`;
-      const selMark = isSel ? `${BOLD}${YELLOW}▸ ` : `  `;
-      const nameStr = `${BOLD}${BLUE}${row.provider}${RESET}`;
-      const serverStr = row.serverInfo
-        ? `${DIM}${row.serverInfo.name} v${row.serverInfo.version}${RESET}`
-        : '';
-      out.write(
-        `\n ${selMark}${nameStr}  ${DIM}(${row.total} tools)${RESET}  ${summary}${serverStr ? `  ${serverStr}` : ''}\n`
-      );
-      if (isSel) {
-        out.write(
-          `   ${DIM}↳ press a/s/d to set all ${row.total} tools in this provider${RESET}\n`
-        );
-      }
-      out.write(`   ${DIM}${'╌'.repeat(55)}${RESET}\n`);
+  const headerScreenRows = headerLines.reduce((sum, l) => sum + terminalRows(l, termCols), 0);
+  const footerScreenRows = 2; // scroll + summary
+  const contentHeight = termHeight - headerScreenRows - footerScreenRows;
+
+  // Pre-render all rows, track screen rows each line takes
+  const allRendered: { rowIndex: number; lines: string[]; screenRows: number[] }[] = [];
+  for (let i = 0; i < rows.length; i++) {
+    const lines = renderRow(rows[i], i === rowIdx);
+    const screenRows = lines.map((l) => terminalRows(l, termCols));
+    allRendered.push({ rowIndex: i, lines, screenRows });
+  }
+
+  // Flatten to line-level with screen-row costs
+  const flatLines: { line: string; cost: number }[] = [];
+  for (const rendered of allRendered) {
+    for (let j = 0; j < rendered.lines.length; j++) {
+      flatLines.push({ line: rendered.lines[j], cost: rendered.screenRows[j] });
+    }
+  }
+  const totalScreenRows = flatLines.reduce((sum, f) => sum + f.cost, 0);
+
+  // Find the screen-row offset of the selected row's midpoint
+  let selectedStart = 0;
+  for (let i = 0; i < rowIdx; i++) {
+    const r = allRendered[i];
+    selectedStart += r.screenRows.reduce((a, b) => a + b, 0);
+  }
+  const selectedCost = allRendered[rowIdx].screenRows.reduce((a, b) => a + b, 0);
+  const selectedMid = selectedStart + Math.floor(selectedCost / 2);
+
+  // Scroll so the selected row is roughly centered
+  let scrollCost = Math.max(0, selectedMid - Math.floor(contentHeight / 2));
+  scrollCost = Math.max(0, Math.min(scrollCost, totalScreenRows - contentHeight));
+
+  // Collect lines that fit in the viewport by screen-row budget
+  const viewportLines: string[] = [];
+  let consumed = 0;
+  let usedScreenRows = 0;
+  let linesAbove = 0;
+  let linesBelow = 0;
+  for (const flat of flatLines) {
+    if (consumed + flat.cost <= scrollCost) {
+      // Before viewport
+      consumed += flat.cost;
+      linesAbove++;
+    } else if (usedScreenRows + flat.cost <= contentHeight) {
+      // Inside viewport
+      viewportLines.push(flat.line);
+      usedScreenRows += flat.cost;
+      consumed += flat.cost;
     } else {
-      const { entry } = row;
-      const isCurEntry = isSel;
-      const dColor = decisionColor(entry.decision);
-      const prefix = isCurEntry ? `${BOLD}${YELLOW} ▸ ` : `   `;
-      const toolName = entry.namespacedName.split('/').slice(1).join('/');
-      const namePart = `${isCurEntry ? BOLD : ''}${toolName}${RESET}`;
-      const badge = annotationBadges(entry.annotations);
-      const badgeColor = entry.annotations.destructiveHint
-        ? RED
-        : entry.annotations.openWorldHint
-          ? YELLOW
-          : entry.annotations.readOnlyHint
-            ? GREEN
-            : DIM;
-
-      out.write(
-        `${prefix}${dColor}[${decisionLabel(entry.decision)}]${RESET}  ${namePart}  ${badge ? `${badgeColor}${badge}${RESET}` : ''}\n`
-      );
-
-      if (isCurEntry && entry.description) {
-        const desc =
-          entry.description.length > 110
-            ? entry.description.slice(0, 110) + '…'
-            : entry.description;
-        out.write(`       ${DIM}${desc}${RESET}\n`);
-      }
+      // After viewport
+      linesBelow++;
     }
   }
 
-  if (rows.length > visible) {
-    const above = start;
-    const below = rows.length - (start + visible);
-    const parts: string[] = [];
-    if (above > 0) parts.push(`↑ ${above} above`);
-    if (below > 0) parts.push(`↓ ${below} below`);
-    out.write(`\n${DIM}  ${parts.join('  ')}${RESET}\n`);
+  // Build scroll indicator
+  if (linesAbove > 0) footerScrollParts.push(`↑ ${linesAbove} above`);
+  if (linesBelow > 0) footerScrollParts.push(`↓ ${linesBelow} below`);
+  const scrollLine = footerScrollParts.length
+    ? `${DIM}  ${footerScrollParts.join('  ')}${RESET}`
+    : '';
+
+  // Pad viewport to fill remaining screen rows
+  while (usedScreenRows < contentHeight) {
+    viewportLines.push('');
+    usedScreenRows++;
   }
 
-  out.write(
-    `\n${DIM}  ${entries.filter((e) => e.decision === 'allow').length} allow  ` +
-      `${entries.filter((e) => e.decision === 'ask').length} ask  ` +
-      `${entries.filter((e) => e.decision === 'deny').length} deny  ` +
-      `/ ${entries.length} total${RESET}\n`
-  );
+  // Write everything
+  for (const line of headerLines) out.write(line + '\n');
+  for (const line of viewportLines) out.write(line + '\n');
+  out.write(scrollLine + '\n');
+  out.write(summaryLine);
 }
 
 // ── Help ──────────────────────────────────────────────────────────────────────
@@ -245,6 +418,30 @@ Options:
   -v, --verbose         Show MCP server output (default: suppressed)
   -h, --help            Show this help
 `;
+
+// ── Connection helpers ────────────────────────────────────────────────────
+
+/** Poll a provider until it connects or the deadline expires. Returns tools or null. */
+async function waitForProvider(
+  pool: ClientPool,
+  mcpId: string,
+  deadlineMs: number
+): Promise<Tool[] | null> {
+  const start = Date.now();
+  const interval = 1_000;
+  while (Date.now() - start < deadlineMs) {
+    await new Promise((r) => setTimeout(r, interval));
+    try {
+      return await Promise.race([
+        pool.listTools(mcpId),
+        new Promise<Tool[]>((_, reject) => setTimeout(() => reject(new Error('timeout')), 2_000)),
+      ]);
+    } catch {
+      // Still not ready — keep waiting
+    }
+  }
+  return null;
+}
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
@@ -277,41 +474,62 @@ export async function runConfigureAgent(argv: string[]): Promise<void> {
     process.exit(1);
   }
 
-  process.stdout.write(`\nConnecting to ${Object.keys(mcpConfigs).length} provider(s)…\n`);
+  const mcpIds = Object.keys(mcpConfigs);
+  process.stdout.write(`\nConnecting to ${mcpIds.length} provider(s)…\n`);
 
   const pool = new ClientPool(mcpConfigs, {
     stdioStderr: values.verbose ? 'inherit' : 'ignore',
   });
+
+  // Start all connections, give them an initial 15s window
   const connectPromise = pool.initialize();
-  const timeout = new Promise<void>((resolve) => setTimeout(resolve, 15_000));
-  await Promise.race([connectPromise, timeout]);
+  const initTimeout = new Promise<void>((resolve) => setTimeout(resolve, 15_000));
+  await Promise.race([connectPromise, initTimeout]);
 
   const entries: ToolEntry[] = [];
   const serverInfoMap = new Map<string, ServerInfo>();
 
-  for (const mcpId of Object.keys(mcpConfigs)) {
+  // Discover tools from each provider, with per-provider retry for slow ones
+  for (const mcpId of mcpIds) {
     process.stdout.write(`  ${mcpId}: `);
+
+    // First attempt — instant if already connected, fails fast if not
+    let ready = true;
+    let tools: Tool[] | null = null;
     try {
-      const tools = await Promise.race([
+      tools = await Promise.race([
         pool.listTools(mcpId),
-        new Promise<Tool[]>((_, reject) => setTimeout(() => reject(new Error('timeout')), 10_000)),
+        new Promise<Tool[]>((_, reject) => setTimeout(() => reject(new Error('timeout')), 2_000)),
       ]);
-      const info = pool.getServerInfo(mcpId);
-      if (info) serverInfoMap.set(mcpId, info);
-      const infoStr = info ? `${DIM}${info.name} v${info.version}${RESET}  ` : '';
-      process.stdout.write(`${infoStr}${GREEN}${tools.length} tools${RESET}\n`);
-      for (const tool of tools) {
-        const annotations = tool.annotations ?? {};
-        entries.push({
-          namespacedName: `${mcpId}/${tool.name}`,
-          description: tool.description ?? '',
-          annotations,
-          decision: defaultDecision(annotations),
-        });
-      }
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      process.stdout.write(`${RED}failed (${msg})${RESET}\n`);
+    } catch {
+      ready = false;
+    }
+    if (!ready) {
+      // Not ready yet — wait with visible status
+      process.stdout.write(`${YELLOW}connecting…${RESET}`);
+      tools = await waitForProvider(pool, mcpId, 30_000);
+    }
+
+    if (!tools) {
+      process.stdout.write(`\r  ${mcpId}: ${RED}timed out (not connected after 30s)${RESET}\n`);
+      continue;
+    }
+
+    const info = pool.getServerInfo(mcpId);
+    if (info) serverInfoMap.set(mcpId, info);
+    const infoStr = info ? `${DIM}${info.name} v${info.version}${RESET}  ` : '';
+    // Clear the "connecting…" text if present
+    process.stdout.write(`\r  ${mcpId}: ${infoStr}${GREEN}${tools.length} tools${RESET}\n`);
+    for (const tool of tools) {
+      const annotations = tool.annotations ?? {};
+      const suspicious = tool.description ? checkSuspiciousPatterns(tool.description) : [];
+      entries.push({
+        namespacedName: `${mcpId}/${tool.name}`,
+        description: tool.description ?? '',
+        annotations,
+        decision: defaultDecision(annotations, suspicious),
+        suspiciousPatterns: suspicious,
+      });
     }
   }
 
@@ -319,6 +537,24 @@ export async function runConfigureAgent(argv: string[]): Promise<void> {
     console.error('\nNo tools found. Check that your providers are reachable.');
     await pool.stop();
     process.exit(1);
+  }
+
+  // Pre-populate decisions from existing agent config
+  const agentName = values.agent;
+  const existingAgent = parsed.agents[agentName];
+  if (existingAgent) {
+    const allowSet = new Set(existingAgent.allow);
+    const askSet = new Set(existingAgent.ask);
+    const denySet = new Set(existingAgent.deny);
+    for (const entry of entries) {
+      if (allowSet.has(entry.namespacedName)) {
+        entry.decision = 'allow';
+      } else if (askSet.has(entry.namespacedName)) {
+        entry.decision = 'ask';
+      } else if (denySet.has(entry.namespacedName)) {
+        entry.decision = 'deny';
+      }
+    }
   }
 
   process.stdout.write(`\n${BOLD}Found ${entries.length} tools.${RESET} Press any key to start…`);
@@ -338,11 +574,19 @@ export async function runConfigureAgent(argv: string[]): Promise<void> {
   let rowIdx = 0;
   let done = false;
   let quit = false;
+  let inspectMode = false;
+  let inspectScroll = 0;
 
   function bulkSetProvider(provider: string, decision: Decision): void {
     for (const e of entries) {
       if (e.namespacedName.split('/')[0] === provider) e.decision = decision;
     }
+  }
+
+  function getSelectedEntry(): ToolEntry | null {
+    const rows = buildRows(entries, serverInfoMap);
+    const row = rows[rowIdx];
+    return row?.type === 'entry' ? row.entry : null;
   }
 
   render(entries, serverInfoMap, rowIdx, values.agent);
@@ -351,6 +595,31 @@ export async function runConfigureAgent(argv: string[]): Promise<void> {
     tty.on('data', (key: string) => {
       if (done) return;
 
+      // ── Inspect mode ──────────────────────────────────────────────
+      if (inspectMode) {
+        const entry = getSelectedEntry();
+        if (!entry) {
+          inspectMode = false;
+          render(entries, serverInfoMap, rowIdx, values.agent);
+          return;
+        }
+
+        if (key === 'i' || key === '\x1b' || key === '\x03') {
+          inspectMode = false;
+          render(entries, serverInfoMap, rowIdx, values.agent);
+          return;
+        }
+        if (key === 'j' || key === `${ESC}B`) inspectScroll++;
+        if (key === 'k' || key === `${ESC}A`) inspectScroll = Math.max(0, inspectScroll - 1);
+        if (key === 'a') entry.decision = 'allow';
+        if (key === 's') entry.decision = 'ask';
+        if (key === 'd') entry.decision = 'deny';
+
+        renderInspect(entry, inspectScroll);
+        return;
+      }
+
+      // ── Normal mode ───────────────────────────────────────────────
       if (key === '\x03' || key === 'q') {
         quit = true;
         done = true;
@@ -375,6 +644,31 @@ export async function runConfigureAgent(argv: string[]): Promise<void> {
 
       if (key === 'j' || key === `${ESC}B`) rowIdx = Math.min(rowIdx + 1, maxIdx);
       if (key === 'k' || key === `${ESC}A`) rowIdx = Math.max(rowIdx - 1, 0);
+
+      // Section navigation: { / } jump to prev/next provider header
+      if (key === '}') {
+        for (let ri = rowIdx + 1; ri <= maxIdx; ri++) {
+          if (rows[ri].type === 'header') {
+            rowIdx = ri;
+            break;
+          }
+        }
+      }
+      if (key === '{') {
+        for (let ri = rowIdx - 1; ri >= 0; ri--) {
+          if (rows[ri].type === 'header') {
+            rowIdx = ri;
+            break;
+          }
+        }
+      }
+      if (key === 'i' && getSelectedEntry()) {
+        inspectMode = true;
+        inspectScroll = 0;
+        const entry = getSelectedEntry()!;
+        renderInspect(entry, inspectScroll);
+        return;
+      }
 
       const currentRow = rows[rowIdx];
       if (currentRow?.type === 'header') {
@@ -456,8 +750,10 @@ export async function runConfigureAgent(argv: string[]): Promise<void> {
     copyFileSync(configPath, backupPath);
 
     const doc = parseYaml(readFileSync(configPath, 'utf8')) as Record<string, unknown>;
-    const agents = (doc.agents ?? {}) as Record<string, unknown>;
+    const agents = (doc.agents ?? {}) as Record<string, Record<string, unknown>>;
+    const existing = agents[values.agent] ?? {};
     agents[values.agent] = {
+      ...existing,
       allow: entries.filter((e) => e.decision === 'allow').map((e) => e.namespacedName),
       ask: entries.filter((e) => e.decision === 'ask').map((e) => e.namespacedName),
       deny: entries.filter((e) => e.decision === 'deny').map((e) => e.namespacedName),
