@@ -1,0 +1,132 @@
+name: Companion Release
+
+on:
+  push:
+    tags: ['companion-v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build-sign-notarize:
+    runs-on: macos-15
+    defaults:
+      run:
+        working-directory: macos-companion
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Import signing certificate
+        env:
+          CERT_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_APPLICATION_CERT }}
+          CERT_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_APPLICATION_PASSWORD }}
+        run: |
+          KEYCHAIN_PATH=$RUNNER_TEMP/signing.keychain-db
+          CERT_PATH=$RUNNER_TEMP/certificate.p12
+
+          echo "$CERT_BASE64" | base64 --decode > "$CERT_PATH"
+
+          security create-keychain -p "" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -P "$CERT_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple: -k "" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain-db
+
+      - name: Build
+        run: swift build -c release
+
+      - name: Generate app icon
+        run: swift scripts/generate-icon.swift AirlockCompanion
+
+      - name: Create .app bundle
+        run: |
+          APP_DIR=.build/AirlockCompanion.app
+          CONTENTS=$APP_DIR/Contents
+          MACOS=$CONTENTS/MacOS
+          RESOURCES=$CONTENTS/Resources
+
+          rm -rf "$APP_DIR"
+          mkdir -p "$MACOS" "$RESOURCES"
+
+          cp .build/arm64-apple-macosx/release/AirlockCompanion "$MACOS/AirlockCompanion"
+          cp AirlockCompanion/AppIcon.icns "$RESOURCES/AppIcon.icns"
+
+          cat > "$CONTENTS/Info.plist" << 'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>CFBundleName</key>
+              <string>AirlockCompanion</string>
+              <key>CFBundleDisplayName</key>
+              <string>Airlock Companion</string>
+              <key>CFBundleIdentifier</key>
+              <string>bot.airlock.companion</string>
+              <key>CFBundleVersion</key>
+              <string>${GITHUB_REF_NAME#companion-v}</string>
+              <key>CFBundleShortVersionString</key>
+              <string>${GITHUB_REF_NAME#companion-v}</string>
+              <key>CFBundleExecutable</key>
+              <string>AirlockCompanion</string>
+              <key>CFBundlePackageType</key>
+              <string>APPL</string>
+              <key>LSUIElement</key>
+              <true/>
+              <key>CFBundleIconFile</key>
+              <string>AppIcon</string>
+              <key>LSMinimumSystemVersion</key>
+              <string>14.0</string>
+              <key>NSAppTransportSecurity</key>
+              <dict>
+                  <key>NSAllowsArbitraryLoads</key>
+                  <true/>
+              </dict>
+          </dict>
+          </plist>
+          PLIST
+
+      - name: Sign app
+        run: |
+          codesign --force --deep --options runtime \
+            --sign "Developer ID Application: ${{ secrets.APPLE_TEAM_NAME }}" \
+            --entitlements AirlockCompanion/Entitlements.plist \
+            .build/AirlockCompanion.app
+
+      - name: Notarize app
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          # Create zip for notarization
+          ditto -c -k --keepParent .build/AirlockCompanion.app .build/AirlockCompanion-notarize.zip
+
+          # Submit for notarization
+          xcrun notarytool submit .build/AirlockCompanion-notarize.zip \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_ID_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait
+
+          # Staple the notarization ticket
+          xcrun stapler staple .build/AirlockCompanion.app
+
+      - name: Create release archive
+        run: |
+          cd .build
+          ditto -c -k --keepParent AirlockCompanion.app AirlockCompanion.zip
+
+      - name: Upload to GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION=${GITHUB_REF_NAME#companion-v}
+          gh release create "$GITHUB_REF_NAME" \
+            --title "Airlock Companion v$VERSION" \
+            --notes "macOS companion app for Airlock HITL approvals.
+
+          Download \`AirlockCompanion.zip\`, unzip, and drag to Applications.
+
+          Requires macOS 14+." \
+            .build/AirlockCompanion.zip

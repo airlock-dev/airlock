@@ -1,0 +1,27 @@
+name: Companion CI
+
+on:
+  push:
+    branches: [main]
+    paths: [macos-companion/**]
+  pull_request:
+    branches: [main]
+    paths: [macos-companion/**]
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: macos-15
+    defaults:
+      run:
+        working-directory: macos-companion
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: swift build
+
+      - name: Test
+        run: swift test
