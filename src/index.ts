@@ -99,6 +99,9 @@ Examples:
 
     const shutdown = async (signal: string) => {
       logger.info({ signal }, 'Shutdown signal received');
+      // Force exit after 3s if graceful shutdown hangs (e.g. open SSE connections)
+      const forceExit = setTimeout(() => process.exit(0), 3000);
+      forceExit.unref();
       try {
         watcher.stop();
         await gateway.stop();
