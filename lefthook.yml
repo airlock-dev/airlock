@@ -11,3 +11,6 @@ pre-commit:
       run: node_modules/.bin/prettier --check {staged_files}
     secrets:
       run: gitleaks protect --staged --no-banner
+    schema:
+      glob: "src/config/schema.ts"
+      run: npm run schema && git diff --exit-code schema.json || (echo "schema.json is out of date — run 'npm run schema' and stage it" && exit 1)

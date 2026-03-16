@@ -51,10 +51,20 @@ export class ToolRegistry {
 
     return this.cachedTools
       .filter((t) => this.allowlist.evaluate(agentId, t.name) !== 'deny')
-      .map((t) => ({
-        ...t,
-        description: sanitizeToolDescription(t.name, t.description, overrides[t.name]?.description),
-      }));
+      .map((t) => {
+        const override = overrides[t.name];
+        // Trusted tools bypass sanitization entirely
+        if (override?.trusted) {
+          return {
+            ...t,
+            description: override.description ?? t.description,
+          };
+        }
+        return {
+          ...t,
+          description: sanitizeToolDescription(t.name, t.description, override?.description),
+        };
+      });
   }
 
   async call(
