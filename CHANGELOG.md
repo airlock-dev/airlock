@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.11](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.10...airlock-bot-v0.2.11) (2026-03-16)
+
+
+### Bug Fixes
+
+* **dashboard:** default browser notifications to off ([#43](https://github.com/airlock-dev/airlock/issues/43)) ([9441aeb](https://github.com/airlock-dev/airlock/commit/9441aeb2e8136bfe5d01511d0ff8fb9eede9985d))
+
 ## [0.2.10](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.9...airlock-bot-v0.2.10) (2026-03-16)
 
 
