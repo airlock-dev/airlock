@@ -74,6 +74,10 @@ export async function sseServerPlugin(
 
     log.info({ profileId }, 'New SSE connection');
 
+    // Prevent Fastify from finalising the response when the handler returns —
+    // the SSE connection must stay open until the client disconnects.
+    reply.hijack();
+
     const transport = new SSEServerTransport('/agents/' + profileId + '/messages', reply.raw);
     sessions.set(transport.sessionId, { transport, profileId });
 
