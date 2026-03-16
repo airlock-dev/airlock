@@ -124,6 +124,24 @@ final class AppViewModel: ObservableObject {
             }
             notificationManager.showNotification(for: request, soundEnabled: soundEnabled)
 
+        case .notifyEvent(let request):
+            // Auto-approved: add directly to history, no pending state
+            seenRequests[request.code] = request
+            let resolved = ResolvedRequest(
+                code: request.code,
+                action: "notified",
+                tool: request.tool,
+                agentId: request.agentId,
+                argsDisplay: request.argsDisplayString
+            )
+            withAnimation(.spring) {
+                self.resolvedRequests.insert(resolved, at: 0)
+                if self.resolvedRequests.count > Constants.maxResolvedRequests {
+                    self.resolvedRequests = Array(self.resolvedRequests.prefix(Constants.maxResolvedRequests))
+                }
+            }
+            notificationManager.showNotifyNotification(for: request, soundEnabled: soundEnabled)
+
         case .resolved(let code, let action):
             moveToResolved(code: code, action: action)
             notificationManager.removeNotification(code: code)

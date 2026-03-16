@@ -2,6 +2,7 @@ import Foundation
 
 enum SSEMessage: Sendable {
     case newRequest(ApprovalRequest)
+    case notifyEvent(ApprovalRequest)
     case resolved(code: String, action: String)
 
     static func parse(from data: Data) -> SSEMessage? {
@@ -20,6 +21,15 @@ enum SSEMessage: Sendable {
                 return nil
             }
             return .newRequest(request)
+
+        case "notify":
+            guard let requestDict = json["request"],
+                  let requestData = try? JSONSerialization.data(withJSONObject: requestDict),
+                  let request = try? JSONDecoder().decode(ApprovalRequest.self, from: requestData)
+            else {
+                return nil
+            }
+            return .notifyEvent(request)
 
         case "resolved":
             guard let code = json["code"] as? String,

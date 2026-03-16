@@ -86,6 +86,28 @@ final class NotificationManager: NSObject, ObservableObject, UNUserNotificationC
         }
     }
 
+    func showNotifyNotification(for request: ApprovalRequest, soundEnabled: Bool = true) {
+        guard let center = notificationCenter else { return }
+
+        let content = UNMutableNotificationContent()
+        content.title = "Auto-approved: \(request.tool)"
+        content.subtitle = request.agentId
+        let argsStr = request.argsDisplayString
+        if !argsStr.isEmpty {
+            content.body = argsStr
+        }
+        // No category — no action buttons needed
+        content.sound = nil  // Notify events are silent by default
+
+        let notificationRequest = UNNotificationRequest(
+            identifier: "notify-\(request.code)",
+            content: content,
+            trigger: nil
+        )
+
+        center.add(notificationRequest)
+    }
+
     func removeNotification(code: String) {
         guard let center = notificationCenter else { return }
         center.removeDeliveredNotifications(withIdentifiers: [code])

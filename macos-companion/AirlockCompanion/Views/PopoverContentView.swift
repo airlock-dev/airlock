@@ -155,8 +155,10 @@ struct HistoryRow: View {
                 HStack(spacing: 8) {
                     Image(systemName: resolved.action == "approved"
                           ? "checkmark.circle.fill"
+                          : resolved.action == "notified"
+                          ? "bell.circle.fill"
                           : "xmark.circle.fill")
-                        .foregroundStyle(resolved.action == "approved" ? .green : .red)
+                        .foregroundStyle(resolved.action == "approved" ? .green : resolved.action == "notified" ? .purple : .red)
                         .font(.system(size: 12))
 
                     Text(title)

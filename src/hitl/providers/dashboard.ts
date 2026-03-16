@@ -112,8 +112,13 @@ export class DashboardHitlProvider implements HitlProvider {
 
   notify(requests: HitlNotification[]): Promise<void> {
     for (const req of requests) {
-      this.pending.set(req.code, req);
-      this.broadcast({ type: 'new', request: req });
+      if (req.notifyOnly) {
+        // Fire-and-forget: broadcast but don't track in pending
+        this.broadcast({ type: 'notify', request: req });
+      } else {
+        this.pending.set(req.code, req);
+        this.broadcast({ type: 'new', request: req });
+      }
     }
     return Promise.resolve();
   }
@@ -151,6 +156,8 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
   .card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; margin-bottom: 12px; }
   .card.approved { border-color: #238636; opacity: 0.5; }
   .card.denied { border-color: #da3633; opacity: 0.5; }
+  .card.notify { border-color: #8957e5; opacity: 0.7; }
+  .notify-badge { display: inline-block; background: #8957e5; color: #fff; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 4px; margin-bottom: 8px; }
   .tool { font-weight: 600; color: #f0883e; font-size: 15px; }
   .agent { color: #8b949e; font-size: 13px; margin-top: 2px; }
   .args { font-family: "SF Mono", Monaco, monospace; font-size: 12px; background: #0d1117; border-radius: 4px; padding: 8px; margin: 8px 0; white-space: pre-wrap; word-break: break-all; color: #8b949e; max-height: 120px; overflow-y: auto; }
@@ -210,6 +217,21 @@ function render(req) {
   empty.style.display = 'none';
 }
 
+function renderNotify(req) {
+  const el = document.createElement('div');
+  el.className = 'card notify';
+  const args = JSON.stringify(req.args, null, 2);
+  el.innerHTML = \`
+    <div class="notify-badge">auto-approved</div>
+    <div class="tool">\${esc(req.tool)}</div>
+    <div class="agent">agent: \${esc(req.agentId)}</div>
+    <div class="args">\${esc(args)}</div>
+  \`;
+  list.prepend(el);
+  empty.style.display = 'none';
+  setTimeout(() => { el.style.transition = 'opacity 1s'; el.style.opacity = '0.3'; }, 10000);
+}
+
 function act(action, code) {
   fetch('/' + action + '?code=' + code, { method: 'POST' });
   const el = cards.get(code);
@@ -233,6 +255,16 @@ es.onmessage = (e) => {
         body: 'agent: ' + msg.request.agentId + '\\n' + msg.request.code,
         tag: msg.request.code,
         silent: !soundEl.checked,
+      });
+    }
+  }
+  if (msg.type === 'notify') {
+    renderNotify(msg.request);
+    if (notifsEl.checked && Notification.permission === 'granted') {
+      new Notification('Airlock (notify): ' + msg.request.tool, {
+        body: 'auto-approved — agent: ' + msg.request.agentId,
+        tag: 'notify-' + Date.now(),
+        silent: true,
       });
     }
   }
