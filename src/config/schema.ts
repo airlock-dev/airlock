@@ -74,6 +74,7 @@ export function getBuiltinProviders(providers: Record<string, ProviderConfig>): 
 
 export const ToolOverride = z.object({
   description: z.string().optional(),
+  trusted: z.boolean().default(false),
 });
 
 export const AgentExecConfig = z.object({

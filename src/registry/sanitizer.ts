@@ -2,7 +2,7 @@ import { childLogger } from '../util/logger.js';
 
 const log = childLogger('sanitizer');
 
-const SUSPICIOUS_PATTERNS = [
+export const SUSPICIOUS_PATTERNS = [
   /ignore\s+(previous|above|prior)/i,
   /you\s+are\s+/i,
   /new\s+instruction/i,
@@ -12,6 +12,17 @@ const SUSPICIOUS_PATTERNS = [
 ];
 
 const MAX_DESCRIPTION_LENGTH = 500;
+
+/** Returns the source strings of any suspicious patterns found in the description. */
+export function checkSuspiciousPatterns(description: string): string[] {
+  const matched: string[] = [];
+  for (const pattern of SUSPICIOUS_PATTERNS) {
+    if (pattern.test(description)) {
+      matched.push(pattern.source);
+    }
+  }
+  return matched;
+}
 
 export function sanitizeToolDescription(
   toolName: string,
