@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.6](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.5...airlock-bot-v0.2.6) (2026-03-16)
+
+
+### Features
+
+* trusted tool overrides and schema pre-commit check ([#29](https://github.com/airlock-dev/airlock/issues/29)) ([1088946](https://github.com/airlock-dev/airlock/commit/108894688030ebe98c67fbcd182d89fa4a5869e2))
+
+
+### Bug Fixes
+
+* **sse:** hijack reply to prevent Fastify from finalising SSE connections ([#28](https://github.com/airlock-dev/airlock/issues/28)) ([45b84ac](https://github.com/airlock-dev/airlock/commit/45b84ac37622edee65cef482fb8c89eff125cb53))
+
 ## [0.2.5](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.4...airlock-bot-v0.2.5) (2026-03-16)
 
 
