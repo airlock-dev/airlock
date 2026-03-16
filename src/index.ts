@@ -29,6 +29,7 @@ function runGateway(): void {
     options: {
       config: { type: 'string', short: 'c', default: './airlock.yaml' },
       agent: { type: 'string', short: 'a' },
+      pretty: { type: 'boolean', default: false },
       help: { type: 'boolean', short: 'h', default: false },
     },
     allowPositionals: false,
@@ -46,6 +47,7 @@ Usage:
 Options:
   -c, --config <path>    Config file path (default: ./airlock.yaml)
   -a, --agent <name>     Run in stdio mode for the given agent
+      --pretty           Human-friendly colored log output
   -h, --help             Show this help message
 
 Subcommands:
