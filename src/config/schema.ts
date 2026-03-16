@@ -1,3 +1,4 @@
+import { homedir } from 'os';
 import { z } from 'zod';
 
 // Env var substitution helper
@@ -11,7 +12,16 @@ function substituteEnvVars(value: string): string {
   });
 }
 
+// Expand leading ~ to the user's home directory
+function expandTilde(value: string): string {
+  if (value === '~' || value.startsWith('~/')) {
+    return homedir() + value.slice(1);
+  }
+  return value;
+}
+
 const EnvString = z.string().transform(substituteEnvVars);
+const PathString = z.string().transform(expandTilde);
 
 export const McpServerConfig = z.discriminatedUnion('type', [
   z.object({
@@ -230,7 +240,7 @@ export const SecurityConfig = z.object({
 export type SecurityConfig = z.infer<typeof SecurityConfig>;
 
 export const AuditConfig = z.object({
-  db_path: z.string().default('./audit.db'),
+  db_path: PathString.default('./audit.db'),
   retention_days: z.number().default(90),
   redact_fields: z
     .array(z.string())
@@ -261,15 +271,15 @@ export const CliCommandConfig = z.object({
   exec: z.string(),
   description: z.string().optional(),
   params: z.record(CliParamConfig).default({}),
-  cwd: z.string().optional(),
+  cwd: PathString.optional(),
   timeout: z.number().default(30),
 });
 export type CliCommandConfig = z.infer<typeof CliCommandConfig>;
 
 export const CliConfig = z.object({
-  discovered: z.string().optional(),
-  shell: z.string().optional(),
-  cwd: z.string().optional(),
+  discovered: PathString.optional(),
+  shell: PathString.optional(),
+  cwd: PathString.optional(),
   max_output_bytes: z.number().default(30_000),
   commands: z.record(CliCommandConfig).default({}),
 });
@@ -284,7 +294,7 @@ export const ApiAuthConfig = z.discriminatedUnion('type', [
 export type ApiAuthConfig = z.infer<typeof ApiAuthConfig>;
 
 export const ApiConfig = z.object({
-  spec: z.string(),
+  spec: PathString,
   base_url: z.string().optional(),
   auth: ApiAuthConfig.optional(),
   include: z.array(z.string()).optional(),
