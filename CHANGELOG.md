@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.9](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.8...airlock-bot-v0.2.9) (2026-03-16)
+
+
+### Features
+
+* **dashboard:** add settings for browser notifications and sound ([#39](https://github.com/airlock-dev/airlock/issues/39)) ([11575b1](https://github.com/airlock-dev/airlock/commit/11575b12a080f5d396c63bc295e8cc4f8c4bd86e))
+
 ## [0.2.8](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.7...airlock-bot-v0.2.8) (2026-03-16)
 
 
