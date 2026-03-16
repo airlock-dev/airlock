@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.7](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.6...airlock-bot-v0.2.7) (2026-03-16)
+
+
+### Features
+
+* **configure-agent:** injection warnings, pre-population, and TUI improvements ([#30](https://github.com/airlock-dev/airlock/issues/30)) ([9110de6](https://github.com/airlock-dev/airlock/commit/9110de6b663f63d86037bf8ed0cd2e45cf9ea82b))
+
 ## [0.2.6](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.5...airlock-bot-v0.2.6) (2026-03-16)
 
 
