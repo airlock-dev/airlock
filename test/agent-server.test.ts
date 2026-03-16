@@ -18,9 +18,10 @@ function makeAgentConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
   return {
     allow: [],
     ask: [],
+    notify: [],
     deny: [],
     tool_overrides: {},
-    exec: { allow: [], ask: [], deny: ['*'], env: {}, default_timeout_ms: 5000 },
+    exec: { allow: [], ask: [], notify: [], deny: ['*'], env: {}, default_timeout_ms: 5000 },
     http: { domain_allowlist: [], max_response_bytes: 1048576, timeout_ms: 5000 },
     middleware: [],
     ...overrides,
@@ -196,7 +197,7 @@ describe('call_tool — exec/run policy', () => {
     const auditLogger = makeMockAuditLogger();
     const agentConfig = makeAgentConfig({
       allow: ['exec/run'],
-      exec: { allow: ['git*'], ask: [], deny: ['sudo*'], env: {}, default_timeout_ms: 5000 },
+      exec: { allow: ['git*'], ask: [], notify: [], deny: ['sudo*'], env: {}, default_timeout_ms: 5000 },
     });
     const allowlist = new AllowlistEngine({ agent1: agentConfig });
     const deps = makeDeps({ agentConfig, allowlist, auditLogger });
@@ -214,7 +215,7 @@ describe('call_tool — exec/run policy', () => {
   it('executes allowed exec command and returns output', async () => {
     const agentConfig = makeAgentConfig({
       allow: ['exec/run'],
-      exec: { allow: ['echo*'], ask: [], deny: [], env: {}, default_timeout_ms: 5000 },
+      exec: { allow: ['echo*'], ask: [], notify: [], deny: [], env: {}, default_timeout_ms: 5000 },
     });
     const agents = { agent1: agentConfig };
     const allowlist = new AllowlistEngine(agents);
@@ -370,7 +371,7 @@ describe('call_tool — HITL gate', () => {
   it('exec/run command matching hitl pattern routes to HITL gate', async () => {
     const agentConfig = makeAgentConfig({
       allow: ['exec/run'],
-      exec: { allow: ['git*'], ask: ['git push*'], deny: [], env: {}, default_timeout_ms: 5000 },
+      exec: { allow: ['git*'], ask: ['git push*'], notify: [], deny: [], env: {}, default_timeout_ms: 5000 },
     });
     const agents = { agent1: agentConfig };
     const allowlist = new AllowlistEngine(agents);

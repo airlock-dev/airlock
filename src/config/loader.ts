@@ -67,8 +67,8 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
       }
     }
 
-    // Collect all referenced namespaces from allow/ask/deny
-    const allPatterns = [...agent.allow, ...agent.ask, ...agent.deny];
+    // Collect all referenced namespaces from allow/ask/notify/deny
+    const allPatterns = [...agent.allow, ...agent.ask, ...agent.notify, ...agent.deny];
     const referencedNamespaces = new Set<string>();
 
     for (const pattern of allPatterns) {
@@ -124,8 +124,44 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
       }
     }
 
+    // Check for shadowed notify: notify pattern also matched by deny
+    for (const notifyPattern of agent.notify) {
+      for (const denyPattern of agent.deny) {
+        if (
+          matches(denyPattern, notifyPattern) ||
+          matches(notifyPattern, denyPattern) ||
+          patternsOverlap(notifyPattern, denyPattern)
+        ) {
+          diagnostics.push({
+            level: 'warn',
+            agent: agentId,
+            message: `"${notifyPattern}" in notify is shadowed by "${denyPattern}" in deny — notification will never be sent.`,
+            suggestion: `Remove "${notifyPattern}" from notify, or narrow the deny pattern.`,
+          });
+        }
+      }
+    }
+
+    // Check for shadowed notify: notify pattern also matched by ask
+    for (const notifyPattern of agent.notify) {
+      for (const askPattern of agent.ask) {
+        if (
+          matches(askPattern, notifyPattern) ||
+          matches(notifyPattern, askPattern) ||
+          patternsOverlap(notifyPattern, askPattern)
+        ) {
+          diagnostics.push({
+            level: 'warn',
+            agent: agentId,
+            message: `"${notifyPattern}" in notify is shadowed by "${askPattern}" in ask — ask takes precedence over notify.`,
+            suggestion: `Remove "${notifyPattern}" from notify, or narrow the ask pattern.`,
+          });
+        }
+      }
+    }
+
     // Check exec command routing without exec provider
-    const hasExecPatterns = agent.exec.allow.length > 0 || agent.exec.ask.length > 0;
+    const hasExecPatterns = agent.exec.allow.length > 0 || agent.exec.ask.length > 0 || agent.exec.notify.length > 0;
     if (hasExecPatterns && !builtins.has('exec')) {
       diagnostics.push({
         level: 'warn',
@@ -137,21 +173,21 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
 
     // Check exec deny-all with other exec patterns
     const hasCatchAllDeny = agent.exec.deny.some((p) => p === '*');
-    if (hasCatchAllDeny && (agent.exec.allow.length > 0 || agent.exec.ask.length > 0)) {
+    if (hasCatchAllDeny && (agent.exec.allow.length > 0 || agent.exec.ask.length > 0 || agent.exec.notify.length > 0)) {
       diagnostics.push({
         level: 'warn',
         agent: agentId,
-        message: 'exec.deny contains "*" which overrides all exec.allow and exec.ask patterns.',
+        message: 'exec.deny contains "*" which overrides all exec.allow, exec.ask, and exec.notify patterns.',
         suggestion: 'Remove deny: ["*"] and rely on fail-closed behavior instead.',
       });
     }
 
     // Check empty agent
-    if (agent.allow.length === 0 && agent.ask.length === 0) {
+    if (agent.allow.length === 0 && agent.ask.length === 0 && agent.notify.length === 0) {
       diagnostics.push({
         level: 'info',
         agent: agentId,
-        message: 'Agent has no allow or ask rules — all tools will be denied.',
+        message: 'Agent has no allow, ask, or notify rules — all tools will be denied.',
       });
     }
 

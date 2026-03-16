@@ -22,6 +22,10 @@ export function allowlistMiddleware(): Middleware {
       ctx.meta.needsApproval = true;
     }
 
+    if (decision === 'notify') {
+      ctx.meta.notifyOnly = true;
+    }
+
     return next();
   };
 }

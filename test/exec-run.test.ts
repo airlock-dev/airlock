@@ -6,11 +6,13 @@ function makeAgentConfig(execOverrides: Partial<AgentConfig['exec']> = {}): Agen
   return {
     allow: ['exec/run'],
     ask: [],
+    notify: [],
     deny: [],
     tool_overrides: {},
     exec: {
       allow: ['*'],
       ask: [],
+      notify: [],
       deny: [],
       env: {},
       default_timeout_ms: 5000,

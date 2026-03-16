@@ -13,8 +13,8 @@ function makeCtx(overrides: Partial<ToolCallContext> = {}): ToolCallContext {
     callId: 'test',
     agentId: 'agent1',
     agentConfig: {
-      allow: [], ask: [], deny: [], tool_overrides: {}, middleware: [],
-      exec: { allow: [], ask: [], deny: ['*'], env: {}, default_timeout_ms: 5000 },
+      allow: [], ask: [], notify: [], deny: [], tool_overrides: {}, middleware: [],
+      exec: { allow: [], ask: [], notify: [], deny: ['*'], env: {}, default_timeout_ms: 5000 },
       http: { domain_allowlist: [], max_response_bytes: 1048576, timeout_ms: 5000 },
     },
     toolName: 'github/create_pr',
@@ -78,7 +78,7 @@ describe('execPolicyMiddleware', () => {
       args: { command: 'sudo rm -rf /' },
       agentConfig: {
         ...makeCtx().agentConfig,
-        exec: { allow: [], ask: [], deny: ['sudo*'], env: {}, default_timeout_ms: 5000 },
+        exec: { allow: [], ask: [], notify: [], deny: ['sudo*'], env: {}, default_timeout_ms: 5000 },
       },
     });
     await expect(mw(ctx, okNext)).rejects.toThrow('Command denied by policy');

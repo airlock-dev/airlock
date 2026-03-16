@@ -5,6 +5,8 @@ export interface HitlNotification {
   tool: string;
   args: Record<string, unknown>;
   timeoutMs: number;
+  /** When true, this is a fire-and-forget notification — no approval needed. */
+  notifyOnly?: boolean;
 }
 
 export interface HitlProvider {

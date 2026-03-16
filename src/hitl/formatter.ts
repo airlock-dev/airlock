@@ -1,8 +1,7 @@
 import type { HitlNotification } from './providers/types.js';
 
-export function formatNotification(req: HitlNotification): string {
-  const timeoutMin = Math.round(req.timeoutMs / 60000);
-  const argLines = Object.entries(req.args)
+function formatArgs(args: Record<string, unknown>): string {
+  return Object.entries(args)
     .map(([k, v]) => {
       const val =
         typeof v === 'string'
@@ -13,6 +12,13 @@ export function formatNotification(req: HitlNotification): string {
       return `  ${k}: ${val}`;
     })
     .join('\n');
+}
+
+export function formatNotification(req: HitlNotification): string {
+  if (req.notifyOnly) return formatNotifyEvent(req);
+
+  const timeoutMin = Math.round(req.timeoutMs / 60000);
+  const argLines = formatArgs(req.args);
 
   return [
     `🔒 APPROVE? [${req.code}]`,
@@ -26,10 +32,39 @@ export function formatNotification(req: HitlNotification): string {
   ].join('\n');
 }
 
+/** Format a notify-only event (informational, no approval needed). */
+export function formatNotifyEvent(req: HitlNotification): string {
+  const argLines = formatArgs(req.args);
+
+  return [
+    `📋 AUTO-APPROVED (notify)`,
+    ``,
+    `Agent: ${req.agentId}`,
+    `Tool:  ${req.tool}`,
+    argLines,
+  ].join('\n');
+}
+
 export function formatBatch(requests: HitlNotification[]): string {
   if (requests.length === 1) return formatNotification(requests[0]);
 
-  const header = `🔒 ${requests.length} APPROVAL REQUESTS`;
-  const items = requests.map((r) => formatNotification(r)).join('\n\n---\n\n');
-  return `${header}\n\n${items}`;
+  // Separate notify-only from approval requests
+  const approvals = requests.filter((r) => !r.notifyOnly);
+  const notifies = requests.filter((r) => r.notifyOnly);
+
+  const parts: string[] = [];
+
+  if (approvals.length > 0) {
+    const header = `🔒 ${approvals.length} APPROVAL REQUEST${approvals.length > 1 ? 'S' : ''}`;
+    const items = approvals.map((r) => formatNotification(r)).join('\n\n---\n\n');
+    parts.push(`${header}\n\n${items}`);
+  }
+
+  if (notifies.length > 0) {
+    const header = `📋 ${notifies.length} AUTO-APPROVED (notify)`;
+    const items = notifies.map((r) => formatNotifyEvent(r)).join('\n\n---\n\n');
+    parts.push(`${header}\n\n${items}`);
+  }
+
+  return parts.join('\n\n===\n\n');
 }

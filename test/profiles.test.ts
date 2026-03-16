@@ -8,9 +8,10 @@ function makeAgentConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
     extends: [],
     allow: [],
     ask: [],
+    notify: [],
     deny: [],
     tool_overrides: {},
-    exec: { allow: [], ask: [], deny: [], env: {}, default_timeout_ms: 30000 },
+    exec: { allow: [], ask: [], notify: [], deny: [], env: {}, default_timeout_ms: 30000 },
     http: { domain_allowlist: [], max_response_bytes: 1048576, timeout_ms: 30000 },
     ...overrides,
   };
@@ -30,7 +31,7 @@ describe('resolveAgentPermissions()', () => {
       allow: ['exec/run'],
     });
     const profiles = {
-      readonly: { allow: ['github/list*', 'github/get*'], ask: [] },
+      readonly: { allow: ['github/list*', 'github/get*'], ask: [], notify: [] },
     };
     const result = resolveAgentPermissions(agent, profiles);
     expect(result.allow).toContain('github/list*');
@@ -44,8 +45,8 @@ describe('resolveAgentPermissions()', () => {
       allow: [],
     });
     const profiles = {
-      readonly: { allow: ['github/list*'], ask: [] },
-      writer: { allow: ['github/create_pr'], ask: ['github/create_pr'] },
+      readonly: { allow: ['github/list*'], ask: [], notify: [] },
+      writer: { allow: ['github/create_pr'], ask: ['github/create_pr'], notify: [] },
     };
     const result = resolveAgentPermissions(agent, profiles);
     expect(result.allow).toEqual(['github/list*', 'github/create_pr']);
@@ -58,7 +59,7 @@ describe('resolveAgentPermissions()', () => {
       allow: ['github/*'],
     });
     const profiles = {
-      profile1: { allow: ['github/*'], ask: [] },
+      profile1: { allow: ['github/*'], ask: [], notify: [] },
     };
     const result = resolveAgentPermissions(agent, profiles);
     expect(result.allow).toEqual(['github/*']);

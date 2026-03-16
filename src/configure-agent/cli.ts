@@ -10,7 +10,7 @@ import { checkSuspiciousPatterns, SUSPICIOUS_PATTERNS } from '../registry/saniti
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-type Decision = 'allow' | 'ask' | 'deny';
+type Decision = 'allow' | 'ask' | 'notify' | 'deny';
 
 interface ToolEntry {
   namespacedName: string;
@@ -56,17 +56,20 @@ const YELLOW = `${ESC}33m`;
 const RED = `${ESC}31m`;
 const CYAN = `${ESC}36m`;
 const BLUE = `${ESC}34m`;
+const MAGENTA = `${ESC}35m`;
 
 function decisionColor(d: Decision): string {
   if (d === 'allow') return GREEN;
   if (d === 'ask') return YELLOW;
+  if (d === 'notify') return MAGENTA;
   return RED;
 }
 
 function decisionLabel(d: Decision): string {
-  if (d === 'allow') return 'allow';
-  if (d === 'ask') return 'ask  ';
-  return 'deny ';
+  if (d === 'allow') return 'allow ';
+  if (d === 'ask') return 'ask   ';
+  if (d === 'notify') return 'notify';
+  return 'deny  ';
 }
 
 // ── YAML output ───────────────────────────────────────────────────────────────
@@ -94,6 +97,7 @@ function renderYaml(agentName: string, entries: ToolEntry[]): string {
 
   renderList('allow', 'allow');
   renderList('ask', 'ask');
+  renderList('notify', 'notify');
   renderList('deny', 'deny');
 
   return lines.join('\n');
@@ -145,6 +149,7 @@ type Row =
       total: number;
       allow: number;
       ask: number;
+      notify: number;
       deny: number;
     }
   | { type: 'entry'; entry: ToolEntry; entryIdx: number };
@@ -165,7 +170,7 @@ function buildRows(entries: ToolEntry[], serverInfoMap: Map<string, ServerInfo>)
 
   for (const p of providerOrder) {
     const indices = groups.get(p)!;
-    const counts = { allow: 0, ask: 0, deny: 0 };
+    const counts = { allow: 0, ask: 0, notify: 0, deny: 0 };
     for (const i of indices) counts[entries[i].decision]++;
     rows.push({
       type: 'header',
@@ -189,7 +194,7 @@ function renderInspect(entry: ToolEntry, inspectScroll: number): void {
   const dColor = decisionColor(entry.decision);
   out.write(`\n${BOLD}${CYAN}  Inspect: ${entry.namespacedName}${RESET}\n`);
   out.write(`${DIM}  ${'─'.repeat(70)}${RESET}\n`);
-  out.write(`${DIM}  [j/k] scroll  [i/esc] back  [a] allow  [s] ask  [d] deny${RESET}\n`);
+  out.write(`${DIM}  [j/k] scroll  [i/esc] back  [a] allow  [s] ask  [n] notify  [d] deny${RESET}\n`);
   out.write(`${DIM}  ${'─'.repeat(70)}${RESET}\n\n`);
 
   // Status line
@@ -239,7 +244,7 @@ function renderRow(row: Row, isSel: boolean): string[] {
   const lines: string[] = [];
 
   if (row.type === 'header') {
-    const summary = `${GREEN}${row.allow}✓${RESET} ${YELLOW}${row.ask}?${RESET} ${RED}${row.deny}✗${RESET}`;
+    const summary = `${GREEN}${row.allow}✓${RESET} ${YELLOW}${row.ask}?${RESET} ${MAGENTA}${row.notify}📋${RESET} ${RED}${row.deny}✗${RESET}`;
     const selMark = isSel ? `${BOLD}${YELLOW}▸ ` : `  `;
     const nameStr = `${BOLD}${BLUE}${row.provider}${RESET}`;
     const serverStr = row.serverInfo
@@ -250,7 +255,7 @@ function renderRow(row: Row, isSel: boolean): string[] {
       ` ${selMark}${nameStr}  ${DIM}(${row.total} tools)${RESET}  ${summary}${serverStr ? `  ${serverStr}` : ''}`
     );
     if (isSel) {
-      lines.push(`   ${DIM}↳ press a/s/d to set all ${row.total} tools in this provider${RESET}`);
+      lines.push(`   ${DIM}↳ press a/s/n/d to set all ${row.total} tools in this provider${RESET}`);
     }
     lines.push(`   ${DIM}${'╌'.repeat(55)}${RESET}`);
   } else {
@@ -315,8 +320,8 @@ function render(
     '',
     `${BOLD}${CYAN}  Airlock — Configure Agent: ${agentName}${RESET}`,
     `${DIM}  ${'─'.repeat(70)}${RESET}`,
-    `${DIM}  [a] allow  [s] ask  [d] deny  [j/k] move  [{/}] section  ${inspectHint}${DIM}  [enter] confirm  [q] quit${RESET}`,
-    `${DIM}  on a provider header, a/s/d applies to all tools in that provider${RESET}`,
+    `${DIM}  [a] allow  [s] ask  [n] notify  [d] deny  [j/k] move  [{/}] section  ${inspectHint}${DIM}  [enter] confirm  [q] quit${RESET}`,
+    `${DIM}  on a provider header, a/s/n/d applies to all tools in that provider${RESET}`,
     `${DIM}  ${'─'.repeat(70)}${RESET}`,
   ];
 
@@ -325,6 +330,7 @@ function render(
   const summaryLine =
     `${DIM}  ${entries.filter((e) => e.decision === 'allow').length} allow  ` +
     `${entries.filter((e) => e.decision === 'ask').length} ask  ` +
+    `${entries.filter((e) => e.decision === 'notify').length} notify  ` +
     `${entries.filter((e) => e.decision === 'deny').length} deny  ` +
     `/ ${entries.length} total${RESET}`;
 
@@ -407,7 +413,7 @@ function render(
 // ── Help ──────────────────────────────────────────────────────────────────────
 
 const HELP = `
-airlock configure-agent — build allow/ask/deny lists from live MCP tools
+airlock configure-agent — build allow/ask/notify/deny lists from live MCP tools
 
 Usage:
   airlock configure-agent [options]
@@ -545,12 +551,15 @@ export async function runConfigureAgent(argv: string[]): Promise<void> {
   if (existingAgent) {
     const allowSet = new Set(existingAgent.allow);
     const askSet = new Set(existingAgent.ask);
+    const notifySet = new Set(existingAgent.notify);
     const denySet = new Set(existingAgent.deny);
     for (const entry of entries) {
       if (allowSet.has(entry.namespacedName)) {
         entry.decision = 'allow';
       } else if (askSet.has(entry.namespacedName)) {
         entry.decision = 'ask';
+      } else if (notifySet.has(entry.namespacedName)) {
+        entry.decision = 'notify';
       } else if (denySet.has(entry.namespacedName)) {
         entry.decision = 'deny';
       }
@@ -613,6 +622,7 @@ export async function runConfigureAgent(argv: string[]): Promise<void> {
         if (key === 'k' || key === `${ESC}A`) inspectScroll = Math.max(0, inspectScroll - 1);
         if (key === 'a') entry.decision = 'allow';
         if (key === 's') entry.decision = 'ask';
+        if (key === 'n') entry.decision = 'notify';
         if (key === 'd') entry.decision = 'deny';
 
         renderInspect(entry, inspectScroll);
@@ -674,10 +684,12 @@ export async function runConfigureAgent(argv: string[]): Promise<void> {
       if (currentRow?.type === 'header') {
         if (key === 'a') bulkSetProvider(currentRow.provider, 'allow');
         if (key === 's') bulkSetProvider(currentRow.provider, 'ask');
+        if (key === 'n') bulkSetProvider(currentRow.provider, 'notify');
         if (key === 'd') bulkSetProvider(currentRow.provider, 'deny');
       } else if (currentRow?.type === 'entry') {
         if (key === 'a') currentRow.entry.decision = 'allow';
         if (key === 's') currentRow.entry.decision = 'ask';
+        if (key === 'n') currentRow.entry.decision = 'notify';
         if (key === 'd') currentRow.entry.decision = 'deny';
       }
 
@@ -756,6 +768,7 @@ export async function runConfigureAgent(argv: string[]): Promise<void> {
       ...existing,
       allow: entries.filter((e) => e.decision === 'allow').map((e) => e.namespacedName),
       ask: entries.filter((e) => e.decision === 'ask').map((e) => e.namespacedName),
+      notify: entries.filter((e) => e.decision === 'notify').map((e) => e.namespacedName),
       deny: entries.filter((e) => e.decision === 'deny').map((e) => e.namespacedName),
     };
     doc.agents = agents;

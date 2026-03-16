@@ -126,6 +126,13 @@
                   "type": "string"
                 },
                 "default": []
+              },
+              "notify": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "default": []
               }
             },
             "additionalProperties": false
@@ -334,6 +341,13 @@
                 },
                 "default": []
               },
+              "notify": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "default": []
+              },
               "deny": {
                 "type": "array",
                 "items": {
@@ -369,6 +383,13 @@
                     "default": []
                   },
                   "ask": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "default": []
+                  },
+                  "notify": {
                     "type": "array",
                     "items": {
                       "type": "string"

@@ -6,9 +6,10 @@ function makeAgent(allow: string[], ask: string[] = []): AgentConfig {
   return {
     allow,
     ask,
+    notify: [],
     deny: [],
     tool_overrides: {},
-    exec: { allow: [], ask: [], deny: [], env: {}, default_timeout_ms: 30000 },
+    exec: { allow: [], ask: [], notify: [], deny: [], env: {}, default_timeout_ms: 30000 },
     http: { domain_allowlist: [], max_response_bytes: 1048576, timeout_ms: 30000 },
   };
 }
@@ -75,9 +76,10 @@ const MINIMAL_CONFIG = {
     'claude-code': {
       allow: ['http/get'],
       ask: [],
+      notify: [],
       deny: [],
       tool_overrides: {},
-      exec: { allow: [], ask: [], deny: [], env: {}, default_timeout_ms: 5000 },
+      exec: { allow: [], ask: [], notify: [], deny: [], env: {}, default_timeout_ms: 5000 },
       http: { domain_allowlist: [], max_response_bytes: 1048576, timeout_ms: 5000 },
     },
   },
@@ -136,9 +138,10 @@ describe('runStdioMode()', () => {
         'claude-code': {
           allow: ['github/*', 'filesystem/read_file'],
           ask: [],
+          notify: [],
           deny: [],
           tool_overrides: {},
-          exec: { allow: [], ask: [], deny: [], env: {}, default_timeout_ms: 5000 },
+          exec: { allow: [], ask: [], notify: [], deny: [], env: {}, default_timeout_ms: 5000 },
           http: { domain_allowlist: [], max_response_bytes: 1048576, timeout_ms: 5000 },
         },
       },

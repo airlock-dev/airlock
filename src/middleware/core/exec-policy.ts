@@ -28,6 +28,9 @@ export function execPolicyMiddleware(): Middleware {
     if (cmdDecision === 'ask') {
       ctx.meta.needsApproval = true;
     }
+    if (cmdDecision === 'notify') {
+      ctx.meta.notifyOnly = true;
+    }
 
     return next();
   };

@@ -75,9 +75,10 @@ function makeAgentConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
   return {
     allow: ['tools/*'],
     ask: [],
+    notify: [],
     deny: [],
     tool_overrides: {},
-    exec: { allow: [], ask: [], deny: ['*'], env: {}, default_timeout_ms: 5000 },
+    exec: { allow: [], ask: [], notify: [], deny: ['*'], env: {}, default_timeout_ms: 5000 },
     http: { domain_allowlist: [], max_response_bytes: 1048576, timeout_ms: 5000 },
     middleware: [],
     ...overrides,
@@ -303,7 +304,7 @@ describe('e2e: exec/run — per-command policy', () => {
   it('ALLOW: runs an allowed command and returns output', async () => {
     const config = makeAgentConfig({
       allow: ['exec/run'],
-      exec: { allow: ['echo*'], ask: [], deny: [], env: {}, default_timeout_ms: 5000 },
+      exec: { allow: ['echo*'], ask: [], notify: [], deny: [], env: {}, default_timeout_ms: 5000 },
     });
     const stack = await buildStack(config);
 
@@ -324,7 +325,7 @@ describe('e2e: exec/run — per-command policy', () => {
   it('DENY: rejects a denied command', async () => {
     const config = makeAgentConfig({
       allow: ['exec/run'],
-      exec: { allow: ['echo*'], ask: [], deny: ['rm*'], env: {}, default_timeout_ms: 5000 },
+      exec: { allow: ['echo*'], ask: [], notify: [], deny: ['rm*'], env: {}, default_timeout_ms: 5000 },
     });
     const stack = await buildStack(config);
 
@@ -341,7 +342,7 @@ describe('e2e: exec/run — per-command policy', () => {
   it('DENY: deny takes priority over allow', async () => {
     const config = makeAgentConfig({
       allow: ['exec/run'],
-      exec: { allow: ['rm*'], ask: [], deny: ['rm -rf*'], env: {}, default_timeout_ms: 5000 },
+      exec: { allow: ['rm*'], ask: [], notify: [], deny: ['rm -rf*'], env: {}, default_timeout_ms: 5000 },
     });
     const stack = await buildStack(config);
 
@@ -354,7 +355,7 @@ describe('e2e: exec/run — per-command policy', () => {
   it('DENY: commands not in any list are denied (fail-closed)', async () => {
     const config = makeAgentConfig({
       allow: ['exec/run'],
-      exec: { allow: ['echo*'], ask: [], deny: [], env: {}, default_timeout_ms: 5000 },
+      exec: { allow: ['echo*'], ask: [], notify: [], deny: [], env: {}, default_timeout_ms: 5000 },
     });
     const stack = await buildStack(config);
 
@@ -367,7 +368,7 @@ describe('e2e: exec/run — per-command policy', () => {
   it('DENY: shell injection is blocked regardless of allow patterns', async () => {
     const config = makeAgentConfig({
       allow: ['exec/run'],
-      exec: { allow: ['echo*'], ask: [], deny: [], env: {}, default_timeout_ms: 5000 },
+      exec: { allow: ['echo*'], ask: [], notify: [], deny: [], env: {}, default_timeout_ms: 5000 },
     });
     const stack = await buildStack(config);
 
@@ -386,6 +387,7 @@ describe('e2e: exec/run — per-command policy', () => {
       exec: {
         allow: ['echo*'],
         ask: ['echo secret*'],
+        notify: [],
         deny: [],
         env: {},
         default_timeout_ms: 5000,
@@ -420,6 +422,7 @@ describe('e2e: exec/run — per-command policy', () => {
       exec: {
         allow: ['echo*'],
         ask: ['echo danger*'],
+        notify: [],
         deny: [],
         env: {},
         default_timeout_ms: 5000,
@@ -445,7 +448,7 @@ describe('e2e: exec/run — per-command policy', () => {
   it('exec/run blocked at allowlist level when not in agent allow list', async () => {
     const config = makeAgentConfig({
       allow: ['tools/*'], // exec/run NOT allowed
-      exec: { allow: ['echo*'], ask: [], deny: [], env: {}, default_timeout_ms: 5000 },
+      exec: { allow: ['echo*'], ask: [], notify: [], deny: [], env: {}, default_timeout_ms: 5000 },
     });
     const stack = await buildStack(config);
 
@@ -727,6 +730,7 @@ describe('e2e: mixed policy — allow + ask + deny across tool types', () => {
       exec: {
         allow: ['echo*'],
         ask: ['echo deploy*'],
+        notify: [],
         deny: ['rm*'],
         env: {},
         default_timeout_ms: 5000,

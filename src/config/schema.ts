@@ -80,6 +80,7 @@ export const ToolOverride = z.object({
 export const AgentExecConfig = z.object({
   allow: z.array(z.string()).default([]),
   ask: z.array(z.string()).default([]),
+  notify: z.array(z.string()).default([]),
   deny: z.array(z.string()).default([]),
   env: z.record(z.string()).default({}),
   default_timeout_ms: z.number().default(30000),
@@ -136,6 +137,7 @@ export const AgentConfig = z.object({
   extends: z.array(z.string()).default([]),
   allow: z.array(z.string()).default([]),
   ask: z.array(z.string()).default([]),
+  notify: z.array(z.string()).default([]),
   deny: z.array(z.string()).default([]),
   tool_overrides: z.record(ToolOverride).default({}),
   exec: AgentExecConfig.default({}),
@@ -147,6 +149,7 @@ export type AgentConfig = z.infer<typeof AgentConfig>;
 export const ProfileConfig = z.object({
   allow: z.array(z.string()).default([]),
   ask: z.array(z.string()).default([]),
+  notify: z.array(z.string()).default([]),
 });
 export type ProfileConfig = z.infer<typeof ProfileConfig>;
 
