@@ -185,7 +185,7 @@ const cards = new Map();
 const notifsEl = document.getElementById('notifs');
 const soundEl = document.getElementById('sound');
 
-notifsEl.checked = localStorage.getItem('airlock:notifs') !== 'false';
+notifsEl.checked = localStorage.getItem('airlock:notifs') === 'true';
 soundEl.checked = localStorage.getItem('airlock:sound') !== 'false';
 notifsEl.onchange = () => localStorage.setItem('airlock:notifs', notifsEl.checked);
 soundEl.onchange = () => localStorage.setItem('airlock:sound', soundEl.checked);
@@ -221,7 +221,11 @@ function act(action, code) {
 
 function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 
-if ('Notification' in window) Notification.requestPermission();
+// Only request notification permission if the user has notifications enabled
+if ('Notification' in window && notifsEl.checked) Notification.requestPermission();
+notifsEl.addEventListener('change', () => {
+  if (notifsEl.checked && 'Notification' in window) Notification.requestPermission();
+});
 
 const es = new EventSource('/events');
 es.onmessage = (e) => {
