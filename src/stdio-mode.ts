@@ -129,7 +129,15 @@ export async function runStdioMode(
   // Graceful shutdown
   const shutdown = async () => {
     log.info('Shutting down stdio mode');
-    const forceExit = setTimeout(() => process.exit(0), 3000);
+    // The MCP SDK's StdioClientTransport.close() escalates:
+    //   stdin.end → 2s wait → SIGTERM → 2s wait → SIGKILL
+    // Give it enough time (5s) before forcing exit, otherwise
+    // process.exit() orphans children mid-cleanup.
+    const forceExit = setTimeout(() => {
+      log.warn('Graceful shutdown timed out, forcing exit');
+      pool.forceKill();
+      process.exit(1);
+    }, 5000);
     forceExit.unref();
     try {
       watcher.stop();

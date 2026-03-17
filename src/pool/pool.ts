@@ -133,4 +133,13 @@ export class ClientPool {
     clearInterval(this.healthTimer);
     await Promise.allSettled(Array.from(this.clients.values()).map((c) => c.stop()));
   }
+
+  /** SIGKILL any stdio child processes that survived graceful stop. */
+  forceKill(): void {
+    for (const client of this.clients.values()) {
+      if (client instanceof StdioMcpClient) {
+        client.kill();
+      }
+    }
+  }
 }

@@ -82,4 +82,16 @@ export class StdioMcpClient {
     this.stopped = true;
     await this.transport?.close();
   }
+
+  /** Send SIGKILL to the child process if it's still alive. */
+  kill(): void {
+    const pid = this.transport?.pid;
+    if (pid) {
+      try {
+        process.kill(pid, 'SIGKILL');
+      } catch {
+        /* already dead */
+      }
+    }
+  }
 }

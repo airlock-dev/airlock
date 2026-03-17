@@ -150,4 +150,9 @@ export class Gateway {
     await this.hitlProvider?.stop();
     this.auditLogger?.stop();
   }
+
+  /** SIGKILL any child processes that survived graceful stop. */
+  forceKill(): void {
+    this.pool?.forceKill();
+  }
 }
