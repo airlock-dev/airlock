@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.15](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.14...airlock-bot-v0.2.15) (2026-03-17)
+
+
+### Features
+
+* **companion,dashboard:** add update visibility and keyboard approval flow ([#55](https://github.com/airlock-dev/airlock/issues/55)) ([99f0ea4](https://github.com/airlock-dev/airlock/commit/99f0ea484fcc24dcfec33e28c5c1b555c31ee347))
+* **dashboard,companion:** clickable approvals, version check, keyboard shortcuts ([#53](https://github.com/airlock-dev/airlock/issues/53)) ([cb32093](https://github.com/airlock-dev/airlock/commit/cb32093a28be786763f755e8b2bcdb37812854cd))
+
 ## [0.2.14](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.13...airlock-bot-v0.2.14) (2026-03-17)
 
 
