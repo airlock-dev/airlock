@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.12](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.11...airlock-bot-v0.2.12) (2026-03-17)
+
+
+### Bug Fixes
+
+* SIGKILL orphaned child processes on forced shutdown ([#46](https://github.com/airlock-dev/airlock/issues/46)) ([a852611](https://github.com/airlock-dev/airlock/commit/a85261187c18edd1bb33a7fa455ce6968da44b05))
+
 ## [0.2.11](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.10...airlock-bot-v0.2.11) (2026-03-16)
 
 
