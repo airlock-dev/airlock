@@ -4,6 +4,8 @@ struct RequestCardView: View {
     let request: ApprovalRequest
     let currentTime: Date
     var isSelected: Bool = false
+    var autoExpandWhenSelected: Bool = false
+    let onShowDetails: () -> Void
     let onApprove: () -> Void
     let onDeny: () -> Void
 
@@ -12,6 +14,14 @@ struct RequestCardView: View {
 
     private var argsLines: [String] {
         request.argsDisplayString.components(separatedBy: "\n")
+    }
+
+    private var isEffectivelyExpanded: Bool {
+        isExpanded || (autoExpandWhenSelected && isSelected)
+    }
+
+    private var showsExpandToggle: Bool {
+        !(autoExpandWhenSelected && isSelected)
     }
 
     var body: some View {
@@ -47,7 +57,7 @@ struct RequestCardView: View {
             if !request.args.isEmpty {
                 VStack(alignment: .leading, spacing: 2) {
                     let lines = argsLines
-                    let displayLines = isExpanded ? lines : Array(lines.prefix(3))
+                    let displayLines = isEffectivelyExpanded ? lines : Array(lines.prefix(3))
 
                     ForEach(Array(displayLines.enumerated()), id: \.offset) { _, line in
                         Text(line)
@@ -56,9 +66,9 @@ struct RequestCardView: View {
                             .lineLimit(1)
                     }
 
-                    if lines.count > 3 {
+                    if lines.count > 3 && showsExpandToggle {
                         Button(action: { isExpanded.toggle() }) {
-                            Text(isExpanded ? "Show less" : "Show more (\(lines.count - 3) more)")
+                            Text(isEffectivelyExpanded ? "Show less" : "Show more (\(lines.count - 3) more)")
                                 .font(.system(size: 10))
                                 .foregroundStyle(.secondary)
                         }
@@ -72,6 +82,15 @@ struct RequestCardView: View {
                 .background(.quaternary.opacity(0.5))
                 .clipShape(RoundedRectangle(cornerRadius: 6))
             }
+
+            Button(action: onShowDetails) {
+                Label("View Details", systemImage: "doc.text.magnifyingglass")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .focusable(false)
+            .focusEffectDisabled()
 
             // Action buttons
             HStack(spacing: 8) {

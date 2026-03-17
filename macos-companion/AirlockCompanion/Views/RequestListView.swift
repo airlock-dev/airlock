@@ -3,6 +3,7 @@ import SwiftUI
 struct RequestListView: View {
     @ObservedObject var viewModel: AppViewModel
     @Binding var selectedIndex: Int
+    let onShowDetails: (ApprovalRequest) -> Void
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -13,6 +14,8 @@ struct RequestListView: View {
                             request: request,
                             currentTime: viewModel.currentTime,
                             isSelected: index == selectedIndex,
+                            autoExpandWhenSelected: viewModel.autoExpandSelectedRequest,
+                            onShowDetails: { onShowDetails(request) },
                             onApprove: { viewModel.approve(code: request.code) },
                             onDeny: { viewModel.deny(code: request.code) }
                         )
@@ -24,8 +27,10 @@ struct RequestListView: View {
                     }
                 }
                 .padding(.horizontal, 12)
+                .padding(.trailing, 6)
                 .padding(.vertical, 8)
             }
+            .scrollIndicators(.hidden)
             .animation(.spring, value: viewModel.pendingRequests.map(\.id))
             .onChange(of: selectedIndex) { _, newIndex in
                 guard newIndex < viewModel.pendingRequests.count else { return }

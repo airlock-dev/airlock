@@ -9,6 +9,9 @@ enum Constants {
     enum UserDefaultsKeys {
         static let dashboardURL = "dashboardURL"
         static let soundEnabled = "soundEnabled"
+        static let approveShortcutKey = "approveShortcutKey"
+        static let denyShortcutKey = "denyShortcutKey"
+        static let autoExpandSelectedRequest = "autoExpandSelectedRequest"
     }
 
     enum NotificationCategory {

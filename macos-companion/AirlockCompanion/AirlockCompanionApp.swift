@@ -7,15 +7,17 @@ struct AirlockCompanionApp: App {
 
     var body: some Scene {
         Settings {
-            EmptyView()
+            SettingsView(viewModel: AppDelegate.sharedViewModel)
         }
     }
 }
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    static let sharedViewModel = AppViewModel()
+
     private var statusBarController: StatusBarController?
-    private let viewModel = AppViewModel()
+    private let viewModel = AppDelegate.sharedViewModel
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Set the app icon explicitly so notifications pick it up
