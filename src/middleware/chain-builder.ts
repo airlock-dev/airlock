@@ -5,6 +5,7 @@ import { allowlistMiddleware } from './core/allowlist.js';
 import { execPolicyMiddleware } from './core/exec-policy.js';
 import { hitlGateMiddleware } from './core/hitl-gate.js';
 import { executeMiddleware } from './core/execute.js';
+import { sandboxMiddleware } from './core/sandbox.js';
 import { schemaValidatorMiddleware } from './core/schema-validator.js';
 import { rateLimiterMiddleware } from './core/rate-limiter.js';
 import { untrustedEnvelopeMiddleware } from './post/untrusted-envelope.js';
@@ -132,13 +133,14 @@ export function buildMiddlewareChain(agentConfig: AgentConfig, _deps: Middleware
   const detectors = coreUserMiddleware.filter((m) => m.name !== 'schema-validator');
 
   // Core zone: fixed security-critical order
-  //   allowlist → exec-policy → schema-validator → [detectors] → hitl-gate → execute
+  //   allowlist → exec-policy → schema-validator → [detectors] → hitl-gate → sandbox → execute
   const coreMiddlewares: Middleware[] = [
     allowlistMiddleware(),
     execPolicyMiddleware(),
     ...schemaValidators.map((m) => withToolFilter(resolveMiddleware(m), m)),
     ...detectors.map((m) => withToolFilter(resolveMiddleware(m), m)),
     hitlGateMiddleware(),
+    sandboxMiddleware(),
     executeMiddleware(),
   ];
 

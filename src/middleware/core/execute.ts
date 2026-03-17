@@ -6,7 +6,7 @@ export function executeMiddleware(): Middleware {
     const { registry, auditLogger } = ctx.deps;
 
     try {
-      const callResult = await registry.call(ctx.toolName, ctx.args, ctx.agentId);
+      const callResult = await registry.call(ctx.toolName, ctx.args, ctx.agentId, ctx.meta);
 
       const duration = Date.now() - ctx.startedAt;
       auditLogger.log({

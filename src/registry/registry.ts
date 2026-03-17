@@ -49,34 +49,57 @@ export class ToolRegistry {
     const agent = this.agents[agentId];
     const overrides = agent?.tool_overrides ?? {};
 
-    return this.cachedTools
+    const filtered = this.cachedTools
       .filter((t) => this.allowlist.evaluate(agentId, t.name) !== 'deny')
-      .map((t) => {
-        const override = overrides[t.name];
-        // Trusted tools bypass sanitization entirely
-        if (override?.trusted) {
-          return {
-            ...t,
-            description: override.description ?? t.description,
-          };
-        }
-        return {
-          ...t,
-          description: sanitizeToolDescription(t.name, t.description, override?.description),
-        };
+      .map((t) => ({
+        ...t,
+        description: sanitizeToolDescription(t.name, t.description, overrides[t.name]?.description),
+      }));
+
+    // Add alias tools from tool_overrides that have alias_of
+    for (const [aliasName, override] of Object.entries(overrides)) {
+      if (!override.alias_of) continue;
+
+      // Find the base tool in the full tool list (not filtered)
+      const baseTool = this.cachedTools.find((t) => t.name === override.alias_of);
+      if (!baseTool) {
+        log.warn({ aliasName, aliasOf: override.alias_of }, 'Alias references unknown tool');
+        continue;
+      }
+
+      // Check if the alias itself is allowed
+      if (this.allowlist.evaluate(agentId, aliasName) === 'deny') continue;
+
+      filtered.push({
+        ...baseTool,
+        name: aliasName,
+        description: sanitizeToolDescription(aliasName, baseTool.description, override.description),
       });
+    }
+
+    return filtered;
   }
 
   async call(
     namespacedName: string,
     args: Record<string, unknown>,
-    agentId: string
+    agentId: string,
+    meta?: Record<string, unknown>
   ): Promise<unknown> {
+    // Resolve alias: if the tool name is an alias, map it to the real backend tool
+    let resolvedName = namespacedName;
+    const agent = this.agents[agentId];
+    const override = agent?.tool_overrides?.[namespacedName];
+    if (override?.alias_of) {
+      resolvedName = override.alias_of;
+      log.info({ alias: namespacedName, resolved: resolvedName }, 'Resolved tool alias');
+    }
+
     // Find the adapter that owns this tool by matching its prefix
     for (const adapter of this.adapters) {
       const prefix = getAdapterPrefix(adapter);
-      if (prefix && namespacedName.startsWith(prefix)) {
-        const result = await adapter.call({ tool: namespacedName, args, agentId });
+      if (prefix && resolvedName.startsWith(prefix)) {
+        const result = await adapter.call({ tool: resolvedName, args, agentId, meta });
         if (!result.success) {
           throw new Error(result.error ?? 'Tool call failed');
         }
@@ -84,7 +107,7 @@ export class ToolRegistry {
       }
     }
 
-    throw new Error(`Unknown tool: ${namespacedName}`);
+    throw new Error(`Unknown tool: ${resolvedName}`);
   }
 
   getAllTools(): Tool[] {

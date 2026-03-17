@@ -72,9 +72,38 @@ export function getBuiltinProviders(providers: Record<string, ProviderConfig>): 
   return result;
 }
 
+export const SandboxFilesystemConfig = z.object({
+  allow_write: z.array(z.string()).default(['.', '/tmp']),
+  deny_read: z.array(z.string()).default([]),
+  deny_write: z.array(z.string()).default([]),
+  allow_read: z.array(z.string()).optional(),
+});
+export type SandboxFilesystemConfig = z.infer<typeof SandboxFilesystemConfig>;
+
+export const SandboxNetworkConfig = z.object({
+  allowed_domains: z.array(z.string()).default([]),
+  denied_domains: z.array(z.string()).default([]),
+});
+export type SandboxNetworkConfig = z.infer<typeof SandboxNetworkConfig>;
+
+export const SandboxOverrideConfig = z.object({
+  filesystem: SandboxFilesystemConfig.optional(),
+  network: SandboxNetworkConfig.optional(),
+});
+export type SandboxOverrideConfig = z.infer<typeof SandboxOverrideConfig>;
+
+export const SandboxConfig = z.object({
+  enabled: z.boolean().default(false),
+  filesystem: SandboxFilesystemConfig.default({}),
+  network: SandboxNetworkConfig.default({}),
+  overrides: z.record(SandboxOverrideConfig).default({}),
+});
+export type SandboxConfig = z.infer<typeof SandboxConfig>;
+
 export const ToolOverride = z.object({
   description: z.string().optional(),
-  trusted: z.boolean().default(false),
+  alias_of: z.string().optional(),
+  sandbox: SandboxOverrideConfig.optional(),
 });
 
 export const AgentExecConfig = z.object({
@@ -140,6 +169,7 @@ export const AgentConfig = z.object({
   tool_overrides: z.record(ToolOverride).default({}),
   exec: AgentExecConfig.default({}),
   http: AgentHttpConfig.default({}),
+  sandbox: SandboxConfig.default({}),
   middleware: z.array(MiddlewareItemConfig).optional(),
 });
 export type AgentConfig = z.infer<typeof AgentConfig>;

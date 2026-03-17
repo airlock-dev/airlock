@@ -2,6 +2,7 @@ export interface ToolCall {
   tool: string;
   args: Record<string, unknown>;
   agentId: string;
+  meta?: Record<string, unknown>;
 }
 
 export interface ToolResult {
