@@ -8,6 +8,8 @@ final class AppViewModel: ObservableObject {
     @Published var connectionState: ConnectionState = .disconnected(nil)
     @Published var currentTime: Date = Date()
     @Published var selectedIndex: Int = 0
+    @Published private(set) var appVersion: String
+    @Published private(set) var availableUpdateVersion: String?
 
     @AppStorage(Constants.UserDefaultsKeys.dashboardURL)
     var dashboardURL: String = Constants.defaultDashboardURL
@@ -18,8 +20,10 @@ final class AppViewModel: ObservableObject {
     let sseClient: SSEClient
     let notificationManager: NotificationManager
     private var apiClient: AirlockAPIClient
+    private let updateChecker: UpdateChecker
     private var sseTask: Task<Void, Never>?
     private var timerTask: Task<Void, Never>?
+    private var updateCheckTask: Task<Void, Never>?
     /// Lookup of all requests we've ever seen, so history always has metadata
     private var seenRequests: [String: ApprovalRequest] = [:]
 
@@ -32,6 +36,8 @@ final class AppViewModel: ObservableObject {
             ?? Constants.defaultDashboardURL
         self.apiClient = AirlockAPIClient(baseURL: storedURL)
         self.notificationManager = NotificationManager()
+        self.updateChecker = UpdateChecker()
+        self.appVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0"
 
         notificationManager.onAction = { [weak self] code, action in
             guard let self else { return }
@@ -48,6 +54,7 @@ final class AppViewModel: ObservableObject {
     func start() {
         notificationManager.requestAuthorization()
         startTimer()
+        startUpdateChecks()
         connectSSE()
     }
 
@@ -56,6 +63,8 @@ final class AppViewModel: ObservableObject {
         sseTask = nil
         timerTask?.cancel()
         timerTask = nil
+        updateCheckTask?.cancel()
+        updateCheckTask = nil
         sseClient.disconnect()
     }
 
@@ -161,6 +170,29 @@ final class AppViewModel: ObservableObject {
                 guard let self, !Task.isCancelled else { break }
                 self.currentTime = Date()
             }
+        }
+    }
+
+    private func startUpdateChecks() {
+        updateCheckTask?.cancel()
+        updateCheckTask = Task { [weak self] in
+            guard let self else { return }
+
+            await self.checkForUpdates()
+
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(Constants.Updates.checkInterval))
+                guard !Task.isCancelled else { break }
+                await self.checkForUpdates()
+            }
+        }
+    }
+
+    private func checkForUpdates() async {
+        do {
+            let result = try await updateChecker.checkForUpdate(currentVersion: appVersion)
+            availableUpdateVersion = result?.latestVersion
+        } catch {
         }
     }
 }
