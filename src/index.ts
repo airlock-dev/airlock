@@ -99,8 +99,15 @@ Examples:
 
     const shutdown = async (signal: string) => {
       logger.info({ signal }, 'Shutdown signal received');
-      // Force exit after 3s if graceful shutdown hangs (e.g. open SSE connections)
-      const forceExit = setTimeout(() => process.exit(0), 3000);
+      // The MCP SDK's StdioClientTransport.close() escalates:
+      //   stdin.end → 2s wait → SIGTERM → 2s wait → SIGKILL
+      // Give it enough time (5s) before forcing exit, otherwise
+      // process.exit() orphans children mid-cleanup.
+      const forceExit = setTimeout(() => {
+        logger.warn('Graceful shutdown timed out, forcing exit');
+        gateway.forceKill();
+        process.exit(1);
+      }, 5000);
       forceExit.unref();
       try {
         watcher.stop();
