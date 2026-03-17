@@ -39,8 +39,17 @@ struct SettingsView: View {
 
             Divider()
 
-            HStack {
-                Spacer()
+            VStack(spacing: 6) {
+                Text("Version \(viewModel.appVersion)")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+
+                if let availableUpdateVersion = viewModel.availableUpdateVersion {
+                    Text("Update available: \(availableUpdateVersion)")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.orange)
+                }
+
                 Link(destination: URL(string: "https://airlock.bot")!) {
                     Text("airlock.bot")
                         .font(.system(size: 11))
@@ -48,8 +57,8 @@ struct SettingsView: View {
                 }
                 .focusable(false)
                 .focusEffectDisabled()
-                Spacer()
             }
+            .frame(maxWidth: .infinity)
         }
         .padding(16)
         .frame(width: 300)

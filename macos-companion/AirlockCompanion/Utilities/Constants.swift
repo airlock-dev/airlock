@@ -26,4 +26,12 @@ enum Constants {
         static let maxDelay: TimeInterval = 30.0
         static let multiplier: Double = 2.0
     }
+
+    enum Updates {
+        static let repositoryOwner = "airlock-dev"
+        static let repositoryName = "airlock"
+        static let tagPrefix = "companion-v"
+        static let checkInterval: TimeInterval = 3600
+        static let releasesURL = URL(string: "https://api.github.com/repos/\(repositoryOwner)/\(repositoryName)/releases?per_page=20")!
+    }
 }
