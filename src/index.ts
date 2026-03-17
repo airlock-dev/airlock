@@ -97,8 +97,14 @@ Examples:
     });
     watcher.start();
 
+    let shuttingDown = false;
     const shutdown = async (signal: string) => {
+      if (shuttingDown) return;
+      shuttingDown = true;
       logger.info({ signal }, 'Shutdown signal received');
+      // Immediately prevent MCP clients from reconnecting — SIGINT
+      // propagates to children, killing them before pool.stop() runs.
+      gateway.disableReconnect();
       // The MCP SDK's StdioClientTransport.close() escalates:
       //   stdin.end → 2s wait → SIGTERM → 2s wait → SIGKILL
       // Give it enough time (5s) before forcing exit, otherwise

@@ -78,6 +78,11 @@ export class StdioMcpClient {
     return this.ready;
   }
 
+  /** Prevent reconnection without closing the transport. */
+  disableReconnect(): void {
+    this.stopped = true;
+  }
+
   async stop(): Promise<void> {
     this.stopped = true;
     await this.transport?.close();

@@ -142,11 +142,17 @@ export class Gateway {
     log.info('Config reloaded: providers, allowlist, registry, and agent configs updated');
   }
 
+  /** Prevent MCP clients from reconnecting during shutdown. */
+  disableReconnect(): void {
+    this.pool?.disableReconnect();
+  }
+
   async stop(): Promise<void> {
     log.info('Stopping Airlock gateway');
+    this.pool?.disableReconnect();
+    await this.pool?.stop();
     await this.app?.close();
     await this.registry?.stopAll();
-    await this.pool?.stop();
     await this.hitlProvider?.stop();
     this.auditLogger?.stop();
   }
