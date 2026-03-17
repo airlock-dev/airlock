@@ -129,8 +129,18 @@ export class ClientPool {
     this.healthTimer.unref();
   }
 
+  /** Disable reconnection on all clients without closing them yet. */
+  disableReconnect(): void {
+    for (const client of this.clients.values()) {
+      if (client instanceof StdioMcpClient) {
+        client.disableReconnect();
+      }
+    }
+  }
+
   async stop(): Promise<void> {
     clearInterval(this.healthTimer);
+    this.disableReconnect();
     await Promise.allSettled(Array.from(this.clients.values()).map((c) => c.stop()));
   }
 

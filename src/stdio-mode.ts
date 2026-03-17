@@ -127,8 +127,14 @@ export async function runStdioMode(
   watcher.start();
 
   // Graceful shutdown
+  let shuttingDown = false;
   const shutdown = async () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
     log.info('Shutting down stdio mode');
+    // Immediately prevent MCP clients from reconnecting — SIGINT
+    // propagates to children, killing them before pool.stop() runs.
+    pool.disableReconnect();
     // The MCP SDK's StdioClientTransport.close() escalates:
     //   stdin.end → 2s wait → SIGTERM → 2s wait → SIGKILL
     // Give it enough time (5s) before forcing exit, otherwise
@@ -141,8 +147,8 @@ export async function runStdioMode(
     forceExit.unref();
     try {
       watcher.stop();
-      await registry.stopAll();
       await pool.stop();
+      await registry.stopAll();
       await hitlProvider.stop();
       auditLogger.stop();
     } catch (err) {
