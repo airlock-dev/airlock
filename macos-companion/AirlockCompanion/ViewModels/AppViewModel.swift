@@ -27,7 +27,9 @@ final class AppViewModel: ObservableObject {
     init() {
         let sseClient = SSEClient()
         self.sseClient = sseClient
-        self.apiClient = AirlockAPIClient()
+        let storedURL = UserDefaults.standard.string(forKey: Constants.UserDefaultsKeys.dashboardURL)
+            ?? Constants.defaultDashboardURL
+        self.apiClient = AirlockAPIClient(baseURL: storedURL)
         self.notificationManager = NotificationManager()
 
         notificationManager.onAction = { [weak self] code, action in
