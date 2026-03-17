@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.16](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.15...airlock-bot-v0.2.16) (2026-03-17)
+
+
+### Features
+
+* **companion:** polish settings and request review ([#57](https://github.com/airlock-dev/airlock/issues/57)) ([6cd9a15](https://github.com/airlock-dev/airlock/commit/6cd9a159a6527635e1830daef555b12da8cb04b4))
+
 ## [0.2.15](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.14...airlock-bot-v0.2.15) (2026-03-17)
 
 
