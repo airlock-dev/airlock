@@ -17,10 +17,20 @@ final class AppViewModel: ObservableObject {
     @AppStorage(Constants.UserDefaultsKeys.soundEnabled)
     var soundEnabled: Bool = true
 
+    @AppStorage(Constants.UserDefaultsKeys.approveShortcutKey)
+    var approveShortcutKey: String = "S"
+
+    @AppStorage(Constants.UserDefaultsKeys.denyShortcutKey)
+    var denyShortcutKey: String = "D"
+
+    @AppStorage(Constants.UserDefaultsKeys.autoExpandSelectedRequest)
+    var autoExpandSelectedRequest: Bool = true
+
     let sseClient: SSEClient
     let notificationManager: NotificationManager
     private var apiClient: AirlockAPIClient
     private let updateChecker: UpdateChecker
+    var onSettingsChanged: (() -> Void)?
     private var sseTask: Task<Void, Never>?
     private var timerTask: Task<Void, Never>?
     private var updateCheckTask: Task<Void, Never>?
@@ -96,7 +106,26 @@ final class AppViewModel: ObservableObject {
     func updateSettings() {
         sseClient.updateBaseURL(dashboardURL)
         apiClient = AirlockAPIClient(baseURL: dashboardURL)
+        onSettingsChanged?()
         connectSSE()
+    }
+
+    func approveSelectedRequest() {
+        guard !pendingRequests.isEmpty else { return }
+        let index = min(selectedIndex, pendingRequests.count - 1)
+        approve(code: pendingRequests[index].code)
+        if selectedIndex >= pendingRequests.count - 1 {
+            selectedIndex = max(0, pendingRequests.count - 2)
+        }
+    }
+
+    func denySelectedRequest() {
+        guard !pendingRequests.isEmpty else { return }
+        let index = min(selectedIndex, pendingRequests.count - 1)
+        deny(code: pendingRequests[index].code)
+        if selectedIndex >= pendingRequests.count - 1 {
+            selectedIndex = max(0, pendingRequests.count - 2)
+        }
     }
 
     // MARK: - Private

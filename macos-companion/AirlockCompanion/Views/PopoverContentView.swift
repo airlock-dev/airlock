@@ -2,8 +2,10 @@ import SwiftUI
 
 struct PopoverContentView: View {
     @ObservedObject var viewModel: AppViewModel
-    @State private var showSettings = false
+    let onOpenSettingsRequest: () -> Void
+    @Environment(\.openSettings) private var openSettings
     @State private var showHistory = false
+    @State private var detailRequest: ApprovalRequest?
     @FocusState private var isFocused: Bool
 
     private var statusColor: Color {
@@ -37,7 +39,10 @@ struct PopoverContentView: View {
 
                 Spacer()
 
-                Button(action: { showSettings.toggle() }) {
+                Button(action: {
+                    onOpenSettingsRequest()
+                    openSettings()
+                }) {
                     Image(systemName: "gear")
                         .font(.system(size: 13))
                         .foregroundStyle(.secondary)
@@ -45,9 +50,6 @@ struct PopoverContentView: View {
                 .buttonStyle(.plain)
                 .focusable(false)
                 .focusEffectDisabled()
-                .popover(isPresented: $showSettings) {
-                    SettingsView(viewModel: viewModel)
-                }
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
@@ -56,7 +58,9 @@ struct PopoverContentView: View {
 
             // Body
             if viewModel.pendingCount > 0 {
-                RequestListView(viewModel: viewModel, selectedIndex: $viewModel.selectedIndex)
+                RequestListView(viewModel: viewModel, selectedIndex: $viewModel.selectedIndex) { request in
+                    detailRequest = request
+                }
             } else {
                 EmptyStateView(connectionState: viewModel.connectionState)
             }
@@ -73,6 +77,13 @@ struct PopoverContentView: View {
         .focused($isFocused)
         .focusEffectDisabled()
         .onAppear { isFocused = true }
+        .sheet(item: $detailRequest) { request in
+            RequestDetailView(
+                request: request,
+                onApprove: { viewModel.approve(code: request.code) },
+                onDeny: { viewModel.deny(code: request.code) }
+            )
+        }
         .onKeyPress(phases: .down) { press in
             let key = press.characters.lowercased()
             let count = viewModel.pendingRequests.count
@@ -98,19 +109,21 @@ struct PopoverContentView: View {
             // a = approve selected
             if key == "a" {
                 guard count > 0 else { return .ignored }
-                let idx = min(viewModel.selectedIndex, count - 1)
-                viewModel.approve(code: viewModel.pendingRequests[idx].code)
-                // Keep selection in bounds after removal
-                if viewModel.selectedIndex >= count - 1 { viewModel.selectedIndex = max(0, count - 2) }
+                viewModel.approveSelectedRequest()
                 return .handled
             }
 
             // d = deny selected
             if key == "d" {
                 guard count > 0 else { return .ignored }
+                viewModel.denySelectedRequest()
+                return .handled
+            }
+
+            if press.key == .return || press.key == .space {
+                guard count > 0 else { return .ignored }
                 let idx = min(viewModel.selectedIndex, count - 1)
-                viewModel.deny(code: viewModel.pendingRequests[idx].code)
-                if viewModel.selectedIndex >= count - 1 { viewModel.selectedIndex = max(0, count - 2) }
+                detailRequest = viewModel.pendingRequests[idx]
                 return .handled
             }
 
@@ -170,7 +183,9 @@ struct HistoryView: View {
                             }
                         }
                     }
+                    .padding(.trailing, 6)
                 }
+                .scrollIndicators(.hidden)
                 .frame(maxHeight: 200)
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
