@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.14](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.13...airlock-bot-v0.2.14) (2026-03-17)
+
+
+### Bug Fixes
+
+* prevent reconnection storms and orphaned children on shutdown ([#51](https://github.com/airlock-dev/airlock/issues/51)) ([5452f90](https://github.com/airlock-dev/airlock/commit/5452f9035ecaa19eb69c0722c2d070d3d6b0163b))
+
 ## [0.2.13](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.12...airlock-bot-v0.2.13) (2026-03-17)
 
 
