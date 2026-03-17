@@ -37,7 +37,8 @@ final class AppViewModel: ObservableObject {
         self.apiClient = AirlockAPIClient(baseURL: storedURL)
         self.notificationManager = NotificationManager()
         self.updateChecker = UpdateChecker()
-        self.appVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0"
+        let bundleVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0"
+        self.appVersion = bundleVersion == "0.0.0" ? "0.0.0 (dev)" : bundleVersion
 
         notificationManager.onAction = { [weak self] code, action in
             guard let self else { return }
