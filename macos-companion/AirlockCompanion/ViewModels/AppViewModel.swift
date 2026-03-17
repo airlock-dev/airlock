@@ -7,6 +7,7 @@ final class AppViewModel: ObservableObject {
     @Published var resolvedRequests: [ResolvedRequest] = []
     @Published var connectionState: ConnectionState = .disconnected(nil)
     @Published var currentTime: Date = Date()
+    @Published var selectedIndex: Int = 0
 
     @AppStorage(Constants.UserDefaultsKeys.dashboardURL)
     var dashboardURL: String = Constants.defaultDashboardURL

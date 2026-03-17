@@ -4,6 +4,7 @@ struct PopoverContentView: View {
     @ObservedObject var viewModel: AppViewModel
     @State private var showSettings = false
     @State private var showHistory = false
+    @FocusState private var isFocused: Bool
 
     private var statusColor: Color {
         switch viewModel.connectionState {
@@ -55,7 +56,7 @@ struct PopoverContentView: View {
 
             // Body
             if viewModel.pendingCount > 0 {
-                RequestListView(viewModel: viewModel)
+                RequestListView(viewModel: viewModel, selectedIndex: $viewModel.selectedIndex)
             } else {
                 EmptyStateView(connectionState: viewModel.connectionState)
             }
@@ -68,6 +69,57 @@ struct PopoverContentView: View {
         }
         .frame(width: Constants.popoverWidth)
         .frame(maxHeight: Constants.popoverMaxHeight)
+        .focusable()
+        .focused($isFocused)
+        .focusEffectDisabled()
+        .onAppear { isFocused = true }
+        .onKeyPress(phases: .down) { press in
+            let key = press.characters.lowercased()
+            let count = viewModel.pendingRequests.count
+
+            // j / down arrow = move selection down
+            if key == "j" || press.key == .downArrow {
+                guard count > 0 else { return .ignored }
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    viewModel.selectedIndex = min(viewModel.selectedIndex + 1, count - 1)
+                }
+                return .handled
+            }
+
+            // k / up arrow = move selection up
+            if key == "k" || press.key == .upArrow {
+                guard count > 0 else { return .ignored }
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    viewModel.selectedIndex = max(viewModel.selectedIndex - 1, 0)
+                }
+                return .handled
+            }
+
+            // a = approve selected
+            if key == "a" {
+                guard count > 0 else { return .ignored }
+                let idx = min(viewModel.selectedIndex, count - 1)
+                viewModel.approve(code: viewModel.pendingRequests[idx].code)
+                // Keep selection in bounds after removal
+                if viewModel.selectedIndex >= count - 1 { viewModel.selectedIndex = max(0, count - 2) }
+                return .handled
+            }
+
+            // d = deny selected
+            if key == "d" {
+                guard count > 0 else { return .ignored }
+                let idx = min(viewModel.selectedIndex, count - 1)
+                viewModel.deny(code: viewModel.pendingRequests[idx].code)
+                if viewModel.selectedIndex >= count - 1 { viewModel.selectedIndex = max(0, count - 2) }
+                return .handled
+            }
+
+            return .ignored
+        }
+        .onChange(of: viewModel.pendingRequests.count) { _, newCount in
+            // Clamp selection when list shrinks
+            if viewModel.selectedIndex >= newCount { viewModel.selectedIndex = max(0, newCount - 1) }
+        }
     }
 }
 

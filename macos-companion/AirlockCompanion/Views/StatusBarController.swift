@@ -1,18 +1,23 @@
 import AppKit
+import Carbon
 import SwiftUI
 
 @MainActor
 final class StatusBarController {
     private var statusItem: NSStatusItem
     private var popover: NSPopover
+    private weak var viewModel: AppViewModel?
     private var badgeView: NSView?
     private var badgeLabel: NSTextField?
-    private var eventMonitor: Any?
+    private var clickMonitor: Any?
+    private var localKeyMonitor: Any?
+    private var hotkeyRef: EventHotKeyRef?
 
     init(viewModel: AppViewModel) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         popover = NSPopover()
 
+        self.viewModel = viewModel
         let contentView = PopoverContentView(viewModel: viewModel)
         popover.contentSize = NSSize(width: Constants.popoverWidth, height: Constants.popoverMaxHeight)
         popover.behavior = .transient
@@ -50,14 +55,71 @@ final class StatusBarController {
         }
 
         // Close popover when clicking outside
-        eventMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
+        clickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
             self?.closePopover()
         }
+
+        // Local hotkey: Ctrl+Shift+A closes popover when it's focused
+        localKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            let requiredFlags: NSEvent.ModifierFlags = [.control, .shift]
+            let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            if flags == requiredFlags && event.charactersIgnoringModifiers?.lowercased() == "a" {
+                DispatchQueue.main.async { self?.togglePopover() }
+                return nil
+            }
+            return event
+        }
+
+        // Global hotkey via Carbon RegisterEventHotKey (Ctrl+Shift+A)
+        registerGlobalHotkey()
+    }
+
+    // MARK: - Carbon Global Hotkey
+
+    private func registerGlobalHotkey() {
+        // Store a pointer to self for the C callback
+        let refcon = UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque())
+
+        // Install handler for hotkey events
+        var eventType = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
+        InstallEventHandler(
+            GetApplicationEventTarget(),
+            { (_, event, refcon) -> OSStatus in
+                guard let refcon else { return OSStatus(eventNotHandledErr) }
+                let controller = Unmanaged<StatusBarController>.fromOpaque(refcon).takeUnretainedValue()
+                DispatchQueue.main.async {
+                    controller.togglePopover()
+                }
+                return noErr
+            },
+            1,
+            &eventType,
+            refcon,
+            nil
+        )
+
+        // Register Ctrl+Shift+A: keycode 0 = 'a', modifiers = control + shift
+        let hotkeyID = EventHotKeyID(signature: OSType(0x414C4B), id: 1) // "ALK" + 1
+        let modifiers: UInt32 = UInt32(controlKey | shiftKey)
+        RegisterEventHotKey(
+            UInt32(kVK_ANSI_A),
+            modifiers,
+            hotkeyID,
+            GetApplicationEventTarget(),
+            0,
+            &hotkeyRef
+        )
     }
 
     deinit {
-        if let monitor = eventMonitor {
+        if let monitor = clickMonitor {
             NSEvent.removeMonitor(monitor)
+        }
+        if let monitor = localKeyMonitor {
+            NSEvent.removeMonitor(monitor)
+        }
+        if let ref = hotkeyRef {
+            UnregisterEventHotKey(ref)
         }
     }
 
@@ -76,9 +138,12 @@ final class StatusBarController {
 
     private func showPopover() {
         if let button = statusItem.button {
+            viewModel?.selectedIndex = 0
+
+            NSApp.activate(ignoringOtherApps: true)
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
 
-            // Ensure popover window is key
+            // Ensure popover window is key so .onKeyPress works
             popover.contentViewController?.view.window?.makeKey()
         }
     }
