@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.13](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.12...airlock-bot-v0.2.13) (2026-03-17)
+
+
+### Bug Fixes
+
+* **companion:** use stored dashboard URL for API client ([#48](https://github.com/airlock-dev/airlock/issues/48)) ([8486ac5](https://github.com/airlock-dev/airlock/commit/8486ac552ec5fcadcafe1cc0f5004170c29de5ef))
+
 ## [0.2.12](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.11...airlock-bot-v0.2.12) (2026-03-17)
 
 
