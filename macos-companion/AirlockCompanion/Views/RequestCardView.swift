@@ -3,6 +3,7 @@ import SwiftUI
 struct RequestCardView: View {
     let request: ApprovalRequest
     let currentTime: Date
+    var isSelected: Bool = false
     let onApprove: () -> Void
     let onDeny: () -> Void
 
@@ -78,8 +79,16 @@ struct RequestCardView: View {
                     acted = true
                     onApprove()
                 }) {
-                    Label("Approve", systemImage: "checkmark.circle.fill")
-                        .frame(maxWidth: .infinity)
+                    HStack(spacing: 4) {
+                        Label("Approve", systemImage: "checkmark.circle.fill")
+                        Text("A")
+                            .font(.system(size: 9, weight: .medium, design: .rounded))
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 1)
+                            .background(.white.opacity(0.2))
+                            .clipShape(RoundedRectangle(cornerRadius: 3))
+                    }
+                    .frame(maxWidth: .infinity)
                 }
                 .focusable(false)
                 .focusEffectDisabled()
@@ -93,8 +102,16 @@ struct RequestCardView: View {
                     acted = true
                     onDeny()
                 }) {
-                    Label("Deny", systemImage: "xmark.circle.fill")
-                        .frame(maxWidth: .infinity)
+                    HStack(spacing: 4) {
+                        Label("Deny", systemImage: "xmark.circle.fill")
+                        Text("D")
+                            .font(.system(size: 9, weight: .medium, design: .rounded))
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 1)
+                            .background(.white.opacity(0.2))
+                            .clipShape(RoundedRectangle(cornerRadius: 3))
+                    }
+                    .frame(maxWidth: .infinity)
                 }
                 .focusable(false)
                 .focusEffectDisabled()
@@ -111,7 +128,8 @@ struct RequestCardView: View {
         .clipShape(RoundedRectangle(cornerRadius: 10))
         .overlay(
             RoundedRectangle(cornerRadius: 10)
-                .stroke(.separator, lineWidth: 0.5)
+                .stroke(isSelected ? Color.accentColor : Color(nsColor: .separatorColor),
+                        lineWidth: isSelected ? 2 : 0.5)
         )
     }
 }
