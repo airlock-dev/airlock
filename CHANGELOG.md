@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.20](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.19...airlock-bot-v0.2.20) (2026-03-18)
+
+
+### Features
+
+* **sandbox:** add presets, tool variants, and runtime smoke tests ([#50](https://github.com/airlock-dev/airlock/issues/50)) ([750a73e](https://github.com/airlock-dev/airlock/commit/750a73ee5bb6ef1ac1dea50cebc7d1f691e57460))
+
 ## [0.2.19](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.18...airlock-bot-v0.2.19) (2026-03-18)
 
 
