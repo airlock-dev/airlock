@@ -367,6 +367,105 @@ describe('call_tool — HITL gate', () => {
     await callPromise.catch(() => {});
   });
 
+  it('cancels pending request and errors when session signal fires during wait', async () => {
+    const agentConfig = makeAgentConfig({ allow: ['github/*'], ask: ['github/create_pr'] });
+    const allowlist = new AllowlistEngine({ agent1: agentConfig });
+    const auditLogger = makeMockAuditLogger();
+    const provider = makeMockProvider();
+    const hitlEngine = new HitlEngine(auditLogger, provider, 10000);
+    const hitlBatcher = new HitlBatcher(50);
+    const registry = makeMockRegistry([], { merged: true });
+    const ac = new AbortController();
+
+    const deps = makeDeps({
+      agentConfig,
+      allowlist,
+      auditLogger,
+      hitlEngine,
+      hitlBatcher,
+      hitlProvider: provider,
+      registry: registry as unknown as AgentServerDeps['registry'],
+      signal: ac.signal,
+    });
+    const client = await buildConnectedClient(deps);
+
+    const callPromise = client.callTool({ name: 'github/create_pr', arguments: {} });
+    await new Promise((r) => setTimeout(r, 10));
+
+    // Verify it's pending, then simulate session disconnect
+    expect(hitlEngine.getPending()).toHaveLength(1);
+    ac.abort();
+
+    await expect(callPromise).rejects.toThrow('disconnected');
+    // Request must be removed from pending — not dangling
+    expect(hitlEngine.getPending()).toHaveLength(0);
+    // Tool must NOT have executed
+    expect(registry.call as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
+    // Audit log must reflect the disconnection
+    expect(auditLogger.log).toHaveBeenCalledWith(
+      expect.objectContaining({ result: 'hitl_disconnected' })
+    );
+  });
+
+  it('errors immediately when signal is already aborted before call', async () => {
+    const agentConfig = makeAgentConfig({ allow: ['github/*'], ask: ['github/create_pr'] });
+    const allowlist = new AllowlistEngine({ agent1: agentConfig });
+    const auditLogger = makeMockAuditLogger();
+    const provider = makeMockProvider();
+    const hitlEngine = new HitlEngine(auditLogger, provider, 10000);
+    const hitlBatcher = new HitlBatcher(50);
+    const ac = new AbortController();
+    ac.abort(); // already dead before the call arrives
+
+    const deps = makeDeps({
+      agentConfig,
+      allowlist,
+      auditLogger,
+      hitlEngine,
+      hitlBatcher,
+      hitlProvider: provider,
+      signal: ac.signal,
+    });
+    const client = await buildConnectedClient(deps);
+
+    await expect(client.callTool({ name: 'github/create_pr', arguments: {} })).rejects.toThrow(
+      'disconnected'
+    );
+
+    expect(hitlEngine.getPending()).toHaveLength(0);
+  });
+
+  it('normal approval still works when signal is present but never fires', async () => {
+    const agentConfig = makeAgentConfig({ allow: ['github/*'], ask: ['github/create_pr'] });
+    const allowlist = new AllowlistEngine({ agent1: agentConfig });
+    const auditLogger = makeMockAuditLogger();
+    const provider = makeMockProvider();
+    const hitlEngine = new HitlEngine(auditLogger, provider, 10000);
+    const hitlBatcher = new HitlBatcher(50);
+    const registry = makeMockRegistry([], { ok: true });
+    const ac = new AbortController(); // never aborted
+
+    const deps = makeDeps({
+      agentConfig,
+      allowlist,
+      auditLogger,
+      hitlEngine,
+      hitlBatcher,
+      hitlProvider: provider,
+      registry: registry as unknown as AgentServerDeps['registry'],
+      signal: ac.signal,
+    });
+    const client = await buildConnectedClient(deps);
+
+    const callPromise = client.callTool({ name: 'github/create_pr', arguments: {} });
+    await new Promise((r) => setTimeout(r, 10));
+    hitlEngine.approve(hitlEngine.getPending()[0].code);
+
+    const result = await callPromise;
+    expect(JSON.parse((result.content[0] as { text: string }).text)).toEqual({ ok: true });
+    expect(auditLogger.log).toHaveBeenCalledWith(expect.objectContaining({ result: 'success' }));
+  });
+
   it('exec/run command matching hitl pattern routes to HITL gate', async () => {
     const agentConfig = makeAgentConfig({
       allow: ['exec/run'],

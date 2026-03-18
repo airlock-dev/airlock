@@ -38,13 +38,21 @@ describe('HitlEngine', () => {
   });
 
   it('resolves approved when approve() called by code', async () => {
-    const { code, result } = engine.create({ agentId: 'agent1', tool: 'github/create_pr', args: {} });
+    const { code, result } = engine.create({
+      agentId: 'agent1',
+      tool: 'github/create_pr',
+      args: {},
+    });
     engine.approve(code);
     expect(await result).toBe('approved');
   });
 
   it('resolves denied when deny() called', async () => {
-    const { code, result } = engine.create({ agentId: 'agent1', tool: 'github/create_pr', args: {} });
+    const { code, result } = engine.create({
+      agentId: 'agent1',
+      tool: 'github/create_pr',
+      args: {},
+    });
     engine.deny(code, 'not today');
     expect(await result).toBe('denied');
   });
@@ -73,6 +81,77 @@ describe('HitlEngine', () => {
   });
 });
 
+describe('HitlEngine.cancel()', () => {
+  let engine: HitlEngine;
+  let auditLogger: ReturnType<typeof makeMockAuditLogger>;
+
+  beforeEach(() => {
+    auditLogger = makeMockAuditLogger();
+    engine = new HitlEngine(auditLogger, makeMockProvider(), 5000);
+  });
+
+  it('resolves cancelled when cancel() called by id', async () => {
+    const { id, result } = engine.create({
+      agentId: 'agent1',
+      tool: 'supabase/execute_sql',
+      args: {},
+    });
+    engine.cancel(id);
+    expect(await result).toBe('cancelled');
+  });
+
+  it('removes request from pending after cancel', async () => {
+    const { id, result } = engine.create({
+      agentId: 'agent1',
+      tool: 'supabase/execute_sql',
+      args: {},
+    });
+    engine.cancel(id);
+    await result;
+    expect(engine.getPending()).toHaveLength(0);
+  });
+
+  it('updates audit DB status to cancelled', async () => {
+    const { id, result } = engine.create({
+      agentId: 'agent1',
+      tool: 'supabase/execute_sql',
+      args: {},
+    });
+    engine.cancel(id);
+    await result;
+    expect(auditLogger.updateHitlStatus).toHaveBeenCalledWith(id, 'cancelled');
+  });
+
+  it('is a no-op for unknown id', () => {
+    expect(() => engine.cancel('nonexistent-id')).not.toThrow();
+  });
+
+  it('cancel after approve is a no-op — does not double-resolve', async () => {
+    const { id, result } = engine.create({
+      agentId: 'agent1',
+      tool: 'supabase/execute_sql',
+      args: {},
+    });
+    engine.approve(id);
+    engine.cancel(id); // already gone from pending
+    expect(await result).toBe('approved');
+  });
+
+  it('clears the timeout timer on cancel', async () => {
+    vi.useFakeTimers();
+    const { id, result } = engine.create({
+      agentId: 'agent1',
+      tool: 'supabase/execute_sql',
+      args: {},
+    });
+    engine.cancel(id);
+    await result;
+    // Advancing past the original timeout should not throw or double-resolve
+    vi.advanceTimersByTime(10000);
+    vi.useRealTimers();
+  });
+});
+
 describe('HitlBatcher', () => {
   it('fires callback after window', async () => {
     vi.useFakeTimers();
@@ -80,8 +159,22 @@ describe('HitlBatcher', () => {
     const cb = vi.fn();
     batcher.onBatchReady(cb);
 
-    batcher.add({ id: '1', code: 'A1B2C3', agentId: 'agent1', tool: 'foo', args: {}, timeoutMs: 5000 });
-    batcher.add({ id: '2', code: 'D4E5F6', agentId: 'agent1', tool: 'bar', args: {}, timeoutMs: 5000 });
+    batcher.add({
+      id: '1',
+      code: 'A1B2C3',
+      agentId: 'agent1',
+      tool: 'foo',
+      args: {},
+      timeoutMs: 5000,
+    });
+    batcher.add({
+      id: '2',
+      code: 'D4E5F6',
+      agentId: 'agent1',
+      tool: 'bar',
+      args: {},
+      timeoutMs: 5000,
+    });
 
     expect(cb).not.toHaveBeenCalled();
     vi.advanceTimersByTime(1100);
@@ -96,8 +189,22 @@ describe('HitlBatcher', () => {
     const cb = vi.fn();
     batcher.onBatchReady(cb);
 
-    batcher.add({ id: '1', code: 'A1B2C3', agentId: 'agent1', tool: 'foo', args: {}, timeoutMs: 5000 });
-    batcher.add({ id: '2', code: 'D4E5F6', agentId: 'agent2', tool: 'bar', args: {}, timeoutMs: 5000 });
+    batcher.add({
+      id: '1',
+      code: 'A1B2C3',
+      agentId: 'agent1',
+      tool: 'foo',
+      args: {},
+      timeoutMs: 5000,
+    });
+    batcher.add({
+      id: '2',
+      code: 'D4E5F6',
+      agentId: 'agent2',
+      tool: 'bar',
+      args: {},
+      timeoutMs: 5000,
+    });
 
     vi.advanceTimersByTime(1100);
     expect(cb).toHaveBeenCalledTimes(2);

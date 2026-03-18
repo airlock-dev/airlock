@@ -80,15 +80,12 @@ export class HttpMcpClient {
           log.info({ id: this.id }, 'OAuth authorization required, waiting for browser flow');
           const code = await this.oauthProvider.waitForAuthCode();
           await this.transport.finishAuth(code);
-
-          this.client = new Client({ name: 'airlock', version: VERSION });
-          await this.client.connect(this.transport);
-          this.reconnectAttempt = 0;
-          this.ready = true;
-          log.info({ id: this.id, url: this.url }, 'MCP HTTP client connected (after OAuth)');
         } finally {
           this.awaitingAuth = false;
         }
+        // Tokens are now persisted by the provider. Reconnect with a fresh
+        // transport — the old one was already started and cannot be reused.
+        await this.connect();
         return;
       }
       log.error({ err, id: this.id }, 'MCP HTTP connect failed');
