@@ -6,6 +6,7 @@ import { Gateway } from './gateway.js';
 import { runStdioMode } from './stdio-mode.js';
 import { runDiscover } from './discover/cli.js';
 import { runConfigureAgent } from './configure-agent/cli.js';
+import { runConfigureCli } from './configure-cli/cli.js';
 import { logger } from './util/logger.js';
 
 // Handle subcommands before parseArgs
@@ -17,6 +18,11 @@ if (subcommand === 'discover') {
   });
 } else if (subcommand === 'configure-agent') {
   runConfigureAgent(process.argv.slice(3)).catch((err) => {
+    console.error(err instanceof Error ? err.message : String(err));
+    process.exit(1);
+  });
+} else if (subcommand === 'configure-cli') {
+  runConfigureCli(process.argv.slice(3)).catch((err) => {
     console.error(err instanceof Error ? err.message : String(err));
     process.exit(1);
   });
@@ -42,6 +48,7 @@ airlock — permissions-aware MCP gateway
 Usage:
   airlock [options]
   airlock discover <cli|api> [options]
+  airlock configure-cli <tool> [options]
   airlock configure-agent [options]
 
 Options:
@@ -53,6 +60,7 @@ Options:
 Subcommands:
   discover cli <tool>    Auto-discover CLI commands from --help or Fig specs
   discover api <spec>    Auto-discover API endpoints from an OpenAPI spec
+  configure-cli <tool>   Interactive TUI to select and configure CLI commands
   configure-agent        Interactive TUI to build allow/ask/deny lists
 
 Examples:
@@ -97,8 +105,24 @@ Examples:
     });
     watcher.start();
 
+    let shuttingDown = false;
     const shutdown = async (signal: string) => {
+      if (shuttingDown) return;
+      shuttingDown = true;
       logger.info({ signal }, 'Shutdown signal received');
+      // Immediately prevent MCP clients from reconnecting — SIGINT
+      // propagates to children, killing them before pool.stop() runs.
+      gateway.disableReconnect();
+      // The MCP SDK's StdioClientTransport.close() escalates:
+      //   stdin.end → 2s wait → SIGTERM → 2s wait → SIGKILL
+      // Give it enough time (5s) before forcing exit, otherwise
+      // process.exit() orphans children mid-cleanup.
+      const forceExit = setTimeout(() => {
+        logger.warn('Graceful shutdown timed out, forcing exit');
+        gateway.forceKill();
+        process.exit(1);
+      }, 5000);
+      forceExit.unref();
       try {
         watcher.stop();
         await gateway.stop();

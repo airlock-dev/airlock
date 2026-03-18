@@ -2,8 +2,11 @@ import SwiftUI
 
 struct PopoverContentView: View {
     @ObservedObject var viewModel: AppViewModel
-    @State private var showSettings = false
+    let onOpenSettingsRequest: () -> Void
+    @Environment(\.openSettings) private var openSettings
     @State private var showHistory = false
+    @State private var detailRequest: ApprovalRequest?
+    @FocusState private var isFocused: Bool
 
     private var statusColor: Color {
         switch viewModel.connectionState {
@@ -36,7 +39,10 @@ struct PopoverContentView: View {
 
                 Spacer()
 
-                Button(action: { showSettings.toggle() }) {
+                Button(action: {
+                    onOpenSettingsRequest()
+                    openSettings()
+                }) {
                     Image(systemName: "gear")
                         .font(.system(size: 13))
                         .foregroundStyle(.secondary)
@@ -44,9 +50,6 @@ struct PopoverContentView: View {
                 .buttonStyle(.plain)
                 .focusable(false)
                 .focusEffectDisabled()
-                .popover(isPresented: $showSettings) {
-                    SettingsView(viewModel: viewModel)
-                }
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
@@ -55,7 +58,9 @@ struct PopoverContentView: View {
 
             // Body
             if viewModel.pendingCount > 0 {
-                RequestListView(viewModel: viewModel)
+                RequestListView(viewModel: viewModel, selectedIndex: $viewModel.selectedIndex) { request in
+                    detailRequest = request
+                }
             } else {
                 EmptyStateView(connectionState: viewModel.connectionState)
             }
@@ -68,6 +73,66 @@ struct PopoverContentView: View {
         }
         .frame(width: Constants.popoverWidth)
         .frame(maxHeight: Constants.popoverMaxHeight)
+        .focusable()
+        .focused($isFocused)
+        .focusEffectDisabled()
+        .onAppear { isFocused = true }
+        .sheet(item: $detailRequest) { request in
+            RequestDetailView(
+                request: request,
+                onApprove: { viewModel.approve(code: request.code) },
+                onDeny: { viewModel.deny(code: request.code) }
+            )
+        }
+        .onKeyPress(phases: .down) { press in
+            let key = press.characters.lowercased()
+            let count = viewModel.pendingRequests.count
+
+            // j / down arrow = move selection down
+            if key == "j" || press.key == .downArrow {
+                guard count > 0 else { return .ignored }
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    viewModel.selectedIndex = min(viewModel.selectedIndex + 1, count - 1)
+                }
+                return .handled
+            }
+
+            // k / up arrow = move selection up
+            if key == "k" || press.key == .upArrow {
+                guard count > 0 else { return .ignored }
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    viewModel.selectedIndex = max(viewModel.selectedIndex - 1, 0)
+                }
+                return .handled
+            }
+
+            // a = approve selected
+            if key == "a" {
+                guard count > 0 else { return .ignored }
+                viewModel.approveSelectedRequest()
+                return .handled
+            }
+
+            // d = deny selected
+            if key == "d" {
+                guard count > 0 else { return .ignored }
+                viewModel.denySelectedRequest()
+                return .handled
+            }
+
+            if press.key == .return || press.key == .space {
+                guard count > 0 else { return .ignored }
+                let idx = min(viewModel.selectedIndex, count - 1)
+                detailRequest = viewModel.pendingRequests[idx]
+                return .handled
+            }
+
+            return .ignored
+        }
+        .onChange(of: viewModel.pendingRequests.count) { _, newCount in
+            // Clamp selection when list shrinks
+            if viewModel.selectedIndex >= newCount { viewModel.selectedIndex = max(0, newCount - 1) }
+        }
     }
 }
 
@@ -118,7 +183,9 @@ struct HistoryView: View {
                             }
                         }
                     }
+                    .padding(.trailing, 6)
                 }
+                .scrollIndicators(.hidden)
                 .frame(maxHeight: 200)
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }

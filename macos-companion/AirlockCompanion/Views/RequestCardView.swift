@@ -3,6 +3,9 @@ import SwiftUI
 struct RequestCardView: View {
     let request: ApprovalRequest
     let currentTime: Date
+    var isSelected: Bool = false
+    var autoExpandWhenSelected: Bool = false
+    let onShowDetails: () -> Void
     let onApprove: () -> Void
     let onDeny: () -> Void
 
@@ -11,6 +14,14 @@ struct RequestCardView: View {
 
     private var argsLines: [String] {
         request.argsDisplayString.components(separatedBy: "\n")
+    }
+
+    private var isEffectivelyExpanded: Bool {
+        isExpanded || (autoExpandWhenSelected && isSelected)
+    }
+
+    private var showsExpandToggle: Bool {
+        !(autoExpandWhenSelected && isSelected)
     }
 
     var body: some View {
@@ -46,7 +57,7 @@ struct RequestCardView: View {
             if !request.args.isEmpty {
                 VStack(alignment: .leading, spacing: 2) {
                     let lines = argsLines
-                    let displayLines = isExpanded ? lines : Array(lines.prefix(3))
+                    let displayLines = isEffectivelyExpanded ? lines : Array(lines.prefix(3))
 
                     ForEach(Array(displayLines.enumerated()), id: \.offset) { _, line in
                         Text(line)
@@ -55,9 +66,9 @@ struct RequestCardView: View {
                             .lineLimit(1)
                     }
 
-                    if lines.count > 3 {
+                    if lines.count > 3 && showsExpandToggle {
                         Button(action: { isExpanded.toggle() }) {
-                            Text(isExpanded ? "Show less" : "Show more (\(lines.count - 3) more)")
+                            Text(isEffectivelyExpanded ? "Show less" : "Show more (\(lines.count - 3) more)")
                                 .font(.system(size: 10))
                                 .foregroundStyle(.secondary)
                         }
@@ -72,14 +83,31 @@ struct RequestCardView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 6))
             }
 
+            Button(action: onShowDetails) {
+                Label("View Details", systemImage: "doc.text.magnifyingglass")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .focusable(false)
+            .focusEffectDisabled()
+
             // Action buttons
             HStack(spacing: 8) {
                 Button(action: {
                     acted = true
                     onApprove()
                 }) {
-                    Label("Approve", systemImage: "checkmark.circle.fill")
-                        .frame(maxWidth: .infinity)
+                    HStack(spacing: 4) {
+                        Label("Approve", systemImage: "checkmark.circle.fill")
+                        Text("A")
+                            .font(.system(size: 9, weight: .medium, design: .rounded))
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 1)
+                            .background(.white.opacity(0.2))
+                            .clipShape(RoundedRectangle(cornerRadius: 3))
+                    }
+                    .frame(maxWidth: .infinity)
                 }
                 .focusable(false)
                 .focusEffectDisabled()
@@ -93,8 +121,16 @@ struct RequestCardView: View {
                     acted = true
                     onDeny()
                 }) {
-                    Label("Deny", systemImage: "xmark.circle.fill")
-                        .frame(maxWidth: .infinity)
+                    HStack(spacing: 4) {
+                        Label("Deny", systemImage: "xmark.circle.fill")
+                        Text("D")
+                            .font(.system(size: 9, weight: .medium, design: .rounded))
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 1)
+                            .background(.white.opacity(0.2))
+                            .clipShape(RoundedRectangle(cornerRadius: 3))
+                    }
+                    .frame(maxWidth: .infinity)
                 }
                 .focusable(false)
                 .focusEffectDisabled()
@@ -111,7 +147,8 @@ struct RequestCardView: View {
         .clipShape(RoundedRectangle(cornerRadius: 10))
         .overlay(
             RoundedRectangle(cornerRadius: 10)
-                .stroke(.separator, lineWidth: 0.5)
+                .stroke(isSelected ? Color.accentColor : Color(nsColor: .separatorColor),
+                        lineWidth: isSelected ? 2 : 0.5)
         )
     }
 }

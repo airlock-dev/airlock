@@ -10,7 +10,7 @@ Usage:
 
 CLI options:
   --output, -o <path>    Write YAML to file (default: stdout)
-  --fig                  Try Fig autocomplete specs first, fall back to --help
+  --fig                  Try Fig autocomplete specs first, then local discovery
   --max-depth <n>        Max subcommand recursion depth (default: 2)
   --include <cmd,...>    Only include these commands
   --exclude <cmd,...>    Exclude these commands

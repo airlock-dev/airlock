@@ -1,8 +1,9 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { writeFileSync, mkdtempSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { figSpecToCommands } from '../src/discover/strategies/fig.js';
+import { deduplicateAliases } from '../src/discover/strategies/completion.js';
 import { parseFlags, parseSubcommands, inferType } from '../src/discover/strategies/help-parser.js';
 import { discoverOpenApi } from '../src/discover/openapi.js';
 import { serializeDiscovery } from '../src/discover/writer.js';
@@ -197,6 +198,109 @@ describe('inferType()', () => {
 
   it('returns boolean for short flags without description', () => {
     expect(inferType('-v', 'v')).toBe('boolean');
+  });
+});
+
+describe('deduplicateAliases()', () => {
+  it('keeps the longest command name for identical exec targets', () => {
+    const commands = deduplicateAliases({
+      cal: {
+        exec: 'gog calendar',
+        params: {},
+        timeout: 30,
+      },
+      calendar: {
+        exec: 'gog calendar',
+        params: {},
+        timeout: 30,
+      },
+      inbox: {
+        exec: 'gog inbox',
+        params: {},
+        timeout: 30,
+      },
+    });
+
+    expect(commands).toHaveProperty('calendar');
+    expect(commands).not.toHaveProperty('cal');
+    expect(commands).toHaveProperty('inbox');
+  });
+});
+
+describe('discoverCliCommands()', () => {
+  afterEach(() => {
+    vi.resetModules();
+    vi.restoreAllMocks();
+  });
+
+  it('prefers Fig when available', async () => {
+    vi.doMock('../src/discover/strategies/fig.js', () => ({
+      fetchFigSpec: vi.fn(async () => ({ name: 'tool', subcommands: [] })),
+      figSpecToCommands: vi.fn(() => ({ root: { exec: 'tool', params: {}, timeout: 30 } })),
+    }));
+    vi.doMock('../src/discover/strategies/completion.js', () => ({
+      detectCompletionSupport: vi.fn(() => null),
+      discoverViaCompletion: vi.fn(),
+      deduplicateAliases: vi.fn((commands) => commands),
+    }));
+    vi.doMock('../src/discover/strategies/help-parser.js', () => ({
+      discoverCli: vi.fn(() => ({ fallback: { exec: 'tool', params: {}, timeout: 30 } })),
+    }));
+
+    const { discoverCliCommands } = await import('../src/discover/index.js');
+    const result = await discoverCliCommands({ tool: 'tool', fromFig: true });
+
+    expect(result.strategy).toBe('fig');
+    expect(result.commands).toHaveProperty('root');
+  });
+
+  it('uses completion discovery before help parsing', async () => {
+    vi.doMock('../src/discover/strategies/fig.js', () => ({
+      fetchFigSpec: vi.fn(async () => null),
+      figSpecToCommands: vi.fn(),
+    }));
+    vi.doMock('../src/discover/strategies/completion.js', () => ({
+      detectCompletionSupport: vi.fn(() => 'click'),
+      discoverViaCompletion: vi.fn(() => ({
+        adapterId: 'click',
+        commands: {
+          short: { exec: 'tool short', params: {}, timeout: 30 },
+        },
+      })),
+      deduplicateAliases: vi.fn(() => ({
+        canonical: { exec: 'tool short', params: {}, timeout: 30 },
+      })),
+    }));
+    vi.doMock('../src/discover/strategies/help-parser.js', () => ({
+      discoverCli: vi.fn(() => ({ fallback: { exec: 'tool', params: {}, timeout: 30 } })),
+    }));
+
+    const { discoverCliCommands } = await import('../src/discover/index.js');
+    const result = await discoverCliCommands({ tool: 'tool' });
+
+    expect(result.strategy).toBe('completion:click');
+    expect(result.commands).toHaveProperty('canonical');
+  });
+
+  it('falls back to help parsing when completion is unavailable', async () => {
+    vi.doMock('../src/discover/strategies/fig.js', () => ({
+      fetchFigSpec: vi.fn(async () => null),
+      figSpecToCommands: vi.fn(),
+    }));
+    vi.doMock('../src/discover/strategies/completion.js', () => ({
+      detectCompletionSupport: vi.fn(() => null),
+      discoverViaCompletion: vi.fn(),
+      deduplicateAliases: vi.fn((commands) => commands),
+    }));
+    vi.doMock('../src/discover/strategies/help-parser.js', () => ({
+      discoverCli: vi.fn(() => ({ fallback: { exec: 'tool', params: {}, timeout: 30 } })),
+    }));
+
+    const { discoverCliCommands } = await import('../src/discover/index.js');
+    const result = await discoverCliCommands({ tool: 'tool' });
+
+    expect(result.strategy).toBe('help-text');
+    expect(result.commands).toHaveProperty('fallback');
   });
 });
 

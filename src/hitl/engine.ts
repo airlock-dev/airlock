@@ -6,7 +6,7 @@ import { childLogger } from '../util/logger.js';
 
 const log = childLogger('hitl-engine');
 
-export type HitlResult = 'approved' | 'denied' | 'timeout';
+export type HitlResult = 'approved' | 'denied' | 'timeout' | 'cancelled';
 
 export interface HitlTicket {
   id: string;
@@ -87,6 +87,18 @@ export class HitlEngine implements ApprovalApi {
     this.auditLogger.updateHitlStatus(req.id, 'approved');
     log.info({ id: req.id, code: req.code }, 'HITL approved');
     req.resolve('approved');
+  }
+
+  /** Cancel a pending request (e.g. transport disconnected). */
+  cancel(id: string): void {
+    const req = this.pending.get(id);
+    if (!req) return;
+    clearTimeout(req.timer);
+    this.pending.delete(req.id);
+    this.byCode.delete(req.code);
+    this.auditLogger.updateHitlStatus(req.id, 'cancelled');
+    log.info({ id: req.id, code: req.code }, 'HITL cancelled (session disconnected)');
+    req.resolve('cancelled');
   }
 
   /** Deny by code or id */

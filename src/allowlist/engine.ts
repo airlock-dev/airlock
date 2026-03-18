@@ -1,4 +1,4 @@
-import { matches } from './pattern.js';
+import { bestSpecificity } from './pattern.js';
 import type { AgentConfig } from '../config/schema.js';
 
 export type Decision = 'allow' | 'ask' | 'deny';
@@ -14,11 +14,18 @@ export class AllowlistEngine {
     const agent = this.agents[agentId];
     if (!agent) return 'deny';
 
-    // deny > ask > allow > default-deny
-    if (agent.deny.some((p) => matches(p, toolName))) return 'deny';
-    if (agent.ask.some((p) => matches(p, toolName))) return 'ask';
-    if (agent.allow.some((p) => matches(p, toolName))) return 'allow';
+    // Pure specificity: most specific matching pattern wins across all tiers.
+    // Ties break deny > ask > allow (more restrictive wins).
+    const denySpec = bestSpecificity(agent.deny, toolName);
+    const askSpec = bestSpecificity(agent.ask, toolName);
+    const allowSpec = bestSpecificity(agent.allow, toolName);
 
-    return 'deny'; // fail-closed
+    const best = Math.max(denySpec, askSpec, allowSpec);
+    if (best < 0) return 'deny'; // no match, fail-closed
+
+    // Tiebreaker order: deny > ask > allow
+    if (denySpec === best) return 'deny';
+    if (askSpec === best) return 'ask';
+    return 'allow';
   }
 }

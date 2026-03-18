@@ -1,5 +1,76 @@
 # Changelog
 
+## [0.2.19](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.18...airlock-bot-v0.2.19) (2026-03-18)
+
+
+### Features
+
+* add /hook endpoint for external tool approval (Claude Code, Cursor, etc.) ([#63](https://github.com/airlock-dev/airlock/issues/63)) ([b677371](https://github.com/airlock-dev/airlock/commit/b677371b96ad1d9d05d5273307cbf7393e596ece))
+
+## [0.2.18](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.17...airlock-bot-v0.2.18) (2026-03-18)
+
+
+### Bug Fixes
+
+* **sse:** add keep-alive ping and cancel HITL on session disconnect ([#61](https://github.com/airlock-dev/airlock/issues/61)) ([fd4bedf](https://github.com/airlock-dev/airlock/commit/fd4bedf489b1aaef8177121c2933c9c57523d260))
+
+## [0.2.17](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.16...airlock-bot-v0.2.17) (2026-03-18)
+
+
+### Features
+
+* **cli:** add completion-driven configure wizard ([#59](https://github.com/airlock-dev/airlock/issues/59)) ([a668eff](https://github.com/airlock-dev/airlock/commit/a668effd42802169a7d7805715c0e137ae887090))
+
+## [0.2.16](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.15...airlock-bot-v0.2.16) (2026-03-17)
+
+
+### Features
+
+* **companion:** polish settings and request review ([#57](https://github.com/airlock-dev/airlock/issues/57)) ([6cd9a15](https://github.com/airlock-dev/airlock/commit/6cd9a159a6527635e1830daef555b12da8cb04b4))
+
+## [0.2.15](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.14...airlock-bot-v0.2.15) (2026-03-17)
+
+
+### Features
+
+* **companion,dashboard:** add update visibility and keyboard approval flow ([#55](https://github.com/airlock-dev/airlock/issues/55)) ([99f0ea4](https://github.com/airlock-dev/airlock/commit/99f0ea484fcc24dcfec33e28c5c1b555c31ee347))
+* **dashboard,companion:** clickable approvals, version check, keyboard shortcuts ([#53](https://github.com/airlock-dev/airlock/issues/53)) ([cb32093](https://github.com/airlock-dev/airlock/commit/cb32093a28be786763f755e8b2bcdb37812854cd))
+
+## [0.2.14](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.13...airlock-bot-v0.2.14) (2026-03-17)
+
+
+### Bug Fixes
+
+* prevent reconnection storms and orphaned children on shutdown ([#51](https://github.com/airlock-dev/airlock/issues/51)) ([5452f90](https://github.com/airlock-dev/airlock/commit/5452f9035ecaa19eb69c0722c2d070d3d6b0163b))
+
+## [0.2.13](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.12...airlock-bot-v0.2.13) (2026-03-17)
+
+
+### Bug Fixes
+
+* **companion:** use stored dashboard URL for API client ([#48](https://github.com/airlock-dev/airlock/issues/48)) ([8486ac5](https://github.com/airlock-dev/airlock/commit/8486ac552ec5fcadcafe1cc0f5004170c29de5ef))
+
+## [0.2.12](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.11...airlock-bot-v0.2.12) (2026-03-17)
+
+
+### Bug Fixes
+
+* SIGKILL orphaned child processes on forced shutdown ([#46](https://github.com/airlock-dev/airlock/issues/46)) ([a852611](https://github.com/airlock-dev/airlock/commit/a85261187c18edd1bb33a7fa455ce6968da44b05))
+
+## [0.2.11](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.10...airlock-bot-v0.2.11) (2026-03-16)
+
+
+### Bug Fixes
+
+* **dashboard:** default browser notifications to off ([#43](https://github.com/airlock-dev/airlock/issues/43)) ([9441aeb](https://github.com/airlock-dev/airlock/commit/9441aeb2e8136bfe5d01511d0ff8fb9eede9985d))
+
+## [0.2.10](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.9...airlock-bot-v0.2.10) (2026-03-16)
+
+
+### Bug Fixes
+
+* force exit after 3s if graceful shutdown hangs ([#41](https://github.com/airlock-dev/airlock/issues/41)) ([fe96703](https://github.com/airlock-dev/airlock/commit/fe967034da8580768cab7e7c48b377a3fb2c240f))
+
 ## [0.2.9](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.8...airlock-bot-v0.2.9) (2026-03-16)
 
 

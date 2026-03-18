@@ -25,6 +25,8 @@ export interface AgentServerDeps {
   auditLogger: AuditLogger;
   securityConfig?: SecurityConfig;
   chain?: Middleware;
+  /** Signals that the transport/session has been closed. */
+  signal?: AbortSignal;
 }
 
 export function createAgentServer(deps: AgentServerDeps): Server {
@@ -69,6 +71,7 @@ export function createAgentServer(deps: AgentServerDeps): Server {
         securityConfig: deps.securityConfig ?? { blocked_hosts: [], allowed_local: [] },
       },
       startedAt: Date.now(),
+      signal: deps.signal,
     };
 
     const response = await chain(ctx, () => {

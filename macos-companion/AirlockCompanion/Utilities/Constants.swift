@@ -9,6 +9,9 @@ enum Constants {
     enum UserDefaultsKeys {
         static let dashboardURL = "dashboardURL"
         static let soundEnabled = "soundEnabled"
+        static let approveShortcutKey = "approveShortcutKey"
+        static let denyShortcutKey = "denyShortcutKey"
+        static let autoExpandSelectedRequest = "autoExpandSelectedRequest"
     }
 
     enum NotificationCategory {
@@ -25,5 +28,13 @@ enum Constants {
         static let initialDelay: TimeInterval = 1.0
         static let maxDelay: TimeInterval = 30.0
         static let multiplier: Double = 2.0
+    }
+
+    enum Updates {
+        static let repositoryOwner = "airlock-dev"
+        static let repositoryName = "airlock"
+        static let tagPrefix = "companion-v"
+        static let checkInterval: TimeInterval = 3600
+        static let releasesURL = URL(string: "https://api.github.com/repos/\(repositoryOwner)/\(repositoryName)/releases?per_page=20")!
     }
 }

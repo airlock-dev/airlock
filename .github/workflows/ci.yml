@@ -3,36 +3,56 @@ name: CI
 on:
   push:
     branches: [main]
-    paths-ignore: [macos-companion/**]
   pull_request:
     branches: [main]
-    paths-ignore: [macos-companion/**]
 
 permissions:
   contents: read
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    outputs:
+      node: ${{ steps.filter.outputs.node }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            node:
+              - '!(macos-companion/**)'
+
   test:
+    needs: changes
     runs-on: ubuntu-latest
     permissions:
       contents: read
       pull-requests: write
     steps:
       - uses: actions/checkout@v4
+        if: needs.changes.outputs.node == 'true'
 
       - uses: actions/setup-node@v4
+        if: needs.changes.outputs.node == 'true'
         with:
           node-version: 24
           cache: npm
 
       - run: npm ci
+        if: needs.changes.outputs.node == 'true'
 
       - run: npm run build
+        if: needs.changes.outputs.node == 'true'
 
       - name: Run tests with coverage
+        if: needs.changes.outputs.node == 'true'
         run: npx vitest run --reporter=verbose --coverage --coverage.reporter=json-summary --coverage.reporter=json
 
       - name: Upload coverage artifact
+        if: needs.changes.outputs.node == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: coverage-report
@@ -40,5 +60,5 @@ jobs:
           retention-days: 30
 
       - name: Coverage PR comment
-        if: github.event_name == 'pull_request'
+        if: needs.changes.outputs.node == 'true' && github.event_name == 'pull_request'
         uses: davelosert/vitest-coverage-report-action@v2

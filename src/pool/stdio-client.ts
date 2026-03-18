@@ -78,8 +78,25 @@ export class StdioMcpClient {
     return this.ready;
   }
 
+  /** Prevent reconnection without closing the transport. */
+  disableReconnect(): void {
+    this.stopped = true;
+  }
+
   async stop(): Promise<void> {
     this.stopped = true;
     await this.transport?.close();
+  }
+
+  /** Send SIGKILL to the child process if it's still alive. */
+  kill(): void {
+    const pid = this.transport?.pid;
+    if (pid) {
+      try {
+        process.kill(pid, 'SIGKILL');
+      } catch {
+        /* already dead */
+      }
+    }
   }
 }
