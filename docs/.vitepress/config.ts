@@ -35,6 +35,7 @@ export default defineConfig({
       {
         text: 'Guides',
         items: [
+          { text: 'Local Approval UX', link: '/guides/local-approvals' },
           { text: 'CLI Discovery Wizard', link: '/guides/cli-discovery' },
           { text: 'Hook Endpoint', link: '/guides/hook-endpoint' },
           { text: 'Sandboxed Python Variants', link: '/guides/sandboxed-python' },
@@ -43,6 +44,7 @@ export default defineConfig({
       {
         text: 'Reference',
         items: [
+          { text: 'Examples', link: '/reference/examples' },
           { text: 'Config Overview', link: '/reference/config' },
           { text: 'CLI Commands', link: '/reference/cli' },
           { text: 'HITL Providers', link: '/reference/hitl-providers' },

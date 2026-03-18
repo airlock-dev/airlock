@@ -89,6 +89,8 @@ EOF
 # 3. Run in stdio mode for a single agent (e.g. from Claude Code)
 airlock --agent claude-code --config airlock.yaml
 
+# For local approvals in stdio mode, use dashboard/macos/tui - not the stdio HITL provider.
+
 # 4. Or run as a full gateway server (SSE on port 4111)
 airlock --config airlock.yaml
 ```
@@ -281,7 +283,7 @@ approvals:
 
 Precedence: **deny > ask > allow > default-deny**
 
-See [`examples/gateway.yaml`](examples/gateway.yaml) for a fully annotated reference config and [`examples/profiles.yaml`](examples/profiles.yaml) for composable profile examples.
+See [`examples/gateway.yaml`](examples/gateway.yaml) for a fully annotated reference config, [`examples/profiles.yaml`](examples/profiles.yaml) for composable profile examples, and [`examples/sandbox-presets.yaml`](examples/sandbox-presets.yaml) for reusable sandbox variants.
 
 ## Sandbox presets and tool variants
 
@@ -425,7 +427,7 @@ See [`examples/sandbox-presets.yaml`](examples/sandbox-presets.yaml) for a fulle
 | Slack webhook   | `slack`       | Incoming webhook, fire-and-forget; pair with slash commands for approvals                         |
 | Generic webhook | `webhook`     | POSTs `{requests, text}` JSON; configurable headers                                               |
 | OpenClaw        | `openclaw`    | WebSocket RPC to OpenClaw gateway; see [`examples/openclaw-setup.md`](examples/openclaw-setup.md) |
-| stdio           | `stdio`       | Prints to stderr, reads from stdin — for local dev and testing                                    |
+| stdio           | `stdio`       | Prints to stderr, reads from stdin — for local testing and non-stdio gateway workflows only       |
 
 ## API
 

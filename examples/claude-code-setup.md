@@ -44,6 +44,17 @@ Or using `npx` if not globally installed:
 - All tool calls are logged to the audit database
 - Tools requiring HITL will block until approved (or timeout)
 
+## Approval provider note
+
+If you run Airlock with `--agent`, do not use the `stdio` approval provider.
+The MCP transport already uses stdin/stdout in that mode.
+
+For local approval UX, prefer:
+
+- `dashboard`
+- `macos`
+- `tui`
+
 ## Example Agent Config
 
 ```yaml

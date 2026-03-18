@@ -31,5 +31,6 @@ It sits between agents like Claude Code, Cursor, and OpenClaw and the tools they
 
 - New to Airlock: [Quickstart](/quickstart)
 - Connecting Claude Code: [Claude Code Setup](/guides/claude-code)
+- Choosing the right local approval flow: [Local Approval UX](/guides/local-approvals)
 - Understanding policy: [Permissions](/concepts/permissions)
 - Building safer fast paths: [Sandbox Presets and Variants](/concepts/sandboxing)

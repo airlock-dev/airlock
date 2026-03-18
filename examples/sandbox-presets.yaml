@@ -6,6 +6,7 @@
 # - keep a second full-power variant that still requires approval
 #
 # Run: npx tsx src/index.ts --agent claude-code --config examples/sandbox-presets.yaml
+# For stdio agent mode, use dashboard, macos, or tui approvals - not stdio HITL.
 
 providers:
   exec: builtin
@@ -132,7 +133,7 @@ agents:
 
 approvals:
   provider:
-    type: stdio
+    type: dashboard
   timeout_ms: 300000
   batch_window_ms: 5000
 

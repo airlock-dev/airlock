@@ -10,4 +10,4 @@ The goal is to let the agent do cheap local scripting without making you approve
 - `python/full` still exists when the agent genuinely needs more power
 - `python/github` is a middle ground when the script needs a narrow network surface
 
-See `examples/sandbox-presets.yaml` for a complete config.
+See the [sandbox presets example config](https://github.com/airlock-dev/airlock/blob/main/examples/sandbox-presets.yaml) for a complete version, and use [Local Approval UX](/guides/local-approvals) if you plan to run these variants with `--agent`.

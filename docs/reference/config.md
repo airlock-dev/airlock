@@ -26,6 +26,8 @@ server:
 
 ## Useful examples
 
-- `examples/gateway.yaml`
-- `examples/profiles.yaml`
-- `examples/sandbox-presets.yaml`
+- [Gateway example](https://github.com/airlock-dev/airlock/blob/main/examples/gateway.yaml)
+- [Profiles example](https://github.com/airlock-dev/airlock/blob/main/examples/profiles.yaml)
+- [Sandbox presets example](https://github.com/airlock-dev/airlock/blob/main/examples/sandbox-presets.yaml)
+
+See [Examples](/reference/examples) for the curated index.

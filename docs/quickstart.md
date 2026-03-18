@@ -35,7 +35,7 @@ agents:
 
 approvals:
   provider:
-    type: stdio
+    type: dashboard
   timeout_ms: 300000
 ```
 
@@ -44,6 +44,8 @@ approvals:
 ```bash
 airlock --agent claude-code --config airlock.yaml
 ```
+
+When you run Airlock with `--agent`, do not use the `stdio` approval provider. The MCP transport already owns stdin/stdout, so approval input would conflict with the protocol. For local development, prefer the [dashboard](/guides/local-approvals) or the [macOS companion flow](/guides/local-approvals#macos-companion).
 
 ## Wire Claude Code to Airlock
 
@@ -63,3 +65,4 @@ airlock --agent claude-code --config airlock.yaml
 - discover a CLI into named tools: [CLI Discovery Wizard](/guides/cli-discovery)
 - add more nuanced policy: [Permissions](/concepts/permissions)
 - add safe sandboxed execution variants: [Sandboxed Python Variants](/guides/sandboxed-python)
+- explore complete config examples: [Examples](/reference/examples)

@@ -12,6 +12,8 @@ airlock --config airlock.yaml
 airlock --agent claude-code --config airlock.yaml
 ```
 
+If that agent uses approval-gated tools, pair stdio mode with [dashboard or macOS approvals](/guides/local-approvals), not the `stdio` HITL provider.
+
 ## Discover CLI tools
 
 ```bash
