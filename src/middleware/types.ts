@@ -14,6 +14,8 @@ export interface ToolCallContext {
   meta: Record<string, unknown>;
   deps: MiddlewareDeps;
   startedAt: number;
+  /** Signals that the transport/session has been closed. */
+  signal?: AbortSignal;
 }
 
 export interface ToolCallResponse {

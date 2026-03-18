@@ -7,6 +7,9 @@ import { childLogger } from '../util/logger.js';
 
 const log = childLogger('sse-server');
 
+/** Interval between SSE keep-alive pings (ms). Keeps connections alive through NAT/firewalls. */
+const PING_INTERVAL_MS = 30_000;
+
 function constantTimeEqual(a: string, b: string): boolean {
   const bufA = Buffer.from(a);
   const bufB = Buffer.from(b);
@@ -96,13 +99,26 @@ export async function sseServerPlugin(
       log.info({ profileId, sessionId: transport.sessionId }, 'SSE session closed');
     };
 
-    const server = createAgentServer(deps);
+    // Per-session abort controller — signals middlewares (e.g. hitl-gate)
+    // that the transport is gone so they don't execute into the void.
+    const sessionAc = new AbortController();
+
+    const server = createAgentServer({ ...deps, signal: sessionAc.signal });
     await connectAgentServer(server, transport);
+
+    // Send periodic SSE comments to keep the connection alive through
+    // NAT gateways, firewalls, and load balancers that kill idle TCP connections.
+    const pingTimer = setInterval(() => {
+      reply.raw.write(': ping\n\n');
+    }, PING_INTERVAL_MS);
+    pingTimer.unref();
 
     // Clean up when client disconnects — listen on the response socket,
     // not the request, because request 'close' fires immediately on GET
     // once the body is consumed (which is instant for GET requests).
     reply.raw.on('close', () => {
+      clearInterval(pingTimer);
+      sessionAc.abort();
       sessions.delete(transport.sessionId);
       transport.close().catch(() => {});
     });
