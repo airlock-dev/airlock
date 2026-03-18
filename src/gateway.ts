@@ -8,6 +8,7 @@ import { HitlBatcher } from './hitl/batcher.js';
 import { AuditLogger } from './audit/logger.js';
 import { hitlApiPlugin } from './hitl/api.js';
 import { auditApiPlugin } from './audit/api.js';
+import { hookApiPlugin } from './hook/api.js';
 import { sseServerPlugin } from './transport/sse-server.js';
 import type { AgentServerDeps } from './transport/agent-server.js';
 import type { Config } from './config/loader.js';
@@ -93,6 +94,13 @@ export class Gateway {
 
     await this.app.register(hitlApiPlugin, { engine: this.hitlEngine, secret });
     await this.app.register(auditApiPlugin, { auditLogger: this.auditLogger, secret });
+    await this.app.register(hookApiPlugin, {
+      allowlist: this.allowlist,
+      hitlEngine: this.hitlEngine,
+      hitlBatcher: this.hitlBatcher,
+      auditLogger: this.auditLogger,
+      secret,
+    });
     await this.app.register(sseServerPlugin, {
       getDeps: (agentId: string) => this.buildAgentDeps(agentId),
       secret,
