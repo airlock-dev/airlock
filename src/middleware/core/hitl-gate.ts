@@ -17,7 +17,37 @@ export function hitlGateMiddleware(): Middleware {
       timeoutMs: hitlEngine.timeoutMs,
     });
 
-    const result = await ticket.result;
+    // If the transport provides an abort signal, race the HITL promise against it
+    // so we don't execute a tool on a dead session.
+    let result: Awaited<typeof ticket.result> | 'disconnected';
+    if (ctx.signal && !ctx.signal.aborted) {
+      result = await Promise.race([
+        ticket.result,
+        new Promise<'disconnected'>((resolve) => {
+          if (ctx.signal!.aborted) {
+            resolve('disconnected');
+          } else {
+            ctx.signal!.addEventListener('abort', () => resolve('disconnected'), { once: true });
+          }
+        }),
+      ]);
+    } else if (ctx.signal?.aborted) {
+      // Already disconnected before we even started waiting
+      result = 'disconnected';
+    } else {
+      result = await ticket.result;
+    }
+
+    if (result === 'disconnected') {
+      hitlEngine.cancel(ticket.id);
+      auditLogger.log({
+        agent_id: ctx.agentId,
+        tool: ctx.toolName,
+        args: JSON.stringify(ctx.args),
+        result: 'hitl_disconnected',
+      });
+      throw new McpError(ErrorCode.InvalidRequest, 'Session disconnected while awaiting approval');
+    }
 
     if (result === 'denied') {
       auditLogger.log({

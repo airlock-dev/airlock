@@ -18,7 +18,7 @@ export interface HitlQueueEntry {
   agent_id: string;
   tool: string;
   args: string; // JSON string
-  status: 'pending' | 'approved' | 'denied' | 'timeout';
+  status: 'pending' | 'approved' | 'denied' | 'timeout' | 'cancelled';
   reason?: string;
   created_at: string;
   resolved_at?: string;
