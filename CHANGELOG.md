@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.18](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.17...airlock-bot-v0.2.18) (2026-03-18)
+
+
+### Bug Fixes
+
+* **sse:** add keep-alive ping and cancel HITL on session disconnect ([#61](https://github.com/airlock-dev/airlock/issues/61)) ([fd4bedf](https://github.com/airlock-dev/airlock/commit/fd4bedf489b1aaef8177121c2933c9c57523d260))
+
 ## [0.2.17](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.16...airlock-bot-v0.2.17) (2026-03-18)
 
 
