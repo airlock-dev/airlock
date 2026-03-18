@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.19](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.18...airlock-bot-v0.2.19) (2026-03-18)
+
+
+### Features
+
+* add /hook endpoint for external tool approval (Claude Code, Cursor, etc.) ([#63](https://github.com/airlock-dev/airlock/issues/63)) ([b677371](https://github.com/airlock-dev/airlock/commit/b677371b96ad1d9d05d5273307cbf7393e596ece))
+
 ## [0.2.18](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.17...airlock-bot-v0.2.18) (2026-03-18)
 
 
