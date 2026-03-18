@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.17](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.16...airlock-bot-v0.2.17) (2026-03-18)
+
+
+### Features
+
+* **cli:** add completion-driven configure wizard ([#59](https://github.com/airlock-dev/airlock/issues/59)) ([a668eff](https://github.com/airlock-dev/airlock/commit/a668effd42802169a7d7805715c0e137ae887090))
+
 ## [0.2.16](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.15...airlock-bot-v0.2.16) (2026-03-17)
 
 
