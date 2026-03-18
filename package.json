@@ -40,6 +40,10 @@
     "build": "tsc",
     "dev": "tsx src/index.ts",
     "configure-agent": "tsx scripts/configure-agent.ts",
+    "docs:dev": "vitepress dev docs",
+    "docs:llms": "tsx scripts/generate-llms.ts",
+    "docs:build": "npm run docs:llms && vitepress build docs",
+    "docs:preview": "vitepress preview docs",
     "test": "vitest",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src",
@@ -78,6 +82,7 @@
     "tsx": "^4.7.0",
     "typescript": "^5.4.0",
     "typescript-eslint": "^8.57.0",
+    "vitepress": "^1.6.4",
     "vitest": "^3.0.0",
     "zod-to-json-schema": "^3.25.1"
   }

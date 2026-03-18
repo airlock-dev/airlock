@@ -6,6 +6,13 @@
 
 A permissions-aware MCP gateway that sits between AI agents (Claude Code, Cursor, OpenClaw, etc.) and your downstream tool servers, CLI tools, and REST APIs. Airlock enforces per-agent allowlists, requires human approval for sensitive operations, and keeps a full audit trail of every tool call.
 
+Documentation now lives in the VitePress docs site under `docs/`.
+
+- Run locally: `npm run docs:dev`
+- Build static docs: `npm run docs:build`
+- Preview build: `npm run docs:preview`
+- Read the entry page: `docs/index.md`
+
 ```
 Agent (Claude Code / Cursor / OpenClaw)
   │  stdio or SSE

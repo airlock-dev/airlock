@@ -1,0 +1,27 @@
+import { mkdirSync, writeFileSync } from 'fs';
+import { join } from 'path';
+
+const lines = [
+  'Airlock documentation',
+  'https://docs.airlock.bot',
+  '',
+  'Airlock is a permissions-aware MCP gateway for AI agents. It fronts MCP servers, CLI tools, built-in exec/http tools, and OpenAPI-backed APIs with per-agent allow/ask/deny policy, approvals, audit logging, and sandboxed tool variants.',
+  '',
+  'Key pages:',
+  '- /quickstart',
+  '- /concepts/permissions',
+  '- /concepts/providers-and-tools',
+  '- /concepts/approvals-and-audit',
+  '- /concepts/sandboxing',
+  '- /guides/claude-code',
+  '- /guides/cli-discovery',
+  '- /guides/hook-endpoint',
+  '- /guides/sandboxed-python',
+  '- /reference/config',
+  '- /reference/cli',
+  '- /reference/hitl-providers',
+];
+
+const outputDir = join(process.cwd(), 'docs', 'public');
+mkdirSync(outputDir, { recursive: true });
+writeFileSync(join(outputDir, 'llms.txt'), `${lines.join('\n')}\n`, 'utf8');

@@ -1,0 +1,41 @@
+name: Docs
+
+on:
+  pull_request:
+    paths:
+      - 'docs/**'
+      - 'scripts/generate-llms.ts'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'README.md'
+      - '.github/workflows/docs.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'docs/**'
+      - 'scripts/generate-llms.ts'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'README.md'
+      - '.github/workflows/docs.yml'
+
+jobs:
+  validate-docs:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build docs
+        run: npm run docs:build
