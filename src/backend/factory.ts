@@ -6,7 +6,7 @@ import { ExecBackendAdapter } from './exec-adapter.js';
 import { HttpBackendAdapter } from './http-adapter.js';
 import { CliBackendAdapter } from './cli/adapter.js';
 import { OpenApiAdapter } from './openapi/adapter.js';
-import { getBuiltinProviders } from '../config/schema.js';
+import { getBuiltinProviders, getMcpConfigs } from '../config/schema.js';
 
 /**
  * Build all BackendAdapter instances from the gateway config.
@@ -16,8 +16,9 @@ export function buildAdapters(config: Config, pool: ClientPool): BackendAdapter[
   const adapters: BackendAdapter[] = [];
 
   // MCP adapters — one per connected MCP server
+  const mcpConfigs = getMcpConfigs(config.providers);
   for (const mcpId of pool.getMcpIds()) {
-    adapters.push(new McpBackendAdapter(mcpId, pool));
+    adapters.push(new McpBackendAdapter(mcpId, pool, mcpConfigs[mcpId]));
   }
 
   // Builtin adapters

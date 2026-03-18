@@ -349,9 +349,70 @@
                     "description": {
                       "type": "string"
                     },
-                    "trusted": {
-                      "type": "boolean",
-                      "default": false
+                    "alias_of": {
+                      "type": "string"
+                    },
+                    "sandbox": {
+                      "type": "object",
+                      "properties": {
+                        "filesystem": {
+                          "type": "object",
+                          "properties": {
+                            "allow_write": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              },
+                              "default": [
+                                ".",
+                                "/tmp"
+                              ]
+                            },
+                            "deny_read": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              },
+                              "default": []
+                            },
+                            "deny_write": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              },
+                              "default": []
+                            },
+                            "allow_read": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            }
+                          },
+                          "additionalProperties": false
+                        },
+                        "network": {
+                          "type": "object",
+                          "properties": {
+                            "allowed_domains": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              },
+                              "default": []
+                            },
+                            "denied_domains": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              },
+                              "default": []
+                            }
+                          },
+                          "additionalProperties": false
+                        }
+                      },
+                      "additionalProperties": false
                     }
                   },
                   "additionalProperties": false
@@ -414,6 +475,141 @@
                   "timeout_ms": {
                     "type": "number",
                     "default": 30000
+                  }
+                },
+                "additionalProperties": false,
+                "default": {}
+              },
+              "sandbox": {
+                "type": "object",
+                "properties": {
+                  "enabled": {
+                    "type": "boolean",
+                    "default": false
+                  },
+                  "filesystem": {
+                    "type": "object",
+                    "properties": {
+                      "allow_write": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        },
+                        "default": [
+                          ".",
+                          "/tmp"
+                        ]
+                      },
+                      "deny_read": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        },
+                        "default": []
+                      },
+                      "deny_write": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        },
+                        "default": []
+                      },
+                      "allow_read": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "additionalProperties": false,
+                    "default": {}
+                  },
+                  "network": {
+                    "type": "object",
+                    "properties": {
+                      "allowed_domains": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        },
+                        "default": []
+                      },
+                      "denied_domains": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        },
+                        "default": []
+                      }
+                    },
+                    "additionalProperties": false,
+                    "default": {}
+                  },
+                  "overrides": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "object",
+                      "properties": {
+                        "filesystem": {
+                          "type": "object",
+                          "properties": {
+                            "allow_write": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              },
+                              "default": [
+                                ".",
+                                "/tmp"
+                              ]
+                            },
+                            "deny_read": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              },
+                              "default": []
+                            },
+                            "deny_write": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              },
+                              "default": []
+                            },
+                            "allow_read": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            }
+                          },
+                          "additionalProperties": false
+                        },
+                        "network": {
+                          "type": "object",
+                          "properties": {
+                            "allowed_domains": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              },
+                              "default": []
+                            },
+                            "denied_domains": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              },
+                              "default": []
+                            }
+                          },
+                          "additionalProperties": false
+                        }
+                      },
+                      "additionalProperties": false
+                    },
+                    "default": {}
                   }
                 },
                 "additionalProperties": false,
@@ -628,6 +824,9 @@
                         "type": {
                           "type": "string",
                           "const": "macos"
+                        },
+                        "sound": {
+                          "type": "string"
                         }
                       },
                       "required": [
@@ -779,6 +978,9 @@
                           "type": {
                             "type": "string",
                             "const": "macos"
+                          },
+                          "sound": {
+                            "type": "string"
                           }
                         },
                         "required": [
@@ -835,7 +1037,7 @@
             "batch_window_ms": {
               "type": "integer",
               "minimum": 0,
-              "default": 10000
+              "default": 0
             }
           },
           "additionalProperties": false,

@@ -3,6 +3,7 @@ import type { BackendAdapter } from './types.js';
 import type { ToolCall, ToolResult } from '../types.js';
 import { buildExecTool, executeExec } from '../tools/exec.js';
 import type { AgentConfig } from '../config/schema.js';
+import type { ResolvedSandboxConfig } from '../sandbox/index.js';
 
 export class ExecBackendAdapter implements BackendAdapter {
   readonly id = 'builtin:exec';
@@ -31,8 +32,10 @@ export class ExecBackendAdapter implements BackendAdapter {
     const timeoutMs =
       typeof toolCall.args['timeout_ms'] === 'number' ? toolCall.args['timeout_ms'] : undefined;
 
+    const sandbox = toolCall.meta?.sandbox as ResolvedSandboxConfig | undefined;
+
     try {
-      const data = await executeExec(command, agent, cwd, timeoutMs);
+      const data = await executeExec(command, agent, cwd, timeoutMs, sandbox);
       return {
         success: true,
         data,

@@ -50,6 +50,7 @@
     "prepublishOnly": "npm run schema && npm run build"
   },
   "dependencies": {
+    "@anthropic-ai/sandbox-runtime": "^0.0.42",
     "@apidevtools/swagger-parser": "^12.1.0",
     "@modelcontextprotocol/sdk": "^1.27.1",
     "ai": "^6.0.116",

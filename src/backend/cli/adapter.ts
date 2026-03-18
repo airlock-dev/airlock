@@ -8,6 +8,7 @@ import type { ToolCall, ToolResult } from '../../types.js';
 import { CliCommandConfig, type CliConfig } from '../../config/schema.js';
 import { buildCommand } from './builder.js';
 import { childLogger } from '../../util/logger.js';
+import { wrapCommandWithSandbox, type ResolvedSandboxConfig } from '../../sandbox/index.js';
 
 const log = childLogger('cli-adapter');
 
@@ -90,8 +91,14 @@ export class CliBackendAdapter implements BackendAdapter {
 
     const cwd = cmdConfig.cwd ?? this.defaultCwd;
     const timeoutMs = cmdConfig.timeout * 1000;
+    const sandbox = toolCall.meta?.sandbox as ResolvedSandboxConfig | undefined;
 
-    return this.exec(fullCommand, cwd, timeoutMs);
+    // Wrap command with sandbox if config is present
+    const effectiveCommand = sandbox
+      ? await wrapCommandWithSandbox(fullCommand, sandbox)
+      : fullCommand;
+
+    return this.exec(effectiveCommand, cwd, timeoutMs);
   }
 
   async stop(): Promise<void> {}

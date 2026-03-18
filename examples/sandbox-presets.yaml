@@ -1,0 +1,142 @@
+# Sandbox presets + tool variant example.
+#
+# Goal:
+# - give agents a fast-path tool that is broadly allowed because it runs in a
+#   tight sandbox
+# - keep a second full-power variant that still requires approval
+#
+# Run: npx tsx src/index.ts --agent claude-code --config examples/sandbox-presets.yaml
+
+providers:
+  exec: builtin
+
+# Reusable sandbox building blocks.
+# These can be referenced by agents and by individual tool variants.
+sandbox_presets:
+  local_transform:
+    filesystem:
+      # Let the agent read the repo, but only write to temp space.
+      allow_read:
+        - '.'
+      allow_write:
+        - '/tmp'
+        - '/private/tmp'
+      # Additive deny rules protect common secret locations.
+      deny_read:
+        - '~/.ssh'
+        - '~/.aws'
+        - '~/.config/gcloud'
+        - '.env'
+      # Prevent writes back into the repo by default.
+      deny_write:
+        - '.'
+    network:
+      # Empty allowlist means no outbound network.
+      allowed_domains: []
+      denied_domains: []
+
+  github_only:
+    network:
+      allowed_domains:
+        - 'github.com'
+        - '*.github.com'
+        - 'api.github.com'
+      denied_domains: []
+
+agents:
+  claude-code:
+    allow:
+      - 'python/sandboxed'
+      - 'node/sandboxed'
+    ask:
+      - 'python/full'
+      - 'python/github'
+      - 'node/full'
+    deny:
+      - 'exec/run'
+
+    # Agent-level sandbox defaults apply to any tool that resolves through the
+    # sandbox middleware, then tool-specific presets / overrides refine it.
+    sandbox:
+      enabled: true
+      presets:
+        - local_transform
+
+    tool_overrides:
+      # Safe fast path: same underlying capability, but strongly sandboxed.
+      python/sandboxed:
+        alias_of: 'exec/run'
+        description: 'Run Python for local JSON/text transformations only'
+
+      # Full-power variant: same base tool, but leave it approval-gated.
+      python/full:
+        alias_of: 'exec/run'
+        description: 'Run Python with normal permissions after approval'
+        sandbox:
+          filesystem:
+            # Override allow_write so approved runs can modify the repo.
+            allow_write:
+              - '.'
+              - '/tmp'
+              - '/private/tmp'
+            deny_write: []
+          network:
+            # Example broad approved networking.
+            allowed_domains:
+              - 'pypi.org'
+              - '*.pythonhosted.org'
+            denied_domains: []
+
+      # Middle ground: GitHub-only network for scripts that need API access.
+      python/github:
+        alias_of: 'exec/run'
+        description: 'Run Python with GitHub-only network access after approval'
+        sandbox_presets:
+          - github_only
+
+      node/sandboxed:
+        alias_of: 'exec/run'
+        description: 'Run Node.js for local transformations only'
+
+      node/full:
+        alias_of: 'exec/run'
+        description: 'Run Node.js with broader permissions after approval'
+        sandbox:
+          filesystem:
+            allow_write:
+              - '.'
+              - '/tmp'
+              - '/private/tmp'
+            deny_write: []
+          network:
+            allowed_domains:
+              - 'registry.npmjs.org'
+              - '*.npmjs.org'
+            denied_domains: []
+
+    exec:
+      # Example shell policy for the underlying exec provider.
+      # The tool permission still controls whether the tool can be called at all;
+      # these patterns constrain the command strings passed into exec/run.
+      allow:
+        - 'python3 -c *'
+        - 'python -c *'
+        - 'node -e *'
+      ask:
+        - 'python3 *'
+        - 'python *'
+        - 'node *'
+      deny:
+        - 'sudo *'
+        - 'rm -rf *'
+
+approvals:
+  provider:
+    type: stdio
+  timeout_ms: 300000
+  batch_window_ms: 5000
+
+audit:
+  db_path: ':memory:'
+  retention_days: 1
+  redact_fields: []

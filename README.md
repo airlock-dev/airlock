@@ -142,11 +142,11 @@ Reference the output in your config:
 clis:
   git:
     discovered: ./git-commands.yaml
-    max_output_bytes: 30000   # default matches Claude Code's limit
+    max_output_bytes: 30000 # default matches Claude Code's limit
     commands:
       # Inline commands override discovered ones with the same name
       custom-deploy:
-        exec: "git push origin main"
+        exec: 'git push origin main'
         params: {}
 ```
 
@@ -194,9 +194,9 @@ providers:
   github:
     type: stdio
     command: npx
-    args: ["-y", "@modelcontextprotocol/server-github"]
+    args: ['-y', '@modelcontextprotocol/server-github']
     env:
-      GITHUB_PERSONAL_ACCESS_TOKEN: "${GITHUB_TOKEN}"
+      GITHUB_PERSONAL_ACCESS_TOKEN: '${GITHUB_TOKEN}'
 
   exec: builtin
   http: builtin
@@ -212,7 +212,7 @@ clis:
         exec: git status
         params: {}
       log:
-        exec: "git log --oneline -n {count}"
+        exec: 'git log --oneline -n {count}'
         params:
           count:
             type: number
@@ -249,25 +249,25 @@ agents:
   helena:
     extends: [readonly, developer]
     exec:
-      allow: ["git status", "git diff*", "npm test*"]
-      ask:   ["git push*"]
-      deny:  ["sudo *", "rm -rf *"]
+      allow: ['git status', 'git diff*', 'npm test*']
+      ask: ['git push*']
+      deny: ['sudo *', 'rm -rf *']
       env:
-        PATH: "/usr/local/bin:/usr/bin:/bin"
+        PATH: '/usr/local/bin:/usr/bin:/bin'
     http:
-      domain_allowlist: ["api.github.com", "*.sentry.io"]
+      domain_allowlist: ['api.github.com', '*.sentry.io']
 
   claude-code:
     extends: [readonly]
     exec:
-      allow: ["git status", "git diff*", "npm test"]
-      deny: ["*"]
+      allow: ['git status', 'git diff*', 'npm test']
+      deny: ['*']
 
 approvals:
   provider:
     type: telegram
-    bot_token: "${TELEGRAM_BOT_TOKEN}"
-    chat_id: "${TELEGRAM_CHAT_ID}"
+    bot_token: '${TELEGRAM_BOT_TOKEN}'
+    chat_id: '${TELEGRAM_CHAT_ID}'
   timeout_ms: 300000
   batch_window_ms: 10000
 ```
@@ -276,18 +276,149 @@ Precedence: **deny > ask > allow > default-deny**
 
 See [`examples/gateway.yaml`](examples/gateway.yaml) for a fully annotated reference config and [`examples/profiles.yaml`](examples/profiles.yaml) for composable profile examples.
 
+## Sandbox presets and tool variants
+
+Airlock can expose multiple names for the same underlying tool by using `tool_overrides.<name>.alias_of`.
+This is especially useful when you want different approval posture for the same capability:
+
+- a tightly sandboxed variant that is safe enough to `allow`
+- a broader variant that still goes through `ask`
+
+That pattern helps reduce approval fatigue without giving up higher-power versions of the tool.
+
+### Why use presets?
+
+Sandbox config gets repetitive quickly. A typical local-only transform tool wants the same shape every time:
+
+- read the repo
+- write only to `/tmp`
+- deny secret directories like `~/.ssh`
+- no outbound network
+
+Top-level `sandbox_presets` let you define that once and reuse it across agents and tool variants.
+
+### Example: safe Python fast path + approved full Python
+
+```yaml
+providers:
+  exec: builtin
+
+sandbox_presets:
+  local_transform:
+    filesystem:
+      allow_read:
+        - '.'
+      allow_write:
+        - '/tmp'
+        - '/private/tmp'
+      deny_read:
+        - '~/.ssh'
+        - '~/.aws'
+        - '.env'
+      deny_write:
+        - '.'
+    network:
+      allowed_domains: []
+      denied_domains: []
+
+  github_only:
+    network:
+      allowed_domains:
+        - 'github.com'
+        - '*.github.com'
+        - 'api.github.com'
+      denied_domains: []
+
+agents:
+  claude-code:
+    allow:
+      - 'python/sandboxed'
+    ask:
+      - 'python/full'
+      - 'python/github'
+
+    sandbox:
+      enabled: true
+      presets:
+        - local_transform
+
+    tool_overrides:
+      python/sandboxed:
+        alias_of: 'exec/run'
+        description: 'Run Python for local transformations only'
+
+      python/full:
+        alias_of: 'exec/run'
+        description: 'Run Python with broader permissions after approval'
+        sandbox:
+          filesystem:
+            allow_write:
+              - '.'
+              - '/tmp'
+              - '/private/tmp'
+            deny_write: []
+          network:
+            allowed_domains:
+              - 'pypi.org'
+              - '*.pythonhosted.org'
+            denied_domains: []
+
+      python/github:
+        alias_of: 'exec/run'
+        description: 'Run Python with GitHub-only network access after approval'
+        sandbox_presets:
+          - github_only
+```
+
+In this example:
+
+- `python/sandboxed` inherits the agent's `local_transform` preset and can be broadly allowed
+- `python/full` keeps the same base tool but overrides filesystem and network to be more permissive, so it should stay in `ask`
+- `python/github` reuses the same local transform defaults but adds a reusable GitHub-only network preset
+
+### Preset merge rules
+
+Presets are expanded during config parsing.
+
+- `sandbox.presets` applies to the whole agent sandbox baseline
+- `tool_overrides.<tool>.sandbox_presets` applies only to that tool variant
+- explicit `sandbox` values on the tool override win over preset values when they conflict
+- deny lists are additive
+- allow lists usually replace the previous value so the tool variant can define a tighter or broader envelope intentionally
+
+### Approval and audit visibility
+
+When a tool call requires approval, Airlock includes the resolved sandbox summary in the approval payload and formatter output.
+That means operators can see things like:
+
+- which presets were applied
+- whether network is disabled or limited to specific domains
+- where writes are allowed
+- which paths are explicitly denied
+
+Audit entries also include the resolved sandbox context alongside the tool arguments, so you can later verify not just what command ran, but under what safety envelope it ran.
+
+### Practical guidance
+
+- Use a sandboxed `allow` variant for cheap local work like JSON transforms, parsing, codegen, or text munging
+- Keep networked or repo-writing variants in `ask` until you've smoke-tested the exact runtime you care about
+- Prefer a small number of named presets such as `local_transform`, `github_only`, `npm_registry`, or `readonly_repo`
+- If a tool needs a one-off tweak, put that in the tool override instead of copying a giant sandbox block everywhere
+
+See [`examples/sandbox-presets.yaml`](examples/sandbox-presets.yaml) for a fuller example config focused on this pattern.
+
 ## HITL providers
 
-| Provider | Config `type` | Notes |
-|----------|--------------|-------|
-| TUI | `tui` | Terminal UI on stderr — `[a]pprove` / `[d]eny` with `j/k` navigation via `/dev/tty` |
-| macOS dialog | `macos` | Native approve/deny popup via `osascript` — best for local dev on Mac |
-| Dashboard | `dashboard` | Localhost web UI (default port 4112) with live SSE updates |
-| Telegram bot | `telegram` | Long-polls for replies; reply `approve ABC123` or `deny ABC123` |
-| Slack webhook | `slack` | Incoming webhook, fire-and-forget; pair with slash commands for approvals |
-| Generic webhook | `webhook` | POSTs `{requests, text}` JSON; configurable headers |
-| OpenClaw | `openclaw` | WebSocket RPC to OpenClaw gateway; see [`examples/openclaw-setup.md`](examples/openclaw-setup.md) |
-| stdio | `stdio` | Prints to stderr, reads from stdin — for local dev and testing |
+| Provider        | Config `type` | Notes                                                                                             |
+| --------------- | ------------- | ------------------------------------------------------------------------------------------------- |
+| TUI             | `tui`         | Terminal UI on stderr — `[a]pprove` / `[d]eny` with `j/k` navigation via `/dev/tty`               |
+| macOS dialog    | `macos`       | Native approve/deny popup via `osascript` — best for local dev on Mac                             |
+| Dashboard       | `dashboard`   | Localhost web UI (default port 4112) with live SSE updates                                        |
+| Telegram bot    | `telegram`    | Long-polls for replies; reply `approve ABC123` or `deny ABC123`                                   |
+| Slack webhook   | `slack`       | Incoming webhook, fire-and-forget; pair with slash commands for approvals                         |
+| Generic webhook | `webhook`     | POSTs `{requests, text}` JSON; configurable headers                                               |
+| OpenClaw        | `openclaw`    | WebSocket RPC to OpenClaw gateway; see [`examples/openclaw-setup.md`](examples/openclaw-setup.md) |
+| stdio           | `stdio`       | Prints to stderr, reads from stdin — for local dev and testing                                    |
 
 ## API
 

@@ -31,6 +31,19 @@ providers:
   exec: builtin
   http: builtin
 
+# Optional reusable sandbox presets for policy-wrapped tool variants.
+# See examples/sandbox-presets.yaml for a focused end-to-end example.
+# sandbox_presets:
+#   local_transform:
+#     filesystem:
+#       allow_read: ['.']
+#       allow_write: ['/tmp', '/private/tmp']
+#       deny_read: ['~/.ssh', '~/.aws', '.env']
+#       deny_write: ['.']
+#     network:
+#       allowed_domains: []
+#       denied_domains: []
+
 # Agents
 agents:
   # Helena: full-access developer agent with approval on destructive ops
@@ -61,6 +74,23 @@ agents:
       domain_allowlist:
         - 'api.github.com'
         - '*.sentry.io'
+    # sandbox:
+    #   enabled: true
+    #   presets: ['local_transform']
+    # tool_overrides:
+    #   python/sandboxed:
+    #     alias_of: 'exec/run'
+    #     description: 'Run Python for local transforms only'
+    #   python/full:
+    #     alias_of: 'exec/run'
+    #     description: 'Run Python with broader permissions after approval'
+    #     sandbox:
+    #       filesystem:
+    #         allow_write: ['.', '/tmp', '/private/tmp']
+    #         deny_write: []
+    #       network:
+    #         allowed_domains: ['pypi.org', '*.pythonhosted.org']
+    #         denied_domains: []
 
   # Claude Code: read-only, no approval needed
   claude-code:

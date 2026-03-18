@@ -1,5 +1,6 @@
 import { generateId, generateApprovalCode } from '../util/id.js';
 import type { AuditLogger } from '../audit/logger.js';
+import type { SandboxDisplayInfo } from '../sandbox/index.js';
 import type { HitlProvider, ApprovalApi } from './providers/types.js';
 import { childLogger } from '../util/logger.js';
 
@@ -19,6 +20,7 @@ interface PendingRequest {
   agentId: string;
   tool: string;
   args: Record<string, unknown>;
+  sandbox?: SandboxDisplayInfo;
   resolve: (result: HitlResult) => void;
   timer: NodeJS.Timeout;
 }
@@ -33,7 +35,12 @@ export class HitlEngine implements ApprovalApi {
     readonly timeoutMs: number
   ) {}
 
-  create(params: { agentId: string; tool: string; args: Record<string, unknown> }): HitlTicket {
+  create(params: {
+    agentId: string;
+    tool: string;
+    args: Record<string, unknown>;
+    sandbox?: SandboxDisplayInfo;
+  }): HitlTicket {
     const id = generateId();
     const code = generateApprovalCode();
 
@@ -122,6 +129,7 @@ export class HitlEngine implements ApprovalApi {
       agentId: r.agentId,
       tool: r.tool,
       args: r.args,
+      ...(r.sandbox ? { sandbox: r.sandbox } : {}),
     }));
   }
 
@@ -190,6 +198,7 @@ export class HitlEngine implements ApprovalApi {
             agentId: row.agent_id,
             tool: row.tool,
             args,
+            sandbox: undefined,
             timeoutMs: remaining,
           },
         ])

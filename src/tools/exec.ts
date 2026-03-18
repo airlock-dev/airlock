@@ -2,6 +2,7 @@ import { spawn } from 'child_process';
 import type { AgentConfig } from '../config/schema.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { matchesCommand } from '../allowlist/pattern.js';
+import { wrapCommandWithSandbox, type ResolvedSandboxConfig } from '../sandbox/index.js';
 
 export interface ExecResult {
   exit_code: number | null;
@@ -58,13 +59,17 @@ export async function executeExec(
   command: string,
   agentConfig: AgentConfig,
   cwd?: string,
-  timeoutMs?: number
+  timeoutMs?: number,
+  sandbox?: ResolvedSandboxConfig
 ): Promise<ExecResult> {
   const timeout = timeoutMs ?? agentConfig.exec.default_timeout_ms;
   const start = Date.now();
 
+  // Wrap command with sandbox if config is provided
+  const effectiveCommand = sandbox ? await wrapCommandWithSandbox(command, sandbox) : command;
+
   return new Promise((resolve, reject) => {
-    const child = spawn('/bin/sh', ['-c', command], {
+    const child = spawn('/bin/sh', ['-c', effectiveCommand], {
       cwd,
       env: agentConfig.exec.env,
       stdio: ['ignore', 'pipe', 'pipe'],

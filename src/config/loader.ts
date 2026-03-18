@@ -53,6 +53,7 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
   const builtins = getBuiltinProviders(config.providers);
 
   const profileNames = new Set(Object.keys(config.profiles));
+  const sandboxPresetNames = new Set(Object.keys(config.sandbox_presets ?? {}));
 
   for (const [agentId, agent] of Object.entries(config.agents)) {
     // Check for unknown profile references
@@ -64,6 +65,30 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
           message: `extends references unknown profile "${ref}".`,
           suggestion: `Add "${ref}" to your profiles block, or check for typos.`,
         });
+      }
+    }
+
+    for (const presetName of agent.sandbox.presets) {
+      if (!sandboxPresetNames.has(presetName)) {
+        diagnostics.push({
+          level: 'error',
+          agent: agentId,
+          message: `sandbox.presets references unknown sandbox preset "${presetName}".`,
+          suggestion: `Add "${presetName}" to the top-level sandbox_presets block, or check for typos.`,
+        });
+      }
+    }
+
+    for (const [toolName, override] of Object.entries(agent.tool_overrides)) {
+      for (const presetName of override.sandbox_presets ?? []) {
+        if (!sandboxPresetNames.has(presetName)) {
+          diagnostics.push({
+            level: 'error',
+            agent: agentId,
+            message: `tool_overrides.${toolName}.sandbox_presets references unknown sandbox preset "${presetName}".`,
+            suggestion: `Add "${presetName}" to the top-level sandbox_presets block, or check for typos.`,
+          });
+        }
       }
     }
 
