@@ -1,5 +1,5 @@
 import { matches } from '../allowlist/pattern.js';
-import type { SandboxConfig, SandboxOverrideConfig } from '../config/schema.js';
+import type { AgentConfig, SandboxConfig, SandboxOverrideConfig } from '../config/schema.js';
 import { SandboxManager, type SandboxRuntimeConfig } from '@anthropic-ai/sandbox-runtime';
 
 export interface ResolvedSandboxConfig {
@@ -12,6 +12,55 @@ export interface ResolvedSandboxConfig {
   network: {
     allowed_domains: string[];
     denied_domains: string[];
+  };
+}
+
+export interface SandboxDisplayInfo {
+  enabled: boolean;
+  presets: string[];
+  toolPresets: string[];
+  summary: string[];
+  config?: ResolvedSandboxConfig;
+}
+
+function summarizeSandbox(config: ResolvedSandboxConfig): string[] {
+  const summary: string[] = [];
+  summary.push(
+    config.network.allowed_domains.length === 0
+      ? 'network:none'
+      : `network:${config.network.allowed_domains.join(',')}`
+  );
+
+  if (config.filesystem.allow_write.length > 0) {
+    summary.push(`write:${config.filesystem.allow_write.join(',')}`);
+  }
+  if (config.filesystem.allow_read && config.filesystem.allow_read.length > 0) {
+    summary.push(`read:${config.filesystem.allow_read.join(',')}`);
+  }
+  if (config.filesystem.deny_read.length > 0) {
+    summary.push(`deny-read:${config.filesystem.deny_read.join(',')}`);
+  }
+
+  return summary;
+}
+
+export function getSandboxDisplayInfo(
+  agentConfig: AgentConfig,
+  toolName: string,
+  resolved?: ResolvedSandboxConfig
+): SandboxDisplayInfo | undefined {
+  if (!agentConfig.sandbox.enabled || !resolved) return undefined;
+
+  const toolOverride = agentConfig.tool_overrides[toolName];
+  const presets = agentConfig.sandbox.presets ?? [];
+  const toolPresets = toolOverride?.sandbox_presets ?? [];
+
+  return {
+    enabled: true,
+    presets,
+    toolPresets,
+    summary: summarizeSandbox(resolved),
+    config: resolved,
   };
 }
 
@@ -104,6 +153,42 @@ export function toSandboxRuntimeConfig(config: ResolvedSandboxConfig): SandboxRu
   };
 }
 
+async function ensureSandboxRuntime(config: SandboxRuntimeConfig): Promise<void> {
+  if (
+    typeof SandboxManager.isSupportedPlatform === 'function' &&
+    !SandboxManager.isSupportedPlatform()
+  ) {
+    throw new Error('Sandbox runtime is not supported on this platform');
+  }
+
+  const canInitialize = typeof SandboxManager.initialize === 'function';
+  const isEnabled =
+    typeof SandboxManager.isSandboxingEnabled === 'function'
+      ? SandboxManager.isSandboxingEnabled()
+      : false;
+
+  if (canInitialize && !isEnabled) {
+    await SandboxManager.initialize(config);
+    return;
+  }
+
+  if (typeof SandboxManager.updateConfig === 'function') {
+    SandboxManager.updateConfig(config);
+  }
+
+  if (typeof SandboxManager.waitForNetworkInitialization === 'function') {
+    const ready = await SandboxManager.waitForNetworkInitialization();
+    if (!ready && canInitialize) {
+      await SandboxManager.initialize(config);
+    }
+    return;
+  }
+
+  if (canInitialize) {
+    await SandboxManager.initialize(config);
+  }
+}
+
 /**
  * Wraps a shell command using the SandboxManager programmatic API.
  * Returns the wrapped command string that includes sandbox restrictions.
@@ -113,5 +198,6 @@ export async function wrapCommandWithSandbox(
   sandbox: ResolvedSandboxConfig
 ): Promise<string> {
   const runtimeConfig = toSandboxRuntimeConfig(sandbox);
+  await ensureSandboxRuntime(runtimeConfig);
   return SandboxManager.wrapWithSandbox(command, undefined, runtimeConfig);
 }

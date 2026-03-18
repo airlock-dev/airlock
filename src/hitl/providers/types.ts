@@ -1,3 +1,5 @@
+import type { SandboxDisplayInfo } from '../../sandbox/index.js';
+
 export interface HitlNotification {
   id: string;
   code: string;
@@ -5,6 +7,7 @@ export interface HitlNotification {
   tool: string;
   args: Record<string, unknown>;
   timeoutMs: number;
+  sandbox?: SandboxDisplayInfo;
 }
 
 export interface HitlProvider {

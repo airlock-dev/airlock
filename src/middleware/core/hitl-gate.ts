@@ -1,12 +1,25 @@
 import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
+import type { SandboxDisplayInfo } from '../../sandbox/index.js';
 import type { Middleware } from '../types.js';
+
+function serializeAuditArgs(args: Record<string, unknown>, meta: Record<string, unknown>): string {
+  const sandbox = meta.sandbox_info;
+  if (!sandbox) return JSON.stringify(args);
+  return JSON.stringify({ ...args, _airlock: { sandbox } });
+}
 
 export function hitlGateMiddleware(): Middleware {
   return async (ctx, next) => {
     if (!ctx.meta.needsApproval) return next();
 
     const { hitlEngine, hitlBatcher, auditLogger } = ctx.deps;
-    const ticket = hitlEngine.create({ agentId: ctx.agentId, tool: ctx.toolName, args: ctx.args });
+    const sandboxInfo = ctx.meta.sandbox_info as SandboxDisplayInfo | undefined;
+    const ticket = hitlEngine.create({
+      agentId: ctx.agentId,
+      tool: ctx.toolName,
+      args: ctx.args,
+      sandbox: sandboxInfo,
+    });
 
     hitlBatcher.add({
       id: ticket.id,
@@ -14,6 +27,7 @@ export function hitlGateMiddleware(): Middleware {
       agentId: ctx.agentId,
       tool: ctx.toolName,
       args: ctx.args,
+      ...(sandboxInfo ? { sandbox: sandboxInfo } : {}),
       timeoutMs: hitlEngine.timeoutMs,
     });
 
@@ -23,7 +37,7 @@ export function hitlGateMiddleware(): Middleware {
       auditLogger.log({
         agent_id: ctx.agentId,
         tool: ctx.toolName,
-        args: JSON.stringify(ctx.args),
+        args: serializeAuditArgs(ctx.args, ctx.meta),
         result: 'hitl_denied',
       });
       throw new McpError(ErrorCode.InvalidRequest, 'Request denied by operator');
@@ -32,7 +46,7 @@ export function hitlGateMiddleware(): Middleware {
       auditLogger.log({
         agent_id: ctx.agentId,
         tool: ctx.toolName,
-        args: JSON.stringify(ctx.args),
+        args: serializeAuditArgs(ctx.args, ctx.meta),
         result: 'hitl_timeout',
       });
       throw new McpError(

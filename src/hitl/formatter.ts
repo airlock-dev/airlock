@@ -14,16 +14,33 @@ export function formatNotification(req: HitlNotification): string {
     })
     .join('\n');
 
+  const sandboxLines = req.sandbox
+    ? [
+        req.sandbox.presets.length > 0
+          ? `Sandbox presets: ${req.sandbox.presets.join(', ')}`
+          : undefined,
+        req.sandbox.toolPresets.length > 0
+          ? `Tool sandbox presets: ${req.sandbox.toolPresets.join(', ')}`
+          : undefined,
+        req.sandbox.summary.length > 0 ? `Sandbox: ${req.sandbox.summary.join(' | ')}` : undefined,
+      ]
+        .filter(Boolean)
+        .join('\n')
+    : '';
+
   return [
     `🔒 APPROVE? [${req.code}]`,
     ``,
     `Agent: ${req.agentId}`,
     `Tool:  ${req.tool}`,
     argLines,
+    sandboxLines,
     ``,
     `approve ${req.code} / deny ${req.code}`,
     `Expires: ${timeoutMin}m`,
-  ].join('\n');
+  ]
+    .filter(Boolean)
+    .join('\n');
 }
 
 export function formatBatch(requests: HitlNotification[]): string {

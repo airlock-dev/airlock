@@ -1,5 +1,5 @@
 import type { Middleware } from '../types.js';
-import { resolveSandboxConfig } from '../../sandbox/index.js';
+import { getSandboxDisplayInfo, resolveSandboxConfig } from '../../sandbox/index.js';
 
 export function sandboxMiddleware(): Middleware {
   return async (ctx, next) => {
@@ -11,6 +11,11 @@ export function sandboxMiddleware(): Middleware {
       const toolOverrideSandbox = toolOverride?.sandbox;
 
       ctx.meta.sandbox = resolveSandboxConfig(agentSandbox, ctx.toolName, toolOverrideSandbox);
+      ctx.meta.sandbox_info = getSandboxDisplayInfo(
+        ctx.agentConfig,
+        ctx.toolName,
+        ctx.meta.sandbox as ReturnType<typeof resolveSandboxConfig>
+      );
     }
 
     return next();

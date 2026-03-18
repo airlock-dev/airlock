@@ -158,6 +158,10 @@ export class TuiHitlProvider implements HitlProvider {
             `  ${DIM}[${item.req.code}]${RESET}`
         );
         lines.push(`${selected ? '     ' : '     '}${DIM}${args}${RESET}`);
+        if (item.req.sandbox) {
+          const sandbox = item.req.sandbox.summary.join(' | ');
+          lines.push(`     ${CYAN}sandbox:${RESET} ${DIM}${sandbox}${RESET}`);
+        }
       }
     }
 

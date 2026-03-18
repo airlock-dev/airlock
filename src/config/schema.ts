@@ -92,8 +92,14 @@ export const SandboxOverrideConfig = z.object({
 });
 export type SandboxOverrideConfig = z.infer<typeof SandboxOverrideConfig>;
 
+export const SandboxPresetRef = z
+  .union([z.string(), z.array(z.string())])
+  .transform((value) => (Array.isArray(value) ? value : [value]));
+export type SandboxPresetRef = z.infer<typeof SandboxPresetRef>;
+
 export const SandboxConfig = z.object({
   enabled: z.boolean().default(false),
+  presets: SandboxPresetRef.default([]),
   filesystem: SandboxFilesystemConfig.default({}),
   network: SandboxNetworkConfig.default({}),
   overrides: z.record(SandboxOverrideConfig).default({}),
@@ -103,6 +109,7 @@ export type SandboxConfig = z.infer<typeof SandboxConfig>;
 export const ToolOverride = z.object({
   description: z.string().optional(),
   alias_of: z.string().optional(),
+  sandbox_presets: SandboxPresetRef.default([]),
   sandbox: SandboxOverrideConfig.optional(),
 });
 
@@ -335,15 +342,161 @@ export const ApiConfig = z.object({
 });
 export type ApiConfig = z.infer<typeof ApiConfig>;
 
-export const GatewayConfig = z.object({
-  providers: z.record(ProviderConfig).default({}),
-  profiles: z.record(ProfileConfig).default({}),
-  clis: z.record(CliConfig).default({}),
-  apis: z.record(ApiConfig).default({}),
-  agents: z.record(AgentConfig).default({}),
-  approvals: ApprovalsConfig.default({}),
-  security: SecurityConfig.default({}),
-  audit: AuditConfig.default({}),
-  server: ServerConfig.default({}),
-});
+export const SandboxPresetConfig = SandboxOverrideConfig;
+export type SandboxPresetConfig = z.infer<typeof SandboxPresetConfig>;
+
+function mergeSandboxOverride(
+  base: SandboxOverrideConfig,
+  override: SandboxOverrideConfig
+): SandboxOverrideConfig {
+  const result: SandboxOverrideConfig = {
+    filesystem: base.filesystem ? { ...base.filesystem } : undefined,
+    network: base.network ? { ...base.network } : undefined,
+  };
+
+  if (override.filesystem) {
+    result.filesystem = {
+      ...(result.filesystem ?? {}),
+      ...override.filesystem,
+      ...(override.filesystem.deny_read !== undefined
+        ? {
+            deny_read: [...(result.filesystem?.deny_read ?? []), ...override.filesystem.deny_read],
+          }
+        : {}),
+      ...(override.filesystem.deny_write !== undefined
+        ? {
+            deny_write: [
+              ...(result.filesystem?.deny_write ?? []),
+              ...override.filesystem.deny_write,
+            ],
+          }
+        : {}),
+    };
+  }
+
+  if (override.network) {
+    result.network = {
+      ...(result.network ?? {}),
+      ...override.network,
+      ...(override.network.denied_domains !== undefined
+        ? {
+            denied_domains: [
+              ...(result.network?.denied_domains ?? []),
+              ...override.network.denied_domains,
+            ],
+          }
+        : {}),
+    };
+  }
+
+  return result;
+}
+
+function applySandboxPresetsToConfig<
+  T extends { sandbox_presets?: string[]; sandbox?: SandboxOverrideConfig },
+>(value: T, sandboxPresets: Record<string, SandboxPresetConfig>): T {
+  const presetNames = value.sandbox_presets ?? [];
+  if (presetNames.length === 0) return value;
+
+  let merged: SandboxOverrideConfig = {};
+  for (const presetName of presetNames) {
+    const preset = sandboxPresets[presetName];
+    if (preset) merged = mergeSandboxOverride(merged, preset);
+  }
+
+  if (value.sandbox) {
+    merged = mergeSandboxOverride(merged, value.sandbox);
+  }
+
+  return {
+    ...value,
+    sandbox: merged,
+  };
+}
+
+function applySandboxPresetsToAgent(
+  agent: AgentConfig,
+  sandboxPresets: Record<string, SandboxPresetConfig>
+): AgentConfig {
+  let sandbox: SandboxConfig = { ...agent.sandbox };
+
+  for (const presetName of sandbox.presets) {
+    const preset = sandboxPresets[presetName];
+    if (!preset) continue;
+
+    if (preset.filesystem) {
+      sandbox = {
+        ...sandbox,
+        filesystem: {
+          ...sandbox.filesystem,
+          ...preset.filesystem,
+          ...(preset.filesystem.deny_read !== undefined
+            ? {
+                deny_read: [...sandbox.filesystem.deny_read, ...preset.filesystem.deny_read],
+              }
+            : {}),
+          ...(preset.filesystem.deny_write !== undefined
+            ? {
+                deny_write: [...sandbox.filesystem.deny_write, ...preset.filesystem.deny_write],
+              }
+            : {}),
+        },
+      };
+    }
+
+    if (preset.network) {
+      sandbox = {
+        ...sandbox,
+        network: {
+          ...sandbox.network,
+          ...preset.network,
+          ...(preset.network.denied_domains !== undefined
+            ? {
+                denied_domains: [
+                  ...sandbox.network.denied_domains,
+                  ...preset.network.denied_domains,
+                ],
+              }
+            : {}),
+        },
+      };
+    }
+  }
+
+  const tool_overrides = Object.fromEntries(
+    Object.entries(agent.tool_overrides).map(([key, value]) => [
+      key,
+      applySandboxPresetsToConfig(value, sandboxPresets),
+    ])
+  );
+
+  return {
+    ...agent,
+    sandbox,
+    tool_overrides,
+  };
+}
+
+export const GatewayConfig = z
+  .object({
+    providers: z.record(ProviderConfig).default({}),
+    profiles: z.record(ProfileConfig).default({}),
+    sandbox_presets: z.record(SandboxPresetConfig).default({}),
+    clis: z.record(CliConfig).default({}),
+    apis: z.record(ApiConfig).default({}),
+    agents: z.record(AgentConfig).default({}),
+    approvals: ApprovalsConfig.default({}),
+    security: SecurityConfig.default({}),
+    audit: AuditConfig.default({}),
+    server: ServerConfig.default({}),
+  })
+  .transform((config) => ({
+    ...config,
+    agents: Object.fromEntries(
+      Object.entries(config.agents).map(([key, value]) => [
+        key,
+        applySandboxPresetsToAgent(value, config.sandbox_presets),
+      ])
+    ),
+  }));
 export type GatewayConfig = z.infer<typeof GatewayConfig>;

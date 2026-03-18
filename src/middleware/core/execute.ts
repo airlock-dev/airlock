@@ -1,6 +1,12 @@
 import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
 import type { Middleware, ToolCallResponse } from '../types.js';
 
+function serializeAuditArgs(args: Record<string, unknown>, meta: Record<string, unknown>): string {
+  const sandbox = meta.sandbox_info;
+  if (!sandbox) return JSON.stringify(args);
+  return JSON.stringify({ ...args, _airlock: { sandbox } });
+}
+
 export function executeMiddleware(): Middleware {
   return async (ctx, _next): Promise<ToolCallResponse> => {
     const { registry, auditLogger } = ctx.deps;
@@ -12,7 +18,7 @@ export function executeMiddleware(): Middleware {
       auditLogger.log({
         agent_id: ctx.agentId,
         tool: ctx.toolName,
-        args: JSON.stringify(ctx.args),
+        args: serializeAuditArgs(ctx.args, ctx.meta),
         result: 'success',
         duration_ms: duration,
       });
@@ -27,7 +33,7 @@ export function executeMiddleware(): Middleware {
       auditLogger.log({
         agent_id: ctx.agentId,
         tool: ctx.toolName,
-        args: JSON.stringify(ctx.args),
+        args: serializeAuditArgs(ctx.args, ctx.meta),
         result: 'error',
         error,
         duration_ms: duration,

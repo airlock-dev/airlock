@@ -205,6 +205,88 @@ describe('AgentConfig sandbox defaults', () => {
   });
 });
 
+describe('sandbox presets', () => {
+  it('applies agent-level sandbox presets from GatewayConfig', () => {
+    const parsed = GatewayConfig.parse({
+      sandbox_presets: {
+        local_transform: {
+          filesystem: {
+            allow_write: ['/tmp'],
+            deny_read: ['~/.ssh'],
+            deny_write: ['.'],
+            allow_read: ['.'],
+          },
+          network: {
+            allowed_domains: [],
+            denied_domains: [],
+          },
+        },
+      },
+      agents: {
+        a1: {
+          sandbox: {
+            enabled: true,
+            presets: ['local_transform'],
+          },
+        },
+      },
+    });
+
+    expect(parsed.agents['a1'].sandbox.filesystem.allow_write).toEqual(['/tmp']);
+    expect(parsed.agents['a1'].sandbox.filesystem.allow_read).toEqual(['.']);
+    expect(parsed.agents['a1'].sandbox.filesystem.deny_read).toContain('~/.ssh');
+    expect(parsed.agents['a1'].sandbox.filesystem.deny_write).toContain('.');
+  });
+
+  it('applies tool override sandbox presets and lets explicit sandbox override them', () => {
+    const parsed = GatewayConfig.parse({
+      sandbox_presets: {
+        local_transform: {
+          filesystem: {
+            allow_write: ['/tmp'],
+            deny_read: ['~/.ssh'],
+          },
+          network: {
+            allowed_domains: [],
+            denied_domains: [],
+          },
+        },
+        github_only: {
+          network: {
+            allowed_domains: ['api.github.com'],
+            denied_domains: [],
+          },
+        },
+      },
+      agents: {
+        a1: {
+          tool_overrides: {
+            'python/sandboxed': {
+              alias_of: 'exec/run',
+              sandbox_presets: ['local_transform', 'github_only'],
+              sandbox: {
+                filesystem: {
+                  allow_write: ['/var/tmp'],
+                },
+              },
+            },
+          },
+        },
+      },
+    });
+
+    expect(
+      parsed.agents['a1'].tool_overrides['python/sandboxed'].sandbox?.filesystem?.allow_write
+    ).toEqual(['/var/tmp']);
+    expect(
+      parsed.agents['a1'].tool_overrides['python/sandboxed'].sandbox?.filesystem?.deny_read
+    ).toContain('~/.ssh');
+    expect(
+      parsed.agents['a1'].tool_overrides['python/sandboxed'].sandbox?.network?.allowed_domains
+    ).toEqual(['api.github.com']);
+  });
+});
+
 // ─── ToolOverride schema ─────────────────────────────────────────────────────
 
 describe('ToolOverride schema', () => {

@@ -212,6 +212,43 @@ describe('sandboxMiddleware', () => {
 
     const sandbox = ctx.meta.sandbox as { filesystem: { allow_write: string[] } };
     expect(sandbox.filesystem.allow_write).toEqual(['/sandbox-only']);
+    expect(ctx.meta.sandbox_info).toMatchObject({
+      presets: [],
+      toolPresets: [],
+      summary: expect.arrayContaining(['network:none', 'write:/sandbox-only']),
+    });
+  });
+
+  it('includes preset names in sandbox display info', async () => {
+    const mw = sandboxMiddleware();
+    const ctx = makeCtx({
+      toolName: 'python/sandboxed',
+      agentConfig: makeAgentConfig({
+        sandbox: {
+          enabled: true,
+          presets: ['local_transform'],
+          filesystem: { allow_write: ['/tmp'], deny_read: [], deny_write: ['.'] },
+          network: { allowed_domains: [], denied_domains: [] },
+        },
+        tool_overrides: {
+          'python/sandboxed': {
+            alias_of: 'exec/run',
+            sandbox_presets: ['github_networked'],
+            sandbox: {
+              network: { allowed_domains: ['api.github.com'] },
+            },
+          },
+        },
+      }),
+    });
+
+    await mw(ctx, okNext);
+
+    expect(ctx.meta.sandbox_info).toMatchObject({
+      presets: ['local_transform'],
+      toolPresets: ['github_networked'],
+      summary: expect.arrayContaining(['network:api.github.com']),
+    });
   });
 
   it('ignores tool_overrides sandbox for non-matching tool', async () => {
