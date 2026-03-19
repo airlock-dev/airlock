@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.21](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.20...airlock-bot-v0.2.21) (2026-03-19)
+
+
+### Features
+
+* **transport:** add Streamable HTTP server transport ([#67](https://github.com/airlock-dev/airlock/issues/67)) ([89ece7e](https://github.com/airlock-dev/airlock/commit/89ece7e9a91a641ad17c014577ed75b0024844bd))
+
 ## [0.2.20](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.19...airlock-bot-v0.2.20) (2026-03-18)
 
 
