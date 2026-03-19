@@ -10,6 +10,7 @@ import { hitlApiPlugin } from './hitl/api.js';
 import { auditApiPlugin } from './audit/api.js';
 import { hookApiPlugin } from './hook/api.js';
 import { sseServerPlugin } from './transport/sse-server.js';
+import { httpServerPlugin } from './transport/http-server.js';
 import type { AgentServerDeps } from './transport/agent-server.js';
 import type { Config } from './config/loader.js';
 import type { HitlProvider, ApprovalApi } from './hitl/providers/types.js';
@@ -102,6 +103,10 @@ export class Gateway {
       secret,
     });
     await this.app.register(sseServerPlugin, {
+      getDeps: (agentId: string) => this.buildAgentDeps(agentId),
+      secret,
+    });
+    await this.app.register(httpServerPlugin, {
       getDeps: (agentId: string) => this.buildAgentDeps(agentId),
       secret,
     });
