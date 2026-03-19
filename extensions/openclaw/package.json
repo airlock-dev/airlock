@@ -1,0 +1,12 @@
+{
+  "name": "airlock-bridge",
+  "version": "1.0.0",
+  "description": "Routes tool calls through Airlock for permission enforcement and human-in-the-loop approval",
+  "type": "module",
+  "dependencies": {
+    "@sinclair/typebox": "0.34.48"
+  },
+  "devDependencies": {
+    "openclaw": "latest"
+  }
+}

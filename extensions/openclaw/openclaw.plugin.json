@@ -1,0 +1,38 @@
+{
+  "id": "airlock-bridge",
+  "name": "Airlock Bridge",
+  "description": "Routes tool calls through Airlock for permission enforcement and human-in-the-loop approval",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "url": {
+        "type": "string",
+        "description": "Airlock gateway base URL (overrides AIRLOCK_URL env var)"
+      },
+      "agent": {
+        "type": "string",
+        "description": "Airlock agent profile to run as (overrides AIRLOCK_AGENT env var)"
+      },
+      "secret": {
+        "type": "string",
+        "description": "Airlock API secret / Bearer token (overrides AIRLOCK_SECRET env var)"
+      }
+    }
+  },
+  "uiHints": {
+    "url": {
+      "label": "Gateway URL",
+      "placeholder": "http://localhost:4111"
+    },
+    "agent": {
+      "label": "Agent Profile",
+      "placeholder": "openclaw"
+    },
+    "secret": {
+      "label": "API Secret",
+      "sensitive": true,
+      "placeholder": "your-api-secret"
+    }
+  }
+}

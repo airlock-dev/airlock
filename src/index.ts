@@ -7,6 +7,7 @@ import { runStdioMode } from './stdio-mode.js';
 import { runDiscover } from './discover/cli.js';
 import { runConfigureAgent } from './configure-agent/cli.js';
 import { runConfigureCli } from './configure-cli/cli.js';
+import { runSetupOpenclaw } from './setup-openclaw/cli.js';
 import { logger } from './util/logger.js';
 
 // Handle subcommands before parseArgs
@@ -26,6 +27,13 @@ if (subcommand === 'discover') {
     console.error(err instanceof Error ? err.message : String(err));
     process.exit(1);
   });
+} else if (subcommand === 'setup' && process.argv[3] === 'openclaw') {
+  try {
+    runSetupOpenclaw(process.argv.slice(4));
+  } catch (err) {
+    console.error(err instanceof Error ? err.message : String(err));
+    process.exit(1);
+  }
 } else {
   runGateway();
 }
@@ -50,6 +58,7 @@ Usage:
   airlock discover <cli|api> [options]
   airlock configure-cli <tool> [options]
   airlock configure-agent [options]
+  airlock setup openclaw
 
 Options:
   -c, --config <path>    Config file path (default: ./airlock.yaml)
@@ -62,6 +71,7 @@ Subcommands:
   discover api <spec>    Auto-discover API endpoints from an OpenAPI spec
   configure-cli <tool>   Interactive TUI to select and configure CLI commands
   configure-agent        Interactive TUI to build allow/ask/deny lists
+  setup openclaw         Install the airlock-bridge plugin into OpenClaw
 
 Examples:
   # Start full gateway server
@@ -69,6 +79,9 @@ Examples:
 
   # Connect as a specific agent via stdio (for Claude Code, Cursor, etc.)
   airlock --agent helena
+
+  # Install the OpenClaw bridge plugin (one command)
+  airlock setup openclaw
 
   # Discover CLI tool commands
   airlock discover cli git --output git-commands.yaml
