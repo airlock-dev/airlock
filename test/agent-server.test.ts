@@ -103,7 +103,7 @@ describe('list_tools', () => {
     });
     const client = await buildConnectedClient(deps);
     const result = await client.listTools();
-    expect(result.tools.map((t) => t.name)).toEqual(['github/create_pr', 'github/list_prs']);
+    expect(result.tools.map((t) => t.name)).toEqual(['github_create_pr', 'github_list_prs']);
   });
 
   it('returns empty list when agent has no allowed tools', async () => {

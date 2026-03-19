@@ -174,8 +174,8 @@ describe('e2e: list_tools', () => {
   it('returns downstream tools namespaced as tools/<name>', async () => {
     const { tools } = await stack.testClient.listTools();
     const names = tools.map((t) => t.name);
-    expect(names).toContain('tools/echo');
-    expect(names).toContain('tools/add');
+    expect(names).toContain('tools_echo');
+    expect(names).toContain('tools_add');
   });
 
   it('also exposes built-in http and exec tools when allowed', async () => {
@@ -183,8 +183,8 @@ describe('e2e: list_tools', () => {
     const s = await buildStack(config);
     const { tools } = await s.testClient.listTools();
     const names = tools.map((t) => t.name);
-    expect(names).toContain('http/get');
-    expect(names).toContain('exec/run');
+    expect(names).toContain('http_get');
+    expect(names).toContain('exec_run');
     await s.teardown();
   });
 
@@ -193,8 +193,8 @@ describe('e2e: list_tools', () => {
     const s = await buildStack(restrictedConfig);
     const { tools } = await s.testClient.listTools();
     const names = tools.map((t) => t.name);
-    expect(names).toContain('tools/echo');
-    expect(names).not.toContain('tools/add');
+    expect(names).toContain('tools_echo');
+    expect(names).not.toContain('tools_add');
     await s.teardown();
   });
 });
@@ -589,8 +589,8 @@ describe('e2e: http/* — security and policy', () => {
 
     const { tools } = await stack.testClient.listTools();
     const names = tools.map((t) => t.name);
-    expect(names).not.toContain('http/get');
-    expect(names).not.toContain('http/post');
+    expect(names).not.toContain('http_get');
+    expect(names).not.toContain('http_post');
     await stack.teardown();
   });
 
@@ -600,10 +600,10 @@ describe('e2e: http/* — security and policy', () => {
 
     const { tools } = await stack.testClient.listTools();
     const names = tools.map((t) => t.name);
-    expect(names).toContain('http/get');
-    expect(names).toContain('http/head');
-    expect(names).not.toContain('http/post');
-    expect(names).not.toContain('http/delete');
+    expect(names).toContain('http_get');
+    expect(names).toContain('http_head');
+    expect(names).not.toContain('http_post');
+    expect(names).not.toContain('http_delete');
     await stack.teardown();
   });
 });

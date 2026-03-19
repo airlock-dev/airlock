@@ -250,19 +250,19 @@ describe('http-transport: basic MCP protocol', () => {
     await b.client.close();
   });
 
-  it('lists downstream tools namespaced as tools/<name>', async () => {
+  it('lists downstream tools namespaced as tools_<name>', async () => {
     const { client } = await connect(srv.port);
     const { tools } = await client.listTools();
     const names = tools.map((t) => t.name);
-    expect(names).toContain('tools/echo');
-    expect(names).toContain('tools/add');
+    expect(names).toContain('tools_echo');
+    expect(names).toContain('tools_add');
     await client.close();
   });
 
   it('tools carry proper input schemas', async () => {
     const { client } = await connect(srv.port);
     const { tools } = await client.listTools();
-    const echo = tools.find((t) => t.name === 'tools/echo')!;
+    const echo = tools.find((t) => t.name === 'tools_echo')!;
     expect(echo.inputSchema).toMatchObject({
       type: 'object',
       properties: { message: { type: 'string' } },
@@ -273,21 +273,21 @@ describe('http-transport: basic MCP protocol', () => {
 
   it('calls tools/echo and returns the echoed message', async () => {
     const { client } = await connect(srv.port);
-    const result = await client.callTool({ name: 'tools/echo', arguments: { message: 'hello' } });
+    const result = await client.callTool({ name: 'tools_echo', arguments: { message: 'hello' } });
     expect((result.content as { type: string; text: string }[])[0].text).toBe('hello');
     await client.close();
   });
 
   it('calls tools/add and returns the correct sum', async () => {
     const { client } = await connect(srv.port);
-    const result = await client.callTool({ name: 'tools/add', arguments: { a: 7, b: 13 } });
+    const result = await client.callTool({ name: 'tools_add', arguments: { a: 7, b: 13 } });
     expect((result.content as { type: string; text: string }[])[0].text).toBe('20');
     await client.close();
   });
 
   it('proxies isError flag from downstream tool errors', async () => {
     const { client } = await connect(srv.port);
-    const result = await client.callTool({ name: 'tools/error_tool', arguments: {} });
+    const result = await client.callTool({ name: 'tools_error_tool', arguments: {} });
     expect(result.isError).toBe(true);
     await client.close();
   });
@@ -295,7 +295,7 @@ describe('http-transport: basic MCP protocol', () => {
   it('proxies multi-content responses', async () => {
     const { client } = await connect(srv.port);
     const result = await client.callTool({
-      name: 'tools/multi_content',
+      name: 'tools_multi_content',
       arguments: { message: 'hi' },
     });
     expect((result.content as { type: string; text: string }[]).length).toBeGreaterThanOrEqual(2);
@@ -318,7 +318,7 @@ describe('http-transport: allowlist enforcement', () => {
 
   it('allows tools that match the allowlist', async () => {
     const { client } = await connect(srv.port);
-    const result = await client.callTool({ name: 'tools/echo', arguments: { message: 'ok' } });
+    const result = await client.callTool({ name: 'tools_echo', arguments: { message: 'ok' } });
     expect((result.content as { type: string; text: string }[])[0].text).toBe('ok');
     await client.close();
   });
@@ -326,7 +326,7 @@ describe('http-transport: allowlist enforcement', () => {
   it('rejects tools not in the allowlist', async () => {
     const { client } = await connect(srv.port);
     await expect(
-      client.callTool({ name: 'tools/add', arguments: { a: 1, b: 2 } })
+      client.callTool({ name: 'tools_add', arguments: { a: 1, b: 2 } })
     ).rejects.toThrow();
     await client.close();
   });
@@ -335,14 +335,14 @@ describe('http-transport: allowlist enforcement', () => {
     const { client } = await connect(srv.port);
     const { tools } = await client.listTools();
     const names = tools.map((t) => t.name);
-    expect(names).toContain('tools/echo');
-    expect(names).not.toContain('tools/add');
+    expect(names).toContain('tools_echo');
+    expect(names).not.toContain('tools_add');
     await client.close();
   });
 
   it('rejects completely unknown tools', async () => {
     const { client } = await connect(srv.port);
-    await expect(client.callTool({ name: 'nonexistent/tool', arguments: {} })).rejects.toThrow();
+    await expect(client.callTool({ name: 'nonexistent_tool', arguments: {} })).rejects.toThrow();
     await client.close();
   });
 });
@@ -469,8 +469,8 @@ describe('http-transport: routing', () => {
     const { client } = await connect(testSrv.port, 'test');
     const { tools } = await client.listTools();
     const names = tools.map((t) => t.name);
-    expect(names).toContain('tools/echo');
-    expect(names).not.toContain('tools/add');
+    expect(names).toContain('tools_echo');
+    expect(names).not.toContain('tools_add');
     await client.close();
     await testSrv.teardown();
   });
@@ -479,8 +479,8 @@ describe('http-transport: routing', () => {
     const { client } = await connect(srv.port, 'other');
     const { tools } = await client.listTools();
     const names = tools.map((t) => t.name);
-    expect(names).toContain('tools/add');
-    expect(names).not.toContain('tools/echo');
+    expect(names).toContain('tools_add');
+    expect(names).not.toContain('tools_echo');
     await client.close();
   });
 });
@@ -501,8 +501,8 @@ describe('http-transport: session management', () => {
   it('accepts requests with a valid session ID across multiple calls', async () => {
     const { client } = await connect(srv.port);
     // Two separate tool calls on the same session
-    const r1 = await client.callTool({ name: 'tools/echo', arguments: { message: 'first' } });
-    const r2 = await client.callTool({ name: 'tools/echo', arguments: { message: 'second' } });
+    const r1 = await client.callTool({ name: 'tools_echo', arguments: { message: 'first' } });
+    const r2 = await client.callTool({ name: 'tools_echo', arguments: { message: 'second' } });
     expect((r1.content as { type: string; text: string }[])[0].text).toBe('first');
     expect((r2.content as { type: string; text: string }[])[0].text).toBe('second');
     await client.close();
@@ -559,8 +559,8 @@ describe('http-transport: session management', () => {
     expect(a.transport.sessionId).not.toBe(b.transport.sessionId);
 
     const [r1, r2] = await Promise.all([
-      a.client.callTool({ name: 'tools/echo', arguments: { message: 'from-a' } }),
-      b.client.callTool({ name: 'tools/echo', arguments: { message: 'from-b' } }),
+      a.client.callTool({ name: 'tools_echo', arguments: { message: 'from-a' } }),
+      b.client.callTool({ name: 'tools_echo', arguments: { message: 'from-b' } }),
     ]);
 
     expect((r1.content as { type: string; text: string }[])[0].text).toBe('from-a');
@@ -588,7 +588,7 @@ describe('http-transport: HITL approval gate', () => {
   it('blocks tool call until operator approves, then returns result', async () => {
     const { client } = await connect(srv.port);
 
-    const callPromise = client.callTool({ name: 'tools/echo', arguments: { message: 'approved' } });
+    const callPromise = client.callTool({ name: 'tools_echo', arguments: { message: 'approved' } });
 
     await vi.waitFor(() => expect(srv.hitlEngine.getPending().length).toBe(1), { timeout: 5000 });
 
@@ -606,7 +606,7 @@ describe('http-transport: HITL approval gate', () => {
     const { client } = await connect(srv.port);
 
     try {
-      const callPromise = client.callTool({ name: 'tools/echo', arguments: { message: 'denied' } });
+      const callPromise = client.callTool({ name: 'tools_echo', arguments: { message: 'denied' } });
 
       await vi.waitFor(() => expect(srv.hitlEngine.getPending().length).toBe(1), { timeout: 5000 });
 
@@ -623,8 +623,8 @@ describe('http-transport: HITL approval gate', () => {
   it('handles multiple concurrent HITL requests on the same session', async () => {
     const { client } = await connect(srv.port);
 
-    const p1 = client.callTool({ name: 'tools/echo', arguments: { message: 'one' } });
-    const p2 = client.callTool({ name: 'tools/add', arguments: { a: 3, b: 4 } });
+    const p1 = client.callTool({ name: 'tools_echo', arguments: { message: 'one' } });
+    const p2 = client.callTool({ name: 'tools_add', arguments: { a: 3, b: 4 } });
 
     await vi.waitFor(() => expect(srv.hitlEngine.getPending().length).toBe(2), { timeout: 5000 });
 
@@ -643,8 +643,8 @@ describe('http-transport: HITL approval gate', () => {
     const b = await connect(srv.port);
 
     try {
-      const pa = a.client.callTool({ name: 'tools/echo', arguments: { message: 'session-a' } });
-      const pb = b.client.callTool({ name: 'tools/echo', arguments: { message: 'session-b' } });
+      const pa = a.client.callTool({ name: 'tools_echo', arguments: { message: 'session-a' } });
+      const pb = b.client.callTool({ name: 'tools_echo', arguments: { message: 'session-b' } });
 
       await vi.waitFor(() => expect(srv.hitlEngine.getPending().length).toBe(2), { timeout: 5000 });
 
@@ -722,7 +722,7 @@ describe('http-transport: HITL timeout', () => {
     // Timeout flows through the middleware error path → JSON-RPC error → callTool throws.
     try {
       await expect(
-        client.callTool({ name: 'tools/echo', arguments: { message: 'timeout' } })
+        client.callTool({ name: 'tools_echo', arguments: { message: 'timeout' } })
       ).rejects.toThrow(/timed out/i);
     } finally {
       await client.close();
