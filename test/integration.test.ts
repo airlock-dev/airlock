@@ -36,13 +36,13 @@ describe('integration: stdio child process', () => {
     const { tools } = await client.listTools();
     const names = tools.map((t) => t.name);
 
-    expect(names).toContain('echo/echo');
-    expect(names).toContain('echo/add');
+    expect(names).toContain('echo_echo');
+    expect(names).toContain('echo_add');
   });
 
   it('tools have proper input schemas', async () => {
     const { tools } = await client.listTools();
-    const echo = tools.find((t) => t.name === 'echo/echo');
+    const echo = tools.find((t) => t.name === 'echo_echo');
 
     expect(echo).toBeDefined();
     expect(echo!.inputSchema).toEqual({

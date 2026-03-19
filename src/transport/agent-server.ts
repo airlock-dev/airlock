@@ -46,13 +46,25 @@ export function createAgentServer(deps: AgentServerDeps): Server {
 
   const server = new Server({ name: 'airlock', version: VERSION }, { capabilities: { tools: {} } });
 
+  // MCP tool name pattern: ^[a-zA-Z0-9_-]{1,64}$
+  // Airlock namespaces tools as "provider/toolName" which contains '/'.
+  // Replace '/' with '_' at the protocol boundary so all clients accept the names.
+  function sanitize(name: string): string {
+    return name.replace(/\//g, '_');
+  }
+
   server.setRequestHandler(ListToolsRequestSchema, () => {
     const tools = registry.getFiltered(agentId);
-    return { tools };
+    return { tools: tools.map((t) => ({ ...t, name: sanitize(t.name) })) };
   });
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
-    const toolName = request.params.name;
+    const sanitizedName = request.params.name;
+    // Reverse-map sanitized name back to the internal namespaced name so that
+    // allowlist patterns ("provider/*") and the registry both work correctly.
+    const allTools = registry.getFiltered(agentId);
+    const match = allTools.find((t) => sanitize(t.name) === sanitizedName);
+    const toolName = match?.name ?? sanitizedName;
     const args = request.params.arguments ?? {};
 
     const ctx: ToolCallContext = {

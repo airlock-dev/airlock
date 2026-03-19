@@ -153,7 +153,7 @@ describe('MCP conformance: direct vs through Airlock', () => {
     const airlockTools = await airlockClient.listTools();
 
     const directNames = directTools.tools.map((t) => t.name).sort();
-    const airlockNames = airlockTools.tools.map((t) => t.name.replace(`${NAMESPACE}/`, '')).sort();
+    const airlockNames = airlockTools.tools.map((t) => t.name.replace(`${NAMESPACE}_`, '')).sort();
 
     expect(airlockNames).toEqual(directNames);
   });
@@ -164,7 +164,7 @@ describe('MCP conformance: direct vs through Airlock', () => {
 
     for (const directTool of directTools.tools) {
       const airlockTool = airlockTools.tools.find(
-        (t) => t.name === `${NAMESPACE}/${directTool.name}`
+        (t) => t.name === `${NAMESPACE}_${directTool.name}`
       );
       expect(airlockTool).toBeDefined();
       expect(airlockTool!.inputSchema).toEqual(directTool.inputSchema);
