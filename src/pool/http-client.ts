@@ -17,6 +17,7 @@ export class HttpMcpClient {
   private reconnectAttempt = 0;
   private stopped = false;
   private ready = false;
+  private reconnectTimer?: NodeJS.Timeout;
 
   private awaitingAuth = false;
 
@@ -37,6 +38,16 @@ export class HttpMcpClient {
     if (this.awaitingAuth) {
       log.debug({ id: this.id }, 'Skipping connect — already awaiting OAuth');
       return;
+    }
+
+    // Cancel any pending reconnect timer to prevent concurrent connect() calls.
+    // This matters when connectInBackground() calls connect() immediately while a
+    // timer from a previous onclose is still pending — without this, both would run
+    // concurrently and the timer's connect() would overwrite this.client/transport
+    // mid-flight, causing listTools() to use a client with no session ID yet.
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = undefined;
     }
 
     const transportOpts: ConstructorParameters<typeof StreamableHTTPClientTransport>[1] = {};
@@ -62,7 +73,8 @@ export class HttpMcpClient {
           'HTTP MCP disconnected, reconnecting'
         );
         this.reconnectAttempt++;
-        setTimeout(() => {
+        this.reconnectTimer = setTimeout(() => {
+          this.reconnectTimer = undefined;
           void this.connect().catch((err) => log.error({ err, id: this.id }, 'Reconnect failed'));
         }, delay);
       }
@@ -114,6 +126,10 @@ export class HttpMcpClient {
 
   async stop(): Promise<void> {
     this.stopped = true;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = undefined;
+    }
     this.oauthProvider?.stopCallbackServer();
     await this.transport?.close();
   }
