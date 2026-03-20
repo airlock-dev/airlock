@@ -67,6 +67,29 @@ function broadcast(data) {
 const server = createServer((req, res) => {
   const url = new URL(req.url ?? "/", `http://localhost:${PORT}`);
 
+  // POST /inject with JSON body → broadcast a custom request
+  if (req.method === "POST" && url.pathname === "/inject") {
+    let body = "";
+    req.on("data", (chunk) => (body += chunk));
+    req.on("end", () => {
+      try {
+        const request = JSON.parse(body);
+        request.id = request.id ?? randomUUID();
+        request.code = request.code ?? randomCode();
+        request.timeoutMs = request.timeoutMs ?? 60000;
+        pending.set(request.code, request);
+        broadcast({ type: "new", request });
+        console.log(`  📨 Injected: ${request.tool} [${request.code}]`);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ code: request.code }));
+      } catch (e) {
+        res.writeHead(400);
+        res.end("bad json");
+      }
+    });
+    return;
+  }
+
   if (url.pathname === "/events") {
     res.writeHead(200, {
       "Content-Type": "text/event-stream",
@@ -107,6 +130,12 @@ const server = createServer((req, res) => {
     return;
   }
 
+  if (url.pathname === "/") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ status: "ok", pending: pending.size }));
+    return;
+  }
+
   res.writeHead(404);
   res.end("not found");
 });
@@ -119,6 +148,11 @@ server.listen(PORT, "127.0.0.1", () => {
   console.log(`  "timeout"   → send a request with 10s timeout`);
   console.log(`  "q" / Ctrl-C → quit\n`);
 });
+
+// In non-TTY mode (e.g. nohup), skip readline — use POST /inject instead
+if (!process.stdin.isTTY) {
+  console.log("  (non-interactive mode: use POST /inject to send requests)\n");
+} else {
 
 const rl = createInterface({ input: process.stdin, output: process.stdout });
 
@@ -156,3 +190,5 @@ rl.on("line", (input) => {
   broadcast({ type: "new", request: req });
   console.log(`  📨 Sent: ${req.tool} [${req.code}]`);
 });
+
+} // end TTY-only block

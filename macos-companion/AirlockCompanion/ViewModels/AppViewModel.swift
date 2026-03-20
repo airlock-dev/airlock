@@ -26,6 +26,13 @@ final class AppViewModel: ObservableObject {
     @AppStorage(Constants.UserDefaultsKeys.autoExpandSelectedRequest)
     var autoExpandSelectedRequest: Bool = true
 
+    @AppStorage(Constants.UserDefaultsKeys.displayDensity)
+    var displayDensity: String = DisplayDensity.compact.rawValue
+
+    var density: DisplayDensity {
+        DisplayDensity(rawValue: displayDensity) ?? .compact
+    }
+
     let sseClient: SSEClient
     let notificationManager: NotificationManager
     private var apiClient: AirlockAPIClient

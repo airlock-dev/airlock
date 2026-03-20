@@ -105,6 +105,26 @@ struct SettingsView: View {
 
                 HStack(alignment: .center, spacing: 16) {
                     settingsRowTitle(
+                        title: "Display density",
+                        detail: "Controls the width of the popover."
+                    )
+
+                    Spacer(minLength: 16)
+
+                    Picker("Display density", selection: densityBinding) {
+                        ForEach(DisplayDensity.allCases, id: \.rawValue) { density in
+                            Text(density.displayName).tag(density.rawValue)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                    .frame(width: 210)
+                }
+
+                Divider()
+
+                HStack(alignment: .center, spacing: 16) {
+                    settingsRowTitle(
                         title: "Notification sounds",
                         detail: "Play an alert sound when a new approval arrives."
                     )
@@ -337,6 +357,16 @@ struct SettingsView: View {
         .frame(width: 68, height: 68)
         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .shadow(color: .black.opacity(0.18), radius: 16, y: 8)
+    }
+
+    private var densityBinding: Binding<String> {
+        Binding(
+            get: { viewModel.displayDensity },
+            set: { newValue in
+                viewModel.displayDensity = newValue
+                viewModel.updateSettings()
+            }
+        )
     }
 
     private var soundBinding: Binding<Bool> {

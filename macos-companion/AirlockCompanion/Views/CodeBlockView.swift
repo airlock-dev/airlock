@@ -1,17 +1,24 @@
 import AppKit
 import SwiftUI
 
+// NSTextView subclass that never accepts first-responder so it never steals
+// keyboard focus from the popover's key-handling views.
+private final class NonFocusableTextView: NSTextView {
+    override var acceptsFirstResponder: Bool { false }
+}
+
 struct CodeBlockView: NSViewRepresentable {
     let attributedText: NSAttributedString
+    var showsScrollers: Bool = true
 
     func makeNSView(context: Context) -> NSScrollView {
         let scrollView = NSScrollView()
         scrollView.drawsBackground = false
-        scrollView.hasVerticalScroller = true
+        scrollView.hasVerticalScroller = showsScrollers
         scrollView.hasHorizontalScroller = false
         scrollView.borderType = .noBorder
 
-        let textView = NSTextView()
+        let textView = NonFocusableTextView()
         textView.isEditable = false
         textView.isSelectable = true
         textView.drawsBackground = false
@@ -28,6 +35,7 @@ struct CodeBlockView: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: NSScrollView, context: Context) {
+        nsView.hasVerticalScroller = showsScrollers
         guard let textView = nsView.documentView as? NSTextView else { return }
         textView.textStorage?.setAttributedString(attributedText)
     }

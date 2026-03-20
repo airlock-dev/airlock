@@ -1,32 +1,36 @@
 import AppKit
 import Foundation
-
-enum CodeLanguage {
-    case json
-    case shell
-    case plainText
-}
+import Highlighter
 
 enum CodeHighlighter {
+    private static let highlighter: Highlighter? = {
+        guard let h = Highlighter() else { return nil }
+        // Use a theme that works well on macOS (adapts to dark/light)
+        h.setTheme("xcode")
+        return h
+    }()
+
+    private static let monoFont = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+
     static func highlightedString(for value: JSONValue) -> NSAttributedString {
         let text = formattedText(for: value)
-        return highlightedString(for: text, language: detectLanguage(for: value))
+        return highlight(text)
     }
 
-    static func highlightedString(for text: String, language: CodeLanguage) -> NSAttributedString {
-        let string = NSMutableAttributedString(string: text, attributes: baseAttributes)
-        let nsRange = NSRange(text.startIndex..., in: text)
-
-        switch language {
-        case .json:
-            applyJSONHighlighting(to: string, text: text, range: nsRange)
-        case .shell:
-            applyShellHighlighting(to: string, text: text, range: nsRange)
-        case .plainText:
-            break
+    static func highlight(_ text: String) -> NSAttributedString {
+        // Let highlight.js auto-detect language and color
+        if let h = highlighter, let result = h.highlight(text) {
+            let mutable = NSMutableAttributedString(attributedString: result)
+            // Ensure monospaced font throughout
+            mutable.addAttribute(.font, value: monoFont, range: NSRange(location: 0, length: mutable.length))
+            return mutable
         }
 
-        return string
+        // Fallback: plain monospaced text
+        return NSAttributedString(string: text, attributes: [
+            .font: monoFont,
+            .foregroundColor: NSColor.labelColor
+        ])
     }
 
     static func formattedText(for value: JSONValue) -> String {
@@ -35,87 +39,122 @@ enum CodeHighlighter {
             if let normalizedJSON = normalizedJSONString(string) {
                 return normalizedJSON
             }
+            if looksLikeSQL(string) {
+                return formatSQL(string)
+            }
             return string
         default:
             return normalizedJSON(value) ?? value.displayString
         }
     }
 
-    static func detectLanguage(for value: JSONValue) -> CodeLanguage {
-        switch value {
-        case .object, .array:
-            return .json
-        case .string(let string):
-            if normalizedJSONString(string) != nil {
-                return .json
+    // MARK: - Args preview
+
+    static func highlightedArgsPreview(for args: [String: JSONValue], fontSize: CGFloat = 11) -> NSAttributedString {
+        let combined = NSMutableAttributedString()
+        let sorted = args.sorted(by: { $0.key < $1.key })
+        let font = NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
+
+        for (index, (key, value)) in sorted.enumerated() {
+            let formattedValue = formattedText(for: value)
+            let isMultiline = formattedValue.contains("\n")
+
+            let keyStr = isMultiline ? "\(key):\n" : "\(key): "
+            combined.append(NSAttributedString(string: keyStr, attributes: [
+                .font: font,
+                .foregroundColor: NSColor.secondaryLabelColor
+            ]))
+
+            let displayValue = isMultiline
+                ? formattedValue.components(separatedBy: "\n").map { "  " + $0 }.joined(separator: "\n")
+                : formattedValue
+            let highlighted = highlight(displayValue)
+            let mutable = NSMutableAttributedString(attributedString: highlighted)
+            mutable.addAttribute(.font, value: font, range: NSRange(location: 0, length: mutable.length))
+            combined.append(mutable)
+
+            if index < sorted.count - 1 {
+                combined.append(NSAttributedString(string: "\n", attributes: [.font: font]))
             }
-            return detectLanguage(for: string)
-        default:
-            return .plainText
         }
+
+        return combined
     }
 
-    static func detectLanguage(for string: String) -> CodeLanguage {
+    // MARK: - SQL Detection & Formatting
+
+    private static let sqlLeaders = ["SELECT ", "INSERT INTO", "INSERT OR", "UPDATE ", "DELETE FROM", "DELETE ", "CREATE TABLE", "CREATE INDEX", "DROP TABLE", "DROP INDEX", "ALTER TABLE", "WITH "]
+
+    private static func looksLikeSQL(_ string: String) -> Bool {
         let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.hasPrefix("{") || trimmed.hasPrefix("[") {
-            if normalizedJSONString(trimmed) != nil {
-                return .json
-            }
-        }
+        let upper = trimmed.uppercased()
+        if sqlLeaders.contains(where: { upper.hasPrefix($0) }) { return true }
 
-        let shellHints = ["--", "|", "&&", "export ", "curl ", "npm ", "brew ", "git ", "npx "]
-        if shellHints.contains(where: { trimmed.contains($0) }) {
-            return .shell
-        }
+        // Check after stripping leading -- comments
+        let firstCodeLine = trimmed.components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .first(where: { !$0.hasPrefix("--") && !$0.isEmpty })?
+            .uppercased()
+        if let firstCodeLine, sqlLeaders.contains(where: { firstCodeLine.hasPrefix($0) }) { return true }
 
-        return .plainText
+        return false
     }
 
-    private static let baseAttributes: [NSAttributedString.Key: Any] = [
-        .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular),
-        .foregroundColor: NSColor.labelColor
-    ]
+    private static func formatSQL(_ input: String) -> String {
+        var segments: [(isComment: Bool, text: String)] = []
+        var codeAccumulator = ""
 
-    private static func applyJSONHighlighting(to string: NSMutableAttributedString, text: String, range: NSRange) {
-        applyPattern(#""([^"\\]|\\.)*"\s*:"#, color: .systemBlue, to: string, text: text, range: range)
-        applyPattern(#""([^"\\]|\\.)*""#, color: .systemGreen, to: string, text: text, range: range)
-        applyPattern(#"\b-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?\b"#, color: .systemOrange, to: string, text: text, range: range)
-        applyPattern(#"\b(?:true|false)\b"#, color: .systemPurple, to: string, text: text, range: range)
-        applyPattern(#"\bnull\b"#, color: .systemRed, to: string, text: text, range: range)
-    }
-
-    private static func applyShellHighlighting(to string: NSMutableAttributedString, text: String, range: NSRange) {
-        applyPattern(#"(^|\s)(--?[A-Za-z0-9_-]+)"#, color: .systemOrange, to: string, text: text, range: range, captureGroup: 2)
-        applyPattern(#""([^"\\]|\\.)*""#, color: .systemGreen, to: string, text: text, range: range)
-        applyPattern(#"(^|\s)(/[A-Za-z0-9._~\-/]+)"#, color: .systemCyan, to: string, text: text, range: range, captureGroup: 2)
-        applyPattern(#"#.*$"#, color: .secondaryLabelColor, to: string, text: text, range: range, options: [.anchorsMatchLines])
-    }
-
-    private static func applyPattern(
-        _ pattern: String,
-        color: NSColor,
-        to string: NSMutableAttributedString,
-        text: String,
-        range: NSRange,
-        options: NSRegularExpression.Options = [],
-        captureGroup: Int? = nil
-    ) {
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: options) else {
-            return
-        }
-
-        regex.enumerateMatches(in: text, options: [], range: range) { match, _, _ in
-            guard let match else { return }
-            let matchRange: NSRange
-            if let captureGroup {
-                matchRange = match.range(at: captureGroup)
+        for line in input.components(separatedBy: .newlines) {
+            let stripped = line.trimmingCharacters(in: .whitespaces)
+            if stripped.hasPrefix("--") {
+                if !codeAccumulator.trimmingCharacters(in: .whitespaces).isEmpty {
+                    segments.append((false, codeAccumulator))
+                    codeAccumulator = ""
+                }
+                segments.append((true, stripped))
             } else {
-                matchRange = match.range
+                codeAccumulator += (codeAccumulator.isEmpty ? "" : " ") + stripped
             }
-            guard matchRange.location != NSNotFound else { return }
-            string.addAttribute(.foregroundColor, value: color, range: matchRange)
         }
+        if !codeAccumulator.trimmingCharacters(in: .whitespaces).isEmpty {
+            segments.append((false, codeAccumulator))
+        }
+
+        let formatted = segments.map { segment -> String in
+            if segment.isComment { return segment.text }
+            return formatSQLCode(segment.text)
+        }
+
+        return formatted.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
     }
+
+    private static func formatSQLCode(_ input: String) -> String {
+        let normalized = input
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+
+        let pattern = "(?<=\\s)(FROM|WHERE|AND|OR|GROUP\\s+BY|HAVING|ORDER\\s+BY|LIMIT|OFFSET|(?:(?:LEFT|RIGHT|INNER|OUTER|CROSS)\\s+)?JOIN|ON|UNION(?:\\s+ALL)?|EXCEPT|INTERSECT|RETURNING|SET)(?=\\s)"
+
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
+            return normalized
+        }
+
+        let range = NSRange(normalized.startIndex..., in: normalized)
+        let matches = regex.matches(in: normalized, range: range).reversed()
+        var result = normalized
+
+        for match in matches {
+            guard let swiftRange = Range(match.range, in: result) else { continue }
+            let keyword = String(result[swiftRange]).trimmingCharacters(in: .whitespaces)
+            result.replaceSubrange(swiftRange, with: "\n" + keyword.uppercased())
+        }
+
+        return result.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    // MARK: - JSON Helpers
 
     private static func normalizedJSON(_ value: JSONValue) -> String? {
         guard let data = try? JSONEncoder().encode(value),
@@ -125,7 +164,6 @@ enum CodeHighlighter {
               let string = String(data: prettyData, encoding: .utf8) else {
             return nil
         }
-
         return string
     }
 
@@ -137,7 +175,6 @@ enum CodeHighlighter {
               let prettyString = String(data: prettyData, encoding: .utf8) else {
             return nil
         }
-
         return prettyString
     }
 }

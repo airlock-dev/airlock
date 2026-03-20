@@ -1,17 +1,25 @@
+import AppKit
 import SwiftUI
+
+// MARK: - PopoverContentView
 
 struct PopoverContentView: View {
     @ObservedObject var viewModel: AppViewModel
     let onOpenSettingsRequest: () -> Void
     @Environment(\.openSettings) private var openSettings
+    @AppStorage(Constants.UserDefaultsKeys.displayDensity) private var densityString: String = DisplayDensity.compact.rawValue
     @State private var showHistory = false
     @State private var detailRequest: ApprovalRequest?
+    @State private var detailArgsScrollView: NSScrollView? = nil
     @FocusState private var isFocused: Bool
+
+    private var density: DisplayDensity { DisplayDensity(rawValue: densityString) ?? .compact }
+    private var isDetail: Bool { detailRequest != nil }
 
     private var statusColor: Color {
         switch viewModel.connectionState {
-        case .connected: return .green
-        case .connecting: return .yellow
+        case .connected:    return .green
+        case .connecting:   return .yellow
         case .disconnected: return .red
         }
     }
@@ -56,83 +64,109 @@ struct PopoverContentView: View {
 
             Divider()
 
-            // Body
-            if viewModel.pendingCount > 0 {
-                RequestListView(viewModel: viewModel, selectedIndex: $viewModel.selectedIndex) { request in
-                    detailRequest = request
-                }
+            // Body — list or detail inline
+            if let request = detailRequest {
+                RequestDetailView(
+                    request: request,
+                    onApprove: { viewModel.approve(code: request.code) },
+                    onDeny:    { viewModel.deny(code: request.code) },
+                    onDismiss: { detailRequest = nil },
+                    onNext:    adjacentRequest(from: request, by: +1).map { next in
+                        { navigate(to: next) }
+                    },
+                    onPrev:    adjacentRequest(from: request, by: -1).map { prev in
+                        { navigate(to: prev) }
+                    },
+                    argsScrollView: $detailArgsScrollView
+                )
             } else {
-                EmptyStateView(connectionState: viewModel.connectionState)
-            }
+                if viewModel.pendingCount > 0 {
+                    RequestListView(viewModel: viewModel, selectedIndex: $viewModel.selectedIndex) { request in
+                        detailRequest = request
+                    }
+                } else {
+                    EmptyStateView(connectionState: viewModel.connectionState)
+                }
 
-            // History
-            if !viewModel.resolvedRequests.isEmpty {
-                Divider()
-                HistoryView(resolvedRequests: viewModel.resolvedRequests, isExpanded: $showHistory)
+                // History
+                if !viewModel.resolvedRequests.isEmpty {
+                    Divider()
+                    HistoryView(resolvedRequests: viewModel.resolvedRequests, isExpanded: $showHistory)
+                }
             }
         }
-        .frame(width: Constants.popoverWidth)
-        .frame(maxHeight: Constants.popoverMaxHeight)
+        .frame(width: isDetail ? 620 : density.popoverWidth)
+        .frame(maxHeight: isDetail ? 520 : density.popoverMaxHeight)
         .focusable()
         .focused($isFocused)
         .focusEffectDisabled()
         .onAppear { isFocused = true }
-        .sheet(item: $detailRequest) { request in
-            RequestDetailView(
-                request: request,
-                onApprove: { viewModel.approve(code: request.code) },
-                onDeny: { viewModel.deny(code: request.code) }
-            )
-        }
         .onKeyPress(phases: .down) { press in
+            guard !press.modifiers.contains(.command) else { return .ignored }
+
             let key = press.characters.lowercased()
+            let shift = press.modifiers.contains(.shift)
+
+            if let request = detailRequest {
+                if !shift {
+                    if key == "a"                                          { viewModel.approve(code: request.code); detailRequest = nil }
+                    else if key == "d"                                     { viewModel.deny(code: request.code);    detailRequest = nil }
+                    else if press.key == .escape || key == "h" || press.key == .leftArrow  { detailRequest = nil }
+                    else if key == "j" || press.key == .downArrow          { scrollDetail(80) }
+                    else if key == "k" || press.key == .upArrow            { scrollDetail(-80) }
+                } else {
+                    if key == "j" || press.key == .downArrow {
+                        if let next = adjacentRequest(from: request, by: +1) { navigate(to: next) }
+                    } else if key == "k" || press.key == .upArrow {
+                        if let prev = adjacentRequest(from: request, by: -1) { navigate(to: prev) }
+                    }
+                }
+                return .handled
+            }
+
             let count = viewModel.pendingRequests.count
-
-            // j / down arrow = move selection down
             if key == "j" || press.key == .downArrow {
-                guard count > 0 else { return .ignored }
-                withAnimation(.easeInOut(duration: 0.15)) {
-                    viewModel.selectedIndex = min(viewModel.selectedIndex + 1, count - 1)
-                }
+                if count > 0 { withAnimation(.easeInOut(duration: 0.15)) { viewModel.selectedIndex = min(viewModel.selectedIndex + 1, count - 1) } }
                 return .handled
             }
-
-            // k / up arrow = move selection up
             if key == "k" || press.key == .upArrow {
-                guard count > 0 else { return .ignored }
-                withAnimation(.easeInOut(duration: 0.15)) {
-                    viewModel.selectedIndex = max(viewModel.selectedIndex - 1, 0)
-                }
+                if count > 0 { withAnimation(.easeInOut(duration: 0.15)) { viewModel.selectedIndex = max(viewModel.selectedIndex - 1, 0) } }
                 return .handled
             }
-
-            // a = approve selected
-            if key == "a" {
-                guard count > 0 else { return .ignored }
-                viewModel.approveSelectedRequest()
+            if key == "a" { if count > 0 { viewModel.approveSelectedRequest() }; return .handled }
+            if key == "d" { if count > 0 { viewModel.denySelectedRequest()    }; return .handled }
+            if key == "l" || press.key == .rightArrow || press.key == .return || press.key == .space {
+                if count > 0 { detailRequest = viewModel.pendingRequests[min(viewModel.selectedIndex, count - 1)] }
                 return .handled
             }
-
-            // d = deny selected
-            if key == "d" {
-                guard count > 0 else { return .ignored }
-                viewModel.denySelectedRequest()
-                return .handled
-            }
-
-            if press.key == .return || press.key == .space {
-                guard count > 0 else { return .ignored }
-                let idx = min(viewModel.selectedIndex, count - 1)
-                detailRequest = viewModel.pendingRequests[idx]
-                return .handled
-            }
-
-            return .ignored
+            return .handled
         }
         .onChange(of: viewModel.pendingRequests.count) { _, newCount in
-            // Clamp selection when list shrinks
             if viewModel.selectedIndex >= newCount { viewModel.selectedIndex = max(0, newCount - 1) }
         }
+    }
+
+    private func navigate(to request: ApprovalRequest) {
+        detailArgsScrollView = nil
+        detailRequest = request
+        viewModel.selectedIndex = viewModel.pendingRequests.firstIndex(where: { $0.id == request.id }) ?? viewModel.selectedIndex
+    }
+
+    private func scrollDetail(_ delta: CGFloat) {
+        guard let sv = detailArgsScrollView else { return }
+        let clip = sv.contentView
+        let maxY = max(0, (sv.documentView?.bounds.height ?? 0) - clip.bounds.height)
+        let newY = max(0, min(clip.bounds.origin.y + delta, maxY))
+        clip.scroll(to: NSPoint(x: 0, y: newY))
+        sv.reflectScrolledClipView(clip)
+    }
+
+    private func adjacentRequest(from request: ApprovalRequest, by delta: Int) -> ApprovalRequest? {
+        let requests = viewModel.pendingRequests
+        guard let idx = requests.firstIndex(where: { $0.id == request.id }) else { return nil }
+        let newIdx = idx + delta
+        guard newIdx >= 0 && newIdx < requests.count else { return nil }
+        return requests[newIdx]
     }
 }
 
@@ -205,9 +239,7 @@ struct HistoryRow: View {
     }
 
     private var title: String {
-        if !resolved.agentId.isEmpty && !resolved.tool.isEmpty {
-            return "\(resolved.agentId): \(resolved.tool)"
-        }
+        if !resolved.agentId.isEmpty && !resolved.tool.isEmpty { return "\(resolved.agentId): \(resolved.tool)" }
         if !resolved.tool.isEmpty { return resolved.tool }
         return resolved.code
     }
@@ -220,9 +252,7 @@ struct HistoryRow: View {
                 }
             }) {
                 HStack(spacing: 8) {
-                    Image(systemName: resolved.action == "approved"
-                          ? "checkmark.circle.fill"
-                          : "xmark.circle.fill")
+                    Image(systemName: resolved.action == "approved" ? "checkmark.circle.fill" : "xmark.circle.fill")
                         .foregroundStyle(resolved.action == "approved" ? .green : .red)
                         .font(.system(size: 12))
 

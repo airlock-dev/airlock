@@ -29,6 +29,7 @@ final class StatusBarController {
 
         viewModel.onSettingsChanged = { [weak self] in
             self?.registerHotkeys()
+            self?.updatePopoverSize()
         }
 
         if let button = statusItem.button {
@@ -122,6 +123,12 @@ final class StatusBarController {
             refcon,
             &eventHandlerRef
         )
+    }
+
+    private func updatePopoverSize() {
+        guard let viewModel else { return }
+        let density = viewModel.density
+        popover.contentSize = NSSize(width: density.popoverWidth, height: density.popoverMaxHeight)
     }
 
     private func registerGlobalHotkey() {
