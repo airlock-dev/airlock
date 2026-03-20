@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.23](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.22...airlock-bot-v0.2.23) (2026-03-20)
+
+
+### Bug Fixes
+
+* **hitl:** return tool-level isError for deny/timeout + reconnect race fix ([#74](https://github.com/airlock-dev/airlock/issues/74)) ([d6e530b](https://github.com/airlock-dev/airlock/commit/d6e530bc134314a85efc063e431a6f9d39621170))
+
 ## [0.2.22](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.21...airlock-bot-v0.2.22) (2026-03-19)
 
 
