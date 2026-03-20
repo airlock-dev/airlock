@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.24](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.23...airlock-bot-v0.2.24) (2026-03-20)
+
+
+### Features
+
+* **companion:** inline detail view with vim-style keyboard nav ([#73](https://github.com/airlock-dev/airlock/issues/73)) ([e8b90cd](https://github.com/airlock-dev/airlock/commit/e8b90cd51bd14cfc049f3ad89a2625d524e05bdd))
+
 ## [0.2.23](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.22...airlock-bot-v0.2.23) (2026-03-20)
 
 
