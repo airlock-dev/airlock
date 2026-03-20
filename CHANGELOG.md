@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.22](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.21...airlock-bot-v0.2.22) (2026-03-19)
+
+
+### Bug Fixes
+
+* **http-client:** cancel stale reconnect timer to prevent session ID race ([#71](https://github.com/airlock-dev/airlock/issues/71)) ([20f1db5](https://github.com/airlock-dev/airlock/commit/20f1db58a2d1d61556fe866c0014187a7ee59ba6))
+* **transport:** sanitize tool names to comply with MCP name pattern ([#69](https://github.com/airlock-dev/airlock/issues/69)) ([83f843c](https://github.com/airlock-dev/airlock/commit/83f843c8f0f0bde92f6b51d4801d042025ff0c5b))
+
 ## [0.2.21](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.20...airlock-bot-v0.2.21) (2026-03-19)
 
 
