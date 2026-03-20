@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct RequestCardView: View {
@@ -12,8 +13,11 @@ struct RequestCardView: View {
     @State private var isExpanded = false
     @State private var acted = false
 
-    private var argsLines: [String] {
-        request.argsDisplayString.components(separatedBy: "\n")
+    private var argsHighlighted: NSAttributedString {
+        CodeHighlighter.highlightedArgsPreview(for: request.args)
+    }
+    private var argsLineCount: Int {
+        argsHighlighted.string.components(separatedBy: "\n").count
     }
 
     private var isEffectivelyExpanded: Bool {
@@ -53,22 +57,20 @@ struct RequestCardView: View {
                 )
             }
 
-            // Args section
+            // Args section — syntax-highlighted preview
             if !request.args.isEmpty {
-                VStack(alignment: .leading, spacing: 2) {
-                    let lines = argsLines
-                    let displayLines = isEffectivelyExpanded ? lines : Array(lines.prefix(3))
+                let highlighted = argsHighlighted
+                let lineCount = argsLineCount
 
-                    ForEach(Array(displayLines.enumerated()), id: \.offset) { _, line in
-                        Text(line)
-                            .font(.system(size: 11, design: .monospaced))
-                            .foregroundStyle(.primary.opacity(0.8))
-                            .lineLimit(1)
-                    }
+                VStack(alignment: .leading, spacing: 4) {
+                    CodeBlockView(attributedText: highlighted, showsScrollers: false)
+                        .frame(height: isEffectivelyExpanded
+                               ? min(CGFloat(lineCount) * 15 + 20, 220)
+                               : 58)
 
-                    if lines.count > 3 && showsExpandToggle {
+                    if lineCount > 3 && showsExpandToggle {
                         Button(action: { isExpanded.toggle() }) {
-                            Text(isEffectivelyExpanded ? "Show less" : "Show more (\(lines.count - 3) more)")
+                            Text(isEffectivelyExpanded ? "Show less" : "Show more (\(lineCount - 3) more lines)")
                                 .font(.system(size: 10))
                                 .foregroundStyle(.secondary)
                         }
@@ -93,54 +95,10 @@ struct RequestCardView: View {
             .focusEffectDisabled()
 
             // Action buttons
-            HStack(spacing: 8) {
-                Button(action: {
-                    acted = true
-                    onApprove()
-                }) {
-                    HStack(spacing: 4) {
-                        Label("Approve", systemImage: "checkmark.circle.fill")
-                        Text("A")
-                            .font(.system(size: 9, weight: .medium, design: .rounded))
-                            .padding(.horizontal, 4)
-                            .padding(.vertical, 1)
-                            .background(.white.opacity(0.2))
-                            .clipShape(RoundedRectangle(cornerRadius: 3))
-                    }
-                    .frame(maxWidth: .infinity)
-                }
-                .focusable(false)
-                .focusEffectDisabled()
-                .buttonStyle(.plain)
-                .padding(.vertical, 6)
-                .background(.green)
-                .foregroundStyle(.white)
-                .clipShape(RoundedRectangle(cornerRadius: 6))
-
-                Button(action: {
-                    acted = true
-                    onDeny()
-                }) {
-                    HStack(spacing: 4) {
-                        Label("Deny", systemImage: "xmark.circle.fill")
-                        Text("D")
-                            .font(.system(size: 9, weight: .medium, design: .rounded))
-                            .padding(.horizontal, 4)
-                            .padding(.vertical, 1)
-                            .background(.white.opacity(0.2))
-                            .clipShape(RoundedRectangle(cornerRadius: 3))
-                    }
-                    .frame(maxWidth: .infinity)
-                }
-                .focusable(false)
-                .focusEffectDisabled()
-                .buttonStyle(.plain)
-                .padding(.vertical, 6)
-                .background(.red)
-                .foregroundStyle(.white)
-                .clipShape(RoundedRectangle(cornerRadius: 6))
-            }
-            .font(.system(size: 12, weight: .semibold))
+            ApproveRejectButtons(
+                onApprove: { acted = true; onApprove() },
+                onDeny:    { acted = true; onDeny() }
+            )
         }
         .padding(12)
         .background(.ultraThinMaterial)

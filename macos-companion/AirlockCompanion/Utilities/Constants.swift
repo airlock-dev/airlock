@@ -12,6 +12,7 @@ enum Constants {
         static let approveShortcutKey = "approveShortcutKey"
         static let denyShortcutKey = "denyShortcutKey"
         static let autoExpandSelectedRequest = "autoExpandSelectedRequest"
+        static let displayDensity = "displayDensity"
     }
 
     enum NotificationCategory {
