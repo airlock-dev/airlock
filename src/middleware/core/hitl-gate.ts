@@ -1,6 +1,13 @@
 import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
 import type { SandboxDisplayInfo } from '../../sandbox/index.js';
-import type { Middleware } from '../types.js';
+import type { Middleware, ToolCallResponse } from '../types.js';
+
+function errorResponse(message: string): ToolCallResponse {
+  return {
+    result: { content: [{ type: 'text', text: message }], isError: true },
+    text: message,
+  };
+}
 
 function serializeAuditArgs(args: Record<string, unknown>, meta: Record<string, unknown>): string {
   const sandbox = meta.sandbox_info;
@@ -70,7 +77,7 @@ export function hitlGateMiddleware(): Middleware {
         args: serializeAuditArgs(ctx.args, ctx.meta),
         result: 'hitl_denied',
       });
-      throw new McpError(ErrorCode.InvalidRequest, 'Request denied by operator');
+      return errorResponse('Request denied by operator');
     }
     if (result === 'timeout') {
       auditLogger.log({
@@ -79,10 +86,7 @@ export function hitlGateMiddleware(): Middleware {
         args: serializeAuditArgs(ctx.args, ctx.meta),
         result: 'hitl_timeout',
       });
-      throw new McpError(
-        ErrorCode.InvalidRequest,
-        'Approval timed out. Re-request when operator is available.'
-      );
+      return errorResponse('Approval timed out. Re-request when operator is available.');
     }
 
     return next();

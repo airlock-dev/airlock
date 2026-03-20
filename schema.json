@@ -132,6 +132,72 @@
           },
           "default": {}
         },
+        "sandbox_presets": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "filesystem": {
+                "type": "object",
+                "properties": {
+                  "allow_write": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "default": [
+                      ".",
+                      "/tmp"
+                    ]
+                  },
+                  "deny_read": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "default": []
+                  },
+                  "deny_write": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "default": []
+                  },
+                  "allow_read": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "additionalProperties": false
+              },
+              "network": {
+                "type": "object",
+                "properties": {
+                  "allowed_domains": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "default": []
+                  },
+                  "denied_domains": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "default": []
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "additionalProperties": false
+          },
+          "default": {}
+        },
         "clis": {
           "type": "object",
           "additionalProperties": {
@@ -352,6 +418,20 @@
                     "alias_of": {
                       "type": "string"
                     },
+                    "sandbox_presets": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        }
+                      ],
+                      "default": []
+                    },
                     "sandbox": {
                       "type": "object",
                       "properties": {
@@ -486,6 +566,20 @@
                   "enabled": {
                     "type": "boolean",
                     "default": false
+                  },
+                  "presets": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      }
+                    ],
+                    "default": []
                   },
                   "filesystem": {
                     "type": "object",
@@ -1031,7 +1125,7 @@
             },
             "timeout_ms": {
               "type": "integer",
-              "minimum": 1000,
+              "minimum": 0,
               "default": 300000
             },
             "batch_window_ms": {

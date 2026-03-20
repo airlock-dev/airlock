@@ -22,7 +22,7 @@ interface PendingRequest {
   args: Record<string, unknown>;
   sandbox?: SandboxDisplayInfo;
   resolve: (result: HitlResult) => void;
-  timer: NodeJS.Timeout;
+  timer?: NodeJS.Timeout; // undefined when timeoutMs === 0 (no timeout)
 }
 
 export class HitlEngine implements ApprovalApi {
@@ -56,18 +56,21 @@ export class HitlEngine implements ApprovalApi {
     });
 
     const result = new Promise<HitlResult>((resolve) => {
-      const timer = setTimeout(() => {
-        this.pending.delete(id);
-        this.byCode.delete(code);
-        this.auditLogger.updateHitlStatus(id, 'timeout');
-        log.warn({ id, code, tool: params.tool }, 'HITL request timed out');
-        resolve('timeout');
-      }, this.timeoutMs);
-      timer.unref();
-
-      const req: PendingRequest = { id, code, ...params, resolve, timer };
+      const req: PendingRequest = { id, code, ...params, resolve };
       this.pending.set(id, req);
       this.byCode.set(code, id);
+
+      if (this.timeoutMs > 0) {
+        const timer = setTimeout(() => {
+          this.pending.delete(id);
+          this.byCode.delete(code);
+          this.auditLogger.updateHitlStatus(id, 'timeout');
+          log.warn({ id, code, tool: params.tool }, 'HITL request timed out');
+          resolve('timeout');
+        }, this.timeoutMs);
+        timer.unref();
+        req.timer = timer;
+      }
     });
 
     log.info({ id, code, agent: params.agentId, tool: params.tool }, 'HITL request created');
@@ -81,7 +84,7 @@ export class HitlEngine implements ApprovalApi {
       log.warn({ codeOrId }, 'No pending HITL request found');
       return;
     }
-    clearTimeout(req.timer);
+    if (req.timer) clearTimeout(req.timer);
     this.pending.delete(req.id);
     this.byCode.delete(req.code);
     this.auditLogger.updateHitlStatus(req.id, 'approved');
@@ -93,7 +96,7 @@ export class HitlEngine implements ApprovalApi {
   cancel(id: string): void {
     const req = this.pending.get(id);
     if (!req) return;
-    clearTimeout(req.timer);
+    if (req.timer) clearTimeout(req.timer);
     this.pending.delete(req.id);
     this.byCode.delete(req.code);
     this.auditLogger.updateHitlStatus(req.id, 'cancelled');
@@ -108,7 +111,7 @@ export class HitlEngine implements ApprovalApi {
       log.warn({ codeOrId }, 'No pending HITL request found');
       return;
     }
-    clearTimeout(req.timer);
+    if (req.timer) clearTimeout(req.timer);
     this.pending.delete(req.id);
     this.byCode.delete(req.code);
     this.auditLogger.updateHitlStatus(req.id, 'denied', reason);
@@ -158,24 +161,21 @@ export class HitlEngine implements ApprovalApi {
         log.warn({ id: row.id }, 'Failed to parse HITL args from DB, using empty args');
       }
 
-      const elapsed = Date.now() - new Date(row.created_at).getTime();
-      const remaining = this.timeoutMs - elapsed;
+      let remaining: number;
+      if (this.timeoutMs > 0) {
+        const elapsed = Date.now() - new Date(row.created_at).getTime();
+        remaining = this.timeoutMs - elapsed;
 
-      if (remaining <= 0) {
-        this.auditLogger.updateHitlStatus(row.id, 'timeout');
-        continue;
+        if (remaining <= 0) {
+          this.auditLogger.updateHitlStatus(row.id, 'timeout');
+          continue;
+        }
+      } else {
+        remaining = 0; // no timeout
       }
 
       // Re-arm without re-notifying (provider may not be ready yet)
       const promise = new Promise<HitlResult>((resolve) => {
-        const timer = setTimeout(() => {
-          this.pending.delete(row.id);
-          this.byCode.delete(row.code);
-          this.auditLogger.updateHitlStatus(row.id, 'timeout');
-          resolve('timeout');
-        }, remaining);
-        timer.unref();
-
         const req: PendingRequest = {
           id: row.id,
           code: row.code,
@@ -183,10 +183,20 @@ export class HitlEngine implements ApprovalApi {
           tool: row.tool,
           args,
           resolve,
-          timer,
         };
         this.pending.set(row.id, req);
         this.byCode.set(row.code, row.id);
+
+        if (remaining > 0) {
+          const timer = setTimeout(() => {
+            this.pending.delete(row.id);
+            this.byCode.delete(row.code);
+            this.auditLogger.updateHitlStatus(row.id, 'timeout');
+            resolve('timeout');
+          }, remaining);
+          timer.unref();
+          req.timer = timer;
+        }
       });
 
       // Notify again so operator sees recovered requests

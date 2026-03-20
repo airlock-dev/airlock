@@ -288,7 +288,9 @@ describe('e2e: call_tool — HITL gate with real downstream', () => {
     await new Promise((r) => setTimeout(r, 20));
     stack.hitlEngine.deny(stack.hitlEngine.getPending()[0].code, 'not now');
 
-    await expect(callPromise).rejects.toThrow('denied');
+    const result = await callPromise;
+    expect(result.isError).toBe(true);
+    expect((result.content[0] as { text: string }).text).toMatch(/denied/i);
     expect(stack.auditLogger.log).toHaveBeenCalledWith(
       expect.objectContaining({ result: 'hitl_denied' })
     );
@@ -435,7 +437,9 @@ describe('e2e: exec/run — per-command policy', () => {
     await new Promise((r) => setTimeout(r, 20));
     stack.hitlEngine.deny(stack.hitlEngine.getPending()[0].code, 'nope');
 
-    await expect(callPromise).rejects.toThrow('denied');
+    const result = await callPromise;
+    expect(result.isError).toBe(true);
+    expect((result.content[0] as { text: string }).text).toMatch(/denied/i);
     expect(stack.auditLogger.log).toHaveBeenCalledWith(
       expect.objectContaining({ result: 'hitl_denied' })
     );
@@ -576,7 +580,9 @@ describe('e2e: http/* — security and policy', () => {
     await new Promise((r) => setTimeout(r, 20));
     stack.hitlEngine.deny(stack.hitlEngine.getPending()[0].code, 'not allowed');
 
-    await expect(callPromise).rejects.toThrow('denied');
+    const result = await callPromise;
+    expect(result.isError).toBe(true);
+    expect((result.content[0] as { text: string }).text).toMatch(/denied/i);
     expect(stack.auditLogger.log).toHaveBeenCalledWith(
       expect.objectContaining({ result: 'hitl_denied', tool: 'http/get' })
     );
@@ -707,7 +713,9 @@ describe('e2e: external MCP — HITL wildcard patterns', () => {
     vi.advanceTimersByTime(600);
     vi.useRealTimers();
 
-    await expect(callPromise).rejects.toThrow('timed out');
+    const result = await callPromise;
+    expect(result.isError).toBe(true);
+    expect((result.content[0] as { text: string }).text).toMatch(/timed out/i);
     expect(auditLogger.log).toHaveBeenCalledWith(
       expect.objectContaining({ result: 'hitl_timeout', tool: 'tools/echo' })
     );

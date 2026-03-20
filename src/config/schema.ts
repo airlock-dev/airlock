@@ -232,7 +232,7 @@ export const ApprovalsConfig = z.object({
   provider: z
     .union([ApprovalProviderConfig, z.array(ApprovalProviderConfig).min(1)])
     .default({ type: 'stdio' }),
-  timeout_ms: z.number().int().min(1000).default(300000), // 5 minutes
+  timeout_ms: z.number().int().min(0).default(300000), // 5 minutes; 0 = no timeout
   batch_window_ms: z.number().int().min(0).default(0),
 });
 export type ApprovalsConfig = z.infer<typeof ApprovalsConfig>;
