@@ -42,13 +42,14 @@ struct ApproveRejectButtons: View {
                     .clipShape(RoundedRectangle(cornerRadius: 3))
             }
             .frame(maxWidth: .infinity)
+            .padding(.vertical, verticalPadding)
+            .background(color)
+            .foregroundStyle(.white)
+            .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
+            .contentShape(RoundedRectangle(cornerRadius: cornerRadius))
         }
         .buttonStyle(.plain)
         .focusable(focusable)
         .focusEffectDisabled(!focusable)
-        .padding(.vertical, verticalPadding)
-        .background(color)
-        .foregroundStyle(.white)
-        .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
     }
 }
