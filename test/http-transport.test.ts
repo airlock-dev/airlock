@@ -613,8 +613,10 @@ describe('http-transport: HITL approval gate', () => {
       const [pending] = srv.hitlEngine.getPending();
       srv.hitlEngine.deny(pending.code, 'not allowed right now');
 
-      // HITL denial flows through the middleware error path → JSON-RPC error → callTool throws.
-      await expect(callPromise).rejects.toThrow(/denied/i);
+      // HITL denial returns isError: true so Claude sees a tool-level failure, not a protocol error.
+      const result = await callPromise;
+      expect(result.isError).toBe(true);
+      expect((result.content[0] as { text: string }).text).toMatch(/denied/i);
     } finally {
       await client.close();
     }
@@ -655,19 +657,11 @@ describe('http-transport: HITL approval gate', () => {
       srv.hitlEngine.approve(byArg('session-a').code);
       srv.hitlEngine.deny(byArg('session-b').code, 'no');
 
-      // Settle both simultaneously to avoid a transient unhandled-rejection window.
-      const [ra, rb] = await Promise.allSettled([pa, pb]);
-      expect(ra.status).toBe('fulfilled');
-      expect(
-        (
-          (ra as PromiseFulfilledResult<Awaited<typeof pa>>).value.content as {
-            type: string;
-            text: string;
-          }[]
-        )[0].text
-      ).toBe('session-a');
-      expect(rb.status).toBe('rejected');
-      expect((rb as PromiseRejectedResult).reason.message).toMatch(/denied/i);
+      const [ra, rb] = await Promise.all([pa, pb]);
+      expect((ra.content as { type: string; text: string }[])[0].text).toBe('session-a');
+      expect(ra.isError).toBeFalsy();
+      expect(rb.isError).toBe(true);
+      expect((rb.content[0] as { text: string }).text).toMatch(/denied/i);
     } finally {
       await a.client.close();
       await b.client.close();
@@ -719,11 +713,14 @@ describe('http-transport: HITL timeout', () => {
 
     const { client } = await connect(port);
 
-    // Timeout flows through the middleware error path → JSON-RPC error → callTool throws.
+    // Timeout returns isError: true so Claude sees a tool-level failure, not a protocol error.
     try {
-      await expect(
-        client.callTool({ name: 'tools_echo', arguments: { message: 'timeout' } })
-      ).rejects.toThrow(/timed out/i);
+      const result = await client.callTool({
+        name: 'tools_echo',
+        arguments: { message: 'timeout' },
+      });
+      expect(result.isError).toBe(true);
+      expect((result.content[0] as { text: string }).text).toMatch(/timed out/i);
     } finally {
       await client.close();
       await poolClient.close();

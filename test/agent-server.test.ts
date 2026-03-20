@@ -299,7 +299,9 @@ describe('call_tool — HITL gate', () => {
     await new Promise((r) => setTimeout(r, 10));
     hitlEngine.deny(hitlEngine.getPending()[0].code, 'not now');
 
-    await expect(callPromise).rejects.toThrow('denied by operator');
+    const result = await callPromise;
+    expect(result.isError).toBe(true);
+    expect((result.content[0] as { text: string }).text).toMatch(/denied by operator/i);
     expect(auditLogger.log).toHaveBeenCalledWith(
       expect.objectContaining({ result: 'hitl_denied' })
     );
@@ -327,7 +329,9 @@ describe('call_tool — HITL gate', () => {
     vi.advanceTimersByTime(600);
     vi.useRealTimers();
 
-    await expect(callPromise).rejects.toThrow('timed out');
+    const result = await callPromise;
+    expect(result.isError).toBe(true);
+    expect((result.content[0] as { text: string }).text).toMatch(/timed out/i);
     expect(auditLogger.log).toHaveBeenCalledWith(
       expect.objectContaining({ result: 'hitl_timeout' })
     );
