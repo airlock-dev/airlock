@@ -55,11 +55,6 @@ jobs:
           cp .build/arm64-apple-macosx/release/AirlockCompanion "$MACOS/AirlockCompanion"
           cp AirlockCompanion/AppIcon.icns "$RESOURCES/AppIcon.icns"
 
-          # Copy SPM resource bundles at .app root (where Bundle.main.bundleURL points)
-          for bundle in .build/arm64-apple-macosx/release/*.bundle; do
-            [ -d "$bundle" ] && cp -R "$bundle" "$APP_DIR/"
-          done
-
           cat > "$CONTENTS/Info.plist" << PLIST
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -96,16 +91,8 @@ jobs:
 
       - name: Sign app
         run: |
-          IDENTITY="Developer ID Application: ${{ secrets.APPLE_TEAM_NAME }}"
-
-          # Sign resource bundles first
-          for bundle in .build/AirlockCompanion.app/*.bundle; do
-            [ -d "$bundle" ] && codesign --force --options runtime --sign "$IDENTITY" "$bundle"
-          done
-
-          # Sign the main app (without --deep since bundles are already signed)
-          codesign --force --options runtime \
-            --sign "$IDENTITY" \
+          codesign --force --deep --options runtime \
+            --sign "Developer ID Application: ${{ secrets.APPLE_TEAM_NAME }}" \
             --entitlements AirlockCompanion/Entitlements.plist \
             .build/AirlockCompanion.app
 
