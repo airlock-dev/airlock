@@ -20,6 +20,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let viewModel = AppDelegate.sharedViewModel
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Warm up highlight.js on a background thread
+        EmbeddedHighlighter.warmUp()
+
         // Set the app icon explicitly so notifications pick it up
         if let iconPath = Bundle.main.path(forResource: "AppIcon", ofType: "icns"),
            let icon = NSImage(contentsOfFile: iconPath) {

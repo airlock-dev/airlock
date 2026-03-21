@@ -28,8 +28,18 @@ final class EmbeddedHighlighter {
 
     // MARK: - Singleton
 
-    /// Shared instance. Returns `nil` if initialization failed.
-    static let shared: EmbeddedHighlighter? = EmbeddedHighlighter()
+    /// Shared instance, initialized on a background thread.
+    /// Returns `nil` until initialization completes (callers should fall back to regex).
+    static var shared: EmbeddedHighlighter? { _shared }
+    private static var _shared: EmbeddedHighlighter?
+
+    /// Kick off background initialization. Call once at app startup.
+    static func warmUp() {
+        DispatchQueue.global(qos: .userInitiated).async {
+            let instance = EmbeddedHighlighter()
+            DispatchQueue.main.async { _shared = instance }
+        }
+    }
 
     // MARK: - Private Properties
 
