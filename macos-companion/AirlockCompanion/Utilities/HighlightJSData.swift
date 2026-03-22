@@ -3496,9 +3496,13 @@ return We}()
 
 """#
 
-    // MARK: - xcode.css theme
+    // MARK: - Themes
 
-    static let xcodeThemeCSS: String = #"""
+    static let xcodeLightCSS: String = #"""
 .hljs{display:block;overflow-x:auto;padding:.5em;background:#fff;color:#000}.xml .hljs-meta{color:silver}.hljs-comment,.hljs-quote{color:#007400}.hljs-attribute,.hljs-keyword,.hljs-literal,.hljs-name,.hljs-selector-tag,.hljs-tag{color:#aa0d91}.hljs-template-variable,.hljs-variable{color:#3f6e74}.hljs-code,.hljs-meta-string,.hljs-string{color:#c41a16}.hljs-link,.hljs-regexp{color:#0e0eff}.hljs-bullet,.hljs-number,.hljs-symbol,.hljs-title{color:#1c00cf}.hljs-meta,.hljs-section{color:#643820}.hljs-built_in,.hljs-builtin-name,.hljs-class .hljs-title,.hljs-params,.hljs-type{color:#5c2699}.hljs-attr{color:#836c28}.hljs-subst{color:#000}.hljs-formula{background-color:#eee;font-style:italic}.hljs-addition{background-color:#baeeba}.hljs-deletion{background-color:#ffc8bd}.hljs-selector-class,.hljs-selector-id{color:#9b703f}.hljs-doctag,.hljs-strong{font-weight:700}.hljs-emphasis{font-style:italic}
+"""#
+
+    static let xcodeDarkCSS: String = #"""
+.hljs{display:block;overflow-x:auto;padding:1em;color:#939599;background:#282b35}.xml .hljs-meta{color:#939599;}.hljs-comment{color:#686a71}.hljs-tag{color:#7e8086}.hljs-operator,.hljs-punctuation,.hljs-subst{color:#939599}.hljs-operator{opacity:.7}.hljs-bullet,.hljs-deletion,.hljs-name,.hljs-selector-tag,.hljs-template-variable,.hljs-variable{color:#b21889}.hljs-attr,.hljs-link,.hljs-literal,.hljs-number,.hljs-symbol,.hljs-variable.constant_{color:#786dc5}.hljs-class .hljs-title,.hljs-title,.hljs-title.class_{color:#438288}.hljs-strong{font-weight:700;color:#438288}.hljs-addition,.hljs-code,.hljs-string,.hljs-title.class_.inherited__{color:#df0002}.hljs-built_in,.hljs-doctag,.hljs-keyword.hljs-atrule,.hljs-quote,.hljs-regexp{color:#00a0be}.hljs-attribute,.hljs-function .hljs-title,.hljs-section,.hljs-title.function_,.ruby .hljs-property{color:#790ead}.diff .hljs-meta,.hljs-keyword,.hljs-template-tag,.hljs-type{color:#b21889}.hljs-emphasis{color:#b21889;font-style:italic}.hljs-meta,.hljs-meta .hljs-keyword,.hljs-meta .hljs-string{color:#c77c48}.hljs-meta .hljs-keyword,.hljs-meta-keyword{font-weight:700}
 """#
 }

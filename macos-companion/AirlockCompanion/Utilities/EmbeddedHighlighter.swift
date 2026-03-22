@@ -44,7 +44,13 @@ final class EmbeddedHighlighter {
     // MARK: - Private Properties
 
     private let hljs: JSValue
-    private let theme: EmbeddedTheme
+    private let lightTheme: EmbeddedTheme
+    private let darkTheme: EmbeddedTheme
+
+    private var theme: EmbeddedTheme {
+        let isDark = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        return isDark ? darkTheme : lightTheme
+    }
 
     private let htmlStart: String = "<"
     private let spanStart: String = "span class=\""
@@ -75,7 +81,8 @@ final class EmbeddedHighlighter {
         }
 
         self.hljs = hljsValue
-        self.theme = EmbeddedTheme(css: HighlightJSData.xcodeThemeCSS)
+        self.lightTheme = EmbeddedTheme(css: HighlightJSData.xcodeLightCSS)
+        self.darkTheme = EmbeddedTheme(css: HighlightJSData.xcodeDarkCSS)
     }
 
     // MARK: - Public API
