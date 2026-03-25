@@ -21,6 +21,7 @@ export default defineConfig({
           { text: 'Introduction', link: '/' },
           { text: 'Quickstart', link: '/quickstart' },
           { text: 'Claude Code Setup', link: '/guides/claude-code' },
+          { text: 'OpenClaw Setup', link: '/guides/openclaw' },
         ],
       },
       {

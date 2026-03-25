@@ -12,6 +12,7 @@
   "files": [
     "dist",
     "examples",
+    "extensions",
     "schema.json",
     "airlock.service"
   ],
@@ -64,6 +65,7 @@
     "fastify": "^5.0.0",
     "pino": "^9.0.0",
     "ws": "^8.19.0",
+    "@sinclair/typebox": "^0.34.48",
     "yaml": "^2.4.0",
     "zod": "^3.22.0"
   },
