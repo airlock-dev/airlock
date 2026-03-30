@@ -78,7 +78,12 @@ export class Gateway {
 
     // Allowlist + registry
     this.allowlist = new AllowlistEngine(this.config.agents);
-    this.registry = new ToolRegistry(adapters, this.allowlist, this.config.agents);
+    this.registry = new ToolRegistry(
+      adapters,
+      this.allowlist,
+      this.config.agents,
+      this.config.profiles
+    );
     await this.registry.refresh();
 
     // Register callback for late-connecting MCPs (after registry exists)
@@ -153,6 +158,7 @@ export class Gateway {
     await this.pool.reload(mcpConfigs);
     this.allowlist.reload(newConfig.agents);
     this.registry.reloadAgents(newConfig.agents);
+    this.registry.reloadProfiles(newConfig.profiles);
     // Rebuild adapters to pick up new CLIs/APIs
     const adapters = buildAdapters(newConfig, this.pool);
     this.registry.setAdapters(adapters);

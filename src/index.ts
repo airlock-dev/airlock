@@ -8,6 +8,7 @@ import { runDiscover } from './discover/cli.js';
 import { runConfigureAgent } from './configure-agent/cli.js';
 import { runConfigureCli } from './configure-cli/cli.js';
 import { runSetupOpenclaw } from './setup-openclaw/cli.js';
+import { runConfigureProfile } from './configure-profile/cli.js';
 import { logger } from './util/logger.js';
 
 // Handle subcommands before parseArgs
@@ -34,6 +35,11 @@ if (subcommand === 'discover') {
     console.error(err instanceof Error ? err.message : String(err));
     process.exit(1);
   }
+} else if (subcommand === 'configure-profile') {
+  runConfigureProfile(process.argv.slice(3)).catch((err) => {
+    console.error(err instanceof Error ? err.message : String(err));
+    process.exit(1);
+  });
 } else {
   runGateway();
 }
@@ -59,6 +65,7 @@ Usage:
   airlock configure-cli <tool> [options]
   airlock configure-agent [options]
   airlock setup openclaw
+  airlock configure-profile [options]
 
 Options:
   -c, --config <path>    Config file path (default: ./airlock.yaml)
@@ -72,6 +79,7 @@ Subcommands:
   configure-cli <tool>   Interactive TUI to select and configure CLI commands
   configure-agent        Interactive TUI to build allow/ask/deny lists
   setup openclaw         Install the airlock-bridge plugin into OpenClaw
+  configure-profile      Interactive TUI to build reusable profile permissions
 
 Examples:
   # Start full gateway server
@@ -91,6 +99,9 @@ Examples:
 
   # Interactively configure agent permissions
   airlock configure-agent --config ./airlock.yaml --agent my-agent
+
+  # Interactively build a reusable profile
+  airlock configure-profile --config ./airlock.yaml --profile readonly
 `);
     process.exit(0);
   }

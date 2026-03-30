@@ -1,7 +1,8 @@
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { BackendAdapter } from '../backend/types.js';
 import type { AllowlistEngine } from '../allowlist/engine.js';
-import type { AgentConfig } from '../config/schema.js';
+import type { AgentConfig, ProfileConfig } from '../config/schema.js';
+import { matches } from '../allowlist/pattern.js';
 import { sanitizeToolDescription } from './sanitizer.js';
 import { childLogger } from '../util/logger.js';
 
@@ -13,11 +14,16 @@ export class ToolRegistry {
   constructor(
     private adapters: BackendAdapter[],
     private allowlist: AllowlistEngine,
-    private agents: Record<string, AgentConfig>
+    private agents: Record<string, AgentConfig>,
+    private profiles: Record<string, ProfileConfig> = {}
   ) {}
 
   reloadAgents(agents: Record<string, AgentConfig>): void {
     this.agents = agents;
+  }
+
+  reloadProfiles(profiles: Record<string, ProfileConfig>): void {
+    this.profiles = profiles;
   }
 
   setAdapters(adapters: BackendAdapter[]): void {
@@ -43,6 +49,65 @@ export class ToolRegistry {
 
     this.cachedTools = tools;
     log.info({ count: tools.length }, 'Tool registry refreshed');
+    this.detectDrift();
+  }
+
+  /** Compare live tools against config references and log drift warnings. */
+  private detectDrift(): void {
+    const toolNames = new Set(this.cachedTools.map((t) => t.name));
+
+    // Collect all exact tool references (no wildcards) from agents and profiles
+    const exactRefs = new Map<string, string[]>(); // toolName → ["agent:foo", "profile:bar"]
+
+    for (const [agentId, agent] of Object.entries(this.agents)) {
+      for (const pattern of [...agent.allow, ...agent.ask, ...agent.deny]) {
+        if (!pattern.includes('*') && pattern.includes('/')) {
+          const sources = exactRefs.get(pattern) ?? [];
+          sources.push(`agent:${agentId}`);
+          exactRefs.set(pattern, sources);
+        }
+      }
+    }
+
+    for (const [profileId, profile] of Object.entries(this.profiles)) {
+      for (const pattern of [...profile.allow, ...profile.ask]) {
+        if (!pattern.includes('*') && pattern.includes('/')) {
+          const sources = exactRefs.get(pattern) ?? [];
+          sources.push(`profile:${profileId}`);
+          exactRefs.set(pattern, sources);
+        }
+      }
+    }
+
+    // Warn about stale references — exact tool names that no longer exist
+    for (const [ref, sources] of exactRefs) {
+      if (!toolNames.has(ref)) {
+        log.warn(
+          { tool: ref, referencedBy: sources },
+          `Config references tool "${ref}" which no longer exists in any provider`
+        );
+      }
+    }
+
+    // Collect all patterns from agents and profiles
+    const allPatterns: string[] = [];
+    for (const agent of Object.values(this.agents)) {
+      allPatterns.push(...agent.allow, ...agent.ask, ...agent.deny);
+    }
+    for (const profile of Object.values(this.profiles)) {
+      allPatterns.push(...profile.allow, ...profile.ask);
+    }
+
+    // Info about uncovered tools — tools no pattern matches
+    for (const toolName of toolNames) {
+      const covered = allPatterns.some((p) => matches(p, toolName));
+      if (!covered) {
+        log.info(
+          { tool: toolName },
+          `Tool "${toolName}" is not referenced by any agent or profile`
+        );
+      }
+    }
   }
 
   getFiltered(agentId: string): Tool[] {

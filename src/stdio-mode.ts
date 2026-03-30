@@ -86,7 +86,7 @@ export async function runStdioMode(
   const adapters = buildAdapters(config, pool);
 
   const allowlist = new AllowlistEngine(config.agents);
-  const registry = new ToolRegistry(adapters, allowlist, config.agents);
+  const registry = new ToolRegistry(adapters, allowlist, config.agents, config.profiles);
   await registry.refresh();
 
   // Register callback for late-connecting MCPs (after registry exists)
@@ -110,6 +110,7 @@ export async function runStdioMode(
         .then(() => {
           allowlist.reload(newConfig.agents);
           registry.reloadAgents(newConfig.agents);
+          registry.reloadProfiles(newConfig.profiles);
           const newAdapters = buildAdapters(newConfig, pool);
           registry.setAdapters(newAdapters);
           return registry.refresh();
