@@ -92,6 +92,18 @@ export async function toolsApiPlugin(app: FastifyInstance, opts: ToolsApiOpts): 
         throw new Error('Middleware chain did not terminate — missing execute middleware');
       });
       const duration_ms = Date.now() - ctx.startedAt;
+
+      // Middleware may return an MCP-style error response (e.g. HITL deny/timeout)
+      // with isError: true in the result — map that to success: false for the HTTP API.
+      const result = response.result as Record<string, unknown> | undefined;
+      if (result?.isError) {
+        return reply.send({
+          success: false,
+          error: response.text || 'Tool call failed',
+          metadata: { duration_ms },
+        });
+      }
+
       return reply.send({
         success: true,
         data: response.result,
