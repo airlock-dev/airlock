@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.26](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.25...airlock-bot-v0.2.26) (2026-03-31)
+
+
+### Features
+
+* **oauth:** support pre-registered OAuth client credentials ([#81](https://github.com/airlock-dev/airlock/issues/81)) ([26637b3](https://github.com/airlock-dev/airlock/commit/26637b343b90772738d0153be4df16807dda5c47))
+
 ## [0.2.25](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.24...airlock-bot-v0.2.25) (2026-03-31)
 
 
