@@ -67,7 +67,8 @@ export class ClientPool {
           cfg.oauth,
           cfg.oauth_callback_port,
           cfg.client_id,
-          cfg.client_secret
+          cfg.client_secret,
+          cfg.oauth_callback_url
         );
     }
   }

@@ -33,7 +33,8 @@ export class FileOAuthProvider implements OAuthClientProvider {
     private serverId: string,
     private callbackPort: number,
     private preregisteredClientId?: string,
-    private preregisteredClientSecret?: string
+    private preregisteredClientSecret?: string,
+    private relayCallbackUrl?: string
   ) {
     const home = process.env.HOME ?? process.env.USERPROFILE ?? '.';
     const dir = join(home, '.airlock', 'oauth');
@@ -41,6 +42,9 @@ export class FileOAuthProvider implements OAuthClientProvider {
   }
 
   get redirectUrl(): string {
+    if (this.relayCallbackUrl) {
+      return this.relayCallbackUrl;
+    }
     return `http://127.0.0.1:${this.callbackPort}/oauth/callback`;
   }
 
@@ -92,6 +96,16 @@ export class FileOAuthProvider implements OAuthClientProvider {
       return Promise.resolve();
     }
     this.browserOpenedAt = now;
+
+    // When using an HTTPS relay, wrap the state parameter with the local port
+    // so the relay can redirect back to localhost after the OAuth provider responds.
+    if (this.relayCallbackUrl) {
+      const originalState = url.searchParams.get('state');
+      if (originalState) {
+        url.searchParams.set('state', `${this.callbackPort}.${originalState}`);
+      }
+    }
+
     log.info(
       { serverId: this.serverId, url: url.toString() },
       'Opening browser for OAuth authorization'
