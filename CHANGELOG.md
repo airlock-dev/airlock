@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.27](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.26...airlock-bot-v0.2.27) (2026-03-31)
+
+
+### Features
+
+* **oauth:** support HTTPS relay for OAuth callbacks ([#83](https://github.com/airlock-dev/airlock/issues/83)) ([a4d7483](https://github.com/airlock-dev/airlock/commit/a4d7483d6f4ffba750b28a326d4b83411ec5982c))
+
 ## [0.2.26](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.25...airlock-bot-v0.2.26) (2026-03-31)
 
 
