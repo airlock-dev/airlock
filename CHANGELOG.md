@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.2.25](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.24...airlock-bot-v0.2.25) (2026-03-31)
+
+
+### Features
+
+* **companion:** add launch at login toggle in settings ([3d41694](https://github.com/airlock-dev/airlock/commit/3d4169492e7a57ae3a7a1f647a0aa2c9b259dc26))
+* **companion:** add launch at login toggle in settings ([#78](https://github.com/airlock-dev/airlock/issues/78)) ([6ae7f1b](https://github.com/airlock-dev/airlock/commit/6ae7f1b4eef31e7868b83c768ae3a112218329ca))
+* **companion:** embed highlight.js directly for syntax coloring ([c89dd68](https://github.com/airlock-dev/airlock/commit/c89dd68d0a2363db79916ae19cda28845c88722c))
+* **openclaw:** HTTP tool execution API and airlock-bridge plugin ([#72](https://github.com/airlock-dev/airlock/issues/72)) ([66ec09b](https://github.com/airlock-dev/airlock/commit/66ec09b5e51b1ba0bf04ac4ef30e67ef903d58a2))
+
+
+### Bug Fixes
+
+* **companion:** async highlight.js init to prevent UI lag on launch ([64d53c9](https://github.com/airlock-dev/airlock/commit/64d53c98a6c982ae192b6f4f81739a430a38d7ce))
+* **companion:** copy SPM resource bundles into .app for release builds ([dc62403](https://github.com/airlock-dev/airlock/commit/dc62403c149fe93134024c5fabb261166c26c5bb))
+* **companion:** dark mode syntax highlighting with xcode-dusk theme ([808fbe8](https://github.com/airlock-dev/airlock/commit/808fbe8ca468499b56eed4f1186bc857d29b7ba3))
+* **companion:** place SPM resource bundles at .app root for Bundle.main ([3e4105e](https://github.com/airlock-dev/airlock/commit/3e4105e5bbccb539de930b2f3a431fd4be363075))
+* **companion:** sign SPM resource bundles before app for codesigning ([bfd0c8a](https://github.com/airlock-dev/airlock/commit/bfd0c8a5972b4ebfe716a92c1831240438e9afbe))
+* **tools-api:** map MCP isError responses to success:false in HTTP API ([#80](https://github.com/airlock-dev/airlock/issues/80)) ([882a489](https://github.com/airlock-dev/airlock/commit/882a4894ac9a680cf07bd387e5af12a16bad2e28))
+
 ## [0.2.24](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.23...airlock-bot-v0.2.24) (2026-03-20)
 
 
