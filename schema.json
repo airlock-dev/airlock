@@ -94,6 +94,12 @@
                         "minimum": 1,
                         "maximum": 65535,
                         "default": 18432
+                      },
+                      "client_id": {
+                        "type": "string"
+                      },
+                      "client_secret": {
+                        "type": "string"
                       }
                     },
                     "required": [

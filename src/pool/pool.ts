@@ -60,7 +60,15 @@ export class ClientPool {
       case 'sse':
         return new SseMcpClient(id, cfg.url, cfg.headers);
       case 'http':
-        return new HttpMcpClient(id, cfg.url, cfg.headers, cfg.oauth, cfg.oauth_callback_port);
+        return new HttpMcpClient(
+          id,
+          cfg.url,
+          cfg.headers,
+          cfg.oauth,
+          cfg.oauth_callback_port,
+          cfg.client_id,
+          cfg.client_secret
+        );
     }
   }
 

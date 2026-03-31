@@ -31,7 +31,9 @@ export class FileOAuthProvider implements OAuthClientProvider {
 
   constructor(
     private serverId: string,
-    private callbackPort: number
+    private callbackPort: number,
+    private preregisteredClientId?: string,
+    private preregisteredClientSecret?: string
   ) {
     const home = process.env.HOME ?? process.env.USERPROFILE ?? '.';
     const dir = join(home, '.airlock', 'oauth');
@@ -46,13 +48,24 @@ export class FileOAuthProvider implements OAuthClientProvider {
     return {
       redirect_uris: [this.redirectUrl],
       client_name: `Airlock (${this.serverId})`,
-      token_endpoint_auth_method: 'none',
+      token_endpoint_auth_method: this.preregisteredClientSecret ? 'client_secret_post' : 'none',
       grant_types: ['authorization_code', 'refresh_token'],
       response_types: ['code'],
     };
   }
 
   async clientInformation(): Promise<OAuthClientInformationFull | undefined> {
+    // If pre-registered credentials were provided, use them directly
+    // (skips dynamic client registration)
+    if (this.preregisteredClientId) {
+      return {
+        client_id: this.preregisteredClientId,
+        redirect_uris: [this.redirectUrl],
+        ...(this.preregisteredClientSecret && {
+          client_secret: this.preregisteredClientSecret,
+        }),
+      };
+    }
     await this.load();
     return this.data.clientInfo;
   }
