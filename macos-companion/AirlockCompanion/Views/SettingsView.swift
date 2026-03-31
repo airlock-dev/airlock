@@ -1,9 +1,11 @@
 import AppKit
+import ServiceManagement
 import SwiftUI
 
 struct SettingsView: View {
     @ObservedObject var viewModel: AppViewModel
     @State private var urlText: String = ""
+    @State private var launchAtLogin: Bool = SMAppService.mainApp.status == .enabled
 
     private let shortcutKeys = (65...90).compactMap { UnicodeScalar($0).map(String.init) }
 
@@ -149,6 +151,32 @@ struct SettingsView: View {
                     Toggle("Auto-expand selected request", isOn: autoExpandBinding)
                         .labelsHidden()
                         .toggleStyle(.switch)
+                }
+
+                Divider()
+
+                HStack(alignment: .center, spacing: 16) {
+                    settingsRowTitle(
+                        title: "Launch at login",
+                        detail: "Automatically start Airlock Companion when you log in."
+                    )
+
+                    Spacer(minLength: 16)
+
+                    Toggle("Launch at login", isOn: $launchAtLogin)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .onChange(of: launchAtLogin) { _, newValue in
+                            do {
+                                if newValue {
+                                    try SMAppService.mainApp.register()
+                                } else {
+                                    try SMAppService.mainApp.unregister()
+                                }
+                            } catch {
+                                launchAtLogin = SMAppService.mainApp.status == .enabled
+                            }
+                        }
                 }
             }
         }
