@@ -26,10 +26,17 @@ export class HttpMcpClient {
     private url: string,
     private headers?: Record<string, string>,
     private oauth = false,
-    private oauthCallbackPort = 18432
+    private oauthCallbackPort = 18432,
+    private clientId?: string,
+    private clientSecret?: string
   ) {
     if (this.oauth) {
-      this.oauthProvider = new FileOAuthProvider(this.id, this.oauthCallbackPort);
+      this.oauthProvider = new FileOAuthProvider(
+        this.id,
+        this.oauthCallbackPort,
+        this.clientId,
+        this.clientSecret
+      );
     }
   }
 

@@ -41,6 +41,8 @@ export const McpServerConfig = z.discriminatedUnion('type', [
     headers: z.record(EnvString).optional(),
     oauth: z.boolean().default(false),
     oauth_callback_port: z.number().int().min(1).max(65535).default(18432),
+    client_id: EnvString.optional(),
+    client_secret: EnvString.optional(),
   }),
 ]);
 export type McpServerConfig = z.infer<typeof McpServerConfig>;
