@@ -13,23 +13,136 @@ Use `alias_of` to create tool variants:
 
 For example:
 
-- `python/sandboxed` -> local transforms only
-- `python/full` -> broader filesystem/network after approval
+- `python/sandboxed` → local transforms only, auto-approved
+- `python/full` → broader filesystem/network, requires approval
+- `python/github` → GitHub-only network access, requires approval
+
+## OS-level sandboxing
+
+The built-in `python/eval` tool uses macOS `sandbox-exec` to run Python in a kernel-enforced sandbox:
+
+- All filesystem writes are denied at the OS level
+- All network access is denied at the OS level
+- Process execution is allowed (to run Python itself)
+- File reads are allowed (for Python stdlib and your project files)
+
+This is real OS-level isolation, not just config-level restrictions. The kernel enforces the sandbox profile regardless of what the Python code tries to do.
+
+```yaml
+providers:
+  python: builtin
+
+agents:
+  claude-code:
+    allow:
+      - python/eval # Safe — OS-level sandbox denies writes and network
+```
 
 ## Reusable presets
 
 Top-level `sandbox_presets` let you define reusable envelopes once and apply them:
 
-- agent-wide with `sandbox.presets`
-- per tool variant with `tool_overrides.<tool>.sandbox_presets`
+```yaml
+sandbox_presets:
+  local_transform:
+    filesystem:
+      allow_read: ['.']
+      allow_write: ['/tmp', '/private/tmp']
+      deny_read: ['~/.ssh', '~/.aws', '.env']
+      deny_write: ['.']
+    network:
+      allowed_domains: []
 
-## What is actually validated
+  github_only:
+    network:
+      allowed_domains:
+        - 'github.com'
+        - '*.github.com'
+        - 'api.github.com'
+      denied_domains: []
 
-Current macOS smoke coverage verifies:
+  npm_registry:
+    network:
+      allowed_domains:
+        - 'registry.npmjs.org'
+        - 'npmjs.org'
+```
 
-- allowed writes succeed
-- disallowed writes fail
-- denied reads fail
+Apply presets agent-wide or per tool variant:
+
+- `sandbox.presets` applies to the whole agent sandbox baseline
+- `tool_overrides.<tool>.sandbox_presets` applies only to that tool variant
+
+## Full example
+
+```yaml
+agents:
+  claude-code:
+    allow:
+      - python/sandboxed
+    ask:
+      - python/full
+      - python/github
+
+    sandbox:
+      enabled: true
+      presets:
+        - local_transform # Agent-wide baseline
+
+    tool_overrides:
+      python/sandboxed:
+        alias_of: exec/run
+        description: 'Run Python for local transformations only'
+
+      python/full:
+        alias_of: exec/run
+        description: 'Run Python with broader permissions after approval'
+        sandbox:
+          filesystem:
+            allow_write: ['.', '/tmp', '/private/tmp']
+            deny_write: []
+          network:
+            allowed_domains: ['pypi.org', '*.pythonhosted.org']
+
+      python/github:
+        alias_of: exec/run
+        description: 'Run Python with GitHub-only network access'
+        sandbox_presets:
+          - github_only # Reuses the named preset
+```
+
+## Preset merge rules
+
+- Explicit `sandbox` values on a tool override win over preset values when they conflict
+- Deny lists are additive — denies from presets and explicit config are combined
+- Allow lists usually replace the previous value so the tool variant can intentionally define a tighter or broader envelope
+- Agent-level presets provide the baseline; tool-level presets and explicit sandbox config refine it
+
+## Approval visibility
+
+When a sandboxed tool call requires approval, Airlock includes the resolved sandbox summary in the approval notification:
+
+- Which presets were applied
+- Whether network is disabled or limited to specific domains
+- Where writes are allowed
+- Which paths are explicitly denied
+
+Audit entries also include the resolved sandbox context alongside the tool arguments.
+
+## What is validated
+
+Current macOS smoke test coverage verifies:
+
+- Allowed writes succeed
+- Disallowed writes fail
+- Denied reads fail
 - `allow_read` carve-outs work
-- deny-all network blocks outbound access
-- allowlisted network domains work for the tested runtime path
+- Deny-all network blocks outbound access
+- Allowlisted network domains work for the tested runtime path
+
+## Practical guidance
+
+- Use a sandboxed `allow` variant for cheap local work: JSON transforms, parsing, codegen, text munging
+- Keep networked or repo-writing variants in `ask` until you've verified the runtime
+- Prefer a small number of named presets: `local_transform`, `github_only`, `npm_registry`, `readonly_repo`
+- If a tool needs a one-off tweak, put it in the tool override instead of creating a new preset

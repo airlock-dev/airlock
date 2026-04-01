@@ -10,22 +10,32 @@ It sits between agents like Claude Code, Cursor, and OpenClaw and the tools they
 - Static MCP manifests do not capture per-agent policy well.
 - Human approval is valuable, but approval fatigue is real.
 - You need an audit trail for what ran, by whom, and under what policy.
+- Untrusted content (web pages, tool outputs, files) can instruct agents to take unauthorized actions.
 
 ## What Airlock can front
 
 - MCP servers over stdio, SSE, and streamable HTTP
-- built-in shell execution through `exec/run`
-- built-in HTTP tools like `http/get`
-- CLI tools exposed as named MCP tools
-- OpenAPI specs exposed as MCP tools
-- external clients through the `/hook` endpoint
+- Built-in shell execution through `exec/run`
+- Built-in HTTP tools like `http/get`, `http/post`
+- Built-in sandboxed Python via `python/eval`
+- CLI tools exposed as named MCP tools (auto-discovered from `--help`, Fig specs, or shell completions)
+- REST APIs exposed as MCP tools (auto-discovered from OpenAPI specs)
+- External clients through the `/hook` endpoint
 
-## Recent features
+## Key features
 
-- sandbox presets and alias-based tool variants
-- real macOS sandbox smoke tests for filesystem and network behavior
-- `/hook` support for external approval and policy checks
-- a completion-driven CLI discovery/configuration flow
+- **Per-agent allowlists** with glob patterns and tool hiding
+- **Human-in-the-loop approval** via Telegram, Slack, dashboard, macOS, TUI, webhook, or OpenClaw
+- **Composable profiles** with inheritance via `extends`
+- **Sandbox presets and tool variants** — same tool, different security envelope
+- **Middleware pipeline** — injection detection, canary tokens, PII classification, output scanning, rate limiting, schema validation
+- **Auto-discovery** for CLI tools and OpenAPI specs
+- **Full audit trail** to SQLite with secret redaction
+- **Management API** for querying logs and managing approvals programmatically
+- **Hot reload** — edit config without restarting
+- **Batched notifications** to reduce approval fatigue
+- **OS-level sandboxing** via macOS `sandbox-exec`
+- **Native macOS companion app** for menu bar approvals
 
 ## Start here
 
@@ -33,3 +43,7 @@ It sits between agents like Claude Code, Cursor, and OpenClaw and the tools they
 - Connecting Claude Code: [Claude Code Setup](/guides/claude-code)
 - Understanding policy: [Permissions](/concepts/permissions)
 - Building safer fast paths: [Sandbox Presets and Variants](/concepts/sandboxing)
+- Auto-generating configs: [CLI Discovery](/guides/cli-discovery) and [API Discovery](/guides/api-discovery)
+- Security middleware: [Middleware Pipeline](/concepts/middleware)
+- Approval providers: [HITL Providers](/reference/hitl-providers) and [Dashboard](/guides/dashboard)
+- Full config reference: [Config Reference](/reference/config)
