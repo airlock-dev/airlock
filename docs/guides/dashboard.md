@@ -63,7 +63,7 @@ The dashboard checks npm for newer versions of `airlock-bot` and shows an upgrad
 
 ## Combining with the macOS Companion
 
-The [macOS Companion app](/companion) connects to the same dashboard SSE endpoint. You can use both simultaneously — the dashboard in a browser tab and the companion in your menu bar.
+The [macOS Companion app](https://github.com/airlock-dev/airlock/releases/latest) connects to the same dashboard SSE endpoint. You can use both simultaneously — the dashboard in a browser tab and the companion in your menu bar.
 
 ## Graceful degradation
 
