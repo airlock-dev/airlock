@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.28](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.27...airlock-bot-v0.2.28) (2026-04-01)
+
+
+### Bug Fixes
+
+* **oauth:** wrap state even when empty for relay compatibility ([#85](https://github.com/airlock-dev/airlock/issues/85)) ([6d0b3c7](https://github.com/airlock-dev/airlock/commit/6d0b3c72d8e0122cda89450b02e2afe16ebdb816))
+
 ## [0.2.27](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.26...airlock-bot-v0.2.27) (2026-03-31)
 
 
