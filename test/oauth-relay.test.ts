@@ -49,11 +49,18 @@ describe('FileOAuthProvider — relay callback URL', () => {
       expect(url.searchParams.get('state')).toBe(`${PORT}.a.b.c`);
     });
 
-    it('does not wrap state when state param is absent', async () => {
+    it('wraps port even when state param is absent', async () => {
       const provider = new FileOAuthProvider('test-server', PORT, undefined, undefined, RELAY_URL);
       const url = new URL('https://oauth.example.com/authorize?client_id=abc');
       await provider.redirectToAuthorization(url);
-      expect(url.searchParams.has('state')).toBe(false);
+      expect(url.searchParams.get('state')).toBe(`${PORT}.`);
+    });
+
+    it('wraps port when state param is empty', async () => {
+      const provider = new FileOAuthProvider('test-server', PORT, undefined, undefined, RELAY_URL);
+      const url = new URL('https://oauth.example.com/authorize?state=&client_id=abc');
+      await provider.redirectToAuthorization(url);
+      expect(url.searchParams.get('state')).toBe(`${PORT}.`);
     });
 
     it('includes relay URL in pre-registered client info redirect_uris', async () => {

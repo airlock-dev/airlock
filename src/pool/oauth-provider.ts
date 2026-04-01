@@ -100,10 +100,8 @@ export class FileOAuthProvider implements OAuthClientProvider {
     // When using an HTTPS relay, wrap the state parameter with the local port
     // so the relay can redirect back to localhost after the OAuth provider responds.
     if (this.relayCallbackUrl) {
-      const originalState = url.searchParams.get('state');
-      if (originalState) {
-        url.searchParams.set('state', `${this.callbackPort}.${originalState}`);
-      }
+      const originalState = url.searchParams.get('state') ?? '';
+      url.searchParams.set('state', `${this.callbackPort}.${originalState}`);
     }
 
     log.info(
