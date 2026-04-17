@@ -121,7 +121,11 @@ export class HttpMcpClient {
       log.info({ id: this.id, url: this.url }, 'MCP HTTP client connected');
     } catch (err) {
       if (err instanceof UnauthorizedError && this.oauthProvider) {
-        await this.runOAuthFlow();
+        // Run the browser auth flow in the background so it doesn't block
+        // gateway startup (pool.initialize waits for all connect() calls).
+        void this.runOAuthFlow().catch((oauthErr) =>
+          log.error({ id: this.id, reason: friendlyError(oauthErr) }, 'OAuth flow failed')
+        );
         return;
       }
       log.error({ id: this.id, reason: friendlyError(err) }, 'MCP HTTP connect failed');
