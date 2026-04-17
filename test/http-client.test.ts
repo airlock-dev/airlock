@@ -8,6 +8,10 @@
  *
  * The fix: call `this.connect()` recursively after `finishAuth()`, which creates
  * a fresh transport with the persisted tokens.
+ *
+ * Note: the OAuth flow runs in the background (not awaited by connect()) so the
+ * gateway can start listening immediately. Tests use vi.waitFor() or flushes to
+ * let the background flow settle.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { UnauthorizedError } from '@modelcontextprotocol/sdk/client/auth.js';
@@ -77,10 +81,20 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
+/** Helper: flush microtasks so the background OAuth flow settles. */
+async function flushOAuthFlow(): Promise<void> {
+  // The background flow chains several awaits (waitForAuthCode → finishAuth →
+  // recursive connect). Flushing a few microtask rounds lets them all resolve.
+  for (let i = 0; i < 5; i++) {
+    await new Promise((r) => setTimeout(r, 0));
+  }
+}
+
 describe('HttpMcpClient — OAuth reconnect', () => {
   it('creates a new transport after OAuth (does not reuse the already-started one)', async () => {
     const client = new HttpMcpClient('supabase', 'https://mcp.supabase.com/mcp', undefined, true);
     await client.connect();
+    await flushOAuthFlow();
 
     // Should have created exactly two transports:
     //   1st: used for initial connect → UnauthorizedError → finishAuth
@@ -92,27 +106,31 @@ describe('HttpMcpClient — OAuth reconnect', () => {
   it('is ready after a successful OAuth flow', async () => {
     const client = new HttpMcpClient('supabase', 'https://mcp.supabase.com/mcp', undefined, true);
     await client.connect();
+    await flushOAuthFlow();
     expect(client.isReady()).toBe(true);
   });
 
   it('calls finishAuth on the first transport with the code from waitForAuthCode', async () => {
     const client = new HttpMcpClient('supabase', 'https://mcp.supabase.com/mcp', undefined, true);
     await client.connect();
+    await flushOAuthFlow();
     expect(transportInstances[0].finishAuth).toHaveBeenCalledWith('mock-auth-code');
   });
 
   it('does not call finishAuth on the new transport', async () => {
     const client = new HttpMcpClient('supabase', 'https://mcp.supabase.com/mcp', undefined, true);
     await client.connect();
+    await flushOAuthFlow();
     expect(transportInstances[1].finishAuth).not.toHaveBeenCalled();
   });
 
-  it('awaitingAuth is false after connect completes', async () => {
+  it('awaitingAuth is false after OAuth flow completes', async () => {
     // If awaitingAuth stayed true, any subsequent connect() call would be silently
     // skipped (the guard at the top of connect()). Verify it creates a new transport
     // when connect() is called again after the OAuth flow finishes.
     const client = new HttpMcpClient('supabase', 'https://mcp.supabase.com/mcp', undefined, true);
-    await client.connect(); // OAuth flow: first connect → UnauthorizedError, recursive connect → succeeds
+    await client.connect();
+    await flushOAuthFlow();
     expect(client.isReady()).toBe(true);
 
     const countBefore = transportInstances.length;
