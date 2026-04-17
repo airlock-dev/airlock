@@ -37,8 +37,8 @@ export class ClientPool {
       await client.connect();
       log.info({ id }, 'MCP connected');
       this._onClientReady?.(id);
-    } catch (err) {
-      log.error({ err, id }, 'Failed to connect MCP (will retry in background)');
+    } catch {
+      log.warn({ id }, 'Failed to connect MCP (will retry in background)');
       this.connectInBackground(id, client);
     }
   }
