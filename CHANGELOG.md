@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.29](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.28...airlock-bot-v0.2.29) (2026-04-17)
+
+
+### Bug Fixes
+
+* **oauth:** re-prompt browser auth when grant is invalidated ([#89](https://github.com/airlock-dev/airlock/issues/89)) ([cc5a9ff](https://github.com/airlock-dev/airlock/commit/cc5a9ffb533047970d7602e33609fafe2ec44861))
+
 ## [0.2.28](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.27...airlock-bot-v0.2.28) (2026-04-01)
 
 
