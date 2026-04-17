@@ -89,6 +89,16 @@ export class FileOAuthProvider implements OAuthClientProvider {
     await this.save();
   }
 
+  async invalidateCredentials(scope: 'all' | 'tokens'): Promise<void> {
+    log.info({ serverId: this.serverId, scope }, 'Invalidating OAuth credentials');
+    if (scope === 'all') {
+      this.data = {};
+    } else {
+      delete this.data.tokens;
+    }
+    await this.save();
+  }
+
   redirectToAuthorization(url: URL): Promise<void> {
     const now = Date.now();
     if (now - this.browserOpenedAt < 30_000) {

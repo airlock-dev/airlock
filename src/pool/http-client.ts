@@ -96,22 +96,30 @@ export class HttpMcpClient {
       log.info({ id: this.id, url: this.url }, 'MCP HTTP client connected');
     } catch (err) {
       if (err instanceof UnauthorizedError && this.oauthProvider) {
-        this.awaitingAuth = true;
-        try {
-          log.info({ id: this.id }, 'OAuth authorization required, waiting for browser flow');
-          const code = await this.oauthProvider.waitForAuthCode();
-          await this.transport.finishAuth(code);
-        } finally {
-          this.awaitingAuth = false;
-        }
-        // Tokens are now persisted by the provider. Reconnect with a fresh
-        // transport — the old one was already started and cannot be reused.
-        await this.connect();
+        await this.runOAuthFlow();
         return;
       }
       log.error({ err, id: this.id }, 'MCP HTTP connect failed');
       throw err;
     }
+  }
+
+  /**
+   * Run the full browser OAuth flow: wait for the user to authorize in the
+   * browser, finish the auth exchange, then reconnect with fresh tokens.
+   */
+  private async runOAuthFlow(): Promise<void> {
+    this.awaitingAuth = true;
+    try {
+      log.info({ id: this.id }, 'OAuth authorization required, waiting for browser flow');
+      const code = await this.oauthProvider!.waitForAuthCode();
+      await this.transport!.finishAuth(code);
+    } finally {
+      this.awaitingAuth = false;
+    }
+    // Tokens are now persisted by the provider. Reconnect with a fresh
+    // transport — the old one was already started and cannot be reused.
+    await this.connect();
   }
 
   async listTools(): Promise<Tool[]> {
