@@ -7,6 +7,16 @@ import { VERSION } from '../version.js';
 const log = childLogger('stdio-client');
 
 const BACKOFF_STEPS = [1000, 2000, 4000, 8000, 16000, 30000];
+const MAX_RECONNECT_ATTEMPTS = BACKOFF_STEPS.length;
+
+/** Extract a short, human-readable reason from a connection error. */
+function friendlyError(err: unknown): string {
+  const msg = err instanceof Error ? err.message : String(err);
+  if (msg.includes('Connection closed')) return 'process exited immediately';
+  if (msg.includes('ENOENT'))
+    return `command not found: ${msg.match(/ENOENT.*?'(.+?)'/)?.[1] ?? 'unknown'}`;
+  return msg.split('\n')[0];
+}
 
 export class StdioMcpClient {
   private client?: Client;
@@ -36,6 +46,14 @@ export class StdioMcpClient {
     this.transport.onclose = () => {
       this.ready = false;
       if (!this.stopped) {
+        if (this.reconnectAttempt >= MAX_RECONNECT_ATTEMPTS) {
+          log.error(
+            { id: this.id },
+            'MCP gave up reconnecting after %d attempts',
+            MAX_RECONNECT_ATTEMPTS
+          );
+          return;
+        }
         const delay = BACKOFF_STEPS[Math.min(this.reconnectAttempt, BACKOFF_STEPS.length - 1)];
         log.warn(
           { id: this.id, attempt: this.reconnectAttempt, delay },
@@ -43,7 +61,9 @@ export class StdioMcpClient {
         );
         this.reconnectAttempt++;
         setTimeout(() => {
-          void this.connect().catch((err) => log.error({ err, id: this.id }, 'Reconnect failed'));
+          void this.connect().catch((err) =>
+            log.error({ id: this.id, reason: friendlyError(err) }, 'MCP reconnect failed')
+          );
         }, delay);
       }
     };
@@ -54,7 +74,7 @@ export class StdioMcpClient {
       this.ready = true;
       log.info({ id: this.id }, 'MCP stdio client connected');
     } catch (err) {
-      log.error({ err, id: this.id }, 'MCP stdio connect failed');
+      log.error({ id: this.id, reason: friendlyError(err) }, 'MCP stdio connect failed');
       throw err;
     }
   }

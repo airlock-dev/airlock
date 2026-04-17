@@ -9,6 +9,21 @@ import { VERSION } from '../version.js';
 const log = childLogger('http-client');
 
 const BACKOFF_STEPS = [1000, 2000, 4000, 8000, 16000, 30000];
+const MAX_RECONNECT_ATTEMPTS = BACKOFF_STEPS.length;
+
+/** Extract a short, human-readable reason from a connection error. */
+function friendlyError(err: unknown): string {
+  const msg = err instanceof Error ? err.message : String(err);
+  if (msg.includes('ENOTFOUND')) {
+    const host = msg.match(/ENOTFOUND\s+(\S+)/)?.[1];
+    return `DNS lookup failed for ${host ?? 'unknown host'}`;
+  }
+  if (msg.includes('InvalidGrantError') || err?.constructor?.name === 'InvalidGrantError') {
+    return 'OAuth grant expired — re-authentication required';
+  }
+  if (msg.includes('ECONNREFUSED')) return 'connection refused';
+  return msg.split('\n')[0];
+}
 
 export class HttpMcpClient {
   private client?: Client;
@@ -76,6 +91,14 @@ export class HttpMcpClient {
     this.transport.onclose = () => {
       this.ready = false;
       if (!this.stopped && !this.awaitingAuth) {
+        if (this.reconnectAttempt >= MAX_RECONNECT_ATTEMPTS) {
+          log.error(
+            { id: this.id },
+            'HTTP MCP gave up reconnecting after %d attempts',
+            MAX_RECONNECT_ATTEMPTS
+          );
+          return;
+        }
         const delay = BACKOFF_STEPS[Math.min(this.reconnectAttempt, BACKOFF_STEPS.length - 1)];
         log.warn(
           { id: this.id, attempt: this.reconnectAttempt, delay },
@@ -84,7 +107,9 @@ export class HttpMcpClient {
         this.reconnectAttempt++;
         this.reconnectTimer = setTimeout(() => {
           this.reconnectTimer = undefined;
-          void this.connect().catch((err) => log.error({ err, id: this.id }, 'Reconnect failed'));
+          void this.connect().catch((err) =>
+            log.error({ id: this.id, reason: friendlyError(err) }, 'HTTP MCP reconnect failed')
+          );
         }, delay);
       }
     };
@@ -96,22 +121,30 @@ export class HttpMcpClient {
       log.info({ id: this.id, url: this.url }, 'MCP HTTP client connected');
     } catch (err) {
       if (err instanceof UnauthorizedError && this.oauthProvider) {
-        this.awaitingAuth = true;
-        try {
-          log.info({ id: this.id }, 'OAuth authorization required, waiting for browser flow');
-          const code = await this.oauthProvider.waitForAuthCode();
-          await this.transport.finishAuth(code);
-        } finally {
-          this.awaitingAuth = false;
-        }
-        // Tokens are now persisted by the provider. Reconnect with a fresh
-        // transport — the old one was already started and cannot be reused.
-        await this.connect();
+        await this.runOAuthFlow();
         return;
       }
-      log.error({ err, id: this.id }, 'MCP HTTP connect failed');
+      log.error({ id: this.id, reason: friendlyError(err) }, 'MCP HTTP connect failed');
       throw err;
     }
+  }
+
+  /**
+   * Run the full browser OAuth flow: wait for the user to authorize in the
+   * browser, finish the auth exchange, then reconnect with fresh tokens.
+   */
+  private async runOAuthFlow(): Promise<void> {
+    this.awaitingAuth = true;
+    try {
+      log.info({ id: this.id }, 'OAuth authorization required, waiting for browser flow');
+      const code = await this.oauthProvider!.waitForAuthCode();
+      await this.transport!.finishAuth(code);
+    } finally {
+      this.awaitingAuth = false;
+    }
+    // Tokens are now persisted by the provider. Reconnect with a fresh
+    // transport — the old one was already started and cannot be reused.
+    await this.connect();
   }
 
   async listTools(): Promise<Tool[]> {
