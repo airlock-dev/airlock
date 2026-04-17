@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.30](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.29...airlock-bot-v0.2.30) (2026-04-17)
+
+
+### Bug Fixes
+
+* **oauth:** don't block gateway startup on browser auth flow ([#91](https://github.com/airlock-dev/airlock/issues/91)) ([ad75564](https://github.com/airlock-dev/airlock/commit/ad7556482e3d896eb1dc81c25c87bf1de56d500c))
+
 ## [0.2.29](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.28...airlock-bot-v0.2.29) (2026-04-17)
 
 
