@@ -79,6 +79,10 @@ export class ClientPool {
     return client.listTools();
   }
 
+  isReady(mcpId: string): boolean {
+    return this.clients.get(mcpId)?.isReady() ?? false;
+  }
+
   async callTool(mcpId: string, toolName: string, args: Record<string, unknown>): Promise<unknown> {
     const client = this.clients.get(mcpId);
     if (!client) throw new Error(`Unknown MCP: ${mcpId}`);
