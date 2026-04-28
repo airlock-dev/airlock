@@ -23,6 +23,7 @@ export class McpBackendAdapter implements BackendAdapter {
   }
 
   async listTools(): Promise<Tool[]> {
+    if (!this.pool.isReady(this.mcpId)) return [];
     const tools = await this.pool.listTools(this.mcpId);
     return tools.map((t) => ({
       ...t,

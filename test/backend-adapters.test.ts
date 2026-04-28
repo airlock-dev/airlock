@@ -20,6 +20,7 @@ describe('McpBackendAdapter', () => {
       listTools: vi.fn().mockResolvedValue([]),
       callTool: vi.fn().mockResolvedValue({ content: [] }),
       getMcpIds: vi.fn().mockReturnValue([]),
+      isReady: vi.fn().mockReturnValue(true),
       stop: vi.fn().mockResolvedValue(undefined),
       ...overrides,
     } as unknown as ClientPool;
