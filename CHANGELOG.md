@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.31](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.30...airlock-bot-v0.2.31) (2026-04-28)
+
+
+### Bug Fixes
+
+* **registry:** skip listTools for adapters not yet connected ([#93](https://github.com/airlock-dev/airlock/issues/93)) ([c760ad9](https://github.com/airlock-dev/airlock/commit/c760ad9c1759f94b2b94d5150d8003f0af57c446))
+
 ## [0.2.30](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.29...airlock-bot-v0.2.30) (2026-04-17)
 
 
