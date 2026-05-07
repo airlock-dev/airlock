@@ -14,12 +14,17 @@ export class SseMcpClient {
   private reconnectAttempt = 0;
   private stopped = false;
   private ready = false;
+  private readyListeners = new Set<() => void>();
 
   constructor(
     private id: string,
     private url: string,
     private headers?: Record<string, string>
   ) {}
+
+  onReady(cb: () => void): void {
+    this.readyListeners.add(cb);
+  }
 
   async connect(): Promise<void> {
     this.transport = new SSEClientTransport(new URL(this.url), {
@@ -48,6 +53,7 @@ export class SseMcpClient {
       this.reconnectAttempt = 0;
       this.ready = true;
       log.info({ id: this.id, url: this.url }, 'MCP SSE client connected');
+      this.notifyReady();
     } catch (err) {
       log.error({ err, id: this.id }, 'MCP SSE connect failed');
       throw err;
@@ -71,6 +77,12 @@ export class SseMcpClient {
 
   isReady(): boolean {
     return this.ready;
+  }
+
+  private notifyReady(): void {
+    for (const cb of this.readyListeners) {
+      cb();
+    }
   }
 
   async stop(): Promise<void> {

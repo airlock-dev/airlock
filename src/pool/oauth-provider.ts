@@ -71,6 +71,20 @@ export class FileOAuthProvider implements OAuthClientProvider {
       };
     }
     await this.load();
+    const info = this.data.clientInfo;
+    if (info?.redirect_uris?.length && !info.redirect_uris.includes(this.redirectUrl)) {
+      log.info(
+        {
+          serverId: this.serverId,
+          redirectUrl: this.redirectUrl,
+          cachedRedirectUris: info.redirect_uris,
+        },
+        'Invalidating OAuth client registration because redirect URI changed'
+      );
+      this.data = {};
+      await this.save();
+      return undefined;
+    }
     return this.data.clientInfo;
   }
 

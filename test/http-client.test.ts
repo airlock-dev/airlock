@@ -110,6 +110,18 @@ describe('HttpMcpClient — OAuth reconnect', () => {
     expect(client.isReady()).toBe(true);
   });
 
+  it('notifies listeners after OAuth reconnect becomes ready', async () => {
+    const client = new HttpMcpClient('supabase', 'https://mcp.supabase.com/mcp', undefined, true);
+    const onReady = vi.fn();
+    client.onReady(onReady);
+
+    await client.connect();
+    expect(onReady).not.toHaveBeenCalled();
+
+    await flushOAuthFlow();
+    expect(onReady).toHaveBeenCalledTimes(1);
+  });
+
   it('calls finishAuth on the first transport with the code from waitForAuthCode', async () => {
     const client = new HttpMcpClient('supabase', 'https://mcp.supabase.com/mcp', undefined, true);
     await client.connect();
@@ -149,8 +161,12 @@ describe('HttpMcpClient — plain header auth (no OAuth)', () => {
       { Authorization: 'Bearer test-token' },
       false
     );
+    const onReady = vi.fn();
+    client.onReady(onReady);
+
     await client.connect();
     expect(client.isReady()).toBe(true);
+    expect(onReady).toHaveBeenCalledTimes(1);
     expect(transportInstances).toHaveLength(1);
   });
 

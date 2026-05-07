@@ -33,10 +33,12 @@ export class ClientPool {
   private async connectClient(id: string, cfg: McpServerConfig): Promise<void> {
     const client = this.createClient(id, cfg);
     this.clients.set(id, client);
+    client.onReady(() => this.notifyClientReady(id));
     try {
       await client.connect();
-      log.info({ id }, 'MCP connected');
-      this._onClientReady?.(id);
+      if (!client.isReady()) {
+        log.info({ id }, 'MCP connection pending');
+      }
     } catch {
       log.warn({ id }, 'Failed to connect MCP (will retry in background)');
       this.connectInBackground(id, client);
@@ -44,13 +46,12 @@ export class ClientPool {
   }
 
   private connectInBackground(id: string, client: McpClient): void {
-    client
-      .connect()
-      .then(() => {
-        log.info({ id }, 'MCP connected (background)');
-        this._onClientReady?.(id);
-      })
-      .catch(() => {});
+    client.connect().catch(() => {});
+  }
+
+  private notifyClientReady(id: string): void {
+    log.info({ id }, 'MCP connected');
+    this._onClientReady?.(id);
   }
 
   private createClient(id: string, cfg: McpServerConfig): McpClient {

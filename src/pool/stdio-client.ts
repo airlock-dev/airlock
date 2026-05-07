@@ -24,6 +24,7 @@ export class StdioMcpClient {
   private reconnectAttempt = 0;
   private stopped = false;
   private ready = false;
+  private readyListeners = new Set<() => void>();
 
   constructor(
     private id: string,
@@ -32,6 +33,10 @@ export class StdioMcpClient {
     private env?: Record<string, string>,
     private stderr?: 'inherit' | 'ignore' | 'pipe'
   ) {}
+
+  onReady(cb: () => void): void {
+    this.readyListeners.add(cb);
+  }
 
   async connect(): Promise<void> {
     this.transport = new StdioClientTransport({
@@ -73,6 +78,7 @@ export class StdioMcpClient {
       this.reconnectAttempt = 0;
       this.ready = true;
       log.info({ id: this.id }, 'MCP stdio client connected');
+      this.notifyReady();
     } catch (err) {
       log.error({ id: this.id, reason: friendlyError(err) }, 'MCP stdio connect failed');
       throw err;
@@ -96,6 +102,12 @@ export class StdioMcpClient {
 
   isReady(): boolean {
     return this.ready;
+  }
+
+  private notifyReady(): void {
+    for (const cb of this.readyListeners) {
+      cb();
+    }
   }
 
   /** Prevent reconnection without closing the transport. */

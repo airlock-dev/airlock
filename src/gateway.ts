@@ -79,7 +79,6 @@ export class Gateway {
     // Allowlist + registry
     this.allowlist = new AllowlistEngine(this.config.agents);
     this.registry = new ToolRegistry(adapters, this.allowlist, this.config.agents);
-    await this.registry.refresh();
 
     // Register callback for late-connecting MCPs (after registry exists)
     this.pool.onClientReady((id) => {
@@ -88,6 +87,8 @@ export class Gateway {
         .refresh()
         .catch((err) => log.error({ err }, 'Failed to refresh registry after MCP ready'));
     });
+
+    await this.registry.refresh();
 
     // HTTP server
     this.app = Fastify({ logger: false });
