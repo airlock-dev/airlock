@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.32](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.31...airlock-bot-v0.2.32) (2026-05-07)
+
+
+### Bug Fixes
+
+* **oauth:** refresh registry after auth reconnect ([#95](https://github.com/airlock-dev/airlock/issues/95)) ([7f5a175](https://github.com/airlock-dev/airlock/commit/7f5a1756b6c81ed14898575288b8ecf637067537))
+
 ## [0.2.31](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.30...airlock-bot-v0.2.31) (2026-04-28)
 
 
