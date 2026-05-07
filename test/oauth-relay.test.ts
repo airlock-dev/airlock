@@ -1,4 +1,7 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { mkdtemp, readFile, rm } from 'fs/promises';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { FileOAuthProvider } from '../src/pool/oauth-provider.js';
 
 // Prevent actual browser opens
@@ -9,6 +12,23 @@ vi.mock('child_process', () => ({
 describe('FileOAuthProvider — relay callback URL', () => {
   const RELAY_URL = 'https://auth.airlock.bot/callback';
   const PORT = 18432;
+  const originalHome = process.env.HOME;
+  let tempHome: string;
+
+  beforeEach(async () => {
+    tempHome = await mkdtemp(join(tmpdir(), 'airlock-oauth-'));
+    process.env.HOME = tempHome;
+    vi.clearAllMocks();
+  });
+
+  afterEach(async () => {
+    if (originalHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = originalHome;
+    }
+    await rm(tempHome, { recursive: true, force: true });
+  });
 
   describe('without relay', () => {
     it('uses localhost redirect URL', () => {
@@ -21,6 +41,37 @@ describe('FileOAuthProvider — relay callback URL', () => {
       const url = new URL('https://oauth.example.com/authorize?state=original&client_id=abc');
       await provider.redirectToAuthorization(url);
       expect(url.searchParams.get('state')).toBe('original');
+    });
+
+    it('reuses cached client registration when redirect URL matches', async () => {
+      const provider = new FileOAuthProvider('matching-server', PORT);
+      await provider.saveClientInformation({
+        client_id: 'client-123',
+        redirect_uris: [provider.redirectUrl],
+      });
+
+      await expect(provider.clientInformation()).resolves.toMatchObject({
+        client_id: 'client-123',
+        redirect_uris: [provider.redirectUrl],
+      });
+    });
+
+    it('drops cached client registration when redirect URL changes', async () => {
+      const serverId = 'stale-server';
+      const staleProvider = new FileOAuthProvider(serverId, PORT);
+      await staleProvider.saveClientInformation({
+        client_id: 'stale-client',
+        redirect_uris: [staleProvider.redirectUrl],
+      });
+      await staleProvider.saveTokens({ access_token: 'old-token', token_type: 'Bearer' });
+
+      const provider = new FileOAuthProvider(serverId, PORT + 1);
+      await expect(provider.clientInformation()).resolves.toBeUndefined();
+
+      const stored = JSON.parse(
+        await readFile(join(tempHome, '.airlock', 'oauth', `${serverId}.json`), 'utf-8')
+      );
+      expect(stored).toEqual({});
     });
   });
 

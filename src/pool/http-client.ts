@@ -33,6 +33,7 @@ export class HttpMcpClient {
   private stopped = false;
   private ready = false;
   private reconnectTimer?: NodeJS.Timeout;
+  private readyListeners = new Set<() => void>();
 
   private awaitingAuth = false;
 
@@ -55,6 +56,10 @@ export class HttpMcpClient {
         this.oauthCallbackUrl
       );
     }
+  }
+
+  onReady(cb: () => void): void {
+    this.readyListeners.add(cb);
   }
 
   async connect(): Promise<void> {
@@ -119,6 +124,7 @@ export class HttpMcpClient {
       this.reconnectAttempt = 0;
       this.ready = true;
       log.info({ id: this.id, url: this.url }, 'MCP HTTP client connected');
+      this.notifyReady();
     } catch (err) {
       if (err instanceof UnauthorizedError && this.oauthProvider) {
         // Run the browser auth flow in the background so it doesn't block
@@ -168,6 +174,12 @@ export class HttpMcpClient {
 
   isReady(): boolean {
     return this.ready;
+  }
+
+  private notifyReady(): void {
+    for (const cb of this.readyListeners) {
+      cb();
+    }
   }
 
   async stop(): Promise<void> {
