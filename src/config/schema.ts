@@ -26,17 +26,20 @@ const PathString = z.string().transform(expandTilde);
 export const McpServerConfig = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('stdio'),
+    enabled: z.boolean().default(true),
     command: z.string(),
     args: z.array(z.string()).default([]),
     env: z.record(EnvString).optional(),
   }),
   z.object({
     type: z.literal('sse'),
+    enabled: z.boolean().default(true),
     url: z.string().url(),
     headers: z.record(EnvString).optional(),
   }),
   z.object({
     type: z.literal('http'),
+    enabled: z.boolean().default(true),
     url: z.string().url(),
     headers: z.record(EnvString).optional(),
     oauth: z.boolean().default(false),
@@ -48,7 +51,17 @@ export const McpServerConfig = z.discriminatedUnion('type', [
 ]);
 export type McpServerConfig = z.infer<typeof McpServerConfig>;
 
-export const ProviderConfig = z.union([z.literal('builtin'), McpServerConfig]);
+export const BuiltinProviderConfig = z.object({
+  type: z.literal('builtin'),
+  enabled: z.boolean().default(true),
+});
+export type BuiltinProviderConfig = z.infer<typeof BuiltinProviderConfig>;
+
+export const ProviderConfig = z.union([
+  z.literal('builtin'),
+  BuiltinProviderConfig,
+  McpServerConfig,
+]);
 export type ProviderConfig = z.infer<typeof ProviderConfig>;
 
 /** Extract only MCP server configs from the providers map */
@@ -57,7 +70,7 @@ export function getMcpConfigs(
 ): Record<string, McpServerConfig> {
   const result: Record<string, McpServerConfig> = {};
   for (const [id, cfg] of Object.entries(providers)) {
-    if (cfg !== 'builtin') {
+    if (cfg !== 'builtin' && cfg.type !== 'builtin' && cfg.enabled !== false) {
       result[id] = cfg;
     }
   }
@@ -68,7 +81,7 @@ export function getMcpConfigs(
 export function getBuiltinProviders(providers: Record<string, ProviderConfig>): Set<string> {
   const result = new Set<string>();
   for (const [id, cfg] of Object.entries(providers)) {
-    if (cfg === 'builtin') {
+    if (cfg === 'builtin' || (cfg.type === 'builtin' && cfg.enabled !== false)) {
       result.add(id);
     }
   }
@@ -187,6 +200,7 @@ export type AgentConfig = z.infer<typeof AgentConfig>;
 export const ProfileConfig = z.object({
   allow: z.array(z.string()).default([]),
   ask: z.array(z.string()).default([]),
+  deny: z.array(z.string()).default([]),
 });
 export type ProfileConfig = z.infer<typeof ProfileConfig>;
 

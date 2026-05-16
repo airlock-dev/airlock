@@ -3,7 +3,7 @@ import { writeFileSync, mkdtempSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { loadConfig } from '../src/config/loader.js';
-import { GatewayConfig } from '../src/config/schema.js';
+import { GatewayConfig, getBuiltinProviders, getMcpConfigs } from '../src/config/schema.js';
 
 // --- Schema / env var substitution ---
 
@@ -32,9 +32,13 @@ describe('GatewayConfig schema', () => {
 
   it('throws on missing required env var', () => {
     delete process.env['MISSING_VAR_XYZ'];
-    expect(() => GatewayConfig.parse({
-      approvals: { provider: { type: 'telegram', bot_token: '${MISSING_VAR_XYZ}', chat_id: '123' } },
-    })).toThrow('MISSING_VAR_XYZ');
+    expect(() =>
+      GatewayConfig.parse({
+        approvals: {
+          provider: { type: 'telegram', bot_token: '${MISSING_VAR_XYZ}', chat_id: '123' },
+        },
+      })
+    ).toThrow('MISSING_VAR_XYZ');
   });
 
   it('validates agent allow/ask as arrays of strings', () => {
@@ -83,6 +87,21 @@ describe('GatewayConfig schema', () => {
     if (!result.success) return;
     expect(result.data.providers['exec']).toBe('builtin');
     expect(result.data.providers['http']).toBe('builtin');
+  });
+
+  it('accepts disabled providers', () => {
+    const result = GatewayConfig.safeParse({
+      providers: {
+        exec: { type: 'builtin', enabled: false },
+        github: { type: 'stdio', enabled: false, command: 'npx', args: ['server'] },
+      },
+    });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.providers['exec']).toEqual({ type: 'builtin', enabled: false });
+    expect(result.data.providers['github']).toMatchObject({ type: 'stdio', enabled: false });
+    expect(getBuiltinProviders(result.data.providers).has('exec')).toBe(false);
+    expect(getMcpConfigs(result.data.providers)).toEqual({});
   });
 
   it('supports deny list on agents', () => {

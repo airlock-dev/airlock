@@ -41,6 +41,7 @@
     "build": "tsc",
     "dev": "tsx src/index.ts",
     "configure-agent": "tsx scripts/configure-agent.ts",
+    "configure-web": "tsx src/index.ts configure-web",
     "docs:dev": "vitepress dev docs",
     "docs:llms": "tsx scripts/generate-llms.ts",
     "docs:build": "npm run docs:llms && vitepress build docs",

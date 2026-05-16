@@ -63,19 +63,37 @@ describe('resolveAgentPermissions()', () => {
     const result = resolveAgentPermissions(agent, profiles);
     expect(result.allow).toEqual(['github/*']);
   });
+
+  it('merges profile deny rules', () => {
+    const agent = makeAgentConfig({
+      extends: ['dangerous'],
+      allow: ['github/*'],
+      deny: ['exec/run'],
+    });
+    const profiles = {
+      dangerous: { allow: [], ask: [], deny: ['github/delete_repo'] },
+    };
+    const result = resolveAgentPermissions(agent, profiles);
+    expect(result.deny).toEqual(['github/delete_repo', 'exec/run']);
+  });
 });
 
 describe('applyProfiles()', () => {
-  it('mutates agent allow/ask with resolved values', () => {
+  it('mutates agent allow/ask/deny with resolved values', () => {
     const config = GatewayConfig.parse({
       profiles: {
         readonly: { allow: ['github/list*', 'github/get*'] },
-        writer: { allow: ['github/create_pr'], ask: ['github/create_pr'] },
+        writer: {
+          allow: ['github/create_pr'],
+          ask: ['github/create_pr'],
+          deny: ['github/delete_repo'],
+        },
       },
       agents: {
         helena: {
           extends: ['readonly', 'writer'],
           allow: ['exec/run'],
+          deny: ['exec/sudo'],
         },
       },
     });
@@ -87,6 +105,8 @@ describe('applyProfiles()', () => {
     expect(config.agents['helena'].allow).toContain('github/create_pr');
     expect(config.agents['helena'].allow).toContain('exec/run');
     expect(config.agents['helena'].ask).toContain('github/create_pr');
+    expect(config.agents['helena'].deny).toContain('github/delete_repo');
+    expect(config.agents['helena'].deny).toContain('exec/sudo');
   });
 
   it('clears extends after resolution', () => {
