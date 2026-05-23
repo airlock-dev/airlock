@@ -13,6 +13,23 @@
                 "const": "builtin"
               },
               {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "builtin"
+                  },
+                  "enabled": {
+                    "type": "boolean",
+                    "default": true
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "additionalProperties": false
+              },
+              {
                 "anyOf": [
                   {
                     "type": "object",
@@ -20,6 +37,10 @@
                       "type": {
                         "type": "string",
                         "const": "stdio"
+                      },
+                      "enabled": {
+                        "type": "boolean",
+                        "default": true
                       },
                       "command": {
                         "type": "string"
@@ -51,6 +72,10 @@
                         "type": "string",
                         "const": "sse"
                       },
+                      "enabled": {
+                        "type": "boolean",
+                        "default": true
+                      },
                       "url": {
                         "type": "string",
                         "format": "uri"
@@ -74,6 +99,10 @@
                       "type": {
                         "type": "string",
                         "const": "http"
+                      },
+                      "enabled": {
+                        "type": "boolean",
+                        "default": true
                       },
                       "url": {
                         "type": "string",
@@ -131,6 +160,13 @@
                 "default": []
               },
               "ask": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "default": []
+              },
+              "deny": {
                 "type": "array",
                 "items": {
                   "type": "string"

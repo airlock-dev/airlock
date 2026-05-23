@@ -10,6 +10,12 @@ const log = childLogger('pool');
 type McpClient = StdioMcpClient | SseMcpClient | HttpMcpClient;
 export type HealthStatus = 'ok' | 'degraded' | 'down';
 
+interface ClientPoolOptions {
+  stdioStderr?: 'inherit' | 'ignore' | 'pipe';
+  healthCheck?: boolean;
+  retryFailedConnections?: boolean;
+}
+
 export class ClientPool {
   private clients = new Map<string, McpClient>();
   private healthTimer?: NodeJS.Timeout;
@@ -17,7 +23,7 @@ export class ClientPool {
 
   constructor(
     private mcps: Record<string, McpServerConfig>,
-    private options?: { stdioStderr?: 'inherit' | 'ignore' | 'pipe' }
+    private options?: ClientPoolOptions
   ) {}
 
   onClientReady(cb: (id: string) => void): void {
@@ -40,8 +46,12 @@ export class ClientPool {
         log.info({ id }, 'MCP connection pending');
       }
     } catch {
-      log.warn({ id }, 'Failed to connect MCP (will retry in background)');
-      this.connectInBackground(id, client);
+      if (this.options?.retryFailedConnections === false) {
+        log.warn({ id }, 'Failed to connect MCP');
+      } else {
+        log.warn({ id }, 'Failed to connect MCP (will retry in background)');
+        this.connectInBackground(id, client);
+      }
     }
   }
 
@@ -133,6 +143,7 @@ export class ClientPool {
   }
 
   private startHealthCheck(): void {
+    if (this.options?.healthCheck === false) return;
     this.healthTimer = setInterval(() => {
       const health = this.healthCheck();
       const down = Object.entries(health).filter(([, s]) => s === 'down');
