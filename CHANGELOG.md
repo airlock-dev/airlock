@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.33](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.32...airlock-bot-v0.2.33) (2026-05-23)
+
+
+### Features
+
+* **config:** add configure web UI ([#97](https://github.com/airlock-dev/airlock/issues/97)) ([55bbddc](https://github.com/airlock-dev/airlock/commit/55bbddccd145e953d582b334eff5bfc60ce41ac8))
+
+
+### Bug Fixes
+
+* **macos:** reduce companion idle work ([#99](https://github.com/airlock-dev/airlock/issues/99)) ([1e48db9](https://github.com/airlock-dev/airlock/commit/1e48db9e9fe578bcb21b39a48db93a67366f1a59))
+
 ## [0.2.32](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.31...airlock-bot-v0.2.32) (2026-05-07)
 
 
