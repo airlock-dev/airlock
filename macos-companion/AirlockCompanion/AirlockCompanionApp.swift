@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import Combine
 
 @main
 struct AirlockCompanionApp: App {
@@ -17,6 +18,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     static let sharedViewModel = AppViewModel()
 
     private var statusBarController: StatusBarController?
+    private var badgeCancellable: AnyCancellable?
     private let viewModel = AppDelegate.sharedViewModel
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -39,20 +41,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         viewModel.start()
 
         // Observe pending count changes to update badge
-        Task {
-            var previousCount = 0
-            while !Task.isCancelled {
-                let count = viewModel.pendingCount
-                if count != previousCount {
-                    statusBarController?.updateBadge(count: count)
-                    previousCount = count
-                }
-                try? await Task.sleep(for: .milliseconds(250))
+        badgeCancellable = viewModel.$pendingRequests
+            .map(\.count)
+            .removeDuplicates()
+            .sink { [weak self] count in
+                self?.statusBarController?.updateBadge(count: count)
             }
-        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        badgeCancellable?.cancel()
         viewModel.stop()
     }
 }

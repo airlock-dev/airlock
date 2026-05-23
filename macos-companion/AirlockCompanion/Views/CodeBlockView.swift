@@ -37,6 +37,9 @@ struct CodeBlockView: NSViewRepresentable {
     func updateNSView(_ nsView: NSScrollView, context: Context) {
         nsView.hasVerticalScroller = showsScrollers
         guard let textView = nsView.documentView as? NSTextView else { return }
+        if textView.attributedString().isEqual(to: attributedText) {
+            return
+        }
         textView.textStorage?.setAttributedString(attributedText)
     }
 }

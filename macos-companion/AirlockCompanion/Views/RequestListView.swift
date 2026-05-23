@@ -12,7 +12,6 @@ struct RequestListView: View {
                     ForEach(Array(viewModel.pendingRequests.enumerated()), id: \.element.id) { index, request in
                         RequestCardView(
                             request: request,
-                            currentTime: viewModel.currentTime,
                             isSelected: index == selectedIndex,
                             autoExpandWhenSelected: viewModel.autoExpandSelectedRequest,
                             onShowDetails: { onShowDetails(request) },

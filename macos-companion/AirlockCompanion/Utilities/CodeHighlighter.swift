@@ -10,6 +10,16 @@ enum CodeLanguage {
 
 enum CodeHighlighter {
     private static let monoFont = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+    private static let highlightCache: NSCache<NSString, NSAttributedString> = {
+        let cache = NSCache<NSString, NSAttributedString>()
+        cache.countLimit = 200
+        return cache
+    }()
+    private static let argsPreviewCache: NSCache<NSString, NSAttributedString> = {
+        let cache = NSCache<NSString, NSAttributedString>()
+        cache.countLimit = 100
+        return cache
+    }()
 
     static func highlightedString(for value: JSONValue) -> NSAttributedString {
         let text = formattedText(for: value)
@@ -17,15 +27,23 @@ enum CodeHighlighter {
     }
 
     static func highlight(_ text: String) -> NSAttributedString {
+        let key = cacheKey(parts: ["highlight", appearanceToken, highlighterToken, text])
+        if let cached = highlightCache.object(forKey: key) {
+            return cached
+        }
+
         // Use embedded highlight.js for auto-detected syntax coloring
         if let result = EmbeddedHighlighter.shared?.highlight(text) {
             let mutable = NSMutableAttributedString(attributedString: result)
             mutable.addAttribute(.font, value: monoFont, range: NSRange(location: 0, length: mutable.length))
+            highlightCache.setObject(mutable, forKey: key)
             return mutable
         }
 
         // Fallback: hand-rolled regex highlighting
-        return highlightedStringFallback(for: text, language: detectLanguage(for: text))
+        let highlighted = highlightedStringFallback(for: text, language: detectLanguage(for: text))
+        highlightCache.setObject(highlighted, forKey: key)
+        return highlighted
     }
 
     private static func highlightedStringFallback(for text: String, language: CodeLanguage) -> NSAttributedString {
@@ -110,6 +128,11 @@ enum CodeHighlighter {
 
     /// Builds a combined syntax-highlighted attributed string for all args (for use in card previews).
     static func highlightedArgsPreview(for args: [String: JSONValue], fontSize: CGFloat = 11) -> NSAttributedString {
+        let cacheKey = argsPreviewCacheKey(for: args, fontSize: fontSize)
+        if let cached = argsPreviewCache.object(forKey: cacheKey) {
+            return cached
+        }
+
         let combined = NSMutableAttributedString()
         let sorted = args.sorted(by: { $0.key < $1.key })
 
@@ -142,7 +165,27 @@ enum CodeHighlighter {
             }
         }
 
+        argsPreviewCache.setObject(combined, forKey: cacheKey)
         return combined
+    }
+
+    private static var appearanceToken: String {
+        NSApplication.shared.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? "dark" : "light"
+    }
+
+    private static var highlighterToken: String {
+        EmbeddedHighlighter.shared == nil ? "fallback" : "embedded"
+    }
+
+    private static func argsPreviewCacheKey(for args: [String: JSONValue], fontSize: CGFloat) -> NSString {
+        let parts = args.sorted(by: { $0.key < $1.key }).flatMap { key, value in
+            [key, formattedText(for: value)]
+        }
+        return cacheKey(parts: ["args-preview", appearanceToken, highlighterToken, String(describing: fontSize)] + parts)
+    }
+
+    private static func cacheKey(parts: [String]) -> NSString {
+        parts.joined(separator: "\u{1f}") as NSString
     }
 
     private static let baseAttributes: [NSAttributedString.Key: Any] = [

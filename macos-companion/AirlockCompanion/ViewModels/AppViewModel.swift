@@ -1,12 +1,12 @@
 import Foundation
 import SwiftUI
+import Combine
 
 @MainActor
 final class AppViewModel: ObservableObject {
     @Published var pendingRequests: [ApprovalRequest] = []
     @Published var resolvedRequests: [ResolvedRequest] = []
     @Published var connectionState: ConnectionState = .disconnected(nil)
-    @Published var currentTime: Date = Date()
     @Published var selectedIndex: Int = 0
     @Published private(set) var appVersion: String
     @Published private(set) var availableUpdateVersion: String?
@@ -39,8 +39,8 @@ final class AppViewModel: ObservableObject {
     private let updateChecker: UpdateChecker
     var onSettingsChanged: (() -> Void)?
     private var sseTask: Task<Void, Never>?
-    private var timerTask: Task<Void, Never>?
     private var updateCheckTask: Task<Void, Never>?
+    private var cancellables = Set<AnyCancellable>()
     /// Lookup of all requests we've ever seen, so history always has metadata
     private var seenRequests: [String: ApprovalRequest] = [:]
 
@@ -57,6 +57,13 @@ final class AppViewModel: ObservableObject {
         let bundleVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0"
         self.appVersion = bundleVersion == "0.0.0" ? "0.0.0 (dev)" : bundleVersion
 
+        sseClient.$connectionState
+            .removeDuplicates()
+            .sink { [weak self] state in
+                self?.connectionState = state
+            }
+            .store(in: &cancellables)
+
         notificationManager.onAction = { [weak self] code, action in
             guard let self else { return }
             Task { @MainActor in
@@ -71,7 +78,6 @@ final class AppViewModel: ObservableObject {
 
     func start() {
         notificationManager.requestAuthorization()
-        startTimer()
         startUpdateChecks()
         connectSSE()
     }
@@ -79,8 +85,6 @@ final class AppViewModel: ObservableObject {
     func stop() {
         sseTask?.cancel()
         sseTask = nil
-        timerTask?.cancel()
-        timerTask = nil
         updateCheckTask?.cancel()
         updateCheckTask = nil
         sseClient.disconnect()
@@ -149,16 +153,6 @@ final class AppViewModel: ObservableObject {
                 self.handleSSEMessage(message)
             }
         }
-
-        // Observe connection state
-        Task { [weak self] in
-            guard let self else { return }
-            // Poll connection state from SSEClient
-            while !Task.isCancelled {
-                self.connectionState = self.sseClient.connectionState
-                try? await Task.sleep(for: .milliseconds(250))
-            }
-        }
     }
 
     private func handleSSEMessage(_ message: SSEMessage) {
@@ -195,17 +189,6 @@ final class AppViewModel: ObservableObject {
             self.resolvedRequests.insert(resolved, at: 0)
             if self.resolvedRequests.count > Constants.maxResolvedRequests {
                 self.resolvedRequests = Array(self.resolvedRequests.prefix(Constants.maxResolvedRequests))
-            }
-        }
-    }
-
-    private func startTimer() {
-        timerTask?.cancel()
-        timerTask = Task { [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(1))
-                guard let self, !Task.isCancelled else { break }
-                self.currentTime = Date()
             }
         }
     }
