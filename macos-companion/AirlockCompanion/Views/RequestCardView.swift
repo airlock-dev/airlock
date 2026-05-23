@@ -3,7 +3,6 @@ import SwiftUI
 
 struct RequestCardView: View {
     let request: ApprovalRequest
-    let currentTime: Date
     var isSelected: Bool = false
     var autoExpandWhenSelected: Bool = false
     let onShowDetails: () -> Void
@@ -15,9 +14,6 @@ struct RequestCardView: View {
 
     private var argsHighlighted: NSAttributedString {
         CodeHighlighter.highlightedArgsPreview(for: request.args)
-    }
-    private var argsLineCount: Int {
-        argsHighlighted.string.components(separatedBy: "\n").count
     }
 
     private var isEffectivelyExpanded: Bool {
@@ -52,15 +48,14 @@ struct RequestCardView: View {
 
                 CountdownTimerView(
                     deadline: request.deadline,
-                    totalDuration: TimeInterval(request.timeoutMs) / 1000.0,
-                    currentTime: currentTime
+                    totalDuration: TimeInterval(request.timeoutMs) / 1000.0
                 )
             }
 
             // Args section — syntax-highlighted preview
             if !request.args.isEmpty {
                 let highlighted = argsHighlighted
-                let lineCount = argsLineCount
+                let lineCount = highlighted.string.components(separatedBy: "\n").count
 
                 VStack(alignment: .leading, spacing: 4) {
                     CodeBlockView(attributedText: highlighted, showsScrollers: false)
