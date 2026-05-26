@@ -439,6 +439,25 @@
                 },
                 "default": []
               },
+              "remember_allow": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "tool": {
+                      "type": "string"
+                    },
+                    "expires_at": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "tool"
+                  ],
+                  "additionalProperties": false
+                },
+                "default": []
+              },
               "ask": {
                 "type": "array",
                 "items": {

@@ -64,11 +64,11 @@ final class AppViewModel: ObservableObject {
             }
             .store(in: &cancellables)
 
-        notificationManager.onAction = { [weak self] code, action in
+        notificationManager.onAction = { [weak self] code, action, remember, durationMs in
             guard let self else { return }
             Task { @MainActor in
                 if action == "approved" {
-                    self.approve(code: code)
+                    self.approve(code: code, remember: remember, durationMs: durationMs)
                 } else {
                     self.deny(code: code)
                 }
@@ -94,13 +94,13 @@ final class AppViewModel: ObservableObject {
         connectSSE()
     }
 
-    func approve(code: String) {
+    func approve(code: String, remember: ApprovalRememberMode? = nil, durationMs: Int? = nil) {
         moveToResolved(code: code, action: "approved")
         notificationManager.removeNotification(code: code)
 
         let client = apiClient
         Task {
-            try? await client.approve(code: code)
+            try? await client.approve(code: code, remember: remember, durationMs: durationMs)
         }
     }
 

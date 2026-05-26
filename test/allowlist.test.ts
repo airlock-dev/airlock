@@ -148,6 +148,7 @@ describe('bestSpecificity()', () => {
 function makeAgent(allow: string[], ask: string[] = [], deny: string[] = []): AgentConfig {
   return {
     allow,
+    remember_allow: [],
     ask,
     deny,
     tool_overrides: {},
@@ -318,27 +319,27 @@ describe('AllowlistEngine', () => {
       it('each tier wins when it has the most specific pattern', () => {
         const engine = new AllowlistEngine({
           agent1: makeAgent(
-            ['bash/git*'],       // specificity 8
-            ['bash/*'],          // specificity 5
-            ['bash/rm*'],        // specificity 7
+            ['bash/git*'], // specificity 8
+            ['bash/*'], // specificity 5
+            ['bash/rm*'] // specificity 7
           ),
         });
-        expect(engine.evaluate('agent1', 'bash/git')).toBe('allow');    // 8 wins
-        expect(engine.evaluate('agent1', 'bash/rm')).toBe('deny');      // 7 beats 5
-        expect(engine.evaluate('agent1', 'bash/curl')).toBe('ask');     // only 5 matches
+        expect(engine.evaluate('agent1', 'bash/git')).toBe('allow'); // 8 wins
+        expect(engine.evaluate('agent1', 'bash/rm')).toBe('deny'); // 7 beats 5
+        expect(engine.evaluate('agent1', 'bash/curl')).toBe('ask'); // only 5 matches
       });
 
       it('most specific wins across all three tiers simultaneously', () => {
         const engine = new AllowlistEngine({
           agent1: makeAgent(
-            ['bash/git'],        // exact, specificity 9
-            ['bash/git*'],       // specificity 8
-            ['bash/*'],          // specificity 5
+            ['bash/git'], // exact, specificity 9
+            ['bash/git*'], // specificity 8
+            ['bash/*'] // specificity 5
           ),
         });
-        expect(engine.evaluate('agent1', 'bash/git')).toBe('allow');    // exact 9 wins
-        expect(engine.evaluate('agent1', 'bash/git-lfs')).toBe('ask');  // 8 beats 5
-        expect(engine.evaluate('agent1', 'bash/curl')).toBe('deny');    // only 5 matches
+        expect(engine.evaluate('agent1', 'bash/git')).toBe('allow'); // exact 9 wins
+        expect(engine.evaluate('agent1', 'bash/git-lfs')).toBe('ask'); // 8 beats 5
+        expect(engine.evaluate('agent1', 'bash/curl')).toBe('deny'); // only 5 matches
       });
     });
 
@@ -379,13 +380,43 @@ describe('AllowlistEngine', () => {
       });
     });
 
+    describe('remembered allow', () => {
+      it('allows a remembered exact rule to override an exact ask rule', () => {
+        const agent = makeAgent([], ['github/create_pr']);
+        agent.remember_allow = [{ tool: 'github/create_pr' }];
+        const engine = new AllowlistEngine({ agent1: agent });
+
+        expect(engine.evaluate('agent1', 'github/create_pr')).toBe('allow');
+      });
+
+      it('allows an unexpired remembered exact rule to override an exact ask rule', () => {
+        const agent = makeAgent([], ['github/create_pr']);
+        agent.remember_allow = [
+          { tool: 'github/create_pr', expires_at: new Date(Date.now() + 60_000).toISOString() },
+        ];
+        const engine = new AllowlistEngine({ agent1: agent });
+
+        expect(engine.evaluate('agent1', 'github/create_pr')).toBe('allow');
+      });
+
+      it('ignores expired remembered allow rules', () => {
+        const agent = makeAgent([], ['github/create_pr']);
+        agent.remember_allow = [
+          { tool: 'github/create_pr', expires_at: new Date(Date.now() - 60_000).toISOString() },
+        ];
+        const engine = new AllowlistEngine({ agent1: agent });
+
+        expect(engine.evaluate('agent1', 'github/create_pr')).toBe('ask');
+      });
+    });
+
     describe('multiple patterns in same tier', () => {
       it('uses the most specific matching pattern within a tier', () => {
         // allow has both broad and specific; the specific one determines the tier's score
         const engine = new AllowlistEngine({
           agent1: makeAgent(
-            ['bash/*', 'bash/git'],     // best allow specificity: exact 9
-            ['bash/git*'],              // best ask specificity: 8
+            ['bash/*', 'bash/git'], // best allow specificity: exact 9
+            ['bash/git*'] // best ask specificity: 8
           ),
         });
         // exact allow (9) beats ask wildcard (8)
@@ -432,7 +463,7 @@ describe('AllowlistEngine', () => {
         // ask — catch-all for bash, sensitive file ops
         ['bash/*', 'file/edit', 'file/write'],
         // deny — dangerous bash executables, complex commands
-        ['bash/rm*', 'bash/sudo*', 'bash/_complex', 'bash/_empty'],
+        ['bash/rm*', 'bash/sudo*', 'bash/_complex', 'bash/_empty']
       ),
     });
 

@@ -4,7 +4,7 @@ import UserNotifications
 
 @MainActor
 final class NotificationManager: NSObject, ObservableObject, UNUserNotificationCenterDelegate {
-    var onAction: ((String, String) -> Void)?
+    var onAction: ((String, String, ApprovalRememberMode?, Int?) -> Void)?
     private var notificationCenter: UNUserNotificationCenter?
     private var isAvailable = false
 
@@ -45,9 +45,21 @@ final class NotificationManager: NSObject, ObservableObject, UNUserNotificationC
             options: [.destructive]
         )
 
+        let allowOneHourAction = UNNotificationAction(
+            identifier: Constants.NotificationCategory.allowOneHourAction,
+            title: "Allow 1 Hour",
+            options: [.foreground]
+        )
+
+        let alwaysAllowAction = UNNotificationAction(
+            identifier: Constants.NotificationCategory.alwaysAllowAction,
+            title: "Always Allow",
+            options: [.foreground]
+        )
+
         let category = UNNotificationCategory(
             identifier: Constants.NotificationCategory.approvalRequest,
-            actions: [approveAction, denyAction],
+            actions: [approveAction, allowOneHourAction, alwaysAllowAction, denyAction],
             intentIdentifiers: [],
             options: []
         )
@@ -107,19 +119,35 @@ final class NotificationManager: NSObject, ObservableObject, UNUserNotificationC
 
         let actionIdentifier = response.actionIdentifier
         let action: String?
+        let remember: ApprovalRememberMode?
+        let durationMs: Int?
 
         switch actionIdentifier {
         case Constants.NotificationCategory.approveAction:
             action = "approved"
+            remember = nil
+            durationMs = nil
+        case Constants.NotificationCategory.allowOneHourAction:
+            action = "approved"
+            remember = .temporary
+            durationMs = 60 * 60 * 1000
+        case Constants.NotificationCategory.alwaysAllowAction:
+            action = "approved"
+            remember = .always
+            durationMs = nil
         case Constants.NotificationCategory.denyAction:
             action = "denied"
+            remember = nil
+            durationMs = nil
         default:
             action = nil
+            remember = nil
+            durationMs = nil
         }
 
         if let action {
             Task { @MainActor in
-                self.onAction?(code, action)
+                self.onAction?(code, action, remember, durationMs)
             }
         }
 

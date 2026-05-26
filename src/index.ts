@@ -119,7 +119,7 @@ Examples:
     }
 
     // Full gateway mode
-    const gateway = new Gateway(config);
+    const gateway = new Gateway(config, configPath);
 
     const watcher = new ConfigWatcher(configPath);
     watcher.on('reload', (newConfig) => {

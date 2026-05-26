@@ -18,6 +18,8 @@ enum Constants {
     enum NotificationCategory {
         static let approvalRequest = "APPROVAL_REQUEST"
         static let approveAction = "APPROVE_ACTION"
+        static let allowOneHourAction = "ALLOW_ONE_HOUR_ACTION"
+        static let alwaysAllowAction = "ALWAYS_ALLOW_ACTION"
         static let denyAction = "DENY_ACTION"
     }
 
