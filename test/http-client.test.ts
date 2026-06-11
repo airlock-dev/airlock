@@ -26,6 +26,13 @@ const transportInstances: {
   close: ReturnType<typeof vi.fn>;
 }[] = [];
 
+const clientInstances: {
+  connect: ReturnType<typeof vi.fn>;
+  listTools: ReturnType<typeof vi.fn>;
+  callTool: ReturnType<typeof vi.fn>;
+  getServerVersion: ReturnType<typeof vi.fn>;
+}[] = [];
+
 vi.mock('@modelcontextprotocol/sdk/client/streamableHttp.js', () => {
   return {
     StreamableHTTPClientTransport: vi.fn().mockImplementation(() => {
@@ -44,18 +51,22 @@ vi.mock('@modelcontextprotocol/sdk/client/streamableHttp.js', () => {
 let clientConnectCallCount = 0;
 vi.mock('@modelcontextprotocol/sdk/client/index.js', () => {
   return {
-    Client: vi.fn().mockImplementation(() => ({
-      connect: vi.fn().mockImplementation(async () => {
-        clientConnectCallCount++;
-        if (clientConnectCallCount === 1) {
-          throw new UnauthorizedError('OAuth required');
-        }
-        // Subsequent connects succeed — tokens are now present
-      }),
-      listTools: vi.fn().mockResolvedValue({ tools: [] }),
-      callTool: vi.fn(),
-      getServerVersion: vi.fn(),
-    })),
+    Client: vi.fn().mockImplementation(() => {
+      const client = {
+        connect: vi.fn().mockImplementation(async () => {
+          clientConnectCallCount++;
+          if (clientConnectCallCount === 1) {
+            throw new UnauthorizedError('OAuth required');
+          }
+          // Subsequent connects succeed — tokens are now present
+        }),
+        listTools: vi.fn().mockResolvedValue({ tools: [] }),
+        callTool: vi.fn().mockResolvedValue({ content: [] }),
+        getServerVersion: vi.fn(),
+      };
+      clientInstances.push(client);
+      return client;
+    }),
   };
 });
 
@@ -77,6 +88,7 @@ const { HttpMcpClient } = await import('../src/pool/http-client.js');
 
 beforeEach(() => {
   transportInstances.length = 0;
+  clientInstances.length = 0;
   clientConnectCallCount = 0;
   vi.clearAllMocks();
 });
@@ -217,5 +229,55 @@ describe('HttpMcpClient — reconnect backoff', () => {
     transportInstances[0].onclose?.();
     await new Promise((r) => setTimeout(r, 50));
     expect(transportInstances.length).toBe(countBefore);
+  });
+});
+
+describe('HttpMcpClient — stale Streamable HTTP session recovery', () => {
+  it('reconnects and retries listTools once when the server rejects the cached session', async () => {
+    clientConnectCallCount = 1;
+    const client = new HttpMcpClient('amoura', 'https://mcp.amoura.io/mcp');
+    await client.connect();
+
+    clientInstances[0].listTools.mockRejectedValueOnce(
+      new Error('Bad Request: No valid session ID provided')
+    );
+
+    await expect(client.listTools()).resolves.toEqual([]);
+    expect(transportInstances).toHaveLength(2);
+    expect(transportInstances[0].close).toHaveBeenCalledTimes(1);
+    expect(clientInstances[0].listTools).toHaveBeenCalledTimes(1);
+    expect(clientInstances[1].listTools).toHaveBeenCalledTimes(1);
+  });
+
+  it('reconnects and retries callTool once when the server rejects the cached session', async () => {
+    clientConnectCallCount = 1;
+    const client = new HttpMcpClient('amoura', 'https://mcp.amoura.io/mcp');
+    await client.connect();
+
+    clientInstances[0].callTool.mockRejectedValueOnce(new Error('Session not found: stale-id'));
+
+    await expect(client.callTool('health_get_health_status', {})).resolves.toEqual({
+      content: [],
+    });
+    expect(transportInstances).toHaveLength(2);
+    expect(transportInstances[0].close).toHaveBeenCalledTimes(1);
+    expect(clientInstances[1].callTool).toHaveBeenCalledWith({
+      name: 'health_get_health_status',
+      arguments: {},
+    });
+  });
+
+  it('does not reconnect for non-session tool errors', async () => {
+    clientConnectCallCount = 1;
+    const client = new HttpMcpClient('amoura', 'https://mcp.amoura.io/mcp');
+    await client.connect();
+
+    clientInstances[0].callTool.mockRejectedValueOnce(new Error('Bad Request: invalid payload'));
+
+    await expect(client.callTool('health_get_health_status', {})).rejects.toThrow(
+      'Bad Request: invalid payload'
+    );
+    expect(transportInstances).toHaveLength(1);
+    expect(transportInstances[0].close).not.toHaveBeenCalled();
   });
 });

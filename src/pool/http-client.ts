@@ -25,6 +25,17 @@ function friendlyError(err: unknown): string {
   return msg.split('\n')[0];
 }
 
+function isInvalidSessionError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  const normalized = msg.toLowerCase();
+  return (
+    normalized.includes('no valid session id provided') ||
+    normalized.includes('missing session id') ||
+    normalized.includes('invalid or expired session id') ||
+    normalized.includes('session not found')
+  );
+}
+
 export class HttpMcpClient {
   private client?: Client;
   private transport?: StreamableHTTPClientTransport;
@@ -158,14 +169,18 @@ export class HttpMcpClient {
   }
 
   async listTools(): Promise<Tool[]> {
-    if (!this.client || !this.ready) throw new Error(`MCP ${this.id} not connected`);
-    const result = await this.client.listTools();
-    return result.tools;
+    return this.withSessionRetry('listTools', async () => {
+      if (!this.client || !this.ready) throw new Error(`MCP ${this.id} not connected`);
+      const result = await this.client.listTools();
+      return result.tools;
+    });
   }
 
   async callTool(name: string, args: Record<string, unknown>): Promise<unknown> {
-    if (!this.client || !this.ready) throw new Error(`MCP ${this.id} not connected`);
-    return this.client.callTool({ name, arguments: args });
+    return this.withSessionRetry('callTool', async () => {
+      if (!this.client || !this.ready) throw new Error(`MCP ${this.id} not connected`);
+      return this.client.callTool({ name, arguments: args });
+    });
   }
 
   getServerInfo(): { name: string; version: string } | undefined {
@@ -179,6 +194,28 @@ export class HttpMcpClient {
   private notifyReady(): void {
     for (const cb of this.readyListeners) {
       cb();
+    }
+  }
+
+  private async withSessionRetry<T>(operation: string, fn: () => Promise<T>): Promise<T> {
+    try {
+      return await fn();
+    } catch (err) {
+      if (!isInvalidSessionError(err)) throw err;
+      log.warn(
+        { id: this.id, operation, reason: friendlyError(err) },
+        'HTTP MCP session invalid, reconnecting'
+      );
+      this.ready = false;
+      const oldTransport = this.transport;
+      if (oldTransport) oldTransport.onclose = undefined;
+      await oldTransport
+        ?.close()
+        .catch((closeErr) =>
+          log.debug({ id: this.id, reason: friendlyError(closeErr) }, 'HTTP MCP close failed')
+        );
+      await this.connect();
+      return fn();
     }
   }
 
