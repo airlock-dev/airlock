@@ -3,12 +3,12 @@ import { childLogger } from '../util/logger.js';
 const log = childLogger('sanitizer');
 
 export const SUSPICIOUS_PATTERNS = [
-  /ignore\s+(previous|above|prior)/i,
-  /you\s+are\s+/i,
-  /new\s+instruction/i,
-  /override/i,
-  /\[SYSTEM\]/i,
-  /system:/i,
+  /ignore\s+(previous|above|prior)\s+(instructions?|messages?|context|prompt)/i,
+  /you\s+are\s+(now\s+)?(a|an)\s+.*\b(ai|assistant|chatbot|system)\b/i,
+  /new\s+instructions?\s*:/i,
+  /override\s+(all\s+)?((previous|above|prior|system|developer)\s+)?instructions?/i,
+  /\[(system|developer)\]/i,
+  /^\s*(system|developer)\s*:/im,
 ];
 
 const MAX_DESCRIPTION_LENGTH = 500;

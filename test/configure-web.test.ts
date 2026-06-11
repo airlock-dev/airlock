@@ -138,12 +138,12 @@ approvals:
     expect(recommendedDecision({ destructiveHint: true })).toBe('ask');
     expect(recommendedDecision({ openWorldHint: true })).toBe('ask');
     expect(recommendedDecision({ readOnlyHint: true })).toBe('allow');
-    expect(recommendedDecision({}, ['override'])).toBe('deny');
-    expect(annotationTags({ readOnlyHint: true, openWorldHint: true }, ['override'])).toEqual([
-      'readonly',
-      'open-world',
-      'injection',
-    ]);
+    expect(recommendedDecision({}, ['override\\s+(all\\s+)?instructions?'])).toBe('deny');
+    expect(
+      annotationTags({ readOnlyHint: true, openWorldHint: true }, [
+        'override\\s+(all\\s+)?instructions?',
+      ])
+    ).toEqual(['readonly', 'open-world', 'injection']);
   });
 });
 
