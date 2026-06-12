@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.34](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.33...airlock-bot-v0.2.34) (2026-06-11)
+
+
+### Bug Fixes
+
+* recover stale http mcp sessions ([#101](https://github.com/airlock-dev/airlock/issues/101)) ([b93bf28](https://github.com/airlock-dev/airlock/commit/b93bf281974b5e7ad8e09c183d6218ede65fd6e8))
+
 ## [0.2.33](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.32...airlock-bot-v0.2.33) (2026-05-23)
 
 
