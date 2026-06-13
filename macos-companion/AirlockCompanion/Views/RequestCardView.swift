@@ -12,8 +12,8 @@ struct RequestCardView: View {
     @State private var isExpanded = false
     @State private var acted = false
 
-    private var argsHighlighted: NSAttributedString {
-        CodeHighlighter.highlightedArgsPreview(for: request.args)
+    private var argsPreview: String {
+        CodeHighlighter.argsPreviewString(for: request.args)
     }
 
     private var isEffectivelyExpanded: Bool {
@@ -52,16 +52,19 @@ struct RequestCardView: View {
                 )
             }
 
-            // Args section — syntax-highlighted preview
+            // Args section - keep cards cheap; rich highlighting lives in detail.
             if !request.args.isEmpty {
-                let highlighted = argsHighlighted
-                let lineCount = highlighted.string.components(separatedBy: "\n").count
+                let preview = argsPreview
+                let lineCount = preview.components(separatedBy: "\n").count
 
                 VStack(alignment: .leading, spacing: 4) {
-                    CodeBlockView(attributedText: highlighted, showsScrollers: false)
-                        .frame(height: isEffectivelyExpanded
-                               ? min(CGFloat(lineCount) * 15 + 20, 220)
-                               : 58)
+                    Text(preview)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                        .lineLimit(isEffectivelyExpanded ? 12 : 3)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .fixedSize(horizontal: false, vertical: true)
 
                     if lineCount > 3 && showsExpandToggle {
                         Button(action: { isExpanded.toggle() }) {

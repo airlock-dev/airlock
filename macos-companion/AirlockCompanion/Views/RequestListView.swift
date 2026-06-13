@@ -19,10 +19,6 @@ struct RequestListView: View {
                             onDeny: { viewModel.deny(code: request.code) }
                         )
                         .id(request.id)
-                        .transition(.asymmetric(
-                            insertion: .move(edge: .top).combined(with: .opacity),
-                            removal: .scale.combined(with: .opacity)
-                        ))
                     }
                 }
                 .padding(.horizontal, 12)
@@ -30,12 +26,9 @@ struct RequestListView: View {
                 .padding(.vertical, 8)
             }
             .scrollIndicators(.hidden)
-            .animation(.spring, value: viewModel.pendingRequests.map(\.id))
             .onChange(of: selectedIndex) { _, newIndex in
                 guard newIndex < viewModel.pendingRequests.count else { return }
-                withAnimation(.easeInOut(duration: 0.15)) {
-                    proxy.scrollTo(viewModel.pendingRequests[newIndex].id, anchor: .center)
-                }
+                proxy.scrollTo(viewModel.pendingRequests[newIndex].id, anchor: .center)
             }
         }
     }

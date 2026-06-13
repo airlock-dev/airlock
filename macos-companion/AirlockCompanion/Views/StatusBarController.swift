@@ -24,7 +24,7 @@ final class StatusBarController {
         }
         popover.contentSize = NSSize(width: Constants.popoverWidth, height: Constants.popoverMaxHeight)
         popover.behavior = .transient
-        popover.animates = true
+        popover.animates = false
         popover.contentViewController = NSHostingController(rootView: contentView)
 
         viewModel.onSettingsChanged = { [weak self] in

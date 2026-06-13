@@ -126,11 +126,11 @@ struct PopoverContentView: View {
 
             let count = viewModel.pendingRequests.count
             if key == "j" || press.key == .downArrow {
-                if count > 0 { withAnimation(.easeInOut(duration: 0.15)) { viewModel.selectedIndex = min(viewModel.selectedIndex + 1, count - 1) } }
+                if count > 0 { viewModel.selectedIndex = min(viewModel.selectedIndex + 1, count - 1) }
                 return .handled
             }
             if key == "k" || press.key == .upArrow {
-                if count > 0 { withAnimation(.easeInOut(duration: 0.15)) { viewModel.selectedIndex = max(viewModel.selectedIndex - 1, 0) } }
+                if count > 0 { viewModel.selectedIndex = max(viewModel.selectedIndex - 1, 0) }
                 return .handled
             }
             if key == "a" { if count > 0 { viewModel.approveSelectedRequest() }; return .handled }
