@@ -184,12 +184,13 @@ jobs:
             version "${APP_VERSION}"
             sha256 "${SHA256}"
 
-            url "https://github.com/airlock-dev/airlock/releases/download/companion-v#{version}/AirlockCompanion.zip"
+            url "https://github.com/airlock-dev/airlock/releases/download/companion-v#{version}/AirlockCompanion.zip",
+                verified: "github.com/airlock-dev/airlock/"
             name "Airlock Companion"
             desc "macOS menu bar companion for Airlock HITL approvals"
             homepage "https://airlock.bot"
 
-            depends_on macos: ">= :sonoma"
+            depends_on macos: :sonoma
 
             app "AirlockCompanion.app"
 
