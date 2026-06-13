@@ -7,10 +7,12 @@ Airlock evaluates tool access with one simple model:
 - `allow` permits the call immediately
 - anything unmatched is default-denied
 
+The companion dashboard may also add `remember_allow` entries. These are per-agent, exact-tool exceptions; if `expires_at` is present, the exception is ignored after that timestamp.
+
 Precedence is always:
 
 ```text
-deny > ask > allow > default-deny
+deny > remember_allow > ask > allow > default-deny
 ```
 
 ## Policy is per agent

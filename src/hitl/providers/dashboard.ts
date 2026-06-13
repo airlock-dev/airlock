@@ -3,6 +3,7 @@ import type { Server } from 'http';
 import { childLogger } from '../../util/logger.js';
 import { VERSION } from '../../version.js';
 import type { HitlProvider, HitlNotification, ApprovalApi } from './types.js';
+import { rememberAllow, type RememberAllowMode } from '../../config/mutator.js';
 
 const log = childLogger('hitl-dashboard');
 
@@ -11,6 +12,7 @@ const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
 
 export interface DashboardHitlConfig {
   port: number;
+  config_path?: string;
 }
 
 export class DashboardHitlProvider implements HitlProvider {
@@ -51,6 +53,50 @@ export class DashboardHitlProvider implements HitlProvider {
       if (req.method === 'POST' && url.pathname === '/approve') {
         const code = url.searchParams.get('code');
         if (code) {
+          const pendingRequest = this.pending.get(code);
+          const remember = url.searchParams.get('remember');
+          if (remember) {
+            if (!this.config.config_path) {
+              res.writeHead(400, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'Config mutation is not available' }));
+              return;
+            }
+            if (remember !== 'always' && remember !== 'temporary') {
+              res.writeHead(400, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'Invalid remember mode' }));
+              return;
+            }
+            if (!pendingRequest) {
+              res.writeHead(404, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'No pending request found for code' }));
+              return;
+            }
+
+            const durationMsParam = url.searchParams.get('duration_ms');
+            const durationMs = durationMsParam ? Number(durationMsParam) : undefined;
+            if (durationMs !== undefined && (!Number.isFinite(durationMs) || durationMs <= 0)) {
+              res.writeHead(400, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'Invalid duration_ms' }));
+              return;
+            }
+
+            try {
+              const result = rememberAllow({
+                configPath: this.config.config_path,
+                agentId: pendingRequest.agentId,
+                tool: pendingRequest.tool,
+                mode: remember as RememberAllowMode,
+                ...(durationMs ? { durationMs } : {}),
+              });
+              log.info(result, 'Updated config from approval decision');
+            } catch (err) {
+              log.error({ err, code, remember }, 'Failed to update config from approval decision');
+              res.writeHead(500, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'Failed to update config' }));
+              return;
+            }
+          }
+
           this.pending.delete(code);
           this.approvalApi.approve(code);
           this.broadcast({ type: 'resolved', code, action: 'approved' });
@@ -348,7 +394,7 @@ function openModal(code) {
     var which = el.classList.contains('approved') ? 'approved' : 'denied';
     footer.innerHTML = '<div class="status ' + which + '">' + which + '</div>';
   } else {
-    footer.innerHTML = '<button class="btn btn-approve" onclick="actAndClose(\\x27approve\\x27,\\x27' + code + '\\x27)">Approve<kbd>A</kbd></button><button class="btn btn-deny" onclick="actAndClose(\\x27deny\\x27,\\x27' + code + '\\x27)">Deny<kbd>D</kbd></button>';
+    footer.innerHTML = actionButtons(code, true);
   }
   overlay.classList.add('open');
 }
@@ -359,10 +405,18 @@ function closeModal(e) {
   currentModalCode = null;
 }
 
-function actAndClose(action, code) {
-  act(action, code);
+function actAndClose(action, code, remember, durationMs) {
+  act(action, code, remember, durationMs);
   document.getElementById('modal-overlay').classList.remove('open');
   currentModalCode = null;
+}
+
+function actionButtons(code, closeAfter) {
+  var fn = closeAfter ? 'actAndClose' : 'act';
+  return '<button class="btn btn-approve" onclick="' + fn + '(\\x27approve\\x27,\\x27' + code + '\\x27)">Approve<kbd>A</kbd></button>' +
+    '<button class="btn btn-approve" onclick="' + fn + '(\\x27approve\\x27,\\x27' + code + '\\x27,\\x27temporary\\x27,3600000)">Allow 1h</button>' +
+    '<button class="btn btn-approve" onclick="' + fn + '(\\x27approve\\x27,\\x27' + code + '\\x27,\\x27always\\x27)">Always Allow</button>' +
+    '<button class="btn btn-deny" onclick="' + fn + '(\\x27deny\\x27,\\x27' + code + '\\x27)">Deny<kbd>D</kbd></button>';
 }
 
 function render(req) {
@@ -381,16 +435,18 @@ function render(req) {
     '<div class="args">' + esc(args) + '</div>' +
     '<div class="code">' + req.code + '</div>' +
     '<div class="actions">' +
-      '<button class="btn btn-approve" onclick="act(\\x27approve\\x27,\\x27' + req.code + '\\x27)">Approve<kbd>A</kbd></button>' +
-      '<button class="btn btn-deny" onclick="act(\\x27deny\\x27,\\x27' + req.code + '\\x27)">Deny<kbd>D</kbd></button>' +
+      actionButtons(req.code, false) +
     '</div>';
   cards.set(req.code, el);
   list.prepend(el);
   empty.style.display = 'none';
 }
 
-function act(action, code) {
-  fetch('/' + action + '?code=' + code, { method: 'POST' });
+function act(action, code, remember, durationMs) {
+  var url = '/' + action + '?code=' + encodeURIComponent(code);
+  if (remember) url += '&remember=' + encodeURIComponent(remember);
+  if (durationMs) url += '&duration_ms=' + encodeURIComponent(String(durationMs));
+  fetch(url, { method: 'POST' });
   var el = cards.get(code);
   if (el) {
     el.querySelector('.actions').innerHTML = '<div class="status ' + action + (action === 'approve' ? 'd' : '') + '">' + action + 'd</div>';

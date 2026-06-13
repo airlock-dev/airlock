@@ -145,6 +145,12 @@ export const AgentHttpConfig = z.object({
 });
 export type AgentHttpConfig = z.infer<typeof AgentHttpConfig>;
 
+export const RememberAllowRule = z.object({
+  tool: z.string(),
+  expires_at: z.string().optional(),
+});
+export type RememberAllowRule = z.infer<typeof RememberAllowRule>;
+
 export const MiddlewareItemConfig = z
   .object({
     name: z.enum([
@@ -187,6 +193,7 @@ export const AgentConfig = z.object({
   token: EnvString.optional(),
   extends: z.array(z.string()).default([]),
   allow: z.array(z.string()).default([]),
+  remember_allow: z.array(RememberAllowRule).default([]),
   ask: z.array(z.string()).default([]),
   deny: z.array(z.string()).default([]),
   tool_overrides: z.record(ToolOverride).default({}),

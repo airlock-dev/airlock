@@ -1,9 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { writeFileSync, mkdtempSync, rmSync } from 'fs';
+import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { loadConfig } from '../src/config/loader.js';
 import { GatewayConfig, getBuiltinProviders, getMcpConfigs } from '../src/config/schema.js';
+import { rememberAllow } from '../src/config/mutator.js';
 
 // --- Schema / env var substitution ---
 
@@ -188,5 +189,86 @@ agents:
     const path = join(dir, 'gateway.yaml');
     writeFileSync(path, yaml);
     expect(() => loadConfig(path)).toThrow(/unknown provider/i);
+  });
+});
+
+describe('rememberAllow()', () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'airlock-cfg-mutate-test-'));
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true });
+  });
+
+  it('adds an always-allow rule only to the requester agent', () => {
+    const path = join(dir, 'gateway.yaml');
+    writeFileSync(
+      path,
+      `
+providers:
+  github: builtin
+agents:
+  requester:
+    ask:
+      - "github/create_pr"
+  other:
+    ask:
+      - "github/create_pr"
+`
+    );
+
+    rememberAllow({
+      configPath: path,
+      agentId: 'requester',
+      tool: 'github/create_pr',
+      mode: 'always',
+    });
+    const config = loadConfig(path);
+
+    expect(config.agents['requester'].allow).toContain('github/create_pr');
+    expect(config.agents['requester'].remember_allow).toContainEqual({ tool: 'github/create_pr' });
+    expect(config.agents['requester'].ask).not.toContain('github/create_pr');
+    expect(config.agents['other'].allow).not.toContain('github/create_pr');
+    expect(config.agents['other'].ask).toContain('github/create_pr');
+  });
+
+  it('adds an expiring temporary allow rule and prunes expired entries', () => {
+    const path = join(dir, 'gateway.yaml');
+    writeFileSync(
+      path,
+      `
+providers:
+  github: builtin
+agents:
+  requester:
+    ask:
+      - "github/create_pr"
+    remember_allow:
+      - tool: "old/tool"
+        expires_at: "2020-01-01T00:00:00.000Z"
+`
+    );
+
+    const now = new Date('2026-05-26T10:00:00.000Z');
+    const result = rememberAllow({
+      configPath: path,
+      agentId: 'requester',
+      tool: 'github/create_pr',
+      mode: 'temporary',
+      durationMs: 60 * 60 * 1000,
+      now,
+    });
+    const raw = readFileSync(path, 'utf8');
+    const config = loadConfig(path);
+
+    expect(result.expiresAt).toBe('2026-05-26T11:00:00.000Z');
+    expect(raw).toContain('remember_allow');
+    expect(config.agents['requester'].remember_allow).toEqual([
+      { tool: 'github/create_pr', expires_at: '2026-05-26T11:00:00.000Z' },
+    ]);
+    expect(config.agents['requester'].ask).toContain('github/create_pr');
   });
 });

@@ -15,16 +15,21 @@ const log = childLogger('hitl-factory');
 
 export function createHitlProvider(
   cfg: HitlProviderConfig | HitlProviderConfig[],
-  approvalApi: ApprovalApi
+  approvalApi: ApprovalApi,
+  options: { configPath?: string } = {}
 ): HitlProvider {
   if (Array.isArray(cfg)) {
-    const providers = cfg.map((c) => createSingleProvider(c, approvalApi));
+    const providers = cfg.map((c) => createSingleProvider(c, approvalApi, options));
     return providers.length === 1 ? providers[0] : new CompositeHitlProvider(providers);
   }
-  return createSingleProvider(cfg, approvalApi);
+  return createSingleProvider(cfg, approvalApi, options);
 }
 
-function createSingleProvider(cfg: HitlProviderConfig, approvalApi: ApprovalApi): HitlProvider {
+function createSingleProvider(
+  cfg: HitlProviderConfig,
+  approvalApi: ApprovalApi,
+  options: { configPath?: string }
+): HitlProvider {
   switch (cfg.type) {
     case 'telegram':
       return new TelegramHitlProvider(
@@ -45,7 +50,10 @@ function createSingleProvider(cfg: HitlProviderConfig, approvalApi: ApprovalApi)
     case 'macos':
       return new MacosHitlProvider(approvalApi, { sound: cfg.sound });
     case 'dashboard':
-      return new DashboardHitlProvider({ port: cfg.port }, approvalApi);
+      return new DashboardHitlProvider(
+        { port: cfg.port, config_path: options.configPath },
+        approvalApi
+      );
     case 'stdio':
       return new StdioHitlProvider(approvalApi);
     default:

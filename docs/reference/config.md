@@ -141,6 +141,10 @@ agents:
       - github/*
     ask:
       - github/create_pr
+    remember_allow:
+      - tool: github/create_pr
+        expires_at: '2026-05-26T11:00:00.000Z'
+      - tool: github/list_prs
     deny:
       - exec/run
 

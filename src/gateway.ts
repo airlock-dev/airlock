@@ -33,7 +33,10 @@ export class Gateway {
   private app!: FastifyInstance;
   private startTime = Date.now();
 
-  constructor(private config: Config) {}
+  constructor(
+    private config: Config,
+    private configPath?: string
+  ) {}
 
   async start(): Promise<void> {
     log.info('Starting Airlock gateway');
@@ -50,7 +53,9 @@ export class Gateway {
       deny: (code, reason) => this.hitlEngine.deny(code, reason),
     };
 
-    this.hitlProvider = createHitlProvider(this.config.approvals.provider, approvalForwarder);
+    this.hitlProvider = createHitlProvider(this.config.approvals.provider, approvalForwarder, {
+      configPath: this.configPath,
+    });
 
     this.hitlEngine = new HitlEngine(
       this.auditLogger,
