@@ -24,7 +24,7 @@ final class AppViewModel: ObservableObject {
     var denyShortcutKey: String = "D"
 
     @AppStorage(Constants.UserDefaultsKeys.autoExpandSelectedRequest)
-    var autoExpandSelectedRequest: Bool = true
+    var autoExpandSelectedRequest: Bool = false
 
     @AppStorage(Constants.UserDefaultsKeys.displayDensity)
     var displayDensity: String = DisplayDensity.compact.rawValue
@@ -159,11 +159,9 @@ final class AppViewModel: ObservableObject {
         switch message {
         case .newRequest(let request):
             seenRequests[request.code] = request
-            withAnimation(.spring) {
-                // Avoid duplicates
-                if !self.pendingRequests.contains(where: { $0.code == request.code }) {
-                    self.pendingRequests.insert(request, at: 0)
-                }
+            // Avoid duplicates.
+            if !pendingRequests.contains(where: { $0.code == request.code }) {
+                pendingRequests.insert(request, at: 0)
             }
             notificationManager.showNotification(for: request, soundEnabled: soundEnabled)
 
@@ -174,22 +172,20 @@ final class AppViewModel: ObservableObject {
     }
 
     private func moveToResolved(code: String, action: String) {
-        withAnimation(.spring) {
-            self.pendingRequests.removeAll { $0.code == code }
-            // Skip if already resolved (optimistic UI already added it)
-            guard !self.resolvedRequests.contains(where: { $0.code == code }) else { return }
-            let seen = seenRequests[code]
-            let resolved = ResolvedRequest(
-                code: code,
-                action: action,
-                tool: seen?.tool ?? "",
-                agentId: seen?.agentId ?? "",
-                argsDisplay: seen?.argsDisplayString ?? ""
-            )
-            self.resolvedRequests.insert(resolved, at: 0)
-            if self.resolvedRequests.count > Constants.maxResolvedRequests {
-                self.resolvedRequests = Array(self.resolvedRequests.prefix(Constants.maxResolvedRequests))
-            }
+        pendingRequests.removeAll { $0.code == code }
+        // Skip if already resolved (optimistic UI already added it).
+        guard !resolvedRequests.contains(where: { $0.code == code }) else { return }
+        let seen = seenRequests[code]
+        let resolved = ResolvedRequest(
+            code: code,
+            action: action,
+            tool: seen?.tool ?? "",
+            agentId: seen?.agentId ?? "",
+            argsDisplay: seen?.argsDisplayString ?? ""
+        )
+        resolvedRequests.insert(resolved, at: 0)
+        if resolvedRequests.count > Constants.maxResolvedRequests {
+            resolvedRequests = Array(resolvedRequests.prefix(Constants.maxResolvedRequests))
         }
     }
 

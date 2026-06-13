@@ -32,4 +32,15 @@ final class CodeHighlighterTests: XCTestCase {
 
         XCTAssertTrue(formatted.contains("-- get active users"))
     }
+
+    func testHighlightedArgsPreviewTruncatesLargeValues() {
+        let args: [String: JSONValue] = [
+            "payload": .string(String(repeating: "x", count: 20_000))
+        ]
+
+        let preview = CodeHighlighter.highlightedArgsPreview(for: args)
+
+        XCTAssertLessThan(preview.string.count, 4_200)
+        XCTAssertTrue(preview.string.contains("..."))
+    }
 }

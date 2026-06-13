@@ -10,6 +10,9 @@ enum CodeLanguage {
 
 enum CodeHighlighter {
     private static let monoFont = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+    private static let detailHighlightCharacterLimit = 20_000
+    private static let previewCharacterLimit = 4_000
+    private static let previewLineLimit = 12
     private static let highlightCache: NSCache<NSString, NSAttributedString> = {
         let cache = NSCache<NSString, NSAttributedString>()
         cache.countLimit = 200
@@ -23,6 +26,9 @@ enum CodeHighlighter {
 
     static func highlightedString(for value: JSONValue) -> NSAttributedString {
         let text = formattedText(for: value)
+        if text.count > detailHighlightCharacterLimit {
+            return NSAttributedString(string: text, attributes: baseAttributes)
+        }
         return highlight(text)
     }
 
@@ -135,9 +141,20 @@ enum CodeHighlighter {
 
         let combined = NSMutableAttributedString()
         let sorted = args.sorted(by: { $0.key < $1.key })
+        var remainingCharacters = previewCharacterLimit
+        var remainingLines = previewLineLimit
 
         for (index, (key, value)) in sorted.enumerated() {
-            let formattedValue = formattedText(for: value)
+            guard remainingCharacters > 0, remainingLines > 0 else {
+                appendTruncation(to: combined, fontSize: fontSize)
+                break
+            }
+
+            let formattedValue = boundedText(
+                previewText(for: value, characterLimit: remainingCharacters),
+                characterLimit: remainingCharacters,
+                lineLimit: remainingLines
+            )
             let isMultiline = formattedValue.contains("\n")
 
             let keyStr = isMultiline ? "\(key):\n" : "\(key): "
@@ -157,6 +174,8 @@ enum CodeHighlighter {
                 range: NSRange(location: 0, length: mutable.length)
             )
             combined.append(mutable)
+            remainingCharacters -= formattedValue.count
+            remainingLines -= formattedValue.components(separatedBy: "\n").count
 
             if index < sorted.count - 1 {
                 combined.append(NSAttributedString(string: "\n", attributes: [
@@ -169,6 +188,34 @@ enum CodeHighlighter {
         return combined
     }
 
+    static func argsPreviewString(for args: [String: JSONValue]) -> String {
+        var parts: [String] = []
+        var remainingCharacters = previewCharacterLimit
+        var remainingLines = previewLineLimit
+
+        for (key, value) in args.sorted(by: { $0.key < $1.key }) {
+            guard remainingCharacters > 0, remainingLines > 0 else {
+                parts.append("...")
+                break
+            }
+
+            let valueText = boundedText(
+                previewText(for: value, characterLimit: remainingCharacters),
+                characterLimit: remainingCharacters,
+                lineLimit: remainingLines
+            )
+            let renderedValue = valueText.contains("\n")
+                ? valueText.components(separatedBy: "\n").map { "  " + $0 }.joined(separator: "\n")
+                : valueText
+            let line = valueText.contains("\n") ? "\(key):\n\(renderedValue)" : "\(key): \(renderedValue)"
+            parts.append(line)
+            remainingCharacters -= valueText.count
+            remainingLines -= valueText.components(separatedBy: "\n").count
+        }
+
+        return parts.joined(separator: "\n")
+    }
+
     private static var appearanceToken: String {
         NSApplication.shared.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? "dark" : "light"
     }
@@ -179,9 +226,126 @@ enum CodeHighlighter {
 
     private static func argsPreviewCacheKey(for args: [String: JSONValue], fontSize: CGFloat) -> NSString {
         let parts = args.sorted(by: { $0.key < $1.key }).flatMap { key, value in
-            [key, formattedText(for: value)]
+            [key, boundedText(previewText(for: value, characterLimit: previewCharacterLimit), characterLimit: previewCharacterLimit, lineLimit: previewLineLimit)]
         }
         return cacheKey(parts: ["args-preview", appearanceToken, highlighterToken, String(describing: fontSize)] + parts)
+    }
+
+    private static func previewText(for value: JSONValue, characterLimit: Int) -> String {
+        switch value {
+        case .string(let string):
+            if string.count <= characterLimit,
+               string.count <= previewCharacterLimit,
+               let normalizedJSON = normalizedJSONString(string) {
+                return normalizedJSON
+            }
+            if string.count <= 1_000, detectLanguage(for: string) == .sql {
+                return formatSQL(string)
+            }
+            return boundedText(string, characterLimit: characterLimit, lineLimit: previewLineLimit)
+        case .number(let number):
+            if number == number.rounded() && !number.isInfinite {
+                return String(format: "%.0f", number)
+            }
+            return String(number)
+        case .bool(let bool):
+            return String(bool)
+        case .null:
+            return "null"
+        case .array, .object:
+            var remaining = characterLimit
+            var didTruncate = false
+            let text = appendPreviewValue(value, remainingCharacters: &remaining, didTruncate: &didTruncate)
+            return didTruncate ? text + "\n..." : text
+        }
+    }
+
+    private static func appendPreviewValue(
+        _ value: JSONValue,
+        remainingCharacters: inout Int,
+        didTruncate: inout Bool
+    ) -> String {
+        guard remainingCharacters > 0 else {
+            didTruncate = true
+            return ""
+        }
+
+        func take(_ string: String) -> String {
+            guard remainingCharacters > 0 else {
+                didTruncate = true
+                return ""
+            }
+            if string.count <= remainingCharacters {
+                remainingCharacters -= string.count
+                return string
+            }
+            let end = string.index(string.startIndex, offsetBy: remainingCharacters)
+            remainingCharacters = 0
+            didTruncate = true
+            return String(string[..<end])
+        }
+
+        switch value {
+        case .string(let string):
+            return take("\"\(string)\"")
+        case .number(let number):
+            let text = number == number.rounded() && !number.isInfinite
+                ? String(format: "%.0f", number)
+                : String(number)
+            return take(text)
+        case .bool(let bool):
+            return take(String(bool))
+        case .null:
+            return take("null")
+        case .array(let values):
+            var result = take("[")
+            for (index, item) in values.enumerated() {
+                if index > 0 { result += take(", ") }
+                result += appendPreviewValue(item, remainingCharacters: &remainingCharacters, didTruncate: &didTruncate)
+                if remainingCharacters <= 0 { break }
+            }
+            result += take("]")
+            return result
+        case .object(let dict):
+            var result = take("{")
+            let pairs = dict.sorted(by: { $0.key < $1.key })
+            for (index, pair) in pairs.enumerated() {
+                if index > 0 { result += take(", ") }
+                result += take("\(pair.key): ")
+                result += appendPreviewValue(pair.value, remainingCharacters: &remainingCharacters, didTruncate: &didTruncate)
+                if remainingCharacters <= 0 { break }
+            }
+            result += take("}")
+            return result
+        }
+    }
+
+    private static func appendTruncation(to string: NSMutableAttributedString, fontSize: CGFloat) {
+        string.append(NSAttributedString(string: "...", attributes: [
+            .font: NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular),
+            .foregroundColor: NSColor.secondaryLabelColor
+        ]))
+    }
+
+    private static func boundedText(_ text: String, characterLimit: Int, lineLimit: Int? = nil) -> String {
+        var result = text
+        var truncated = false
+
+        if let lineLimit {
+            let lines = result.components(separatedBy: .newlines)
+            if lines.count > lineLimit {
+                result = lines.prefix(lineLimit).joined(separator: "\n")
+                truncated = true
+            }
+        }
+
+        if result.count > characterLimit {
+            let end = result.index(result.startIndex, offsetBy: max(0, characterLimit))
+            result = String(result[..<end])
+            truncated = true
+        }
+
+        return truncated ? result + "\n..." : result
     }
 
     private static func cacheKey(parts: [String]) -> NSString {
