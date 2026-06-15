@@ -82,6 +82,30 @@ interface ToolEntry {
   recommended: RecommendedDecision;
 }
 
+type ProviderRuntimeStatus = 'ok' | 'down' | 'disabled';
+
+interface ProviderStatusEntry {
+  id: string;
+  type: EditableProvider['type'];
+  enabled: boolean;
+  status: ProviderRuntimeStatus;
+  toolCount: number;
+  toolFingerprint: string;
+  serverInfo?: { name: string; version: string };
+  error?: string;
+}
+
+interface CommandCenterStatus {
+  generatedAt: string;
+  providers: ProviderStatusEntry[];
+  summary: {
+    ok: number;
+    down: number;
+    disabled: number;
+    tools: number;
+  };
+}
+
 const HELP = `
 airlock configure-web - browser UI for profiles, agents, and allow/ask/deny lists
 
@@ -95,7 +119,27 @@ Options:
   -h, --help            Show this help
 `;
 
-export async function runConfigureWeb(argv: string[]): Promise<void> {
+const RUN_HELP = `
+airlock run - browser command center for provider health and permissions
+
+Usage:
+  airlock run [options]
+
+Options:
+  -c, --config <path>   Airlock config file (default: ./airlock.yaml)
+  -p, --port <port>     Web UI port (default: 4177)
+      --host <host>     Bind host (default: 127.0.0.1)
+  -h, --help            Show this help
+`;
+
+export async function runCommandCenter(argv: string[]): Promise<void> {
+  await runConfigureWeb(argv, 'run');
+}
+
+export async function runConfigureWeb(
+  argv: string[],
+  entrypoint: 'configure-web' | 'run' = 'configure-web'
+): Promise<void> {
   const { values } = parseArgs({
     args: argv,
     options: {
@@ -108,7 +152,7 @@ export async function runConfigureWeb(argv: string[]): Promise<void> {
   });
 
   if (values.help) {
-    console.log(HELP);
+    console.log(entrypoint === 'run' ? RUN_HELP : HELP);
     process.exit(0);
   }
 
@@ -122,7 +166,7 @@ export async function runConfigureWeb(argv: string[]): Promise<void> {
 
   const app = createConfigureWebApp(configPath);
   await app.listen({ host, port });
-  console.log(`Airlock configure-web running at http://${host}:${port}`);
+  console.log(`Airlock command center running at http://${host}:${port}`);
   console.log(`Editing ${configPath}`);
 }
 
@@ -134,6 +178,15 @@ export function createConfigureWebApp(configPath: string) {
   });
 
   app.get('/api/state', () => readState(configPath));
+
+  app.get('/api/status', async (_request, reply) => {
+    try {
+      return await readCommandCenterStatus(configPath);
+    } catch (err) {
+      reply.code(500);
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  });
 
   app.get('/api/tools', async (_request, reply) => {
     try {
@@ -211,6 +264,94 @@ export function readState(configPath: string): WebState {
   };
 }
 
+export async function readCommandCenterStatus(configPath: string): Promise<CommandCenterStatus> {
+  const raw = readConfigObject(configPath);
+  const editableProviders = toEditableProviders(asRecord(raw.providers));
+  const parsed = GatewayConfig.parse(withoutDisabledProviders(raw));
+  const mcpConfigs = getMcpConfigs(parsed.providers);
+  const statuses = new Map<string, ProviderStatusEntry>();
+
+  for (const [id, provider] of Object.entries(editableProviders)) {
+    statuses.set(id, {
+      id,
+      type: provider.type,
+      enabled: provider.enabled,
+      status: provider.enabled ? 'down' : 'disabled',
+      toolCount: 0,
+      toolFingerprint: '',
+      error: provider.enabled ? 'Not checked yet' : undefined,
+    });
+  }
+
+  const pool = new ClientPool(mcpConfigs, {
+    stdioStderr: 'ignore',
+    healthCheck: false,
+    retryFailedConnections: false,
+  });
+
+  try {
+    await Promise.race([
+      pool.initialize(),
+      new Promise<void>((resolve) => setTimeout(resolve, 5_000)),
+    ]);
+
+    const adapters = buildAdapters(parsed, pool);
+    await Promise.all(
+      adapters.map(async (adapter) => {
+        const id = adapter.id.startsWith('builtin:')
+          ? adapter.id.slice('builtin:'.length)
+          : adapter.id.startsWith('mcp:')
+            ? adapter.id.slice('mcp:'.length)
+            : adapter.id;
+        const status = statuses.get(id);
+        if (!status) return;
+
+        try {
+          const tools = await withTimeout(
+            adapter.listTools(),
+            3_000,
+            `${id}: timed out listing tools`
+          );
+          status.toolCount = tools.length;
+          status.toolFingerprint = toolFingerprint(tools.map((tool) => tool.name));
+          status.status = 'ok';
+          status.error = undefined;
+          const serverInfo = pool.getServerInfo(id);
+          if (serverInfo) status.serverInfo = serverInfo;
+        } catch (err) {
+          status.status = 'down';
+          status.error = err instanceof Error ? err.message : String(err);
+        }
+      })
+    );
+
+    for (const [id, mcpConfig] of Object.entries(mcpConfigs)) {
+      const status = statuses.get(id);
+      if (!status) continue;
+      status.type = mcpConfig.type;
+      status.serverInfo = pool.getServerInfo(id);
+      if (!pool.isReady(id) && !status.error) {
+        status.status = 'down';
+        status.error = 'MCP provider is not connected';
+      }
+    }
+  } finally {
+    await pool.stop().catch(() => {});
+  }
+
+  const providers = Array.from(statuses.values()).sort((a, b) => a.id.localeCompare(b.id));
+  return {
+    generatedAt: new Date().toISOString(),
+    providers,
+    summary: {
+      ok: providers.filter((provider) => provider.status === 'ok').length,
+      down: providers.filter((provider) => provider.status === 'down').length,
+      disabled: providers.filter((provider) => provider.status === 'disabled').length,
+      tools: providers.reduce((sum, provider) => sum + provider.toolCount, 0),
+    },
+  };
+}
+
 export function saveRules(configPath: string, body: SaveRulesBody): WebState {
   const kind = parseKind(body.kind);
   const id = parseId(body.id);
@@ -234,6 +375,10 @@ export function saveRules(configPath: string, body: SaveRulesBody): WebState {
   doc[sectionName] = section;
   writeValidatedConfig(configPath, doc);
   return readState(configPath);
+}
+
+export function toolFingerprint(toolNames: string[]): string {
+  return toolNames.slice().sort().join('\n');
 }
 
 export function createEntity(configPath: string, body: EntityBody): WebState {
@@ -624,7 +769,7 @@ const INDEX_HTML = `<!doctype html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Airlock Configure</title>
+  <title>Airlock Command Center</title>
   <style>
     :root {
       color-scheme: light;
@@ -744,9 +889,37 @@ const INDEX_HTML = `<!doctype html>
       border-color: #b9c8ff;
       color: #173c9c;
     }
+    .status-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(120px, 1fr));
+      gap: 10px;
+    }
+    .status-tile {
+      min-width: 0;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      box-shadow: var(--shadow);
+    }
+    .status-value {
+      font-size: 24px;
+      font-weight: 750;
+      line-height: 1;
+    }
+    .status-value.runtime-ok { color: var(--green); }
+    .status-value.runtime-down { color: var(--red); }
+    .status-value.runtime-disabled { color: var(--muted); }
+    .status-label {
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
     .provider-item {
       display: grid;
-      grid-template-columns: minmax(190px, 1fr) 90px 64px 64px 64px;
+      grid-template-columns: minmax(170px, 1fr) 94px 82px 82px 64px 64px 64px;
       align-items: center;
       gap: 10px;
       padding: 12px;
@@ -786,6 +959,39 @@ const INDEX_HTML = `<!doctype html>
       background: #fff0ee;
       color: var(--red);
       font-weight: 700;
+    }
+    .pill.runtime-ok {
+      border-color: #b8dfca;
+      background: #e8f6ef;
+      color: var(--green);
+      font-weight: 700;
+    }
+    .pill.runtime-down {
+      border-color: #f2c0bb;
+      background: #fff0ee;
+      color: var(--red);
+      font-weight: 700;
+    }
+    .pill.runtime-disabled {
+      border-color: #d7dee8;
+      background: #f2f5f8;
+      color: var(--muted);
+      font-weight: 700;
+    }
+    .pill.runtime-stale {
+      border-color: #f1d99a;
+      background: #fff4d6;
+      color: var(--amber);
+      font-weight: 700;
+    }
+    .stale-notice {
+      padding: 10px 12px;
+      border: 1px solid #f1d99a;
+      border-radius: 8px;
+      background: #fff8e1;
+      color: #6a4400;
+      font-size: 13px;
+      font-weight: 650;
     }
     .provider-list {
       background: var(--panel);
@@ -1029,6 +1235,7 @@ const INDEX_HTML = `<!doctype html>
     @media (max-width: 1080px) {
       .layout { grid-template-columns: 220px minmax(0, 1fr); }
       .details { grid-column: 1 / -1; border-left: 0; border-top: 1px solid var(--line); }
+      .status-grid { grid-template-columns: repeat(2, minmax(120px, 1fr)); }
       .tool-row { grid-template-columns: minmax(160px, 240px) minmax(0, 1fr); }
       .rule-actions { grid-column: 1 / -1; justify-content: flex-start; }
     }
@@ -1038,6 +1245,8 @@ const INDEX_HTML = `<!doctype html>
       aside { border-right: 0; border-bottom: 1px solid var(--line); }
       .tool-row { grid-template-columns: 1fr; }
       .hero { flex-direction: column; }
+      .status-grid { grid-template-columns: 1fr; }
+      .provider-item { grid-template-columns: 1fr 1fr; }
     }
   </style>
 </head>
@@ -1045,11 +1254,12 @@ const INDEX_HTML = `<!doctype html>
   <div class="app">
     <header>
       <div>
-        <h1>Airlock Configure</h1>
+        <h1>Airlock Command Center</h1>
         <div id="configPath" class="subtle"></div>
       </div>
       <div class="top-actions">
-        <button id="refreshTools">Refresh Endpoints</button>
+        <button id="refreshStatus">Refresh Status</button>
+        <button id="refreshTools">Refresh Tools</button>
         <button id="saveRules" class="primary">Save</button>
       </div>
     </header>
@@ -1079,6 +1289,8 @@ const INDEX_HTML = `<!doctype html>
               <button id="deleteEntity">Delete</button>
             </div>
           </div>
+          <div id="statusGrid" class="status-grid"></div>
+          <div id="staleNotice" class="stale-notice" hidden></div>
           <div class="toolbar">
             <input id="search" type="search" placeholder="Search tools, endpoints, providers">
             <select id="providerFilter"></select>
@@ -1121,7 +1333,9 @@ const INDEX_HTML = `<!doctype html>
   <script>
     const state = {
       config: null,
+      status: null,
       tools: [],
+      toolsLoaded: false,
       errors: [],
       activeKind: 'agent',
       activeId: '',
@@ -1164,13 +1378,28 @@ const INDEX_HTML = `<!doctype html>
       try {
         const result = await api('/api/tools');
         state.tools = result.tools || [];
+        state.toolsLoaded = true;
         state.errors = result.errors || [];
         render();
       } catch (error) {
         alert(error.message);
       } finally {
         el('refreshTools').disabled = false;
-        el('refreshTools').textContent = 'Refresh Endpoints';
+        el('refreshTools').textContent = 'Refresh Tools';
+      }
+    }
+
+    async function refreshStatus() {
+      el('refreshStatus').disabled = true;
+      el('refreshStatus').textContent = 'Checking...';
+      try {
+        state.status = await api('/api/status');
+        render();
+      } catch (error) {
+        alert(error.message);
+      } finally {
+        el('refreshStatus').disabled = false;
+        el('refreshStatus').textContent = 'Refresh Status';
       }
     }
 
@@ -1207,8 +1436,34 @@ const INDEX_HTML = `<!doctype html>
       renderProviderNav();
       renderEntities();
       renderProviderFilter();
+      renderStatusGrid();
+      renderStaleNotice();
       renderDetails();
       renderTools();
+    }
+
+    function renderStatusGrid() {
+      const summary = state.status?.summary || { ok: 0, down: 0, disabled: 0, tools: state.tools.length };
+      el('statusGrid').innerHTML =
+        statusTile(summary.ok, 'Providers OK', 'runtime-ok') +
+        statusTile(summary.down, 'Providers Down', summary.down > 0 ? 'runtime-down' : '') +
+        statusTile(summary.disabled, 'Disabled', 'runtime-disabled') +
+        statusTile(summary.tools || state.tools.length, 'Tools Visible', '');
+    }
+
+    function statusTile(value, label, className) {
+      return '<div class="status-tile">' +
+        '<div class="status-value ' + escapeHtml(className) + '">' + escapeHtml(value) + '</div>' +
+        '<div class="status-label">' + escapeHtml(label) + '</div>' +
+      '</div>';
+    }
+
+    function renderStaleNotice() {
+      const stale = staleProviders();
+      el('staleNotice').hidden = stale.length === 0;
+      el('staleNotice').textContent = stale.length
+        ? 'Tool list stale: ' + stale.join(', ')
+        : '';
     }
 
     function renderProviderNav() {
@@ -1232,16 +1487,54 @@ const INDEX_HTML = `<!doctype html>
     }
 
     function providerRow(id, provider) {
+      const runtime = providerStatus(id);
+      const stale = isProviderToolListStale(id);
       const disabled = provider.enabled ? '' : ' disabled';
       const toggleLabel = provider.enabled ? 'Disable' : 'Enable';
       const statusClass = provider.enabled ? 'provider-status-enabled' : 'provider-status-disabled';
+      const runtimeClass = stale
+        ? 'runtime-stale'
+        : runtime
+          ? 'runtime-' + runtime.status
+          : 'runtime-disabled';
+      const runtimeText = stale ? 'stale' : runtime ? runtime.status : provider.enabled ? 'unknown' : 'disabled';
+      const tools = runtime ? String(runtime.toolCount) : '0';
+      const server = runtime?.serverInfo ? runtime.serverInfo.name + ' ' + runtime.serverInfo.version : '';
+      const title = stale ? 'Live tool names differ from the loaded tool table' : runtime?.error || server || runtimeText;
       return '<div class="provider-item' + disabled + '">' +
         '<div class="provider-name">' + escapeHtml(id) + '<span>' + escapeHtml(provider.type) + '</span></div>' +
         '<span class="pill ' + statusClass + '">' + (provider.enabled ? 'enabled' : 'disabled') + '</span>' +
+        '<span class="pill ' + runtimeClass + '" title="' + escapeHtml(title) + '">' + escapeHtml(runtimeText) + '</span>' +
+        '<span class="pill">' + escapeHtml(tools) + ' tools</span>' +
         '<button data-provider-toggle data-provider="' + escapeHtml(id) + '">' + toggleLabel + '</button>' +
         '<button data-provider-edit data-provider="' + escapeHtml(id) + '">Edit</button>' +
         '<button data-provider-delete data-provider="' + escapeHtml(id) + '">Del</button>' +
       '</div>';
+    }
+
+    function providerStatus(id) {
+      return (state.status?.providers || []).find((provider) => provider.id === id);
+    }
+
+    function staleProviders() {
+      if (!state.toolsLoaded || !state.status) return [];
+      return state.status.providers
+        .filter((provider) => isProviderToolListStale(provider.id))
+        .map((provider) => provider.id);
+    }
+
+    function isProviderToolListStale(providerId) {
+      const status = providerStatus(providerId);
+      if (!state.toolsLoaded || !status || status.status !== 'ok') return false;
+      return status.toolFingerprint !== loadedToolFingerprint(providerId);
+    }
+
+    function loadedToolFingerprint(providerId) {
+      return state.tools
+        .filter((tool) => tool.provider === providerId)
+        .map((tool) => tool.name)
+        .sort()
+        .join('\\n');
     }
 
     function renderEntities() {
@@ -1281,10 +1574,14 @@ const INDEX_HTML = `<!doctype html>
         if (state.activeKind === 'providers') {
           const providers = Object.values(state.config.providers);
           const enabled = providers.filter((provider) => provider.enabled).length;
+          const status = state.status?.summary || { ok: 0, down: 0, disabled: providers.length - enabled, tools: state.tools.length };
+          const stale = staleProviders().length;
           el('summary').innerHTML =
             '<span class="pill">enabled ' + enabled + '</span>' +
-            '<span class="pill">disabled ' + (providers.length - enabled) + '</span>' +
-            '<span class="pill">total ' + providers.length + '</span>';
+            '<span class="pill runtime-ok">ok ' + status.ok + '</span>' +
+            '<span class="pill runtime-down">down ' + status.down + '</span>' +
+            '<span class="pill runtime-stale">stale ' + stale + '</span>' +
+            '<span class="pill">tools ' + status.tools + '</span>';
         } else {
           el('summary').innerHTML = '<div class="empty">Nothing selected.</div>';
         }
@@ -1550,7 +1847,7 @@ const INDEX_HTML = `<!doctype html>
       const body = { id: id.trim(), type: type.trim(), enabled: true };
       await fillProviderFields(body);
       state.config = await api('/api/providers', { method: 'POST', body: JSON.stringify(body) });
-      await refreshTools();
+      await Promise.all([refreshStatus(), refreshTools()]);
       render();
     }
 
@@ -1560,7 +1857,7 @@ const INDEX_HTML = `<!doctype html>
       const body = { id, type: provider.type, enabled: provider.enabled };
       await fillProviderFields(body, provider);
       state.config = await api('/api/providers', { method: 'POST', body: JSON.stringify(body) });
-      await refreshTools();
+      await Promise.all([refreshStatus(), refreshTools()]);
       render();
     }
 
@@ -1569,14 +1866,14 @@ const INDEX_HTML = `<!doctype html>
       if (!provider) return;
       const body = { ...provider, id, enabled: !provider.enabled };
       state.config = await api('/api/providers', { method: 'POST', body: JSON.stringify(body) });
-      await refreshTools();
+      await Promise.all([refreshStatus(), refreshTools()]);
       render();
     }
 
     async function deleteProvider(id) {
       if (!confirm('Delete provider "' + id + '"?')) return;
       state.config = await api('/api/providers/' + encodeURIComponent(id), { method: 'DELETE' });
-      await refreshTools();
+      await Promise.all([refreshStatus(), refreshTools()]);
       render();
     }
 
@@ -1623,6 +1920,7 @@ const INDEX_HTML = `<!doctype html>
     }
 
     el('refreshTools').addEventListener('click', refreshTools);
+    el('refreshStatus').addEventListener('click', refreshStatus);
     el('saveRules').addEventListener('click', () => saveCurrent().catch((error) => alert(error.message)));
     el('manageProviders').addEventListener('click', () => setActive('providers'));
     el('addProvider').addEventListener('click', () => addProvider().catch((error) => alert(error.message)));
@@ -1640,7 +1938,7 @@ const INDEX_HTML = `<!doctype html>
     el('resetAllRules').addEventListener('click', resetAllToCurrentConfig);
     el('recommendedRules').addEventListener('click', setRecommended);
 
-    loadState().then(refreshTools).catch((error) => {
+    loadState().then(() => Promise.all([refreshStatus(), refreshTools()])).catch((error) => {
       document.body.innerHTML = '<div class="empty">' + escapeHtml(error.message) + '</div>';
     });
   </script>

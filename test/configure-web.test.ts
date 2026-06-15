@@ -8,9 +8,11 @@ import {
   createConfigureWebApp,
   createEntity,
   deleteProvider,
+  readCommandCenterStatus,
   readState,
   recommendedDecision,
   saveRules,
+  toolFingerprint,
   upsertProvider,
 } from '../src/configure-web/cli.js';
 
@@ -134,6 +136,35 @@ approvals:
     expect(state.providers.old).toBeUndefined();
   });
 
+  it('reports command center provider status without connecting disabled providers', async () => {
+    const status = await readCommandCenterStatus(configPath);
+
+    expect(status.summary.ok).toBe(1);
+    expect(status.summary.disabled).toBe(1);
+    expect(status.summary.tools).toBeGreaterThanOrEqual(1);
+    expect(status.providers.find((provider) => provider.id === 'exec')).toMatchObject({
+      type: 'builtin',
+      enabled: true,
+      status: 'ok',
+      toolCount: 1,
+      toolFingerprint: 'exec/run',
+    });
+    expect(status.providers.find((provider) => provider.id === 'old')).toMatchObject({
+      type: 'stdio',
+      enabled: false,
+      status: 'disabled',
+      toolCount: 0,
+      toolFingerprint: '',
+    });
+  });
+
+  it('fingerprints tool names so renames are detected even when counts match', () => {
+    expect(toolFingerprint(['github/create_issue', 'github/create_pr'])).toBe(
+      toolFingerprint(['github/create_pr', 'github/create_issue'])
+    );
+    expect(toolFingerprint(['github/create_pr'])).not.toBe(toolFingerprint(['github/merge_pr']));
+  });
+
   it('matches configure-agent recommendation rules', () => {
     expect(recommendedDecision({ destructiveHint: true })).toBe('ask');
     expect(recommendedDecision({ openWorldHint: true })).toBe('ask');
@@ -188,6 +219,20 @@ approvals:
       recommended: 'allow',
       suspiciousPatterns: [],
     });
+
+    const statusRes = await app.inject('/api/status');
+    expect(statusRes.statusCode).toBe(200);
+    expect(statusRes.json().providers).toContainEqual(
+      expect.objectContaining({
+        id: 'exec',
+        status: 'ok',
+        toolCount: 1,
+        toolFingerprint: 'exec/run',
+      })
+    );
+    expect(statusRes.json().providers).toContainEqual(
+      expect.objectContaining({ id: 'disabled-bad', status: 'disabled' })
+    );
 
     await app.close();
     rmSync(dir, { recursive: true, force: true });
