@@ -40,6 +40,7 @@ It sits between agents like Claude Code, Cursor, and OpenClaw and the tools they
 ## Start here
 
 - New to Airlock: [Quickstart](/quickstart)
+- Deploying Airlock: [Docker Deploy](/guides/docker-deploy)
 - Connecting Claude Code: [Claude Code Setup](/guides/claude-code)
 - Understanding policy: [Permissions](/concepts/permissions)
 - Building safer fast paths: [Sandbox Presets and Variants](/concepts/sandboxing)

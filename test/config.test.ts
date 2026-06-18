@@ -80,6 +80,31 @@ describe('GatewayConfig schema', () => {
     expect(result.data.approvals.provider.type).toBe('stdio');
   });
 
+  it('defaults dashboard approval host to loopback', () => {
+    const result = GatewayConfig.safeParse({
+      approvals: { provider: { type: 'dashboard', port: 4112 } },
+    });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.approvals.provider).toEqual({
+      type: 'dashboard',
+      host: '127.0.0.1',
+      port: 4112,
+    });
+  });
+
+  it('accepts dashboard approval host overrides for container deployments', () => {
+    const result = GatewayConfig.safeParse({
+      approvals: { provider: { type: 'dashboard', host: '0.0.0.0', port: 4112 } },
+    });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.approvals.provider).toMatchObject({
+      type: 'dashboard',
+      host: '0.0.0.0',
+    });
+  });
+
   it('accepts builtin string shorthand for providers', () => {
     const result = GatewayConfig.safeParse({
       providers: { exec: 'builtin', http: 'builtin' },
@@ -173,6 +198,86 @@ agents:
     const config = loadConfig(path);
     delete process.env['TEST_AGENT_SECRET'];
     expect(config.server.api_secret).toBe('supersecret');
+  });
+
+  it('errors when binding beyond loopback without required auth', () => {
+    const yaml = `
+server:
+  host: 0.0.0.0
+agents:
+  agent1:
+    token: agent-secret
+`;
+    const path = join(dir, 'gateway.yaml');
+    writeFileSync(path, yaml);
+    expect(() => loadConfig(path)).toThrow(/auth_required/i);
+  });
+
+  it('errors when auth is required but an agent has no token and no global secret exists', () => {
+    const yaml = `
+server:
+  auth_required: true
+  expose_management_api: false
+  expose_tools_api: false
+  expose_hook_api: false
+agents:
+  agent1: {}
+`;
+    const path = join(dir, 'gateway.yaml');
+    writeFileSync(path, yaml);
+    expect(() => loadConfig(path)).toThrow(/some agents have no token/i);
+  });
+
+  it('allows MCP-only exposure with per-agent tokens and no global admin secret', () => {
+    const yaml = `
+server:
+  auth_required: true
+  require_agent_tokens: true
+  allowed_origins:
+    - https://airlock.internal
+  expose_management_api: false
+  expose_tools_api: false
+  expose_hook_api: false
+agents:
+  agent1:
+    token: agent-secret
+`;
+    const path = join(dir, 'gateway.yaml');
+    writeFileSync(path, yaml);
+    const config = loadConfig(path);
+    expect(config.server.auth_required).toBe(true);
+    expect(config.server.expose_management_api).toBe(false);
+    expect(config.agents['agent1'].token).toBe('agent-secret');
+  });
+
+  it('errors when per-agent tokens are required and an agent has no token', () => {
+    const yaml = `
+server:
+  auth_required: true
+  require_agent_tokens: true
+  api_secret: global-admin-secret
+agents:
+  selene: {}
+  codex:
+    token: codex-secret
+`;
+    const path = join(dir, 'gateway.yaml');
+    writeFileSync(path, yaml);
+    expect(() => loadConfig(path)).toThrow(/Per-agent tokens are required/i);
+  });
+
+  it('requires per-agent tokens automatically when binding beyond loopback', () => {
+    const yaml = `
+server:
+  host: 0.0.0.0
+  auth_required: true
+  api_secret: global-admin-secret
+agents:
+  selene: {}
+`;
+    const path = join(dir, 'gateway.yaml');
+    writeFileSync(path, yaml);
+    expect(() => loadConfig(path)).toThrow(/Per-agent tokens are required/i);
   });
 
   it('errors when agent references unknown provider', () => {

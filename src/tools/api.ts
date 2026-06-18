@@ -1,34 +1,27 @@
-import { timingSafeEqual } from 'crypto';
 import type { FastifyInstance } from 'fastify';
 import type { AgentServerDeps } from '../transport/agent-server.js';
 import type { ToolCallContext } from '../middleware/types.js';
 import { buildMiddlewareChain } from '../middleware/chain-builder.js';
 import { generateId } from '../util/id.js';
 import { childLogger } from '../util/logger.js';
+import { checkRequestSecurity } from '../security/request.js';
 
 const log = childLogger('tools-api');
-
-function constantTimeEqual(a: string, b: string): boolean {
-  const bufA = Buffer.from(a);
-  const bufB = Buffer.from(b);
-  if (bufA.length !== bufB.length) return false;
-  return timingSafeEqual(bufA, bufB);
-}
 
 export interface ToolsApiOpts {
   getDeps: (agentId: string) => AgentServerDeps | undefined;
   secret?: string;
+  authRequired?: boolean;
+  allowedOrigins?: string[];
 }
 
 // eslint-disable-next-line @typescript-eslint/require-await
 export async function toolsApiPlugin(app: FastifyInstance, opts: ToolsApiOpts): Promise<void> {
-  const { getDeps, secret } = opts;
+  const { getDeps } = opts;
 
   app.addHook('preHandler', async (request, reply) => {
-    if (!secret) return;
-    const auth = request.headers.authorization ?? '';
-    if (!constantTimeEqual(auth, `Bearer ${secret}`)) {
-      return reply.status(401).send({ error: 'Unauthorized' });
+    if (!checkRequestSecurity(request, reply, opts)) {
+      return;
     }
   });
 

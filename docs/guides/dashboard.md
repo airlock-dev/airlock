@@ -10,11 +10,16 @@ Set the approval provider to `dashboard` in your config:
 approvals:
   provider:
     type: dashboard
+    host: 127.0.0.1 # default
     port: 4112 # default
   timeout_ms: 300000
 ```
 
 When Airlock starts, the dashboard is available at `http://localhost:4112`.
+
+The dashboard binds to `127.0.0.1` by default. In Docker, set `host: 0.0.0.0`
+only when the dashboard port is kept private or protected by an authenticated
+reverse proxy.
 
 ## Features
 

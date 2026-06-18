@@ -1,4 +1,3 @@
-import { timingSafeEqual } from 'crypto';
 import type { FastifyInstance } from 'fastify';
 import type { AllowlistEngine } from '../allowlist/engine.js';
 import type { HitlEngine } from '../hitl/engine.js';
@@ -6,15 +5,9 @@ import type { HitlBatcher } from '../hitl/batcher.js';
 import type { AuditLogger } from '../audit/logger.js';
 import { normalizeTool } from './normalizer.js';
 import { childLogger } from '../util/logger.js';
+import { checkRequestSecurity } from '../security/request.js';
 
 const log = childLogger('hook-api');
-
-function constantTimeEqual(a: string, b: string): boolean {
-  const bufA = Buffer.from(a);
-  const bufB = Buffer.from(b);
-  if (bufA.length !== bufB.length) return false;
-  return timingSafeEqual(bufA, bufB);
-}
 
 export interface HookApiOpts {
   allowlist: AllowlistEngine;
@@ -22,6 +15,8 @@ export interface HookApiOpts {
   hitlBatcher: HitlBatcher;
   auditLogger: AuditLogger;
   secret?: string;
+  authRequired?: boolean;
+  allowedOrigins?: string[];
 }
 
 interface HookRequestBody {
@@ -34,13 +29,11 @@ interface HookRequestBody {
 
 // eslint-disable-next-line @typescript-eslint/require-await
 export async function hookApiPlugin(app: FastifyInstance, opts: HookApiOpts): Promise<void> {
-  const { allowlist, hitlEngine, hitlBatcher, auditLogger, secret } = opts;
+  const { allowlist, hitlEngine, hitlBatcher, auditLogger } = opts;
 
   app.addHook('preHandler', async (request, reply) => {
-    if (!secret) return;
-    const auth = request.headers.authorization ?? '';
-    if (!constantTimeEqual(auth, `Bearer ${secret}`)) {
-      return reply.status(401).send({ error: 'Unauthorized' });
+    if (!checkRequestSecurity(request, reply, opts)) {
+      return;
     }
   });
 
@@ -57,7 +50,10 @@ export async function hookApiPlugin(app: FastifyInstance, opts: HookApiOpts): Pr
     const agentId = agent ?? client;
     const normalized = normalizeTool(client, tool, input);
 
-    log.info({ client, agent: agentId, tool, normalized: normalized.name, session_id }, 'Hook evaluation request');
+    log.info(
+      { client, agent: agentId, tool, normalized: normalized.name, session_id },
+      'Hook evaluation request'
+    );
 
     const decision = allowlist.evaluate(agentId, normalized.name);
 

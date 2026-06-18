@@ -10,6 +10,8 @@ import { hitlApiPlugin } from './hitl/api.js';
 import { auditApiPlugin } from './audit/api.js';
 import { hookApiPlugin } from './hook/api.js';
 import { toolsApiPlugin } from './tools/api.js';
+import { ApprovalDashboardRoutes } from './hitl/approval-dashboard.js';
+import { CompositeHitlProvider } from './hitl/providers/composite.js';
 import { sseServerPlugin } from './transport/sse-server.js';
 import { httpServerPlugin } from './transport/http-server.js';
 import type { AgentServerDeps } from './transport/agent-server.js';
@@ -19,8 +21,13 @@ import { createHitlProvider } from './hitl/provider-factory.js';
 import { getMcpConfigs } from './config/schema.js';
 import { buildAdapters } from './backend/factory.js';
 import { childLogger } from './util/logger.js';
+import { checkRequestSecurity } from './security/request.js';
 
 const log = childLogger('gateway');
+
+export interface GatewayOptions {
+  runtimeOnly?: boolean;
+}
 
 export class Gateway {
   private pool!: ClientPool;
@@ -29,13 +36,15 @@ export class Gateway {
   private hitlEngine!: HitlEngine;
   private hitlBatcher!: HitlBatcher;
   private hitlProvider!: HitlProvider;
+  private approvalRoutes!: ApprovalDashboardRoutes;
   private auditLogger!: AuditLogger;
   private app!: FastifyInstance;
   private startTime = Date.now();
 
   constructor(
     private config: Config,
-    private configPath?: string
+    private configPath?: string,
+    private options: GatewayOptions = {}
   ) {}
 
   async start(): Promise<void> {
@@ -53,9 +62,8 @@ export class Gateway {
       deny: (code, reason) => this.hitlEngine.deny(code, reason),
     };
 
-    this.hitlProvider = createHitlProvider(this.config.approvals.provider, approvalForwarder, {
-      configPath: this.configPath,
-    });
+    this.approvalRoutes = new ApprovalDashboardRoutes(approvalForwarder);
+    this.hitlProvider = this.buildHitlProvider(approvalForwarder);
 
     this.hitlEngine = new HitlEngine(
       this.auditLogger,
@@ -98,40 +106,85 @@ export class Gateway {
     // HTTP server
     this.app = Fastify({ logger: false });
 
-    const secret = this.config.server.api_secret;
+    const requestSecurity = {
+      secret: this.config.server.api_secret,
+      authRequired: this.config.server.auth_required,
+      allowedOrigins: this.config.server.allowed_origins,
+    };
 
-    await this.app.register(hitlApiPlugin, { engine: this.hitlEngine, secret });
-    await this.app.register(auditApiPlugin, { auditLogger: this.auditLogger, secret });
-    await this.app.register(hookApiPlugin, {
-      allowlist: this.allowlist,
-      hitlEngine: this.hitlEngine,
-      hitlBatcher: this.hitlBatcher,
-      auditLogger: this.auditLogger,
-      secret,
-    });
-    await this.app.register(toolsApiPlugin, {
-      getDeps: (agentId: string) => this.buildAgentDeps(agentId),
-      secret,
-    });
+    if (this.config.server.expose_management_api) {
+      await this.app.register(hitlApiPlugin, { engine: this.hitlEngine, ...requestSecurity });
+      await this.app.register(auditApiPlugin, {
+        auditLogger: this.auditLogger,
+        ...requestSecurity,
+      });
+      await this.app.register(async (adminApp) => {
+        adminApp.addHook('preHandler', async (request, reply) => {
+          if (!checkRequestSecurity(request, reply, requestSecurity)) {
+            return;
+          }
+        });
+        this.approvalRoutes.registerRoutes(adminApp);
+        adminApp.get('/admin/tools', async (_request, reply) => {
+          return reply.send({ tools: this.registry.getAllTools(), errors: [] });
+        });
+      });
+    }
+    if (this.config.server.expose_hook_api) {
+      await this.app.register(hookApiPlugin, {
+        allowlist: this.allowlist,
+        hitlEngine: this.hitlEngine,
+        hitlBatcher: this.hitlBatcher,
+        auditLogger: this.auditLogger,
+        ...requestSecurity,
+      });
+    }
+    if (this.config.server.expose_tools_api) {
+      await this.app.register(toolsApiPlugin, {
+        getDeps: (agentId: string) => this.buildAgentDeps(agentId),
+        ...requestSecurity,
+      });
+    }
     await this.app.register(sseServerPlugin, {
       getDeps: (agentId: string) => this.buildAgentDeps(agentId),
-      secret,
+      ...requestSecurity,
     });
     await this.app.register(httpServerPlugin, {
       getDeps: (agentId: string) => this.buildAgentDeps(agentId),
-      secret,
+      ...requestSecurity,
     });
 
-    this.app.get('/health', () => {
-      const mcpHealth = this.pool.healthCheck();
-      const pendingApprovals = this.hitlEngine.getPending().length;
-      const uptime = Math.floor((Date.now() - this.startTime) / 1000);
-      return { status: 'ok', mcpHealth, pendingApprovals, uptime };
-    });
+    if (this.config.server.expose_management_api) {
+      this.app.get('/health', (request, reply) => {
+        if (!checkRequestSecurity(request, reply, requestSecurity)) return;
+        const mcpHealth = this.pool.healthCheck();
+        const pendingApprovals = this.hitlEngine.getPending().length;
+        const uptime = Math.floor((Date.now() - this.startTime) / 1000);
+        return { status: 'ok', mcpHealth, pendingApprovals, uptime };
+      });
+    }
 
     const { port, host } = this.config.server;
     await this.app.listen({ port, host });
     log.info({ port, host }, 'Airlock gateway listening');
+  }
+
+  private buildHitlProvider(approvalForwarder: ApprovalApi): HitlProvider {
+    const providers: HitlProvider[] = [];
+    const configuredProvider = this.options.runtimeOnly
+      ? withoutDashboardProvider(this.config.approvals.provider)
+      : this.config.approvals.provider;
+
+    if (configuredProvider) {
+      providers.push(
+        createHitlProvider(configuredProvider, approvalForwarder, {
+          configPath: this.configPath,
+        })
+      );
+    }
+    providers.push(this.approvalRoutes);
+
+    return providers.length === 1 ? providers[0] : new CompositeHitlProvider(providers);
   }
 
   buildAgentDeps(agentId: string): AgentServerDeps | undefined {
@@ -185,4 +238,15 @@ export class Gateway {
   forceKill(): void {
     this.pool?.forceKill();
   }
+}
+
+function withoutDashboardProvider(provider: Config['approvals']['provider']):
+  | Config['approvals']['provider']
+  | undefined {
+  if (Array.isArray(provider)) {
+    const filtered = provider.filter((entry) => entry.type !== 'dashboard');
+    if (filtered.length === 0) return undefined;
+    return filtered.length === 1 ? filtered[0] : filtered;
+  }
+  return provider.type === 'dashboard' ? undefined : provider;
 }

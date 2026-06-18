@@ -51,7 +51,7 @@ function createSingleProvider(
       return new MacosHitlProvider(approvalApi, { sound: cfg.sound });
     case 'dashboard':
       return new DashboardHitlProvider(
-        { port: cfg.port, config_path: options.configPath },
+        { host: cfg.host, port: cfg.port, config_path: options.configPath },
         approvalApi
       );
     case 'stdio':

@@ -32,9 +32,14 @@ Localhost web UI served from the Airlock process. Live SSE updates, syntax-highl
 approvals:
   provider:
     type: dashboard
+    host: 127.0.0.1
     port: 4112
   timeout_ms: 300000
 ```
+
+`host` defaults to `127.0.0.1`. For container deployments where a reverse proxy
+needs to reach the dashboard port, set `host: 0.0.0.0` and protect that route at
+the proxy layer.
 
 ## macOS dialog
 

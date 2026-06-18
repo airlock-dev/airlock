@@ -15,7 +15,18 @@ server:
 curl -H "Authorization: Bearer $AIRLOCK_API_SECRET" http://localhost:4111/health
 ```
 
-If `api_secret` is not set, the endpoints are unauthenticated.
+If `api_secret` is not set and `server.auth_required` is false, the endpoints are
+unauthenticated. For exposed deployments, set `server.auth_required: true` and
+either configure `server.api_secret` or disable the management API entirely:
+
+```yaml
+server:
+  auth_required: true
+  expose_management_api: false
+```
+
+When `expose_management_api` is false, `/health`, `/hitl/*`, and `/audit` are
+not registered.
 
 ## Endpoints
 

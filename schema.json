@@ -1000,6 +1000,10 @@
                           "type": "string",
                           "const": "dashboard"
                         },
+                        "host": {
+                          "type": "string",
+                          "default": "127.0.0.1"
+                        },
                         "port": {
                           "type": "integer",
                           "minimum": 1,
@@ -1154,6 +1158,10 @@
                             "type": "string",
                             "const": "dashboard"
                           },
+                          "host": {
+                            "type": "string",
+                            "default": "127.0.0.1"
+                          },
                           "port": {
                             "type": "integer",
                             "minimum": 1,
@@ -1295,6 +1303,33 @@
             },
             "api_secret": {
               "type": "string"
+            },
+            "auth_required": {
+              "type": "boolean",
+              "default": false
+            },
+            "require_agent_tokens": {
+              "type": "boolean",
+              "default": false
+            },
+            "allowed_origins": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "expose_management_api": {
+              "type": "boolean",
+              "default": true
+            },
+            "expose_tools_api": {
+              "type": "boolean",
+              "default": true
+            },
+            "expose_hook_api": {
+              "type": "boolean",
+              "default": true
             }
           },
           "additionalProperties": false,

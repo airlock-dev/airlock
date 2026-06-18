@@ -1,0 +1,61 @@
+# yaml-language-server: $schema=../schema.json
+# Minimal Docker/VPS-oriented config. Copy this file next to
+# examples/docker-compose.yaml, create an .env file with the referenced secrets,
+# and edit providers/agents for your deployment.
+
+server:
+  port: 4111
+  host: 0.0.0.0
+  api_secret: ${AIRLOCK_API_SECRET}
+  auth_required: true
+  require_agent_tokens: true
+  allowed_origins:
+    - https://airlock.example.com
+  expose_management_api: true
+  expose_tools_api: false
+  expose_hook_api: false
+
+providers:
+  http: builtin
+  # Add stdio/SSE/HTTP MCP providers here. If a provider uses npx, the compose
+  # example persists /home/airlock/.npm so packages are cached across restarts.
+
+agents:
+  example-agent:
+    token: ${EXAMPLE_AGENT_AIRLOCK_TOKEN}
+    allow:
+      - http/get
+    ask:
+      - http/post
+    http:
+      domain_allowlist:
+        - api.github.com
+
+approvals:
+  provider:
+    type: dashboard
+    host: 0.0.0.0
+    port: 4112
+  timeout_ms: 300000
+
+security:
+  blocked_hosts:
+    - localhost
+    - 127.0.0.1
+    - '::1'
+    - '*.local'
+    - '10.*'
+    - '172.16.*'
+    - '192.168.*'
+    - '169.254.*'
+  allowed_local: []
+
+audit:
+  db_path: /data/airlock-audit.db
+  retention_days: 90
+  redact_fields:
+    - password
+    - token
+    - secret
+    - key
+    - authorization

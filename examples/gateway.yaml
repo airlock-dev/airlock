@@ -6,6 +6,13 @@ server:
   port: 4111
   host: 127.0.0.1
   # api_secret: ${AIRLOCK_API_SECRET}
+  # auth_required: true
+  # require_agent_tokens: true
+  # allowed_origins:
+  #   - https://airlock.example.com
+  # expose_management_api: false
+  # expose_tools_api: false
+  # expose_hook_api: false
 
 # Tool providers — MCP servers and builtins
 providers:
