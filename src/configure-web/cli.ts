@@ -18,10 +18,13 @@ import { rememberAllow, type RememberAllowMode } from '../config/mutator.js';
 import { validateConfig, type ConfigDiagnostic } from '../config/loader.js';
 import { ClientPool } from '../pool/pool.js';
 import { checkSuspiciousPatterns } from '../registry/sanitizer.js';
+import { bestSpecificity } from '../allowlist/pattern.js';
 import { VERSION } from '../version.js';
 
 type PermissionKind = 'agent' | 'profile';
 type RecommendedDecision = 'allow' | 'ask' | 'deny';
+type EditableDecision = RecommendedDecision | 'unset';
+type EditableDecisionSource = 'exact' | 'pattern' | 'none';
 const LATEST_VERSION_CACHE_TTL_MS = 60 * 60 * 1000;
 let latestVersionCache: { version: string; fetchedAt: number } | null = null;
 
@@ -91,6 +94,12 @@ interface ToolEntry {
   tags: string[];
   suspiciousPatterns: string[];
   recommended: RecommendedDecision;
+}
+
+interface EditableRuleMatch {
+  decision: EditableDecision;
+  source: EditableDecisionSource;
+  pattern?: string;
 }
 
 type ProviderRuntimeStatus = 'ok' | 'down' | 'disabled';
@@ -214,7 +223,9 @@ export async function runDashboard(argv: string[]): Promise<void> {
   const host = values.host ?? '127.0.0.1';
   const gatewayUrl = values['gateway-url'] ?? 'http://127.0.0.1:4111';
   const gatewaySecret =
-    values['gateway-secret'] ?? process.env['AIRLOCK_GATEWAY_SECRET'] ?? process.env['AIRLOCK_API_SECRET'];
+    values['gateway-secret'] ??
+    process.env['AIRLOCK_GATEWAY_SECRET'] ??
+    process.env['AIRLOCK_API_SECRET'];
 
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     throw new Error(`Invalid --port: ${values.port}`);
@@ -551,7 +562,7 @@ async function readRemoteCommandCenterStatus(
       id,
       type,
       enabled,
-      status: enabled ? runtime ?? 'ok' : 'disabled',
+      status: enabled ? (runtime ?? 'ok') : 'disabled',
       toolCount: 0,
       toolFingerprint: '',
       ...(runtime === 'down' ? { error: 'Provider is down on the gateway' } : {}),
@@ -633,7 +644,7 @@ function registerRemoteGatewayRoutes(
         while (true) {
           const result = await reader.read();
           if (result.done) break;
-          reply.raw.write(Buffer.from(result.value));
+          if (result.value) reply.raw.write(Buffer.from(result.value));
         }
       } catch {
         /* client closed */
@@ -654,7 +665,13 @@ function registerRemoteGatewayRoutes(
 
     const remember = typeof query.remember === 'string' ? query.remember : undefined;
     if (remember) {
-      const result = await rememberRemoteDecision(configPath, remoteGateway, code, remember, query.duration_ms);
+      const result = await rememberRemoteDecision(
+        configPath,
+        remoteGateway,
+        code,
+        remember,
+        query.duration_ms
+      );
       if (result.error) return reply.code(result.status).send({ error: result.error });
     }
 
@@ -755,7 +772,9 @@ async function remoteGatewayError(response: Response): Promise<string> {
   }
 }
 
-async function handleLatestVersion(reply: FastifyReply): Promise<{ latest?: string; error?: string }> {
+async function handleLatestVersion(
+  reply: FastifyReply
+): Promise<{ latest?: string; error?: string }> {
   const now = Date.now();
   if (latestVersionCache && now - latestVersionCache.fetchedAt < LATEST_VERSION_CACHE_TTL_MS) {
     return { latest: latestVersionCache.version };
@@ -934,6 +953,58 @@ export function annotationTags(
   if (annotations?.openWorldHint) tags.push('open-world');
   if (suspiciousPatterns.length > 0) tags.push('injection');
   return tags;
+}
+
+export function resolveEditableRuleDecision(
+  rules: Pick<EditableAgent | EditableProfile, 'allow' | 'ask' | 'deny'>,
+  toolName: string
+): EditableDecision {
+  return resolveEditableRuleMatch(rules, toolName).decision;
+}
+
+export function resolveEditableRuleMatch(
+  rules: Pick<EditableAgent | EditableProfile, 'allow' | 'ask' | 'deny'>,
+  toolName: string
+): EditableRuleMatch {
+  const deny = bestRuleMatch(rules.deny, toolName);
+  const ask = bestRuleMatch(rules.ask, toolName);
+  const allow = bestRuleMatch(rules.allow, toolName);
+  const denySpec = deny?.specificity ?? -1;
+  const askSpec = ask?.specificity ?? -1;
+  const allowSpec = allow?.specificity ?? -1;
+  const best = Math.max(denySpec, askSpec, allowSpec);
+
+  if (best < 0) return { decision: 'unset', source: 'none' };
+  if (denySpec === best) return editableRuleMatch('deny', deny, toolName);
+  if (askSpec === best) return editableRuleMatch('ask', ask, toolName);
+  return editableRuleMatch('allow', allow, toolName);
+}
+
+function editableRuleMatch(
+  decision: RecommendedDecision,
+  match: { pattern: string; specificity: number } | undefined,
+  toolName: string
+): EditableRuleMatch {
+  if (!match) return { decision, source: 'none' };
+  return {
+    decision,
+    source: match.pattern === toolName ? 'exact' : 'pattern',
+    pattern: match.pattern,
+  };
+}
+
+function bestRuleMatch(
+  patterns: string[],
+  toolName: string
+): { pattern: string; specificity: number } | undefined {
+  let best: { pattern: string; specificity: number } | undefined;
+  for (const pattern of patterns) {
+    const specificity = bestSpecificity([pattern], toolName);
+    if (specificity >= 0 && (!best || specificity > best.specificity)) {
+      best = { pattern, specificity };
+    }
+  }
+  return best;
 }
 
 export async function discoverTools(
@@ -1780,6 +1851,25 @@ const INDEX_HTML = `<!doctype html>
       background: #fff0ee;
       color: var(--red);
       font-weight: 700;
+    }
+    .rule-actions button.active.pattern-match {
+      border-style: dashed;
+      font-weight: 650;
+    }
+    .rule-actions button.active.pattern-match[data-decision="allow"] {
+      border-color: #b8dfca;
+      background: #f6fbf8;
+      color: #4d7f63;
+    }
+    .rule-actions button.active.pattern-match[data-decision="ask"] {
+      border-color: #f1d99a;
+      background: #fffaf0;
+      color: #8a6a19;
+    }
+    .rule-actions button.active.pattern-match[data-decision="deny"] {
+      border-color: #f2c0bb;
+      background: #fff8f7;
+      color: #9b4a43;
     }
     .pill {
       display: inline-flex;
@@ -2649,7 +2739,7 @@ const INDEX_HTML = `<!doctype html>
 
       const visible = filteredTools();
       el('tools').innerHTML = visible.length
-        ? visible.map((tool) => toolRow(tool, getDecision(draft, tool.name))).join('')
+        ? visible.map((tool) => toolRow(tool, getDecisionMatch(draft, tool.name))).join('')
         : '<div class="empty">No tools match the current filters.</div>';
 
       document.querySelectorAll('[data-rule]').forEach((button) => {
@@ -2678,7 +2768,8 @@ const INDEX_HTML = `<!doctype html>
       });
     }
 
-    function toolRow(tool, decision) {
+    function toolRow(tool, match) {
+      const decision = match.decision;
       const tags = tool.tags && tool.tags.length ? tool.tags : ['untagged'];
       const tagHtml = tags.map((tag) => '<span class="tag ' + tagClass(tag) + '">' + escapeHtml(tag) + '</span>').join('');
       const recommended = '<span class="tag tag-recommended ' + recommendedClass(tool.recommended) + '">recommended ' + escapeHtml(tool.recommended) + '</span>';
@@ -2693,10 +2784,10 @@ const INDEX_HTML = `<!doctype html>
         '<div class="tool-name"><span class="provider">' + escapeHtml(tool.provider) + '</span><br>' + escapeHtml(tool.shortName || tool.name) + '</div>' +
         '<div class="description"><div class="description-content' + descriptionClass + '">' + formatDescription(description) + '</div>' + toggle + '<div class="tag-list">' + tagHtml + recommended + '</div></div>' +
         '<div class="rule-actions">' +
-          ruleButton(tool.name, 'allow', decision) +
-          ruleButton(tool.name, 'ask', decision) +
-          ruleButton(tool.name, 'deny', decision) +
-          ruleButton(tool.name, 'unset', decision) +
+          ruleButton(tool.name, 'allow', match) +
+          ruleButton(tool.name, 'ask', match) +
+          ruleButton(tool.name, 'deny', match) +
+          ruleButton(tool.name, 'unset', match) +
         '</div>' +
       '</div>';
     }
@@ -2751,17 +2842,67 @@ const INDEX_HTML = `<!doctype html>
       return 'tag-good';
     }
 
-    function ruleButton(tool, decision, activeDecision) {
-      const active = decision === activeDecision ? ' active' : '';
+    function ruleButton(tool, decision, activeMatch) {
+      const active = decision === activeMatch.decision ? ' active' : '';
+      const patternMatch = active && activeMatch.source === 'pattern' ? ' pattern-match' : '';
       const label = decision === 'unset' ? 'Clear' : decision;
-      return '<button class="' + active + '" data-rule data-tool="' + escapeHtml(tool) + '" data-decision="' + decision + '">' + label + '</button>';
+      const title = activeMatch.source === 'pattern' && decision === activeMatch.decision
+        ? decision + ' by ' + activeMatch.pattern + '. Click to add an exact rule.'
+        : decision === activeMatch.decision && activeMatch.source === 'exact'
+          ? decision + ' by exact rule.'
+          : decision === 'unset'
+            ? 'Clear exact rule for this tool.'
+            : 'Set exact ' + decision + ' rule for this tool.';
+      return '<button class="' + active + patternMatch + '" title="' + escapeHtml(title) + '" data-rule data-tool="' + escapeHtml(tool) + '" data-decision="' + decision + '">' + label + '</button>';
     }
 
     function getDecision(draft, tool) {
-      if (draft.deny.includes(tool)) return 'deny';
-      if (draft.ask.includes(tool)) return 'ask';
-      if (draft.allow.includes(tool)) return 'allow';
-      return 'unset';
+      return getDecisionMatch(draft, tool).decision;
+    }
+
+    function getDecisionMatch(draft, tool) {
+      const deny = bestRuleMatch(draft.deny, tool);
+      const ask = bestRuleMatch(draft.ask, tool);
+      const allow = bestRuleMatch(draft.allow, tool);
+      const denySpec = deny ? deny.specificity : -1;
+      const askSpec = ask ? ask.specificity : -1;
+      const allowSpec = allow ? allow.specificity : -1;
+      const best = Math.max(denySpec, askSpec, allowSpec);
+      if (best < 0) return { decision: 'unset', source: 'none' };
+      if (denySpec === best) return decisionMatch('deny', deny, tool);
+      if (askSpec === best) return decisionMatch('ask', ask, tool);
+      return decisionMatch('allow', allow, tool);
+    }
+
+    function decisionMatch(decision, match, tool) {
+      if (!match) return { decision, source: 'none' };
+      return {
+        decision,
+        source: match.pattern === tool ? 'exact' : 'pattern',
+        pattern: match.pattern
+      };
+    }
+
+    function bestRuleMatch(patterns, tool) {
+      let best = null;
+      for (const pattern of patterns || []) {
+        const score = ruleSpecificity(pattern, tool);
+        if (score >= 0 && (!best || score > best.specificity)) best = { pattern, specificity: score };
+      }
+      return best;
+    }
+
+    function ruleSpecificity(pattern, tool) {
+      if (pattern === tool) return pattern.length + 1;
+      if (pattern.endsWith('/*')) {
+        const prefix = pattern.slice(0, -1);
+        return tool.startsWith(prefix) && !tool.slice(prefix.length).includes('/') ? prefix.length : -1;
+      }
+      if (pattern.endsWith('*')) {
+        const prefix = pattern.slice(0, -1);
+        return tool.startsWith(prefix) ? prefix.length : -1;
+      }
+      return -1;
     }
 
     function setDecision(draft, tool, decision) {
