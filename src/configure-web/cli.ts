@@ -3,9 +3,12 @@ import { parseArgs } from 'util';
 import Fastify from 'fastify';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import { AuditDb, type AuditEntry, type HitlQueueEntry } from '../audit/db.js';
 import { buildAdapters } from '../backend/factory.js';
 import {
+  AuditConfig,
   GatewayConfig,
+  McpServerConfig,
   getMcpConfigs,
   type GatewayConfig as ParsedGatewayConfig,
 } from '../config/schema.js';
@@ -97,13 +100,29 @@ interface ProviderStatusEntry {
 
 interface CommandCenterStatus {
   generatedAt: string;
+  auditDbPath: string;
   providers: ProviderStatusEntry[];
   summary: {
     ok: number;
     down: number;
     disabled: number;
     tools: number;
+    pendingApprovals: number;
   };
+}
+
+interface AuditLogQuery {
+  agent?: string;
+  tool?: string;
+  since?: string;
+  limit?: number;
+}
+
+interface AuditLogResult {
+  dbPath: string;
+  entries: AuditEntry[];
+  pending: HitlQueueEntry[];
+  error?: string;
 }
 
 const HELP = `
@@ -188,6 +207,20 @@ export function createConfigureWebApp(configPath: string) {
     }
   });
 
+  app.get('/api/logs', (request, reply) => {
+    try {
+      return readAuditLogs(configPath, parseAuditLogQuery(request.query));
+    } catch (err) {
+      reply.code(500);
+      return {
+        dbPath: '',
+        entries: [],
+        pending: [],
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+  });
+
   app.get('/api/tools', async (_request, reply) => {
     try {
       return await discoverTools(configPath);
@@ -267,9 +300,8 @@ export function readState(configPath: string): WebState {
 export async function readCommandCenterStatus(configPath: string): Promise<CommandCenterStatus> {
   const raw = readConfigObject(configPath);
   const editableProviders = toEditableProviders(asRecord(raw.providers));
-  const parsed = GatewayConfig.parse(withoutDisabledProviders(raw));
-  const mcpConfigs = getMcpConfigs(parsed.providers);
   const statuses = new Map<string, ProviderStatusEntry>();
+  const enabledProviders: Record<string, unknown> = {};
 
   for (const [id, provider] of Object.entries(editableProviders)) {
     statuses.set(id, {
@@ -281,8 +313,28 @@ export async function readCommandCenterStatus(configPath: string): Promise<Comma
       toolFingerprint: '',
       error: provider.enabled ? 'Not checked yet' : undefined,
     });
+
+    if (!provider.enabled) continue;
+    const rawProvider = asRecord(raw.providers)[id];
+    if (provider.type === 'builtin') {
+      enabledProviders[id] = rawProvider;
+      continue;
+    }
+
+    const parsedProvider = parseMcpProviderStatus(rawProvider);
+    if (!parsedProvider.success) {
+      const status = statuses.get(id);
+      if (status) {
+        status.status = 'down';
+        status.error = parsedProvider.error;
+      }
+      continue;
+    }
+    enabledProviders[id] = parsedProvider.data;
   }
 
+  const parsed = GatewayConfig.parse({ ...raw, providers: enabledProviders });
+  const mcpConfigs = getMcpConfigs(parsed.providers);
   const pool = new ClientPool(mcpConfigs, {
     stdioStderr: 'ignore',
     healthCheck: false,
@@ -340,16 +392,40 @@ export async function readCommandCenterStatus(configPath: string): Promise<Comma
   }
 
   const providers = Array.from(statuses.values()).sort((a, b) => a.id.localeCompare(b.id));
+  const auditLogs = readAuditLogs(configPath, { limit: 1 });
   return {
     generatedAt: new Date().toISOString(),
+    auditDbPath: parsed.audit.db_path,
     providers,
     summary: {
       ok: providers.filter((provider) => provider.status === 'ok').length,
       down: providers.filter((provider) => provider.status === 'down').length,
       disabled: providers.filter((provider) => provider.status === 'disabled').length,
       tools: providers.reduce((sum, provider) => sum + provider.toolCount, 0),
+      pendingApprovals: auditLogs.pending.length,
     },
   };
+}
+
+export function readAuditLogs(configPath: string, query: AuditLogQuery = {}): AuditLogResult {
+  const parsed = readConfigObject(configPath);
+  const auditConfig = AuditConfig.parse(parsed.audit ?? {});
+  const dbPath = auditConfig.db_path;
+
+  if (dbPath === ':memory:' || !existsSync(dbPath)) {
+    return { dbPath, entries: [], pending: [] };
+  }
+
+  const db = new AuditDb(dbPath);
+  try {
+    return {
+      dbPath,
+      entries: db.queryAudit(query),
+      pending: db.getPendingHitl(),
+    };
+  } finally {
+    db.close();
+  }
 }
 
 export function saveRules(configPath: string, body: SaveRulesBody): WebState {
@@ -579,6 +655,39 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string)
   return Promise.race([promise, timeout]).finally(() => {
     if (timer) clearTimeout(timer);
   });
+}
+
+function parseAuditLogQuery(query: unknown): AuditLogQuery {
+  const input = asRecord(query);
+  const result: AuditLogQuery = {};
+
+  if (typeof input.agent === 'string' && input.agent.trim()) result.agent = input.agent.trim();
+  if (typeof input.tool === 'string' && input.tool.trim()) result.tool = input.tool.trim();
+  if (typeof input.since === 'string' && input.since.trim()) result.since = input.since.trim();
+  if (typeof input.limit === 'string' && input.limit.trim()) {
+    const limit = Number(input.limit);
+    if (Number.isFinite(limit)) result.limit = Math.trunc(limit);
+  }
+
+  return result;
+}
+
+function parseMcpProviderStatus(
+  provider: unknown
+): { success: true; data: McpServerConfig } | { success: false; error: string } {
+  try {
+    const result = McpServerConfig.safeParse(provider);
+    if (result.success) return { success: true, data: result.data };
+    return {
+      success: false,
+      error: result.error.issues.map((issue) => issue.message).join('; '),
+    };
+  } catch (err) {
+    return {
+      success: false,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
 }
 
 function readConfigObject(configPath: string): Record<string, unknown> {
@@ -891,7 +1000,7 @@ const INDEX_HTML = `<!doctype html>
     }
     .status-grid {
       display: grid;
-      grid-template-columns: repeat(4, minmax(120px, 1fr));
+      grid-template-columns: repeat(5, minmax(120px, 1fr));
       gap: 10px;
     }
     .status-tile {
@@ -992,6 +1101,71 @@ const INDEX_HTML = `<!doctype html>
       color: #6a4400;
       font-size: 13px;
       font-weight: 650;
+    }
+    .activity-panel {
+      display: grid;
+      gap: 10px;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      box-shadow: var(--shadow);
+    }
+    .activity-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 10px;
+    }
+    .activity-header h3 {
+      margin: 0 0 3px;
+      font-size: 14px;
+    }
+    .log-toolbar {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(100px, 1fr)) auto;
+      gap: 8px;
+    }
+    .log-toolbar input {
+      min-height: 34px;
+      min-width: 0;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      padding: 0 10px;
+      background: #fff;
+      color: var(--ink);
+    }
+    .log-list {
+      display: grid;
+      gap: 8px;
+    }
+    .log-row {
+      display: grid;
+      grid-template-columns: 172px minmax(120px, 180px) minmax(140px, 1fr) 104px;
+      gap: 10px;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: #fbfcfe;
+      font-size: 13px;
+    }
+    .log-cell {
+      min-width: 0;
+      overflow-wrap: anywhere;
+    }
+    .log-args {
+      grid-column: 1 / -1;
+      max-height: 112px;
+      overflow: auto;
+      margin: 0;
+      padding: 8px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #f5f7fb;
+      color: var(--ink);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px;
+      white-space: pre-wrap;
     }
     .provider-list {
       background: var(--panel);
@@ -1236,6 +1410,8 @@ const INDEX_HTML = `<!doctype html>
       .layout { grid-template-columns: 220px minmax(0, 1fr); }
       .details { grid-column: 1 / -1; border-left: 0; border-top: 1px solid var(--line); }
       .status-grid { grid-template-columns: repeat(2, minmax(120px, 1fr)); }
+      .log-toolbar { grid-template-columns: repeat(2, minmax(120px, 1fr)); }
+      .log-row { grid-template-columns: 1fr 1fr; }
       .tool-row { grid-template-columns: minmax(160px, 240px) minmax(0, 1fr); }
       .rule-actions { grid-column: 1 / -1; justify-content: flex-start; }
     }
@@ -1246,6 +1422,7 @@ const INDEX_HTML = `<!doctype html>
       .tool-row { grid-template-columns: 1fr; }
       .hero { flex-direction: column; }
       .status-grid { grid-template-columns: 1fr; }
+      .log-toolbar { grid-template-columns: 1fr; }
       .provider-item { grid-template-columns: 1fr 1fr; }
     }
   </style>
@@ -1259,6 +1436,7 @@ const INDEX_HTML = `<!doctype html>
       </div>
       <div class="top-actions">
         <button id="refreshStatus">Refresh Status</button>
+        <button id="refreshLogs">Refresh Activity</button>
         <button id="refreshTools">Refresh Tools</button>
         <button id="saveRules" class="primary">Save</button>
       </div>
@@ -1291,6 +1469,23 @@ const INDEX_HTML = `<!doctype html>
           </div>
           <div id="statusGrid" class="status-grid"></div>
           <div id="staleNotice" class="stale-notice" hidden></div>
+          <section class="activity-panel">
+            <div class="activity-header">
+              <div>
+                <h3>Activity</h3>
+                <div id="activityMeta" class="subtle"></div>
+              </div>
+              <span id="pendingBadge" class="pill">pending 0</span>
+            </div>
+            <div class="log-toolbar">
+              <input id="logAgent" placeholder="Agent">
+              <input id="logTool" placeholder="Tool">
+              <input id="logSince" placeholder="Since ISO timestamp">
+              <input id="logLimit" placeholder="Limit" value="50">
+              <button id="applyLogFilters">Apply</button>
+            </div>
+            <div id="activityList" class="log-list"></div>
+          </section>
           <div class="toolbar">
             <input id="search" type="search" placeholder="Search tools, endpoints, providers">
             <select id="providerFilter"></select>
@@ -1334,6 +1529,8 @@ const INDEX_HTML = `<!doctype html>
     const state = {
       config: null,
       status: null,
+      audit: { dbPath: '', entries: [], pending: [] },
+      auditFilters: { agent: '', tool: '', since: '', limit: '50' },
       tools: [],
       toolsLoaded: false,
       errors: [],
@@ -1403,6 +1600,24 @@ const INDEX_HTML = `<!doctype html>
       }
     }
 
+    async function refreshLogs() {
+      el('refreshLogs').disabled = true;
+      el('refreshLogs').textContent = 'Loading...';
+      try {
+        const params = new URLSearchParams();
+        for (const [key, value] of Object.entries(state.auditFilters)) {
+          if (String(value || '').trim()) params.set(key, String(value).trim());
+        }
+        state.audit = await api('/api/logs' + (params.toString() ? '?' + params.toString() : ''));
+        render();
+      } catch (error) {
+        alert(error.message);
+      } finally {
+        el('refreshLogs').disabled = false;
+        el('refreshLogs').textContent = 'Refresh Activity';
+      }
+    }
+
     function hydrateDrafts() {
       for (const [id, agent] of Object.entries(state.config.agents)) {
         const key = keyFor('agent', id);
@@ -1438,17 +1653,19 @@ const INDEX_HTML = `<!doctype html>
       renderProviderFilter();
       renderStatusGrid();
       renderStaleNotice();
+      renderActivity();
       renderDetails();
       renderTools();
     }
 
     function renderStatusGrid() {
-      const summary = state.status?.summary || { ok: 0, down: 0, disabled: 0, tools: state.tools.length };
+      const summary = state.status?.summary || { ok: 0, down: 0, disabled: 0, tools: state.tools.length, pendingApprovals: state.audit.pending.length };
       el('statusGrid').innerHTML =
         statusTile(summary.ok, 'Providers OK', 'runtime-ok') +
         statusTile(summary.down, 'Providers Down', summary.down > 0 ? 'runtime-down' : '') +
         statusTile(summary.disabled, 'Disabled', 'runtime-disabled') +
-        statusTile(summary.tools || state.tools.length, 'Tools Visible', '');
+        statusTile(summary.tools || state.tools.length, 'Tools Visible', '') +
+        statusTile(summary.pendingApprovals || state.audit.pending.length, 'Pending Approvals', summary.pendingApprovals ? 'runtime-down' : '');
     }
 
     function statusTile(value, label, className) {
@@ -1464,6 +1681,63 @@ const INDEX_HTML = `<!doctype html>
       el('staleNotice').textContent = stale.length
         ? 'Tool list stale: ' + stale.join(', ')
         : '';
+    }
+
+    function renderActivity() {
+      const pending = state.audit.pending || [];
+      const entries = state.audit.entries || [];
+      const rows = [
+        ...pending.map(pendingRow),
+        ...entries.map(auditRow)
+      ];
+      el('pendingBadge').textContent = 'pending ' + pending.length;
+      el('activityMeta').textContent = state.audit.dbPath
+        ? 'Audit log: ' + state.audit.dbPath
+        : 'Audit log not loaded yet';
+      el('activityList').innerHTML = rows.length
+        ? rows.join('')
+        : '<div class="empty">No recent activity.</div>';
+    }
+
+    function pendingRow(entry) {
+      return '<div class="log-row">' +
+        '<div class="log-cell"><strong>pending approval</strong><br>' + escapeHtml(formatTime(entry.created_at)) + '</div>' +
+        '<div class="log-cell">' + escapeHtml(entry.agent_id) + '</div>' +
+        '<div class="log-cell">' + escapeHtml(entry.tool) + '<br><span class="subtle">code ' + escapeHtml(entry.code) + '</span></div>' +
+        '<div class="log-cell"><span class="tag tag-warn">' + escapeHtml(entry.status) + '</span></div>' +
+        '<pre class="log-args">' + escapeHtml(prettyJson(entry.args)) + '</pre>' +
+      '</div>';
+    }
+
+    function auditRow(entry) {
+      return '<div class="log-row">' +
+        '<div class="log-cell">' + escapeHtml(formatTime(entry.ts)) + '</div>' +
+        '<div class="log-cell">' + escapeHtml(entry.agent_id) + '</div>' +
+        '<div class="log-cell">' + escapeHtml(entry.tool) + '</div>' +
+        '<div class="log-cell"><span class="tag ' + resultTagClass(entry.result) + '">' + escapeHtml(entry.result) + '</span>' + (entry.duration_ms ? '<br><span class="subtle">' + entry.duration_ms + 'ms</span>' : '') + '</div>' +
+        '<pre class="log-args">' + escapeHtml(prettyJson(entry.args)) + (entry.error ? '\\nerror: ' + escapeHtml(entry.error) : '') + '</pre>' +
+      '</div>';
+    }
+
+    function resultTagClass(result) {
+      if (String(result).includes('denied') || String(result).includes('error') || String(result).includes('timeout')) return 'tag-danger';
+      if (String(result).includes('hitl')) return 'tag-warn';
+      return 'tag-good';
+    }
+
+    function prettyJson(value) {
+      try {
+        return JSON.stringify(JSON.parse(value), null, 2);
+      } catch {
+        return String(value || '');
+      }
+    }
+
+    function formatTime(value) {
+      if (!value) return '';
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return value;
+      return date.toLocaleString();
     }
 
     function renderProviderNav() {
@@ -1618,6 +1892,7 @@ const INDEX_HTML = `<!doctype html>
     function renderDiagnostics() {
       const diagnostics = [...(state.config.diagnostics || [])];
       for (const error of state.errors) diagnostics.push({ level: 'warn', message: error });
+      if (state.audit.error) diagnostics.push({ level: 'warn', message: state.audit.error });
       el('diagnostics').innerHTML = diagnostics.length
         ? diagnostics.map((d) => '<div class="diagnostic ' + escapeHtml(d.level) + '">' + escapeHtml((d.agent ? '[' + d.agent + '] ' : '') + d.message) + '</div>').join('')
         : '<div class="subtle">No diagnostics.</div>';
@@ -1921,6 +2196,7 @@ const INDEX_HTML = `<!doctype html>
 
     el('refreshTools').addEventListener('click', refreshTools);
     el('refreshStatus').addEventListener('click', refreshStatus);
+    el('refreshLogs').addEventListener('click', refreshLogs);
     el('saveRules').addEventListener('click', () => saveCurrent().catch((error) => alert(error.message)));
     el('manageProviders').addEventListener('click', () => setActive('providers'));
     el('addProvider').addEventListener('click', () => addProvider().catch((error) => alert(error.message)));
@@ -1930,6 +2206,13 @@ const INDEX_HTML = `<!doctype html>
     el('search').addEventListener('input', (event) => { state.search = event.target.value; renderTools(); });
     el('providerFilter').addEventListener('change', (event) => { state.provider = event.target.value; renderTools(); });
     el('decisionFilter').addEventListener('change', (event) => { state.decision = event.target.value; renderTools(); });
+    el('applyLogFilters').addEventListener('click', () => {
+      state.auditFilters.agent = el('logAgent').value;
+      state.auditFilters.tool = el('logTool').value;
+      state.auditFilters.since = el('logSince').value;
+      state.auditFilters.limit = el('logLimit').value;
+      refreshLogs().catch((error) => alert(error.message));
+    });
     el('bulkAllow').addEventListener('click', () => setVisible('allow'));
     el('bulkAsk').addEventListener('click', () => setVisible('ask'));
     el('bulkDeny').addEventListener('click', () => setVisible('deny'));
@@ -1938,7 +2221,7 @@ const INDEX_HTML = `<!doctype html>
     el('resetAllRules').addEventListener('click', resetAllToCurrentConfig);
     el('recommendedRules').addEventListener('click', setRecommended);
 
-    loadState().then(() => Promise.all([refreshStatus(), refreshTools()])).catch((error) => {
+    loadState().then(() => Promise.all([refreshStatus(), refreshLogs(), refreshTools()])).catch((error) => {
       document.body.innerHTML = '<div class="empty">' + escapeHtml(error.message) + '</div>';
     });
   </script>
