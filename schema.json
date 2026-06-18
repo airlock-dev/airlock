@@ -152,6 +152,13 @@
           "additionalProperties": {
             "type": "object",
             "properties": {
+              "extends": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "default": []
+              },
               "allow": {
                 "type": "array",
                 "items": {

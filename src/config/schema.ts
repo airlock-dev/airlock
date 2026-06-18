@@ -205,6 +205,7 @@ export const AgentConfig = z.object({
 export type AgentConfig = z.infer<typeof AgentConfig>;
 
 export const ProfileConfig = z.object({
+  extends: z.array(z.string()).default([]),
   allow: z.array(z.string()).default([]),
   ask: z.array(z.string()).default([]),
   deny: z.array(z.string()).default([]),

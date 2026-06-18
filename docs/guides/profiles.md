@@ -31,6 +31,33 @@ profiles:
       - exec/run
 ```
 
+Profiles can also extend other profiles:
+
+```yaml
+profiles:
+  github-read:
+    allow:
+      - github/list*
+      - github/get*
+
+  linear-read:
+    allow:
+      - linear/list*
+      - linear/get*
+
+  dev-ro:
+    extends: [github-read, linear-read]
+    allow:
+      - sentry/list*
+
+  dev-rw:
+    extends: [dev-ro]
+    allow:
+      - github/create_pr
+    ask:
+      - github/merge_pull_request
+```
+
 ## Using extends
 
 Agents inherit from one or more profiles:
@@ -56,13 +83,17 @@ deny > ask > allow > default-deny
 
 If `readonly` allows `http/get` and the agent denies `http/*`, the deny wins.
 
-Profile rules are combined before agent-level rules are applied:
+This also means a derived profile can downgrade an inherited grant without special syntax. If `base` allows `github/*` and `product` adds `ask: [github/merge_pull_request]`, merge requests require approval because `ask` wins over `allow`.
 
-1. All `allow` lists from all profiles are merged
-2. All `ask` lists from all profiles are merged
-3. All `deny` lists from all profiles are merged
-4. Agent-level rules are applied on top
+Profile rules are resolved before agent-level rules are applied:
+
+1. Each profile inherits all transitively extended profiles
+2. Diamond inheritance is deduplicated
+3. Agent `extends` consumes the fully resolved profiles
+4. Agent-level rules are added
 5. Precedence resolves conflicts: deny wins over ask, ask wins over allow
+
+Airlock rejects invalid profile graphs at config load. Unknown profile references are fatal, and cycles report the path, for example `pa-work -> product -> pa-work`.
 
 ## Practical patterns
 

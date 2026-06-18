@@ -43,6 +43,11 @@ profiles:
       - exec/run
     deny:
       - exec/danger
+  writer:
+    extends:
+      - readonly
+    allow:
+      - exec/write
 agents:
   dev:
     extends:
@@ -69,6 +74,7 @@ approvals:
     expect(state.agents.dev.extends).toEqual(['readonly']);
     expect(state.profiles.readonly.allow).toEqual(['exec/run']);
     expect(state.profiles.readonly.deny).toEqual(['exec/danger']);
+    expect(state.profiles.writer.extends).toEqual(['readonly']);
   });
 
   it('saves only editable agent rule fields and keeps backups', () => {
@@ -90,9 +96,9 @@ approvals:
   });
 
   it('creates empty profiles', () => {
-    const state = createEntity(configPath, { kind: 'profile', id: 'writer' });
+    const state = createEntity(configPath, { kind: 'profile', id: 'release' });
 
-    expect(state.profiles.writer).toEqual({ allow: [], ask: [], deny: [] });
+    expect(state.profiles.release).toEqual({ extends: [], allow: [], ask: [], deny: [] });
   });
 
   it('creates agents with a secure bearer token', () => {
@@ -132,16 +138,18 @@ approvals:
     expect(agents.cursor.token).toBe(second.createdToken?.token);
   });
 
-  it('saves profile deny rules', () => {
+  it('saves profile inheritance and deny rules', () => {
     const state = saveRules(configPath, {
       kind: 'profile',
-      id: 'readonly',
-      allow: ['exec/run'],
+      id: 'writer',
+      extends: ['readonly'],
+      allow: ['exec/write'],
       ask: [],
       deny: ['exec/danger'],
     });
 
-    expect(state.profiles.readonly.deny).toEqual(['exec/danger']);
+    expect(state.profiles.writer.extends).toEqual(['readonly']);
+    expect(state.profiles.writer.deny).toEqual(['exec/danger']);
   });
 
   it('adds and disables providers without dropping connection fields', () => {

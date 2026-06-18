@@ -24,6 +24,7 @@ export function loadConfig(path: string): Config {
   if (!result.success) {
     throw new Error(`Invalid config at ${path}:\n${result.error.toString()}`);
   }
+  applyProfiles(result.data);
   const diagnostics = validateConfig(result.data);
   for (const d of diagnostics) {
     const ctx = d.agent ? { agent: d.agent } : {};
@@ -43,7 +44,6 @@ export function loadConfig(path: string): Config {
         errors.map((e) => `  - ${e.agent ? `[${e.agent}] ` : ''}${e.message}`).join('\n')
     );
   }
-  applyProfiles(result.data);
   return result.data;
 }
 
@@ -70,8 +70,7 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
   if (!isLoopback && !config.server.auth_required) {
     diagnostics.push({
       level: 'error',
-      message:
-        'server.auth_required must be true when server.host is not loopback.',
+      message: 'server.auth_required must be true when server.host is not loopback.',
       suggestion:
         'Set server.auth_required: true, configure server.api_secret or per-agent tokens, and put Airlock behind TLS.',
     });
@@ -80,10 +79,8 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
   if (requireAgentTokens && agentsWithoutTokens.length > 0) {
     diagnostics.push({
       level: 'error',
-      message:
-        'Per-agent tokens are required, but some agents have no token.',
-      suggestion:
-        `Add token to agents: ${agentsWithoutTokens.join(', ')}. For reverse-proxy exposure on loopback, set server.require_agent_tokens: true to keep this check enabled.`,
+      message: 'Per-agent tokens are required, but some agents have no token.',
+      suggestion: `Add token to agents: ${agentsWithoutTokens.join(', ')}. For reverse-proxy exposure on loopback, set server.require_agent_tokens: true to keep this check enabled.`,
     });
   }
 
@@ -93,8 +90,7 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
         level: 'error',
         message:
           'server.auth_required is true, but server.api_secret is unset and some agents have no token.',
-        suggestion:
-          `Set server.api_secret or add token to agents: ${agentsWithoutTokens.join(', ')}.`,
+        suggestion: `Set server.api_secret or add token to agents: ${agentsWithoutTokens.join(', ')}.`,
       });
     }
 
