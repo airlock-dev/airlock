@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.36](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.35...airlock-bot-v0.2.36) (2026-06-18)
+
+
+### Features
+
+* add docker split dashboard deployment ([#108](https://github.com/airlock-dev/airlock/issues/108)) ([3f817f4](https://github.com/airlock-dev/airlock/commit/3f817f401beec6d187e23e55659806caf697c9ab))
+* **configure-web:** add command center activity dashboard ([#106](https://github.com/airlock-dev/airlock/issues/106)) ([55fb8f3](https://github.com/airlock-dev/airlock/commit/55fb8f367ad157f0f39bdfeecfe50bd9fa00fc35))
+
 ## [0.2.35](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.34...airlock-bot-v0.2.35) (2026-06-18)
 
 
