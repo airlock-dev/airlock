@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -17,6 +17,7 @@ import {
   upsertProvider,
 } from '../src/configure-web/cli.js';
 import { AuditDb } from '../src/audit/db.js';
+import { ApprovalDashboardRoutes } from '../src/hitl/approval-dashboard.js';
 
 describe('configure-web config helpers', () => {
   let dir: string;
@@ -309,6 +310,136 @@ approvals:
     expect(logsRes.json()).toMatchObject({ entries: [], pending: [] });
 
     await app.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('can host live approval routes alongside the command center', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'airlock-web-approvals-'));
+    const configPath = join(dir, 'airlock.yaml');
+    writeFileSync(
+      configPath,
+      `
+providers:
+  exec: builtin
+agents:
+  dev:
+    allow: []
+approvals:
+  provider:
+    type: dashboard
+`
+    );
+
+    const approved: string[] = [];
+    const denied: string[] = [];
+    const approvals = new ApprovalDashboardRoutes({
+      approve: (code) => approved.push(code),
+      deny: (code) => denied.push(code),
+    });
+    approvals.notify([
+      {
+        id: 'req-1',
+        code: 'ABC123',
+        agentId: 'dev',
+        tool: 'exec/run',
+        args: { command: 'pwd' },
+        timeoutMs: 300000,
+      },
+    ]);
+    const app = createConfigureWebApp(configPath, { approvals });
+    await app.ready();
+
+    const pageRes = await app.inject('/');
+    expect(pageRes.statusCode).toBe(200);
+    expect(pageRes.body).toContain('Airlock Command Center');
+
+    const approveRes = await app.inject({
+      method: 'POST',
+      url: '/approve?code=ABC123&remember=always',
+    });
+    expect(approveRes.statusCode).toBe(200);
+    expect(approved).toEqual(['ABC123']);
+    expect(denied).toEqual([]);
+    expect(readFileSync(configPath, 'utf8')).toContain('remember_allow');
+
+    const denyRes = await app.inject({ method: 'POST', url: '/deny?code=DEF456' });
+    expect(denyRes.statusCode).toBe(200);
+    expect(denied).toEqual(['DEF456']);
+
+    await app.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('can run as a remote dashboard client while mutating local config', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'airlock-web-remote-'));
+    const configPath = join(dir, 'airlock.yaml');
+    writeFileSync(
+      configPath,
+      `
+providers:
+  exec: builtin
+agents:
+  dev:
+    allow: []
+    ask:
+      - exec/run
+approvals:
+  provider:
+    type: stdio
+`
+    );
+
+    const calls: Array<{ url: string; auth?: string; method?: string }> = [];
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      const headers = new Headers(init?.headers);
+      calls.push({ url, auth: headers.get('authorization') ?? undefined, method: init?.method });
+      if (url.endsWith('/health')) {
+        return Response.json({ mcpHealth: {}, pendingApprovals: 1 });
+      }
+      if (url.includes('/audit')) {
+        return Response.json([]);
+      }
+      if (url.endsWith('/hitl/pending')) {
+        return Response.json([
+          { id: 'req-1', code: 'ABC123', agentId: 'dev', tool: 'exec/run', args: { command: 'pwd' } },
+        ]);
+      }
+      if (url.endsWith('/admin/tools')) {
+        return Response.json({ tools: [{ name: 'exec/run', inputSchema: { type: 'object' } }], errors: [] });
+      }
+      if (url.includes('/approve?')) {
+        return Response.json({ ok: true });
+      }
+      return Response.json({ error: 'not found' }, { status: 404 });
+    });
+
+    const app = createConfigureWebApp(configPath, {
+      remoteGateway: { url: 'http://gateway:4111', secret: 'admin-secret' },
+    });
+    await app.ready();
+
+    expect((await app.inject('/api/status')).json()).toMatchObject({
+      summary: { pendingApprovals: 1 },
+    });
+    expect((await app.inject('/api/logs')).json()).toMatchObject({
+      dbPath: 'gateway:http://gateway:4111',
+      pending: [expect.objectContaining({ code: 'ABC123', agent_id: 'dev' })],
+    });
+    expect((await app.inject('/api/tools')).json()).toMatchObject({
+      tools: [expect.objectContaining({ name: 'exec/run' })],
+    });
+
+    const approveRes = await app.inject({
+      method: 'POST',
+      url: '/approve?code=ABC123&remember=always',
+    });
+    expect(approveRes.statusCode).toBe(200);
+    expect(readFileSync(configPath, 'utf8')).toContain('remember_allow');
+    expect(calls.every((call) => call.auth === 'Bearer admin-secret')).toBe(true);
+
+    await app.close();
+    fetchSpy.mockRestore();
     rmSync(dir, { recursive: true, force: true });
   });
 });

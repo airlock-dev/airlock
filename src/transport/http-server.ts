@@ -1,18 +1,12 @@
-import { randomUUID, timingSafeEqual } from 'crypto';
+import { randomUUID } from 'crypto';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { createAgentServer, connectAgentServer } from './agent-server.js';
 import type { AgentServerDeps } from './agent-server.js';
 import { childLogger } from '../util/logger.js';
+import { checkBearerAuth, checkOrigin } from '../security/request.js';
 
 const log = childLogger('http-server');
-
-function constantTimeEqual(a: string, b: string): boolean {
-  const bufA = Buffer.from(a);
-  const bufB = Buffer.from(b);
-  if (bufA.length !== bufB.length) return false;
-  return timingSafeEqual(bufA, bufB);
-}
 
 // eslint-disable-next-line @typescript-eslint/require-await
 export async function httpServerPlugin(
@@ -20,6 +14,8 @@ export async function httpServerPlugin(
   opts: {
     getDeps: (agentId: string) => AgentServerDeps | undefined;
     secret?: string;
+    authRequired?: boolean;
+    allowedOrigins?: string[];
   }
 ): Promise<void> {
   const { secret } = opts;
@@ -42,23 +38,16 @@ export async function httpServerPlugin(
     reply: FastifyReply,
     deps: AgentServerDeps
   ): boolean {
+    if (!checkOrigin(request, reply, opts.allowedOrigins)) return false;
+
     const token = deps.agentConfig.token;
     if (token) {
-      const auth = request.headers.authorization ?? '';
-      if (!constantTimeEqual(auth, `Bearer ${token}`)) {
-        reply.status(401).send({ error: 'Unauthorized' });
-        return false;
-      }
-      return true;
+      return checkBearerAuth(request, reply, { secret: token, authRequired: true });
     }
-    if (secret) {
-      const auth = request.headers.authorization ?? '';
-      if (!constantTimeEqual(auth, `Bearer ${secret}`)) {
-        reply.status(401).send({ error: 'Unauthorized' });
-        return false;
-      }
-    }
-    return true;
+    return checkBearerAuth(request, reply, {
+      secret,
+      authRequired: opts.authRequired,
+    });
   }
 
   async function handleMcpRequest(request: FastifyRequest, reply: FastifyReply): Promise<void> {

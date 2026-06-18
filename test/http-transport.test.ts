@@ -128,6 +128,10 @@ interface BuildServerOpts {
   agentConfig?: Partial<AgentConfig>;
   /** Global API secret passed to the plugin */
   secret?: string;
+  /** Require auth even when no global or agent token is configured */
+  authRequired?: boolean;
+  /** Browser origins allowed to call the MCP endpoint */
+  allowedOrigins?: string[];
   /** Additional named agents beyond 'test' */
   extraAgents?: Record<string, AgentConfig>;
 }
@@ -173,7 +177,12 @@ async function buildServer(opts: BuildServerOpts = {}): Promise<ServerFixture> {
   // forceCloseConnections ensures app.close() doesn't hang if a test client
   // leaves an open SSE connection (e.g. after an unexpected failure).
   const app = Fastify({ logger: false, forceCloseConnections: true });
-  await app.register(httpServerPlugin, { getDeps, secret: opts.secret });
+  await app.register(httpServerPlugin, {
+    getDeps,
+    secret: opts.secret,
+    authRequired: opts.authRequired,
+    allowedOrigins: opts.allowedOrigins,
+  });
   await app.listen({ port: 0, host: '127.0.0.1' });
   const port = (app.server.address() as AddressInfo).port;
 
@@ -419,6 +428,20 @@ describe('http-transport: auth — per-agent token', () => {
     expect(tools.length).toBeGreaterThan(0);
     await client.close();
   });
+
+  it('does not accept the global secret for an agent with its own token', async () => {
+    const mixedSrv = await buildServer({
+      secret: 'global-secret',
+      agentConfig: makeAgentConfig({ token: 'agent-token-abc' }),
+    });
+    try {
+      const transport = makeClientTransport(mixedSrv.port, 'test', { token: 'global-secret' });
+      const client = new Client({ name: 'test', version: '0.0.0' });
+      await expect(client.connect(transport)).rejects.toThrow();
+    } finally {
+      await mixedSrv.teardown();
+    }
+  });
 });
 
 // ─── Auth: no secret ──────────────────────────────────────────────────────────
@@ -438,6 +461,52 @@ describe('http-transport: auth — no secret configured', () => {
     const { client, transport } = await connect(srv.port);
     expect(transport.sessionId).toBeTruthy();
     await client.close();
+  });
+});
+
+describe('http-transport: exposure hardening', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('rejects unauthenticated connections when auth is required without a secret', async () => {
+    const srv = await buildServer({ authRequired: true });
+    try {
+      const transport = makeClientTransport(srv.port, 'test');
+      const client = new Client({ name: 'test', version: '0.0.0' });
+      await expect(client.connect(transport)).rejects.toThrow();
+    } finally {
+      await srv.teardown();
+    }
+  });
+
+  it('rejects browser-originated requests when the Origin is not allowlisted', async () => {
+    const srv = await buildServer({ allowedOrigins: ['https://airlock.internal'] });
+    try {
+      const res = await fetch(`http://127.0.0.1:${srv.port}/agents/test/mcp`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Origin: 'https://evil.example',
+        },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
+      });
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: 'Origin not allowed' });
+    } finally {
+      await srv.teardown();
+    }
+  });
+
+  it('allows requests with no Origin header for non-browser MCP clients', async () => {
+    const srv = await buildServer({ allowedOrigins: ['https://airlock.internal'] });
+    try {
+      const { client, transport } = await connect(srv.port);
+      expect(transport.sessionId).toBeTruthy();
+      await client.close();
+    } finally {
+      await srv.teardown();
+    }
   });
 });
 

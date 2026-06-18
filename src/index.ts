@@ -6,7 +6,7 @@ import { Gateway } from './gateway.js';
 import { runStdioMode } from './stdio-mode.js';
 import { runDiscover } from './discover/cli.js';
 import { runConfigureAgent } from './configure-agent/cli.js';
-import { runCommandCenter, runConfigureWeb } from './configure-web/cli.js';
+import { runCommandCenter, runConfigureWeb, runDashboard } from './configure-web/cli.js';
 import { runConfigureCli } from './configure-cli/cli.js';
 import { runSetupOpenclaw } from './setup-openclaw/cli.js';
 import { logger } from './util/logger.js';
@@ -33,6 +33,15 @@ if (subcommand === 'discover') {
     console.error(err instanceof Error ? err.message : String(err));
     process.exit(1);
   });
+} else if (subcommand === 'dashboard') {
+  runDashboard(process.argv.slice(3)).catch((err) => {
+    console.error(err instanceof Error ? err.message : String(err));
+    process.exit(1);
+  });
+} else if (subcommand === 'gateway') {
+  runGateway(process.argv.slice(3), { runtimeOnly: true });
+} else if (subcommand === 'serve') {
+  runGateway(process.argv.slice(3));
 } else if (subcommand === 'configure-cli') {
   runConfigureCli(process.argv.slice(3)).catch((err) => {
     console.error(err instanceof Error ? err.message : String(err));
@@ -46,11 +55,12 @@ if (subcommand === 'discover') {
     process.exit(1);
   }
 } else {
-  runGateway();
+  runGateway(process.argv.slice(2));
 }
 
-function runGateway(): void {
+function runGateway(argv: string[], options: { runtimeOnly?: boolean } = {}): void {
   const { values } = parseArgs({
+    args: argv,
     options: {
       config: { type: 'string', short: 'c', default: './airlock.yaml' },
       agent: { type: 'string', short: 'a' },
@@ -66,6 +76,9 @@ airlock — permissions-aware MCP gateway
 
 Usage:
   airlock [options]
+  airlock gateway [options]
+  airlock dashboard [options]
+  airlock serve [options]
   airlock discover <cli|api> [options]
   airlock run [options]
   airlock configure-cli <tool> [options]
@@ -81,6 +94,9 @@ Options:
 
 Subcommands:
   run                    Browser command center for provider health and permissions
+  gateway                MCP/runtime gateway only; disables in-process dashboard provider
+  dashboard              Standalone admin dashboard for a remote gateway
+  serve                  Combined gateway mode (same behavior as airlock [options])
   discover cli <tool>    Auto-discover CLI commands from --help or Fig specs
   discover api <spec>    Auto-discover API endpoints from an OpenAPI spec
   configure-cli <tool>   Interactive TUI to select and configure CLI commands
@@ -91,6 +107,12 @@ Subcommands:
 Examples:
   # Start full gateway server
   airlock --config /etc/airlock/gateway.yaml
+
+  # Start runtime-only gateway for split deployments
+  airlock gateway --config /etc/airlock/gateway.yaml
+
+  # Start standalone admin dashboard for split deployments
+  airlock dashboard --config /etc/airlock/gateway.yaml --gateway-url http://gateway:4111
 
   # Connect as a specific agent via stdio (for Claude Code, Cursor, etc.)
   airlock --agent helena
@@ -129,7 +151,7 @@ Examples:
     }
 
     // Full gateway mode
-    const gateway = new Gateway(config, configPath);
+    const gateway = new Gateway(config, configPath, { runtimeOnly: options.runtimeOnly });
 
     const watcher = new ConfigWatcher(configPath);
     watcher.on('reload', (newConfig) => {

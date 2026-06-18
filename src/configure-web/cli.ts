@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, writeFileSync, copyFileSync } from 'fs';
 import { parseArgs } from 'util';
-import Fastify from 'fastify';
+import Fastify, { type FastifyInstance, type FastifyReply } from 'fastify';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { AuditDb, type AuditEntry, type HitlQueueEntry } from '../audit/db.js';
@@ -9,15 +9,20 @@ import {
   AuditConfig,
   GatewayConfig,
   McpServerConfig,
+  ProviderConfig,
   getMcpConfigs,
   type GatewayConfig as ParsedGatewayConfig,
 } from '../config/schema.js';
+import { rememberAllow, type RememberAllowMode } from '../config/mutator.js';
 import { validateConfig, type ConfigDiagnostic } from '../config/loader.js';
 import { ClientPool } from '../pool/pool.js';
 import { checkSuspiciousPatterns } from '../registry/sanitizer.js';
+import { VERSION } from '../version.js';
 
 type PermissionKind = 'agent' | 'profile';
 type RecommendedDecision = 'allow' | 'ask' | 'deny';
+const LATEST_VERSION_CACHE_TTL_MS = 60 * 60 * 1000;
+let latestVersionCache: { version: string; fetchedAt: number } | null = null;
 
 interface WebState {
   configPath: string;
@@ -125,6 +130,18 @@ interface AuditLogResult {
   error?: string;
 }
 
+export interface ConfigureWebOptions {
+  approvals?: {
+    registerRoutes(app: FastifyInstance, configPath?: string): void;
+  };
+  remoteGateway?: RemoteGatewayOptions;
+}
+
+export interface RemoteGatewayOptions {
+  url: string;
+  secret?: string;
+}
+
 const HELP = `
 airlock configure-web - browser UI for profiles, agents, and allow/ask/deny lists
 
@@ -151,8 +168,62 @@ Options:
   -h, --help            Show this help
 `;
 
+const DASHBOARD_HELP = `
+airlock dashboard - standalone admin dashboard for a remote Airlock gateway
+
+Usage:
+  airlock dashboard [options]
+
+Options:
+  -c, --config <path>             Airlock config file (default: ./airlock.yaml)
+  -p, --port <port>               Web UI port (default: 4177)
+      --host <host>               Bind host (default: 127.0.0.1)
+      --gateway-url <url>         Gateway URL (default: http://127.0.0.1:4111)
+      --gateway-secret <secret>   Gateway admin bearer token (default: AIRLOCK_GATEWAY_SECRET or AIRLOCK_API_SECRET)
+  -h, --help                      Show this help
+`;
+
 export async function runCommandCenter(argv: string[]): Promise<void> {
   await runConfigureWeb(argv, 'run');
+}
+
+export async function runDashboard(argv: string[]): Promise<void> {
+  const { values } = parseArgs({
+    args: argv,
+    options: {
+      config: { type: 'string', short: 'c', default: './airlock.yaml' },
+      port: { type: 'string', short: 'p', default: '4177' },
+      host: { type: 'string', default: '127.0.0.1' },
+      'gateway-url': { type: 'string', default: 'http://127.0.0.1:4111' },
+      'gateway-secret': { type: 'string' },
+      help: { type: 'boolean', short: 'h', default: false },
+    },
+    allowPositionals: false,
+  });
+
+  if (values.help) {
+    console.log(DASHBOARD_HELP);
+    process.exit(0);
+  }
+
+  const configPath = values.config ?? './airlock.yaml';
+  const port = Number(values.port ?? '4177');
+  const host = values.host ?? '127.0.0.1';
+  const gatewayUrl = values['gateway-url'] ?? 'http://127.0.0.1:4111';
+  const gatewaySecret =
+    values['gateway-secret'] ?? process.env['AIRLOCK_GATEWAY_SECRET'] ?? process.env['AIRLOCK_API_SECRET'];
+
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error(`Invalid --port: ${values.port}`);
+  }
+
+  const app = createConfigureWebApp(configPath, {
+    remoteGateway: { url: gatewayUrl, secret: gatewaySecret },
+  });
+  await app.listen({ host, port });
+  console.log(`Airlock dashboard running at http://${host}:${port}`);
+  console.log(`Editing ${configPath}`);
+  console.log(`Gateway ${gatewayUrl}`);
 }
 
 export async function runConfigureWeb(
@@ -189,7 +260,7 @@ export async function runConfigureWeb(
   console.log(`Editing ${configPath}`);
 }
 
-export function createConfigureWebApp(configPath: string) {
+export function createConfigureWebApp(configPath: string, options: ConfigureWebOptions = {}) {
   const app = Fastify({ logger: false });
 
   app.get('/', async (_request, reply) => {
@@ -200,6 +271,9 @@ export function createConfigureWebApp(configPath: string) {
 
   app.get('/api/status', async (_request, reply) => {
     try {
+      if (options.remoteGateway) {
+        return await readRemoteCommandCenterStatus(configPath, options.remoteGateway);
+      }
       return await readCommandCenterStatus(configPath);
     } catch (err) {
       reply.code(500);
@@ -207,8 +281,11 @@ export function createConfigureWebApp(configPath: string) {
     }
   });
 
-  app.get('/api/logs', (request, reply) => {
+  app.get('/api/logs', async (request, reply) => {
     try {
+      if (options.remoteGateway) {
+        return await readRemoteAuditLogs(options.remoteGateway, parseAuditLogQuery(request.query));
+      }
       return readAuditLogs(configPath, parseAuditLogQuery(request.query));
     } catch (err) {
       reply.code(500);
@@ -223,12 +300,21 @@ export function createConfigureWebApp(configPath: string) {
 
   app.get('/api/tools', async (_request, reply) => {
     try {
+      if (options.remoteGateway) {
+        return await remoteGatewayJson(options.remoteGateway, '/admin/tools');
+      }
       return await discoverTools(configPath);
     } catch (err) {
       reply.code(500);
       return { error: err instanceof Error ? err.message : String(err), tools: [] };
     }
   });
+
+  if (options.remoteGateway) {
+    registerRemoteGatewayRoutes(app, configPath, options.remoteGateway);
+  } else {
+    options.approvals?.registerRoutes(app, configPath);
+  }
 
   app.post('/api/rules', async (request, reply) => {
     try {
@@ -425,6 +511,261 @@ export function readAuditLogs(configPath: string, query: AuditLogQuery = {}): Au
     };
   } finally {
     db.close();
+  }
+}
+
+interface RemoteHealth {
+  mcpHealth?: Record<string, 'ok' | 'down'>;
+  pendingApprovals?: number;
+}
+
+interface RemotePendingApproval {
+  id: string;
+  code: string;
+  agentId?: string;
+  agent_id?: string;
+  tool: string;
+  args: Record<string, unknown>;
+  status?: string;
+  created_at?: string;
+  createdAt?: string;
+}
+
+async function readRemoteCommandCenterStatus(
+  configPath: string,
+  remoteGateway: RemoteGatewayOptions
+): Promise<CommandCenterStatus> {
+  const raw = readConfigObject(configPath);
+  const config = GatewayConfig.parse(raw);
+  const health = await remoteGatewayJson<RemoteHealth>(remoteGateway, '/health');
+  const mcpHealth = health.mcpHealth ?? {};
+  const providers = Object.entries(config.providers).map(([id, provider]) => {
+    const providerConfig = ProviderConfig.parse(provider);
+    const type = providerConfig === 'builtin' ? 'builtin' : providerConfig.type;
+    const enabled = providerConfig === 'builtin' ? true : providerConfig.enabled;
+    const runtime = mcpHealth[id];
+    return {
+      id,
+      type,
+      enabled,
+      status: enabled ? runtime ?? 'ok' : 'disabled',
+      toolCount: 0,
+      toolFingerprint: '',
+      ...(runtime === 'down' ? { error: 'Provider is down on the gateway' } : {}),
+    } satisfies ProviderStatusEntry;
+  });
+  const ok = providers.filter((provider) => provider.status === 'ok').length;
+  const down = providers.filter((provider) => provider.status === 'down').length;
+  const disabled = providers.filter((provider) => provider.status === 'disabled').length;
+
+  return {
+    generatedAt: new Date().toISOString(),
+    auditDbPath: `gateway:${remoteGateway.url}`,
+    providers,
+    summary: {
+      ok,
+      down,
+      disabled,
+      tools: 0,
+      pendingApprovals: health.pendingApprovals ?? 0,
+    },
+  };
+}
+
+async function readRemoteAuditLogs(
+  remoteGateway: RemoteGatewayOptions,
+  query: AuditLogQuery = {}
+): Promise<AuditLogResult> {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(query)) {
+    if (value !== undefined && value !== '') params.set(key, String(value));
+  }
+  const suffix = params.toString() ? `?${params.toString()}` : '';
+  const [entries, pending] = await Promise.all([
+    remoteGatewayJson<AuditLogResult['entries']>(remoteGateway, `/audit${suffix}`),
+    remoteGatewayJson<RemotePendingApproval[]>(remoteGateway, '/hitl/pending'),
+  ]);
+  return {
+    dbPath: `gateway:${remoteGateway.url}`,
+    entries,
+    pending: pending.map((entry) => ({
+      id: entry.id,
+      code: entry.code,
+      agent_id: entry.agent_id ?? entry.agentId ?? '',
+      tool: entry.tool,
+      args: JSON.stringify(entry.args ?? {}),
+      status: 'pending' as const,
+      created_at: entry.created_at ?? entry.createdAt ?? new Date().toISOString(),
+    })),
+  };
+}
+
+function registerRemoteGatewayRoutes(
+  app: FastifyInstance,
+  configPath: string,
+  remoteGateway: RemoteGatewayOptions
+): void {
+  app.get('/events', (request, reply) => {
+    const controller = new AbortController();
+    request.raw.on('close', () => controller.abort());
+
+    void (async () => {
+      const response = await remoteGatewayFetch(remoteGateway, '/events', {
+        signal: controller.signal,
+      });
+      if (!response.ok || !response.body) {
+        reply.code(response.status || 502).send({ error: await remoteGatewayError(response) });
+        return;
+      }
+
+      reply.hijack();
+      reply.raw.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+      });
+
+      const reader = response.body.getReader();
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          reply.raw.write(Buffer.from(value));
+        }
+      } catch {
+        /* client closed */
+      } finally {
+        reply.raw.end();
+      }
+    })().catch((err) => {
+      if (!reply.sent) {
+        reply.code(502).send({ error: err instanceof Error ? err.message : String(err) });
+      }
+    });
+  });
+
+  app.post('/approve', async (request, reply) => {
+    const query = request.query as Record<string, unknown>;
+    const code = typeof query.code === 'string' ? query.code : '';
+    if (!code) return reply.send({ ok: true });
+
+    const remember = typeof query.remember === 'string' ? query.remember : undefined;
+    if (remember) {
+      const result = await rememberRemoteDecision(configPath, remoteGateway, code, remember, query.duration_ms);
+      if (result.error) return reply.code(result.status).send({ error: result.error });
+    }
+
+    await forwardRemoteApproval(remoteGateway, 'approve', code);
+    return reply.send({ ok: true });
+  });
+
+  app.post('/deny', async (request, reply) => {
+    const query = request.query as Record<string, unknown>;
+    const code = typeof query.code === 'string' ? query.code : '';
+    if (code) await forwardRemoteApproval(remoteGateway, 'deny', code);
+    return reply.send({ ok: true });
+  });
+
+  app.get('/version', () => ({ version: VERSION }));
+  app.get('/version/latest', async (_request, reply) => handleLatestVersion(reply));
+}
+
+async function rememberRemoteDecision(
+  configPath: string,
+  remoteGateway: RemoteGatewayOptions,
+  code: string,
+  remember: string,
+  durationMsValue: unknown
+): Promise<{ status: number; error?: string }> {
+  if (remember !== 'always' && remember !== 'temporary') {
+    return { status: 400, error: 'Invalid remember mode' };
+  }
+
+  const pending = await remoteGatewayJson<RemotePendingApproval[]>(remoteGateway, '/hitl/pending');
+  const request = pending.find((entry) => entry.code === code || entry.id === code);
+  if (!request) return { status: 404, error: 'No pending request found for code' };
+
+  const durationMs =
+    typeof durationMsValue === 'string' && durationMsValue.trim()
+      ? Number(durationMsValue)
+      : undefined;
+  if (durationMs !== undefined && (!Number.isFinite(durationMs) || durationMs <= 0)) {
+    return { status: 400, error: 'Invalid duration_ms' };
+  }
+
+  try {
+    rememberAllow({
+      configPath,
+      agentId: request.agent_id ?? request.agentId ?? '',
+      tool: request.tool,
+      mode: remember as RememberAllowMode,
+      ...(durationMs ? { durationMs } : {}),
+    });
+    return { status: 200 };
+  } catch (err) {
+    return {
+      status: 500,
+      error: err instanceof Error ? err.message : 'Failed to update config',
+    };
+  }
+}
+
+async function forwardRemoteApproval(
+  remoteGateway: RemoteGatewayOptions,
+  action: 'approve' | 'deny',
+  code: string
+): Promise<void> {
+  const response = await remoteGatewayFetch(remoteGateway, `/${action}?${new URLSearchParams({ code })}`, {
+    method: 'POST',
+  });
+  if (!response.ok) throw new Error(await remoteGatewayError(response));
+}
+
+async function remoteGatewayJson<T>(
+  remoteGateway: RemoteGatewayOptions,
+  path: string,
+  init: RequestInit = {}
+): Promise<T> {
+  const response = await remoteGatewayFetch(remoteGateway, path, init);
+  if (!response.ok) throw new Error(await remoteGatewayError(response));
+  return (await response.json()) as T;
+}
+
+function remoteGatewayFetch(
+  remoteGateway: RemoteGatewayOptions,
+  path: string,
+  init: RequestInit = {}
+): Promise<Response> {
+  const headers = new Headers(init.headers);
+  if (remoteGateway.secret) headers.set('Authorization', `Bearer ${remoteGateway.secret}`);
+  const base = remoteGateway.url.endsWith('/') ? remoteGateway.url.slice(0, -1) : remoteGateway.url;
+  return fetch(`${base}${path}`, { ...init, headers });
+}
+
+async function remoteGatewayError(response: Response): Promise<string> {
+  try {
+    const body = (await response.json()) as { error?: string };
+    return body.error ?? `Gateway request failed with HTTP ${response.status}`;
+  } catch {
+    return `Gateway request failed with HTTP ${response.status}`;
+  }
+}
+
+async function handleLatestVersion(reply: FastifyReply): Promise<{ latest?: string; error?: string }> {
+  const now = Date.now();
+  if (latestVersionCache && now - latestVersionCache.fetchedAt < LATEST_VERSION_CACHE_TTL_MS) {
+    return { latest: latestVersionCache.version };
+  }
+
+  try {
+    const response = await fetch('https://registry.npmjs.org/airlock-bot/latest');
+    const data = (await response.json()) as { version?: string };
+    if (!data.version) throw new Error('Registry response did not include a version');
+    latestVersionCache = { version: data.version, fetchedAt: now };
+    return { latest: data.version };
+  } catch {
+    reply.code(502);
+    return { error: 'Failed to fetch latest version' };
   }
 }
 
@@ -998,6 +1339,9 @@ const INDEX_HTML = `<!doctype html>
       border-color: #b9c8ff;
       color: #173c9c;
     }
+    .surface-group {
+      margin-bottom: 14px;
+    }
     .status-grid {
       display: grid;
       grid-template-columns: repeat(5, minmax(120px, 1fr));
@@ -1104,12 +1448,17 @@ const INDEX_HTML = `<!doctype html>
     }
     .activity-panel {
       display: grid;
+      grid-template-rows: auto auto minmax(0, 1fr);
       gap: 10px;
+      max-height: 440px;
       padding: 12px;
       border: 1px solid var(--line);
       border-radius: 8px;
       background: var(--panel);
       box-shadow: var(--shadow);
+    }
+    .activity-panel[hidden] {
+      display: none;
     }
     .activity-header {
       display: flex;
@@ -1126,7 +1475,7 @@ const INDEX_HTML = `<!doctype html>
       grid-template-columns: repeat(4, minmax(100px, 1fr)) auto;
       gap: 8px;
     }
-    .log-toolbar input {
+    .log-toolbar input, .log-toolbar select {
       min-height: 34px;
       min-width: 0;
       border: 1px solid var(--line);
@@ -1138,6 +1487,10 @@ const INDEX_HTML = `<!doctype html>
     .log-list {
       display: grid;
       gap: 8px;
+      min-height: 0;
+      max-height: 280px;
+      overflow: auto;
+      padding-right: 4px;
     }
     .log-row {
       display: grid;
@@ -1149,9 +1502,47 @@ const INDEX_HTML = `<!doctype html>
       background: #fbfcfe;
       font-size: 13px;
     }
+    .log-row.pending {
+      cursor: pointer;
+      border-color: #f1d99a;
+      background: #fffaf0;
+    }
     .log-cell {
       min-width: 0;
       overflow-wrap: anywhere;
+    }
+    .approval-controls {
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+    .approval-controls label {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .approval-controls input {
+      width: 14px;
+      height: 14px;
+    }
+    .approval-actions {
+      grid-column: 1 / -1;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    button.approve {
+      border-color: #b8dfca;
+      background: #e8f6ef;
+      color: var(--green);
+      font-weight: 700;
+    }
+    button.deny {
+      border-color: #f2c0bb;
+      background: #fff0ee;
+      color: var(--red);
+      font-weight: 700;
     }
     .log-args {
       grid-column: 1 / -1;
@@ -1196,6 +1587,9 @@ const INDEX_HTML = `<!doctype html>
       border: 1px solid var(--line);
       border-radius: 8px;
       box-shadow: var(--shadow);
+    }
+    .toolbar[hidden], .table[hidden] {
+      display: none;
     }
     .toolbar input, .toolbar select, .details input {
       min-height: 34px;
@@ -1406,6 +1800,61 @@ const INDEX_HTML = `<!doctype html>
       text-align: center;
       color: var(--muted);
     }
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 20;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 18px;
+      background: rgba(15, 23, 42, 0.38);
+    }
+    .modal-backdrop.open {
+      display: flex;
+    }
+    .modal {
+      width: min(720px, 100%);
+      max-height: min(760px, 92vh);
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr) auto;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      box-shadow: 0 28px 72px rgba(15, 23, 42, 0.28);
+    }
+    .modal-header, .modal-footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 14px;
+      border-bottom: 1px solid var(--line);
+    }
+    .modal-footer {
+      justify-content: flex-start;
+      border-top: 1px solid var(--line);
+      border-bottom: 0;
+      flex-wrap: wrap;
+    }
+    .modal-body {
+      min-height: 0;
+      overflow: auto;
+      padding: 14px;
+    }
+    .modal-title {
+      min-width: 0;
+      overflow-wrap: anywhere;
+      font-weight: 750;
+    }
+    .detail-label {
+      margin: 12px 0 4px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
     @media (max-width: 1080px) {
       .layout { grid-template-columns: 220px minmax(0, 1fr); }
       .details { grid-column: 1 / -1; border-left: 0; border-top: 1px solid var(--line); }
@@ -1443,9 +1892,13 @@ const INDEX_HTML = `<!doctype html>
     </header>
     <div class="layout">
       <aside>
-        <button id="manageProviders" class="entity" style="margin-bottom:14px">Manage Providers</button>
+        <div class="surface-group">
+          <div class="section-title" style="margin-top:0">System</div>
+          <button id="viewActivity" class="entity">Activity</button>
+          <button id="manageProviders" class="entity">Providers</button>
+        </div>
         <div class="row">
-          <div class="section-title" style="margin-top:0">Agents</div>
+          <div class="section-title">Agents</div>
           <button id="addAgent" title="Add agent">+</button>
         </div>
         <div id="agents"></div>
@@ -1469,16 +1922,21 @@ const INDEX_HTML = `<!doctype html>
           </div>
           <div id="statusGrid" class="status-grid"></div>
           <div id="staleNotice" class="stale-notice" hidden></div>
-          <section class="activity-panel">
+          <section id="activitySurface" class="activity-panel" hidden>
             <div class="activity-header">
               <div>
                 <h3>Activity</h3>
                 <div id="activityMeta" class="subtle"></div>
               </div>
-              <span id="pendingBadge" class="pill">pending 0</span>
+              <div class="approval-controls row">
+                <label><input type="checkbox" id="approvalNotifs"> Notifications</label>
+                <label><input type="checkbox" id="approvalSound"> Sound</label>
+                <span id="versionInfo" class="subtle"></span>
+                <span id="pendingBadge" class="pill">pending 0</span>
+              </div>
             </div>
             <div class="log-toolbar">
-              <input id="logAgent" placeholder="Agent">
+              <select id="logAgent"></select>
               <input id="logTool" placeholder="Tool">
               <input id="logSince" placeholder="Since ISO timestamp">
               <input id="logLimit" placeholder="Limit" value="50">
@@ -1486,7 +1944,7 @@ const INDEX_HTML = `<!doctype html>
             </div>
             <div id="activityList" class="log-list"></div>
           </section>
-          <div class="toolbar">
+          <div id="rulesToolbar" class="toolbar">
             <input id="search" type="search" placeholder="Search tools, endpoints, providers">
             <select id="providerFilter"></select>
             <select id="decisionFilter">
@@ -1525,11 +1983,27 @@ const INDEX_HTML = `<!doctype html>
       </section>
     </div>
   </div>
+  <div id="approvalModal" class="modal-backdrop">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="approvalModalTitle">
+      <div class="modal-header">
+        <div>
+          <div id="approvalModalTitle" class="modal-title"></div>
+          <div id="approvalModalMeta" class="subtle"></div>
+        </div>
+        <button id="approvalModalClose" title="Close">Close</button>
+      </div>
+      <div id="approvalModalBody" class="modal-body"></div>
+      <div id="approvalModalFooter" class="modal-footer"></div>
+    </div>
+  </div>
   <script>
     const state = {
       config: null,
       status: null,
       audit: { dbPath: '', entries: [], pending: [] },
+      livePending: {},
+      currentApprovalCode: '',
+      activityAgentId: '',
       auditFilters: { agent: '', tool: '', since: '', limit: '50' },
       tools: [],
       toolsLoaded: false,
@@ -1562,7 +2036,11 @@ const INDEX_HTML = `<!doctype html>
       if (!state.activeId) {
         const firstAgent = Object.keys(state.config.agents)[0];
         const firstProfile = Object.keys(state.config.profiles)[0];
-        if (firstAgent) setActive('agent', firstAgent);
+        if (firstAgent) {
+          state.activityAgentId = firstAgent;
+          state.auditFilters.agent = firstAgent;
+          setActive('agent', firstAgent);
+        }
         else if (firstProfile) setActive('profile', firstProfile);
       }
       hydrateDrafts();
@@ -1634,7 +2112,7 @@ const INDEX_HTML = `<!doctype html>
     }
 
     function currentDraft() {
-      if (state.activeKind === 'providers') return null;
+      if (state.activeKind === 'providers' || state.activeKind === 'activity') return null;
       if (!state.activeId) return null;
       return state.drafts[keyFor(state.activeKind, state.activeId)];
     }
@@ -1642,8 +2120,18 @@ const INDEX_HTML = `<!doctype html>
     function setActive(kind, id) {
       state.activeKind = kind;
       state.activeId = id || '';
+      if (kind === 'agent') {
+        state.activityAgentId = state.activeId;
+        state.auditFilters.agent = state.activeId;
+      }
+      if (kind === 'activity') {
+        state.activityAgentId = state.activityAgentId || firstAgentId();
+        state.auditFilters.agent = state.activityAgentId;
+        state.activeId = state.activityAgentId;
+      }
       hydrateDrafts();
       render();
+      if (kind === 'activity') refreshLogs().catch((error) => alert(error.message));
     }
 
     function render() {
@@ -1659,13 +2147,14 @@ const INDEX_HTML = `<!doctype html>
     }
 
     function renderStatusGrid() {
-      const summary = state.status?.summary || { ok: 0, down: 0, disabled: 0, tools: state.tools.length, pendingApprovals: state.audit.pending.length };
+      const pending = pendingApprovals();
+      const summary = state.status?.summary || { ok: 0, down: 0, disabled: 0, tools: state.tools.length, pendingApprovals: pending.length };
       el('statusGrid').innerHTML =
         statusTile(summary.ok, 'Providers OK', 'runtime-ok') +
         statusTile(summary.down, 'Providers Down', summary.down > 0 ? 'runtime-down' : '') +
         statusTile(summary.disabled, 'Disabled', 'runtime-disabled') +
         statusTile(summary.tools || state.tools.length, 'Tools Visible', '') +
-        statusTile(summary.pendingApprovals || state.audit.pending.length, 'Pending Approvals', summary.pendingApprovals ? 'runtime-down' : '');
+        statusTile(pending.length, 'Pending Approvals', pending.length ? 'runtime-down' : '');
     }
 
     function statusTile(value, label, className) {
@@ -1683,8 +2172,50 @@ const INDEX_HTML = `<!doctype html>
         : '';
     }
 
+    function pendingApprovals(agentId = '') {
+      const byCode = new Map();
+      for (const request of Object.values(state.livePending || {})) {
+        const pending = normalizePending(request, true);
+        if (pending.code && (!agentId || pending.agentId === agentId)) byCode.set(pending.code, pending);
+      }
+      for (const request of state.audit.pending || []) {
+        const pending = normalizePending(request, false);
+        if (pending.code && (!agentId || pending.agentId === agentId) && !byCode.has(pending.code)) byCode.set(pending.code, pending);
+      }
+      return Array.from(byCode.values());
+    }
+
+    function normalizePending(request, live) {
+      const args = live ? request.args : parseArgs(request.args);
+      return {
+        id: request.id || '',
+        code: request.code || '',
+        agentId: request.agentId || request.agent_id || '',
+        tool: request.tool || '',
+        args,
+        status: request.status || 'pending',
+        createdAt: request.createdAt || request.created_at || '',
+        timeoutMs: request.timeoutMs || 0,
+        live
+      };
+    }
+
+    function parseArgs(value) {
+      if (!value) return {};
+      if (typeof value === 'object') return value;
+      try {
+        const parsed = JSON.parse(value);
+        return parsed && typeof parsed === 'object' ? parsed : { value: parsed };
+      } catch {
+        return { value: String(value) };
+      }
+    }
+
     function renderActivity() {
-      const pending = state.audit.pending || [];
+      el('activitySurface').hidden = state.activeKind !== 'activity';
+      renderActivityAgentFilter();
+      const agentId = state.auditFilters.agent || state.activityAgentId || '';
+      const pending = pendingApprovals(agentId);
       const entries = state.audit.entries || [];
       const rows = [
         ...pending.map(pendingRow),
@@ -1692,21 +2223,113 @@ const INDEX_HTML = `<!doctype html>
       ];
       el('pendingBadge').textContent = 'pending ' + pending.length;
       el('activityMeta').textContent = state.audit.dbPath
-        ? 'Audit log: ' + state.audit.dbPath
+        ? 'Audit log: ' + state.audit.dbPath + (agentId ? ' · agent ' + agentId : '')
         : 'Audit log not loaded yet';
       el('activityList').innerHTML = rows.length
         ? rows.join('')
         : '<div class="empty">No recent activity.</div>';
+      document.querySelectorAll('[data-pending-row]').forEach((row) => {
+        row.addEventListener('click', (event) => {
+          if (event.target.closest('[data-approval-action]')) return;
+          openApprovalModal(row.dataset.code);
+        });
+      });
+      document.querySelectorAll('[data-approval-action]').forEach((button) => {
+        button.addEventListener('click', (event) => {
+          event.stopPropagation();
+          actApproval(
+            button.dataset.approvalAction,
+            button.dataset.code,
+            button.dataset.remember || '',
+            button.dataset.duration || ''
+          ).catch((error) => alert(error.message));
+        });
+      });
+    }
+
+    function renderActivityAgentFilter() {
+      const agents = Object.keys(state.config.agents);
+      if (!state.activityAgentId) state.activityAgentId = agents[0] || '';
+      if (!state.auditFilters.agent) state.auditFilters.agent = state.activityAgentId;
+      el('logAgent').innerHTML =
+        '<option value="">All agents</option>' +
+        agents.map((id) => '<option value="' + escapeHtml(id) + '">' + escapeHtml(id) + '</option>').join('');
+      el('logAgent').value = state.auditFilters.agent;
     }
 
     function pendingRow(entry) {
-      return '<div class="log-row">' +
-        '<div class="log-cell"><strong>pending approval</strong><br>' + escapeHtml(formatTime(entry.created_at)) + '</div>' +
-        '<div class="log-cell">' + escapeHtml(entry.agent_id) + '</div>' +
+      return '<div class="log-row pending" data-pending-row data-code="' + escapeHtml(entry.code) + '">' +
+        '<div class="log-cell"><strong>pending approval</strong><br>' + escapeHtml(formatTime(entry.createdAt)) + '</div>' +
+        '<div class="log-cell">' + escapeHtml(entry.agentId) + '</div>' +
         '<div class="log-cell">' + escapeHtml(entry.tool) + '<br><span class="subtle">code ' + escapeHtml(entry.code) + '</span></div>' +
         '<div class="log-cell"><span class="tag tag-warn">' + escapeHtml(entry.status) + '</span></div>' +
         '<pre class="log-args">' + escapeHtml(prettyJson(entry.args)) + '</pre>' +
+        '<div class="approval-actions">' + approvalButtons(entry.code) + '</div>' +
       '</div>';
+    }
+
+    function approvalButtons(code) {
+      return '<button class="approve" data-approval-action="approve" data-code="' + escapeHtml(code) + '">Approve</button>' +
+        '<button class="approve" data-approval-action="approve" data-code="' + escapeHtml(code) + '" data-remember="temporary" data-duration="3600000">Allow 1h</button>' +
+        '<button class="approve" data-approval-action="approve" data-code="' + escapeHtml(code) + '" data-remember="always">Always Allow</button>' +
+        '<button class="deny" data-approval-action="deny" data-code="' + escapeHtml(code) + '">Deny</button>';
+    }
+
+    async function actApproval(action, code, remember, durationMs) {
+      if (!code) return;
+      const params = new URLSearchParams({ code });
+      if (remember) params.set('remember', remember);
+      if (durationMs) params.set('duration_ms', durationMs);
+      const response = await fetch('/' + action + '?' + params.toString(), { method: 'POST' });
+      if (!response.ok) {
+        let message = 'Approval request failed';
+        try {
+          const body = await response.json();
+          message = body.error || message;
+        } catch {
+          message = await response.text();
+        }
+        throw new Error(message);
+      }
+      delete state.livePending[code];
+      closeApprovalModal();
+      await Promise.all([refreshLogs(), refreshStatus()]);
+      render();
+    }
+
+    function findPendingApproval(code) {
+      const agentId = state.activeKind === 'activity' ? state.auditFilters.agent || '' : '';
+      return pendingApprovals(agentId).find((entry) => entry.code === code);
+    }
+
+    function openApprovalModal(code) {
+      const pending = findPendingApproval(code);
+      if (!pending) return;
+      state.currentApprovalCode = code;
+      el('approvalModalTitle').textContent = pending.tool;
+      el('approvalModalMeta').textContent = 'agent ' + pending.agentId + ' · code ' + pending.code;
+      el('approvalModalBody').innerHTML =
+        '<div class="detail-label">Status</div><div>' + escapeHtml(pending.status) + '</div>' +
+        '<div class="detail-label">Created</div><div>' + escapeHtml(formatTime(pending.createdAt)) + '</div>' +
+        (pending.timeoutMs ? '<div class="detail-label">Timeout</div><div>' + Math.round(pending.timeoutMs / 1000) + 's</div>' : '') +
+        '<div class="detail-label">Arguments</div><pre class="log-args">' + escapeHtml(prettyJson(pending.args)) + '</pre>';
+      el('approvalModalFooter').innerHTML = approvalButtons(pending.code);
+      el('approvalModal').classList.add('open');
+      el('approvalModalFooter').querySelectorAll('[data-approval-action]').forEach((button) => {
+        button.addEventListener('click', () => {
+          actApproval(
+            button.dataset.approvalAction,
+            button.dataset.code,
+            button.dataset.remember || '',
+            button.dataset.duration || ''
+          ).catch((error) => alert(error.message));
+        });
+      });
+    }
+
+    function closeApprovalModal() {
+      el('approvalModal').classList.remove('open');
+      state.currentApprovalCode = '';
     }
 
     function auditRow(entry) {
@@ -1726,6 +2349,7 @@ const INDEX_HTML = `<!doctype html>
     }
 
     function prettyJson(value) {
+      if (value && typeof value === 'object') return JSON.stringify(value, null, 2);
       try {
         return JSON.stringify(JSON.parse(value), null, 2);
       } catch {
@@ -1740,8 +2364,13 @@ const INDEX_HTML = `<!doctype html>
       return date.toLocaleString();
     }
 
+    function firstAgentId() {
+      return Object.keys(state.config?.agents || {})[0] || '';
+    }
+
     function renderProviderNav() {
       el('manageProviders').classList.toggle('active', state.activeKind === 'providers');
+      el('viewActivity').classList.toggle('active', state.activeKind === 'activity');
     }
 
     function renderProvidersManager() {
@@ -1832,16 +2461,24 @@ const INDEX_HTML = `<!doctype html>
 
     function renderDetails() {
       const draft = currentDraft();
-      el('activeTitle').textContent = state.activeKind === 'providers' ? 'Providers' : state.activeId || 'Select an agent or profile';
+      el('activeTitle').textContent =
+        state.activeKind === 'providers'
+          ? 'Providers'
+          : state.activeKind === 'activity'
+            ? 'Activity'
+            : state.activeId || 'Select an agent or profile';
       el('activeMeta').textContent =
         state.activeKind === 'providers'
           ? 'Top-level tool sources'
-          : state.activeKind === 'agent'
-            ? 'Agent allow/ask/deny policy'
-            : 'Reusable profile allow/ask/deny policy';
+          : state.activeKind === 'activity'
+            ? 'Approval and audit history'
+            : state.activeKind === 'agent'
+              ? 'Agent allow/ask/deny policy'
+              : 'Reusable profile allow/ask/deny policy';
       el('deleteEntity').style.display = state.activeKind === 'providers' ? 'none' : 'inline-flex';
       el('addProvider').style.display = state.activeKind === 'providers' ? 'inline-flex' : 'none';
-      el('deleteEntity').disabled = !state.activeId;
+      el('deleteEntity').style.display = state.activeKind === 'activity' ? 'none' : el('deleteEntity').style.display;
+      el('deleteEntity').disabled = !state.activeId || state.activeKind === 'activity';
       el('profilePanel').style.display = state.activeKind === 'agent' ? 'block' : 'none';
 
       if (!draft) {
@@ -1856,6 +2493,12 @@ const INDEX_HTML = `<!doctype html>
             '<span class="pill runtime-down">down ' + status.down + '</span>' +
             '<span class="pill runtime-stale">stale ' + stale + '</span>' +
             '<span class="pill">tools ' + status.tools + '</span>';
+        } else if (state.activeKind === 'activity') {
+          const agentId = state.auditFilters.agent || '';
+          el('summary').innerHTML =
+            '<span class="pill">agent ' + escapeHtml(agentId || 'all') + '</span>' +
+            '<span class="pill runtime-down">pending ' + pendingApprovals(agentId).length + '</span>' +
+            '<span class="pill">entries ' + (state.audit.entries || []).length + '</span>';
         } else {
           el('summary').innerHTML = '<div class="empty">Nothing selected.</div>';
         }
@@ -1899,17 +2542,12 @@ const INDEX_HTML = `<!doctype html>
     }
 
     function renderTools() {
-      el('search').disabled = state.activeKind === 'providers';
-      el('providerFilter').disabled = state.activeKind === 'providers';
-      el('decisionFilter').disabled = state.activeKind === 'providers';
-      el('bulkAllow').style.display = state.activeKind === 'providers' ? 'none' : 'inline-flex';
-      el('bulkAsk').style.display = state.activeKind === 'providers' ? 'none' : 'inline-flex';
-      el('bulkDeny').style.display = state.activeKind === 'providers' ? 'none' : 'inline-flex';
-      el('bulkClear').style.display = state.activeKind === 'providers' ? 'none' : 'inline-flex';
-      el('resetRules').style.display = state.activeKind === 'providers' ? 'none' : 'inline-flex';
-      el('recommendedRules').style.display = state.activeKind === 'providers' ? 'none' : 'inline-flex';
-      el('resetAllRules').style.display = state.activeKind === 'providers' ? 'none' : 'inline-flex';
+      const rulesVisible = state.activeKind !== 'providers' && state.activeKind !== 'activity';
+      el('rulesToolbar').hidden = !rulesVisible;
+      el('tools').hidden = state.activeKind === 'activity';
+      if (state.activeKind === 'activity') return;
       if (state.activeKind === 'providers') {
+        el('tools').hidden = false;
         renderProvidersManager();
         return;
       }
@@ -2194,11 +2832,86 @@ const INDEX_HTML = `<!doctype html>
       }[char]));
     }
 
+    function initApprovalSettings() {
+      el('approvalNotifs').checked = localStorage.getItem('airlock:notifs') === 'true';
+      el('approvalSound').checked = localStorage.getItem('airlock:sound') !== 'false';
+      el('approvalNotifs').addEventListener('change', () => {
+        localStorage.setItem('airlock:notifs', el('approvalNotifs').checked);
+        if (el('approvalNotifs').checked && 'Notification' in window) Notification.requestPermission();
+      });
+      el('approvalSound').addEventListener('change', () => {
+        localStorage.setItem('airlock:sound', el('approvalSound').checked);
+      });
+      if ('Notification' in window && el('approvalNotifs').checked) Notification.requestPermission();
+    }
+
+    function connectApprovalEvents() {
+      if (!('EventSource' in window)) return;
+      const events = new EventSource('/events');
+      events.onmessage = (event) => {
+        const message = JSON.parse(event.data);
+        if (message.type === 'new') {
+          state.livePending[message.request.code] = message.request;
+          notifyApproval(message.request);
+          refreshLogs().catch(() => {});
+          render();
+        }
+        if (message.type === 'resolved') {
+          delete state.livePending[message.code];
+          refreshLogs().catch(() => {});
+          refreshStatus().catch(() => {});
+          render();
+        }
+      };
+      events.onerror = () => {
+        events.close();
+      };
+    }
+
+    function notifyApproval(request) {
+      if (!el('approvalNotifs').checked) return;
+      if (!('Notification' in window) || Notification.permission !== 'granted') return;
+      new Notification('Airlock: ' + request.tool, {
+        body: 'agent: ' + request.agentId + '\\n' + request.code,
+        tag: request.code,
+        silent: !el('approvalSound').checked
+      });
+    }
+
+    async function checkVersion() {
+      try {
+        const current = await fetch('/version').then((response) => response.json());
+        const latest = await fetch('/version/latest').then((response) => response.json());
+        el('versionInfo').textContent = current.version
+          ? 'v' + current.version + (latest.latest && isNewer(latest.latest, current.version) ? ' · update v' + latest.latest : '')
+          : '';
+      } catch {
+        el('versionInfo').textContent = '';
+      }
+    }
+
+    function isNewer(latest, current) {
+      const next = String(latest).split('.').map(Number);
+      const now = String(current).split('.').map(Number);
+      for (let i = 0; i < 3; i++) {
+        if ((next[i] || 0) > (now[i] || 0)) return true;
+        if ((next[i] || 0) < (now[i] || 0)) return false;
+      }
+      return false;
+    }
+
+    function firstPendingCode() {
+      const agentId = state.activeKind === 'activity' ? state.auditFilters.agent || '' : '';
+      const first = pendingApprovals(agentId)[0];
+      return first ? first.code : '';
+    }
+
     el('refreshTools').addEventListener('click', refreshTools);
     el('refreshStatus').addEventListener('click', refreshStatus);
     el('refreshLogs').addEventListener('click', refreshLogs);
     el('saveRules').addEventListener('click', () => saveCurrent().catch((error) => alert(error.message)));
     el('manageProviders').addEventListener('click', () => setActive('providers'));
+    el('viewActivity').addEventListener('click', () => setActive('activity'));
     el('addProvider').addEventListener('click', () => addProvider().catch((error) => alert(error.message)));
     el('addAgent').addEventListener('click', () => addEntity('agent').catch((error) => alert(error.message)));
     el('addProfile').addEventListener('click', () => addEntity('profile').catch((error) => alert(error.message)));
@@ -2208,9 +2921,15 @@ const INDEX_HTML = `<!doctype html>
     el('decisionFilter').addEventListener('change', (event) => { state.decision = event.target.value; renderTools(); });
     el('applyLogFilters').addEventListener('click', () => {
       state.auditFilters.agent = el('logAgent').value;
+      state.activityAgentId = state.auditFilters.agent || state.activityAgentId;
       state.auditFilters.tool = el('logTool').value;
       state.auditFilters.since = el('logSince').value;
       state.auditFilters.limit = el('logLimit').value;
+      refreshLogs().catch((error) => alert(error.message));
+    });
+    el('logAgent').addEventListener('change', () => {
+      state.auditFilters.agent = el('logAgent').value;
+      if (state.auditFilters.agent) state.activityAgentId = state.auditFilters.agent;
       refreshLogs().catch((error) => alert(error.message));
     });
     el('bulkAllow').addEventListener('click', () => setVisible('allow'));
@@ -2220,7 +2939,28 @@ const INDEX_HTML = `<!doctype html>
     el('resetRules').addEventListener('click', resetVisibleToCurrentConfig);
     el('resetAllRules').addEventListener('click', resetAllToCurrentConfig);
     el('recommendedRules').addEventListener('click', setRecommended);
+    el('approvalModalClose').addEventListener('click', closeApprovalModal);
+    el('approvalModal').addEventListener('click', (event) => {
+      if (event.target === el('approvalModal')) closeApprovalModal();
+    });
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') {
+        closeApprovalModal();
+        return;
+      }
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+      const target = event.target;
+      if (target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) return;
+      const key = event.key.toLowerCase();
+      if (key !== 'a' && key !== 'd') return;
+      const code = state.currentApprovalCode || firstPendingCode();
+      if (!code) return;
+      actApproval(key === 'a' ? 'approve' : 'deny', code).catch((error) => alert(error.message));
+    });
 
+    initApprovalSettings();
+    connectApprovalEvents();
+    checkVersion().catch(() => {});
     loadState().then(() => Promise.all([refreshStatus(), refreshLogs(), refreshTools()])).catch((error) => {
       document.body.innerHTML = '<div class="empty">' + escapeHtml(error.message) + '</div>';
     });

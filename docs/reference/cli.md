@@ -2,11 +2,39 @@
 
 ## Run the gateway
 
-Start Airlock as an SSE/HTTP gateway server (default port 4111):
+Start Airlock as a combined SSE/HTTP gateway server (default port 4111):
 
 ```bash
 airlock --config airlock.yaml
 ```
+
+For split deployments, run only the MCP/runtime gateway and disable the
+in-process dashboard provider:
+
+```bash
+airlock gateway --config airlock.yaml
+```
+
+## Run the standalone dashboard
+
+Start the admin dashboard as a separate process. It edits the local config file
+and talks to the gateway management API for status, audit, and approvals.
+
+```bash
+airlock dashboard \
+  --config airlock.yaml \
+  --gateway-url http://127.0.0.1:4111
+```
+
+Options:
+
+| Flag               | Description                                                              |
+| ------------------ | ------------------------------------------------------------------------ |
+| `--config`, `-c`   | Path to airlock.yaml config file                                         |
+| `--port`, `-p`     | Dashboard port (default: 4177)                                           |
+| `--host`           | Bind host (default: `127.0.0.1`)                                         |
+| `--gateway-url`    | Gateway base URL (default: `http://127.0.0.1:4111`)                      |
+| `--gateway-secret` | Gateway admin bearer token (defaults to env `AIRLOCK_GATEWAY_SECRET`)    |
 
 ## Open the command center
 

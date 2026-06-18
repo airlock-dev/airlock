@@ -55,6 +55,60 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
   const profileNames = new Set(Object.keys(config.profiles));
   const sandboxPresetNames = new Set(Object.keys(config.sandbox_presets ?? {}));
 
+  const serverHost = config.server.host;
+  const loopbackHosts = new Set(['127.0.0.1', 'localhost', '::1']);
+  const isLoopback = loopbackHosts.has(serverHost);
+  const exposesNonMcpRoutes =
+    config.server.expose_management_api ||
+    config.server.expose_tools_api ||
+    config.server.expose_hook_api;
+  const agentsWithoutTokens = Object.entries(config.agents)
+    .filter(([, agent]) => !agent.token)
+    .map(([agentId]) => agentId);
+  const requireAgentTokens = config.server.require_agent_tokens || !isLoopback;
+
+  if (!isLoopback && !config.server.auth_required) {
+    diagnostics.push({
+      level: 'error',
+      message:
+        'server.auth_required must be true when server.host is not loopback.',
+      suggestion:
+        'Set server.auth_required: true, configure server.api_secret or per-agent tokens, and put Airlock behind TLS.',
+    });
+  }
+
+  if (requireAgentTokens && agentsWithoutTokens.length > 0) {
+    diagnostics.push({
+      level: 'error',
+      message:
+        'Per-agent tokens are required, but some agents have no token.',
+      suggestion:
+        `Add token to agents: ${agentsWithoutTokens.join(', ')}. For reverse-proxy exposure on loopback, set server.require_agent_tokens: true to keep this check enabled.`,
+    });
+  }
+
+  if (config.server.auth_required) {
+    if (!config.server.api_secret && agentsWithoutTokens.length > 0) {
+      diagnostics.push({
+        level: 'error',
+        message:
+          'server.auth_required is true, but server.api_secret is unset and some agents have no token.',
+        suggestion:
+          `Set server.api_secret or add token to agents: ${agentsWithoutTokens.join(', ')}.`,
+      });
+    }
+
+    if (!config.server.api_secret && exposesNonMcpRoutes) {
+      diagnostics.push({
+        level: 'error',
+        message:
+          'server.auth_required is true, but non-MCP APIs are exposed without server.api_secret.',
+        suggestion:
+          'Set server.api_secret, or disable expose_management_api, expose_tools_api, and expose_hook_api.',
+      });
+    }
+  }
+
   for (const [agentId, agent] of Object.entries(config.agents)) {
     // Check for unknown profile references
     for (const ref of agent.extends) {

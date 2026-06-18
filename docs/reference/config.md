@@ -257,7 +257,57 @@ Gateway server settings (used in non-stdio mode).
 ```yaml
 server:
   port: 4111
+  host: 127.0.0.1
   api_secret: '${AIRLOCK_API_SECRET}'
+  auth_required: true
+  require_agent_tokens: true
+  allowed_origins:
+    - https://airlock.example.com
+  expose_management_api: false
+  expose_tools_api: false
+  expose_hook_api: false
+```
+
+For a self-hosted or remote deployment, keep Airlock behind a TLS/authenticated
+edge or a private network, and keep the Airlock listener private when possible.
+If `server.host` is not loopback, Airlock requires
+`auth_required: true` and per-agent tokens at config load time. When Airlock is
+bound to loopback behind a reverse proxy, set `require_agent_tokens: true` to
+enforce the same profile isolation.
+
+- `api_secret` protects management, hook, tools API, and MCP routes for agents
+  without their own token.
+- `auth_required` rejects unauthenticated requests even when no secret/token is
+  configured.
+- `require_agent_tokens` requires every configured agent to have its own token.
+  This prevents the global `api_secret` from becoming a fallback MCP credential
+  for tokenless profiles.
+- `allowed_origins` is an exact allowlist for browser `Origin` headers. Requests
+  without `Origin` are allowed so non-browser MCP clients keep working.
+- `expose_management_api` controls `/health`, `/hitl/*`, and `/audit`.
+- `expose_tools_api` controls `/agents/:agentId/tools` and
+  `/agents/:agentId/tools/invoke`.
+- `expose_hook_api` controls `/hook`.
+
+For a public MCP-only listener, disable the non-MCP APIs and use per-agent tokens:
+
+```yaml
+server:
+  port: 4111
+  host: 127.0.0.1
+  auth_required: true
+  require_agent_tokens: true
+  allowed_origins:
+    - https://airlock.example.com
+  expose_management_api: false
+  expose_tools_api: false
+  expose_hook_api: false
+
+agents:
+  claude-code:
+    token: '${CLAUDE_CODE_AIRLOCK_TOKEN}'
+    allow:
+      - github/list*
 ```
 
 ## Environment variable substitution

@@ -241,6 +241,7 @@ export const ApprovalProviderConfig = z.discriminatedUnion('type', [
   }),
   z.object({
     type: z.literal('dashboard'),
+    host: z.string().default('127.0.0.1'),
     port: z.number().int().min(1).max(65535).default(4112),
   }),
   z.object({
@@ -314,6 +315,12 @@ export const ServerConfig = z.object({
   port: z.number().int().min(1).max(65535).default(4111),
   host: z.string().default('127.0.0.1'),
   api_secret: EnvString.optional(),
+  auth_required: z.boolean().default(false),
+  require_agent_tokens: z.boolean().default(false),
+  allowed_origins: z.array(z.string()).default([]),
+  expose_management_api: z.boolean().default(true),
+  expose_tools_api: z.boolean().default(true),
+  expose_hook_api: z.boolean().default(true),
 });
 export type ServerConfig = z.infer<typeof ServerConfig>;
 

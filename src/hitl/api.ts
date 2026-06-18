@@ -1,26 +1,17 @@
-import { timingSafeEqual } from 'crypto';
 import type { FastifyInstance } from 'fastify';
 import type { HitlEngine } from './engine.js';
-
-function constantTimeEqual(a: string, b: string): boolean {
-  const bufA = Buffer.from(a);
-  const bufB = Buffer.from(b);
-  if (bufA.length !== bufB.length) return false;
-  return timingSafeEqual(bufA, bufB);
-}
+import { checkRequestSecurity } from '../security/request.js';
 
 // eslint-disable-next-line @typescript-eslint/require-await
 export async function hitlApiPlugin(
   app: FastifyInstance,
-  opts: { engine: HitlEngine; secret?: string }
+  opts: { engine: HitlEngine; secret?: string; authRequired?: boolean; allowedOrigins?: string[] }
 ): Promise<void> {
-  const { engine, secret } = opts;
+  const { engine } = opts;
 
   app.addHook('preHandler', async (request, reply) => {
-    if (!secret) return;
-    const auth = request.headers.authorization ?? '';
-    if (!constantTimeEqual(auth, `Bearer ${secret}`)) {
-      return reply.status(401).send({ error: 'Unauthorized' });
+    if (!checkRequestSecurity(request, reply, opts)) {
+      return;
     }
   });
 

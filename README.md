@@ -465,6 +465,27 @@ sudo systemctl enable --now airlock
 
 See [`airlock.service`](airlock.service) for the full unit file.
 
+## Docker
+
+Airlock can also run as a containerized gateway:
+
+```bash
+docker build -t airlock-bot .
+docker run --rm \
+  --env-file .env \
+  -v "$PWD/airlock-config:/config" \
+  -v airlock-data:/data \
+  -p 127.0.0.1:4111:4111 \
+  -p 127.0.0.1:4112:4112 \
+  airlock-bot
+```
+
+See [`examples/docker-compose.yaml`](examples/docker-compose.yaml) and
+[`docs/guides/docker-deploy.md`](docs/guides/docker-deploy.md) for a VPS or
+reverse-proxy deployment. The compose example uses split mode: the gateway mounts
+config read-only, while the dashboard mounts the same config directory read-write
+for admin edits and approval decisions.
+
 ## License
 
 [MIT](LICENSE) © 2026 Airlock

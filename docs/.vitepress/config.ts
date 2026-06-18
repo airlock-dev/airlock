@@ -20,6 +20,7 @@ export default defineConfig({
         items: [
           { text: 'Introduction', link: '/' },
           { text: 'Quickstart', link: '/quickstart' },
+          { text: 'Docker Deploy', link: '/guides/docker-deploy' },
           { text: 'Claude Code Setup', link: '/guides/claude-code' },
           { text: 'OpenClaw Setup', link: '/guides/openclaw' },
         ],
@@ -41,6 +42,7 @@ export default defineConfig({
           { text: 'API Discovery', link: '/guides/api-discovery' },
           { text: 'Composable Profiles', link: '/guides/profiles' },
           { text: 'Dashboard', link: '/guides/dashboard' },
+          { text: 'Docker Deploy', link: '/guides/docker-deploy' },
           { text: 'Sandboxed Python Variants', link: '/guides/sandboxed-python' },
           { text: 'Hook Endpoint', link: '/guides/hook-endpoint' },
         ],

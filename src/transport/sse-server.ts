@@ -1,21 +1,14 @@
-import { timingSafeEqual } from 'crypto';
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { createAgentServer, connectAgentServer } from './agent-server.js';
 import type { AgentServerDeps } from './agent-server.js';
 import { childLogger } from '../util/logger.js';
+import { checkBearerAuth, checkOrigin, checkRequestSecurity } from '../security/request.js';
 
 const log = childLogger('sse-server');
 
 /** Interval between SSE keep-alive pings (ms). Keeps connections alive through NAT/firewalls. */
 const PING_INTERVAL_MS = 30_000;
-
-function constantTimeEqual(a: string, b: string): boolean {
-  const bufA = Buffer.from(a);
-  const bufB = Buffer.from(b);
-  if (bufA.length !== bufB.length) return false;
-  return timingSafeEqual(bufA, bufB);
-}
 
 // eslint-disable-next-line @typescript-eslint/require-await
 export async function sseServerPlugin(
@@ -23,6 +16,8 @@ export async function sseServerPlugin(
   opts: {
     getDeps: (agentId: string) => AgentServerDeps | undefined;
     secret?: string;
+    authRequired?: boolean;
+    allowedOrigins?: string[];
   }
 ): Promise<void> {
   const { secret } = opts;
@@ -43,24 +38,17 @@ export async function sseServerPlugin(
     reply: FastifyReply,
     deps: AgentServerDeps
   ): boolean {
+    if (!checkOrigin(request, reply, opts.allowedOrigins)) return false;
+
     const token = deps.agentConfig.token;
     if (token) {
-      const auth = request.headers.authorization ?? '';
-      if (!constantTimeEqual(auth, `Bearer ${token}`)) {
-        reply.status(401).send({ error: 'Unauthorized' });
-        return false;
-      }
-      return true;
+      return checkBearerAuth(request, reply, { secret: token, authRequired: true });
     }
     // No per-agent token — fall back to global api_secret
-    if (secret) {
-      const auth = request.headers.authorization ?? '';
-      if (!constantTimeEqual(auth, `Bearer ${secret}`)) {
-        reply.status(401).send({ error: 'Unauthorized' });
-        return false;
-      }
-    }
-    return true;
+    return checkBearerAuth(request, reply, {
+      secret,
+      authRequired: opts.authRequired,
+    });
   }
 
   // Auth for non-agent endpoints (management API)
@@ -68,10 +56,8 @@ export async function sseServerPlugin(
     const url = request.url;
     // Agent endpoints handle their own auth
     if (url.startsWith('/agents/')) return;
-    if (!secret) return;
-    const auth = request.headers.authorization ?? '';
-    if (!constantTimeEqual(auth, `Bearer ${secret}`)) {
-      return reply.status(401).send({ error: 'Unauthorized' });
+    if (!checkRequestSecurity(request, reply, opts)) {
+      return;
     }
   });
 
