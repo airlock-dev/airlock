@@ -15,6 +15,9 @@
  *   Downstream MCP Server (fake — two tools: tools/echo and tools/add)
  */
 
+import { createServer } from 'node:http';
+import type { IncomingMessage, ServerResponse } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
@@ -97,6 +100,29 @@ function makeMockProvider() {
   return { init: vi.fn(), notify: vi.fn(), stop: vi.fn() };
 }
 
+async function withLocalHttpServer(
+  handler: (req: IncomingMessage, res: ServerResponse) => void
+): Promise<{ url: string; close: () => Promise<void> }> {
+  const server = createServer(handler);
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+
+  const address = server.address() as AddressInfo | null;
+  if (!address) {
+    throw new Error('Expected local HTTP server to bind to a TCP address');
+  }
+
+  return {
+    url: `http://127.0.0.1:${address.port}`,
+    close: () =>
+      new Promise<void>((resolve, reject) => {
+        server.close((err) => (err ? reject(err) : resolve()));
+      }),
+  };
+}
+
 // ─── Setup: build the full stack and connect both ends ───────────────────────
 
 interface StackFixture {
@@ -106,7 +132,10 @@ interface StackFixture {
   teardown: () => Promise<void>;
 }
 
-async function buildStack(agentConfig: AgentConfig = makeAgentConfig()): Promise<StackFixture> {
+async function buildStack(
+  agentConfig: AgentConfig = makeAgentConfig(),
+  securityConfig: SecurityConfig = SECURITY
+): Promise<StackFixture> {
   // 1. Downstream server ↔ pool client
   const downstream = createDownstreamServer();
   const [poolClientTransport, downstreamTransport] = InMemoryTransport.createLinkedPair();
@@ -121,7 +150,7 @@ async function buildStack(agentConfig: AgentConfig = makeAgentConfig()): Promise
   const adapters: BackendAdapter[] = [
     adapter,
     new ExecBackendAdapter(agents),
-    new HttpBackendAdapter(agents, SECURITY),
+    new HttpBackendAdapter(agents, securityConfig),
   ];
   const registry = new ToolRegistry(adapters, allowlist, agents);
   await registry.refresh();
@@ -539,29 +568,45 @@ describe('e2e: http/* — security and policy', () => {
   });
 
   it('HITL APPROVE: http tool gated by HITL, approved executes', async () => {
+    const local = await withLocalHttpServer((req, res) => {
+      let body = '';
+      req.setEncoding('utf8');
+      req.on('data', (chunk) => {
+        body += chunk;
+      });
+      req.on('end', () => {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ method: req.method, body }));
+      });
+    });
     const config = makeAgentConfig({
       allow: ['http/*'],
       ask: ['http/post'],
-      http: { domain_allowlist: ['httpbin.org'], max_response_bytes: 1048576, timeout_ms: 5000 },
+      http: { domain_allowlist: ['127.0.0.1'], max_response_bytes: 1048576, timeout_ms: 5000 },
     });
-    const stack = await buildStack(config);
+    let stack: StackFixture | undefined;
 
-    const callPromise = stack.testClient.callTool({
-      name: 'http/post',
-      arguments: { url: 'http://httpbin.org/post', body: '{"test":1}' },
-    });
+    try {
+      stack = await buildStack(config, { ...SECURITY, allowed_local: ['127.0.0.1'] });
+      const callPromise = stack.testClient.callTool({
+        name: 'http/post',
+        arguments: { url: local.url, body: '{"test":1}' },
+      });
 
-    await new Promise((r) => setTimeout(r, 20));
-    const pending = stack.hitlEngine.getPending();
-    expect(pending).toHaveLength(1);
-    expect(pending[0].tool).toBe('http/post');
+      await new Promise((r) => setTimeout(r, 20));
+      const pending = stack.hitlEngine.getPending();
+      expect(pending).toHaveLength(1);
+      expect(pending[0].tool).toBe('http/post');
 
-    stack.hitlEngine.approve(pending[0].code);
-    // The call will go through to httpbin — we just verify it doesn't throw
-    const result = await callPromise;
-    const parsed = JSON.parse((result.content[0] as { text: string }).text);
-    expect(parsed.status).toBe(200);
-    await stack.teardown();
+      stack.hitlEngine.approve(pending[0].code);
+      const result = await callPromise;
+      const parsed = JSON.parse((result.content[0] as { text: string }).text);
+      expect(parsed.status).toBe(200);
+      expect(JSON.parse(parsed.body)).toEqual({ method: 'POST', body: '{"test":1}' });
+    } finally {
+      await stack?.teardown();
+      await local.close();
+    }
   });
 
   it('HITL DENY: http tool gated by HITL, denied returns error', async () => {
