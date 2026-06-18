@@ -34,7 +34,7 @@ Options:
 | `--port`, `-p`     | Dashboard port (default: 4177)                                           |
 | `--host`           | Bind host (default: `127.0.0.1`)                                         |
 | `--gateway-url`    | Gateway base URL (default: `http://127.0.0.1:4111`)                      |
-| `--gateway-secret` | Gateway admin bearer token (defaults to env `AIRLOCK_GATEWAY_SECRET`)    |
+| `--gateway-secret` | Gateway admin bearer token (defaults to `AIRLOCK_GATEWAY_SECRET`, then `AIRLOCK_API_SECRET`) |
 
 ## Open the command center
 
@@ -128,6 +128,8 @@ npm run configure-agent -- --config ./airlock.yaml --agent claude-code
 
 Features:
 
+- Create agents and profiles from the sidebar
+- New agents get a generated bearer token for MCP clients
 - Connects to your configured MCP servers and lists all available tools
 - Navigate with `j/k`, set permissions with `a`/`s`/`d`
 - Bulk-set entire providers

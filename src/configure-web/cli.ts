@@ -1,3 +1,4 @@
+import { randomBytes } from 'crypto';
 import { existsSync, readFileSync, writeFileSync, copyFileSync } from 'fs';
 import { parseArgs } from 'util';
 import Fastify, { type FastifyInstance, type FastifyReply } from 'fastify';
@@ -49,6 +50,7 @@ interface EditableAgent {
   allow: string[];
   ask: string[];
   deny: string[];
+  hasToken: boolean;
 }
 
 interface EditableProfile {
@@ -70,6 +72,7 @@ interface EntityBody {
   kind?: PermissionKind;
   id?: string;
   baseId?: string;
+  profileIds?: unknown;
 }
 
 interface ProviderBody {
@@ -542,11 +545,6 @@ interface RemotePendingApproval {
   createdAt?: string;
 }
 
-interface RemoteStreamReadResult {
-  done: boolean;
-  value?: Uint8Array;
-}
-
 async function readRemoteCommandCenterStatus(
   configPath: string,
   remoteGateway: RemoteGatewayOptions
@@ -641,10 +639,10 @@ function registerRemoteGatewayRoutes(
         Connection: 'keep-alive',
       });
 
-      const reader = response.body.getReader();
+      const reader = response.body.getReader() as ReadableStreamDefaultReader<Uint8Array>;
       try {
         while (true) {
-          const result = (await reader.read()) as RemoteStreamReadResult;
+          const result = await reader.read();
           if (result.done) break;
           if (result.value) reply.raw.write(Buffer.from(result.value));
         }
@@ -737,8 +735,8 @@ async function forwardRemoteApproval(
   action: 'approve' | 'deny',
   code: string
 ): Promise<void> {
-  const params = new URLSearchParams({ code }).toString();
-  const response = await remoteGatewayFetch(remoteGateway, `/${action}?${params}`, {
+  const params = new URLSearchParams({ code });
+  const response = await remoteGatewayFetch(remoteGateway, `/${action}?${params.toString()}`, {
     method: 'POST',
   });
   if (!response.ok) throw new Error(await remoteGatewayError(response));
@@ -832,15 +830,32 @@ export function createEntity(configPath: string, body: EntityBody): WebState {
 
   if (section[id]) throw new Error(`${kind} "${id}" already exists`);
 
-  if (body.baseId && section[body.baseId]) {
-    section[id] = structuredClone(section[body.baseId]);
+  const baseId = parseOptionalId(body.baseId);
+  const base = baseId && section[baseId] ? structuredClone(section[baseId]) : undefined;
+  const createdToken = kind === 'agent' ? createAgentToken() : undefined;
+
+  if (kind === 'agent') {
+    const agent = asMutableRecord(base);
+    const profileIds = parseOptionalStringArray(body.profileIds, 'profileIds');
+    delete agent.token;
+    agent.extends = profileIds ?? stringArray(agent.extends);
+    agent.allow = stringArray(agent.allow);
+    agent.ask = stringArray(agent.ask);
+    agent.deny = stringArray(agent.deny);
+    agent.token = createdToken;
+    section[id] = agent;
+  } else if (base) {
+    section[id] = structuredClone(base);
   } else {
     section[id] = { allow: [], ask: [], deny: [] };
   }
 
   doc[sectionName] = section;
   writeValidatedConfig(configPath, doc);
-  return readState(configPath);
+  return {
+    ...readState(configPath),
+    ...(createdToken ? { createdToken: { agentId: id, token: createdToken } } : {}),
+  };
 }
 
 export function deleteEntity(configPath: string, kind: PermissionKind, id: string): WebState {
@@ -1168,6 +1183,7 @@ function toEditableAgents(input: Record<string, unknown>): Record<string, Editab
           allow: stringArray(agent.allow),
           ask: stringArray(agent.ask),
           deny: stringArray(agent.deny),
+          hasToken: typeof agent.token === 'string' && agent.token.trim().length > 0,
         },
       ];
     })
@@ -1231,6 +1247,15 @@ function parseId(value: unknown): string {
     throw new Error('id may only contain letters, numbers, dots, underscores, and dashes');
   }
   return id;
+}
+
+function parseOptionalId(value: unknown): string | undefined {
+  if (value === undefined || value === null || value === '') return undefined;
+  return parseId(value);
+}
+
+function createAgentToken(): string {
+  return `airlock_agent_${randomBytes(32).toString('base64url')}`;
 }
 
 function parseBoolean(value: unknown): boolean {
@@ -1938,6 +1963,43 @@ const INDEX_HTML = `<!doctype html>
       overflow: auto;
       padding: 14px;
     }
+    .form-grid {
+      display: grid;
+      gap: 12px;
+    }
+    .field {
+      display: grid;
+      gap: 6px;
+    }
+    .field label {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+    .field input, .field select {
+      min-height: 36px;
+      min-width: 0;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      padding: 0 10px;
+      background: #fff;
+      color: var(--ink);
+    }
+    .profile-select-list {
+      display: grid;
+      gap: 6px;
+      padding: 8px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: #fbfcfe;
+    }
+    .token-value {
+      width: 100%;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px;
+    }
     .modal-title {
       min-width: 0;
       overflow-wrap: anywhere;
@@ -2092,6 +2154,19 @@ const INDEX_HTML = `<!doctype html>
       <div id="approvalModalFooter" class="modal-footer"></div>
     </div>
   </div>
+  <div id="entityModal" class="modal-backdrop">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="entityModalTitle">
+      <div class="modal-header">
+        <div>
+          <div id="entityModalTitle" class="modal-title"></div>
+          <div id="entityModalMeta" class="subtle"></div>
+        </div>
+        <button id="entityModalClose" title="Close">Close</button>
+      </div>
+      <div id="entityModalBody" class="modal-body"></div>
+      <div id="entityModalFooter" class="modal-footer"></div>
+    </div>
+  </div>
   <script>
     const state = {
       config: null,
@@ -2106,6 +2181,7 @@ const INDEX_HTML = `<!doctype html>
       errors: [],
       activeKind: 'agent',
       activeId: '',
+      createKind: '',
       drafts: {},
       descriptionExpanded: {},
       search: '',
@@ -2603,10 +2679,14 @@ const INDEX_HTML = `<!doctype html>
       }
 
       const denyCount = draft.deny.length;
+      const tokenPill = state.activeKind === 'agent'
+        ? '<span class="pill ' + (state.config.agents[state.activeId]?.hasToken ? 'tag-good' : 'tag-danger') + '">' + (state.config.agents[state.activeId]?.hasToken ? 'token set' : 'token missing') + '</span>'
+        : '';
       el('summary').innerHTML =
         '<span class="pill">allow ' + draft.allow.length + '</span>' +
         '<span class="pill">ask ' + draft.ask.length + '</span>' +
-        '<span class="pill">deny ' + denyCount + '</span>';
+        '<span class="pill">deny ' + denyCount + '</span>' +
+        tokenPill;
 
       const profiles = Object.keys(state.config.profiles);
       el('profileChecks').innerHTML = profiles.length
@@ -2891,12 +2971,104 @@ const INDEX_HTML = `<!doctype html>
       render();
     }
 
-    async function addEntity(kind) {
-      const id = prompt('New ' + kind + ' id');
-      if (!id) return;
-      state.config = await api('/api/entities', { method: 'POST', body: JSON.stringify({ kind, id }) });
+    function openCreateModal(kind) {
+      state.createKind = kind;
+      renderCreateModal();
+      el('entityModal').classList.add('open');
+      setTimeout(() => el('entityId')?.focus(), 0);
+    }
+
+    function closeEntityModal() {
+      el('entityModal').classList.remove('open');
+      state.createKind = '';
+    }
+
+    function renderCreateModal() {
+      const kind = state.createKind;
+      const isAgent = kind === 'agent';
+      const section = isAgent ? state.config.agents : state.config.profiles;
+      const baseOptions = ['<option value="">Blank</option>'].concat(
+        Object.keys(section).map((id) => '<option value="' + escapeHtml(id) + '">' + escapeHtml(id) + '</option>')
+      ).join('');
+      el('entityModalTitle').textContent = isAgent ? 'New agent' : 'New profile';
+      el('entityModalMeta').textContent = isAgent ? 'Creates a bearer token and permission policy' : 'Creates a reusable permission policy';
+      el('entityModalBody').innerHTML =
+        '<div class="form-grid">' +
+          '<div class="field"><label for="entityId">Id</label><input id="entityId" autocomplete="off" placeholder="' + (isAgent ? 'claude-code' : 'readonly') + '"></div>' +
+          '<div class="field"><label for="entityBase">Start from</label><select id="entityBase">' + baseOptions + '</select></div>' +
+          (isAgent ? profilePicker() : '') +
+        '</div>';
+      el('entityModalFooter').innerHTML =
+        '<button id="entityCreate" class="primary">Create</button>' +
+        '<button id="entityCancel">Cancel</button>';
+      el('entityCreate').addEventListener('click', () => submitCreateEntity().catch((error) => alert(error.message)));
+      el('entityCancel').addEventListener('click', closeEntityModal);
+      el('entityId').addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') submitCreateEntity().catch((error) => alert(error.message));
+      });
+    }
+
+    function profilePicker() {
+      const profiles = Object.keys(state.config.profiles);
+      if (profiles.length === 0) {
+        return '<div class="field"><label>Profiles</label><div class="subtle">No profiles yet.</div></div>';
+      }
+      return '<div class="field"><label>Profiles</label><div class="profile-select-list">' +
+        profiles.map((id) => '<label class="check"><input type="checkbox" data-create-profile="' + escapeHtml(id) + '"> ' + escapeHtml(id) + '</label>').join('') +
+        '</div></div>';
+    }
+
+    async function submitCreateEntity() {
+      const kind = state.createKind;
+      const id = el('entityId').value.trim();
+      if (!id) throw new Error('Id is required');
+      const profileIds = Array.from(document.querySelectorAll('[data-create-profile]:checked')).map((box) => box.dataset.createProfile);
+      const body = {
+        kind,
+        id,
+        baseId: el('entityBase').value,
+        profileIds
+      };
+      const result = await api('/api/entities', { method: 'POST', body: JSON.stringify(body) });
+      state.config = result;
       state.drafts = {};
-      setActive(kind, id.trim());
+      setActive(kind, id);
+      if (result.createdToken?.token) {
+        showCreatedToken(result.createdToken.agentId, result.createdToken.token);
+      } else {
+        closeEntityModal();
+      }
+    }
+
+    function showCreatedToken(agentId, token) {
+      el('entityModalTitle').textContent = 'Agent token';
+      el('entityModalMeta').textContent = agentId;
+      el('entityModalBody').innerHTML =
+        '<div class="form-grid">' +
+          '<div class="field"><label for="createdToken">Bearer token</label><input id="createdToken" class="token-value" readonly value="' + escapeHtml(token) + '"></div>' +
+          '<div class="field"><label>Header</label><input class="token-value" readonly value="Authorization: Bearer ' + escapeHtml(token) + '"></div>' +
+        '</div>';
+      el('entityModalFooter').innerHTML =
+        '<button id="copyCreatedToken" class="primary">Copy Token</button>' +
+        '<button id="copyCreatedHeader">Copy Header</button>' +
+        '<button id="entityDone">Done</button>';
+      el('copyCreatedToken').addEventListener('click', () => copyText(token));
+      el('copyCreatedHeader').addEventListener('click', () => copyText('Authorization: Bearer ' + token));
+      el('entityDone').addEventListener('click', closeEntityModal);
+      el('createdToken').select();
+    }
+
+    async function copyText(value) {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(value);
+        return;
+      }
+      const textarea = document.createElement('textarea');
+      textarea.value = value;
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand('copy');
+      textarea.remove();
     }
 
     async function addProvider() {
@@ -3060,8 +3232,8 @@ const INDEX_HTML = `<!doctype html>
     el('manageProviders').addEventListener('click', () => setActive('providers'));
     el('viewActivity').addEventListener('click', () => setActive('activity'));
     el('addProvider').addEventListener('click', () => addProvider().catch((error) => alert(error.message)));
-    el('addAgent').addEventListener('click', () => addEntity('agent').catch((error) => alert(error.message)));
-    el('addProfile').addEventListener('click', () => addEntity('profile').catch((error) => alert(error.message)));
+    el('addAgent').addEventListener('click', () => openCreateModal('agent'));
+    el('addProfile').addEventListener('click', () => openCreateModal('profile'));
     el('deleteEntity').addEventListener('click', () => deleteCurrent().catch((error) => alert(error.message)));
     el('search').addEventListener('input', (event) => { state.search = event.target.value; renderTools(); });
     el('providerFilter').addEventListener('change', (event) => { state.provider = event.target.value; renderTools(); });
@@ -3087,11 +3259,16 @@ const INDEX_HTML = `<!doctype html>
     el('resetAllRules').addEventListener('click', resetAllToCurrentConfig);
     el('recommendedRules').addEventListener('click', setRecommended);
     el('approvalModalClose').addEventListener('click', closeApprovalModal);
+    el('entityModalClose').addEventListener('click', closeEntityModal);
     el('approvalModal').addEventListener('click', (event) => {
       if (event.target === el('approvalModal')) closeApprovalModal();
     });
+    el('entityModal').addEventListener('click', (event) => {
+      if (event.target === el('entityModal')) closeEntityModal();
+    });
     document.addEventListener('keydown', (event) => {
       if (event.key === 'Escape') {
+        closeEntityModal();
         closeApprovalModal();
         return;
       }

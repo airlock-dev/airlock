@@ -107,5 +107,8 @@ Query and manage approvals programmatically:
 - `POST /hitl/approve/:id` — approve by ID
 - `POST /hitl/deny/:id` — deny by ID with optional reason
 - `GET /audit?agent=&tool=&since=&limit=` — query the audit log
+- `GET /events` — dashboard approval event stream
+- `POST /approve?code=ABC123` — approve by approval code
+- `POST /deny?code=ABC123` — deny by approval code
 
 See [Management API](/reference/management-api) for full details.

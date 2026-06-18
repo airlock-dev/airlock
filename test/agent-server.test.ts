@@ -473,7 +473,7 @@ describe('call_tool — HITL gate', () => {
   it('exec/run command matching hitl pattern routes to HITL gate', async () => {
     const agentConfig = makeAgentConfig({
       allow: ['exec/run'],
-      exec: { allow: ['git*'], ask: ['git push*'], deny: [], env: {}, default_timeout_ms: 5000 },
+      exec: { allow: ['git*'], ask: ['git status*'], deny: [], env: {}, default_timeout_ms: 5000 },
     });
     const agents = { agent1: agentConfig };
     const allowlist = new AllowlistEngine(agents);
@@ -497,7 +497,7 @@ describe('call_tool — HITL gate', () => {
 
     const callPromise = client.callTool({
       name: 'exec/run',
-      arguments: { command: 'git push origin main' },
+      arguments: { command: 'git status --short' },
     });
     await new Promise((r) => setTimeout(r, 10));
 
