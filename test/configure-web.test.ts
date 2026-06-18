@@ -93,6 +93,43 @@ approvals:
     expect(state.profiles.writer).toEqual({ allow: [], ask: [], deny: [] });
   });
 
+  it('creates agents with a secure bearer token', () => {
+    const state = createEntity(configPath, {
+      kind: 'agent',
+      id: 'codex',
+      profileIds: ['readonly'],
+    }) as ReturnType<typeof createEntity> & {
+      createdToken?: { agentId: string; token: string };
+    };
+
+    const parsed = parseYaml(readFileSync(configPath, 'utf8')) as Record<string, unknown>;
+    const agents = parsed.agents as Record<string, Record<string, unknown>>;
+
+    expect(state.createdToken?.agentId).toBe('codex');
+    expect(state.createdToken?.token).toMatch(/^airlock_agent_[A-Za-z0-9_-]{43}$/);
+    expect(agents.codex.token).toBe(state.createdToken?.token);
+    expect(agents.codex.extends).toEqual(['readonly']);
+    expect(state.agents.codex.hasToken).toBe(true);
+  });
+
+  it('does not reuse a cloned agent token', () => {
+    const first = createEntity(configPath, { kind: 'agent', id: 'codex' }) as ReturnType<
+      typeof createEntity
+    > & { createdToken?: { token: string } };
+    const second = createEntity(configPath, {
+      kind: 'agent',
+      id: 'cursor',
+      baseId: 'codex',
+    }) as ReturnType<typeof createEntity> & { createdToken?: { token: string } };
+
+    const parsed = parseYaml(readFileSync(configPath, 'utf8')) as Record<string, unknown>;
+    const agents = parsed.agents as Record<string, Record<string, unknown>>;
+
+    expect(second.createdToken?.token).toMatch(/^airlock_agent_[A-Za-z0-9_-]{43}$/);
+    expect(second.createdToken?.token).not.toBe(first.createdToken?.token);
+    expect(agents.cursor.token).toBe(second.createdToken?.token);
+  });
+
   it('saves profile deny rules', () => {
     const state = saveRules(configPath, {
       kind: 'profile',

@@ -128,6 +128,8 @@ npm run configure-agent -- --config ./airlock.yaml --agent claude-code
 
 Features:
 
+- Create agents and profiles from the sidebar
+- New agents get a generated bearer token for MCP clients
 - Connects to your configured MCP servers and lists all available tools
 - Navigate with `j/k`, set permissions with `a`/`s`/`d`
 - Bulk-set entire providers
