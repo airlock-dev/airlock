@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.2.35](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.34...airlock-bot-v0.2.35) (2026-06-18)
+
+
+### Features
+
+* **config:** add command center status UI ([#105](https://github.com/airlock-dev/airlock/issues/105)) ([3b1d0a0](https://github.com/airlock-dev/airlock/commit/3b1d0a0af5ab9c7d71b730ce91881cb4dae86fcc))
+* let companion remember approval decisions ([#100](https://github.com/airlock-dev/airlock/issues/100)) ([8b44dfa](https://github.com/airlock-dev/airlock/commit/8b44dfa534ebd570328f3241766a85b526815492))
+
+
+### Bug Fixes
+
+* **companion:** speed up approval popover ([#104](https://github.com/airlock-dev/airlock/issues/104)) ([ab91bfb](https://github.com/airlock-dev/airlock/commit/ab91bfb84c29df49890200ada119fde4c0b0848f))
+
 ## [0.2.34](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.33...airlock-bot-v0.2.34) (2026-06-11)
 
 
