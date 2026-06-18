@@ -6,7 +6,7 @@ import { Gateway } from './gateway.js';
 import { runStdioMode } from './stdio-mode.js';
 import { runDiscover } from './discover/cli.js';
 import { runConfigureAgent } from './configure-agent/cli.js';
-import { runConfigureWeb } from './configure-web/cli.js';
+import { runCommandCenter, runConfigureWeb } from './configure-web/cli.js';
 import { runConfigureCli } from './configure-cli/cli.js';
 import { runSetupOpenclaw } from './setup-openclaw/cli.js';
 import { logger } from './util/logger.js';
@@ -25,6 +25,11 @@ if (subcommand === 'discover') {
   });
 } else if (subcommand === 'configure-web') {
   runConfigureWeb(process.argv.slice(3)).catch((err) => {
+    console.error(err instanceof Error ? err.message : String(err));
+    process.exit(1);
+  });
+} else if (subcommand === 'run') {
+  runCommandCenter(process.argv.slice(3)).catch((err) => {
     console.error(err instanceof Error ? err.message : String(err));
     process.exit(1);
   });
@@ -62,6 +67,7 @@ airlock — permissions-aware MCP gateway
 Usage:
   airlock [options]
   airlock discover <cli|api> [options]
+  airlock run [options]
   airlock configure-cli <tool> [options]
   airlock configure-agent [options]
   airlock configure-web [options]
@@ -74,6 +80,7 @@ Options:
   -h, --help             Show this help message
 
 Subcommands:
+  run                    Browser command center for provider health and permissions
   discover cli <tool>    Auto-discover CLI commands from --help or Fig specs
   discover api <spec>    Auto-discover API endpoints from an OpenAPI spec
   configure-cli <tool>   Interactive TUI to select and configure CLI commands
@@ -90,6 +97,9 @@ Examples:
 
   # Install the OpenClaw bridge plugin (one command)
   airlock setup openclaw
+
+  # Open the local Airlock command center
+  airlock run --config ./airlock.yaml
 
   # Discover CLI tool commands
   airlock discover cli git --output git-commands.yaml

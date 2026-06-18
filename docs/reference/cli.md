@@ -8,6 +8,22 @@ Start Airlock as an SSE/HTTP gateway server (default port 4111):
 airlock --config airlock.yaml
 ```
 
+## Open the command center
+
+Start the local browser command center for provider health, MCP status, tool discovery, and permission editing:
+
+```bash
+airlock run --config airlock.yaml
+```
+
+Options:
+
+| Flag             | Description                         |
+| ---------------- | ----------------------------------- |
+| `--config`, `-c` | Path to airlock.yaml config file    |
+| `--port`, `-p`   | Command center port (default: 4177) |
+| `--host`         | Bind host (default: `127.0.0.1`)    |
+
 ## Run stdio mode for a specific agent
 
 Lean mode with no HTTP server. Only connects to MCP providers the agent references:
