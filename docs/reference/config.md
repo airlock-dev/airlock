@@ -284,7 +284,9 @@ enforce the same profile isolation.
   for tokenless profiles.
 - `allowed_origins` is an exact allowlist for browser `Origin` headers. Requests
   without `Origin` are allowed so non-browser MCP clients keep working.
-- `expose_management_api` controls `/health`, `/hitl/*`, and `/audit`.
+- `expose_management_api` controls `/health`, `/hitl/*`, `/audit`, the
+  dashboard approval bridge (`/events`, `/approve`, `/deny`, `/version*`), and
+  `/admin/tools`.
 - `expose_tools_api` controls `/agents/:agentId/tools` and
   `/agents/:agentId/tools/invoke`.
 - `expose_hook_api` controls `/hook`.

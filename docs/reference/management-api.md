@@ -25,8 +25,9 @@ server:
   expose_management_api: false
 ```
 
-When `expose_management_api` is false, `/health`, `/hitl/*`, and `/audit` are
-not registered.
+When `expose_management_api` is false, `/health`, `/hitl/*`, `/audit`, the
+dashboard approval bridge (`/events`, `/approve`, `/deny`, `/version*`), and
+`/admin/tools` are not registered.
 
 ## Endpoints
 
@@ -110,6 +111,59 @@ Returns an array of audit entries:
   }
 ]
 ```
+
+### `GET /events`
+
+Streams approval events for dashboard-style clients with Server-Sent Events.
+This endpoint is used by the in-process dashboard, standalone dashboard, and
+macOS Companion app.
+
+Browser `EventSource` cannot set an `Authorization` header directly. In split
+mode, run `airlock dashboard` with `--gateway-secret`,
+`AIRLOCK_GATEWAY_SECRET`, or `AIRLOCK_API_SECRET`; the dashboard server proxies
+the SSE connection to the gateway with the bearer token.
+
+### `POST /approve?code=ABC123`
+
+Approve a pending request by short approval code. This is the endpoint used by
+dashboard clients and companion-style approval UIs.
+
+```bash
+curl -X POST \
+  -H "Authorization: Bearer $AIRLOCK_API_SECRET" \
+  "http://localhost:4111/approve?code=ABC123"
+```
+
+### `POST /deny?code=ABC123`
+
+Deny a pending request by short approval code.
+
+```bash
+curl -X POST \
+  -H "Authorization: Bearer $AIRLOCK_API_SECRET" \
+  "http://localhost:4111/deny?code=ABC123"
+```
+
+### `GET /admin/tools`
+
+Returns the full gateway tool catalog for the dashboard. This is an admin view,
+not the filtered tool list an agent receives.
+
+```json
+{
+  "tools": [],
+  "errors": []
+}
+```
+
+### `GET /version`
+
+Returns the running Airlock version.
+
+### `GET /version/latest`
+
+Checks npm for the latest published `airlock-bot` version. Dashboard clients use
+this for the upgrade banner.
 
 ## Hook API
 

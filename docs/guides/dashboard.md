@@ -1,8 +1,16 @@
 # Dashboard
 
-The dashboard is a localhost web UI for reviewing and acting on approval requests. It runs as a self-contained HTML page served directly from the Airlock process — no build step, no external dependencies.
+The dashboard is a browser UI for reviewing approvals, editing agents and
+profiles, checking provider status, and reading the audit log. It is a
+self-contained HTML app with no build step and no external frontend service.
 
-## Setup
+You can run it in two modes:
+
+- In-process approval provider, useful for local single-process setups.
+- Standalone admin dashboard, useful for Docker/VPS deployments where the MCP
+  gateway keeps its config read-only and the dashboard mounts config read-write.
+
+## In-process provider
 
 Set the approval provider to `dashboard` in your config:
 
@@ -20,6 +28,37 @@ When Airlock starts, the dashboard is available at `http://localhost:4112`.
 The dashboard binds to `127.0.0.1` by default. In Docker, set `host: 0.0.0.0`
 only when the dashboard port is kept private or protected by an authenticated
 reverse proxy.
+
+## Standalone dashboard
+
+Run the gateway and dashboard as separate processes:
+
+```bash
+airlock gateway --config /config/airlock.yaml
+
+airlock dashboard \
+  --config /config/airlock.yaml \
+  --gateway-url http://127.0.0.1:4111
+```
+
+The standalone dashboard talks to the gateway management API for status, audit
+logs, tool discovery, and approval decisions. Set the dashboard secret with
+`--gateway-secret`, `AIRLOCK_GATEWAY_SECRET`, or `AIRLOCK_API_SECRET`:
+
+```bash
+AIRLOCK_GATEWAY_SECRET="$AIRLOCK_API_SECRET" \
+  airlock dashboard \
+    --config /config/airlock.yaml \
+    --gateway-url http://127.0.0.1:4111
+```
+
+Use this mode when the gateway should mount `/config` read-only and the
+dashboard should mount the same directory read-write for config edits. The
+dashboard writes a backup to `/config/airlock.bak` before saving changes.
+
+The standalone dashboard binds to `127.0.0.1:4177` by default. Use `--host` and
+`--port` to change the listener, and protect it with an authenticated reverse
+proxy or private network before exposing it.
 
 ## Features
 
@@ -72,4 +111,6 @@ The [macOS Companion app](https://github.com/airlock-dev/airlock/releases/latest
 
 ## Graceful degradation
 
-If port 4112 is already in use, Airlock logs a warning and continues running without the dashboard UI. The rest of the gateway (MCP proxying, HITL via other providers, audit logging) is unaffected.
+In in-process mode, if port 4112 is already in use, Airlock logs a warning and
+continues running without the dashboard UI. The rest of the gateway (MCP
+proxying, HITL via other providers, audit logging) is unaffected.
