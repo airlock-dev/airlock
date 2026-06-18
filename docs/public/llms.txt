@@ -12,6 +12,8 @@ Key pages:
 - /guides/claude-code
 - /guides/cli-discovery
 - /guides/hook-endpoint
+- /guides/dashboard
+- /guides/docker-deploy
 - /guides/sandboxed-python
 - /reference/config
 - /reference/cli

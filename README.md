@@ -415,7 +415,7 @@ See [`examples/sandbox-presets.yaml`](examples/sandbox-presets.yaml) for a fulle
 | --------------- | ------------- | ------------------------------------------------------------------------------------------------- |
 | TUI             | `tui`         | Terminal UI on stderr — `[a]pprove` / `[d]eny` with `j/k` navigation via `/dev/tty`               |
 | macOS dialog    | `macos`       | Native approve/deny popup via `osascript` — best for local dev on Mac                             |
-| Dashboard       | `dashboard`   | Localhost web UI (default port 4112) with live SSE updates                                        |
+| Dashboard       | `dashboard`   | Browser UI with live SSE updates; runs in-process or as a standalone admin dashboard              |
 | Telegram bot    | `telegram`    | Long-polls for replies; reply `approve ABC123` or `deny ABC123`                                   |
 | Slack webhook   | `slack`       | Incoming webhook, fire-and-forget; pair with slash commands for approvals                         |
 | Generic webhook | `webhook`     | POSTs `{requests, text}` JSON; configurable headers                                               |
@@ -432,6 +432,10 @@ GET  /hitl/pending             — list pending approval requests
 POST /hitl/approve/:id         — approve a request
 POST /hitl/deny/:id            — deny a request (body: {"reason": "..."})
 GET  /audit?agent=&tool=&since=&limit=  — query audit log
+GET  /events                   — dashboard approval event stream
+POST /approve?code=ABC123      — approve a request by approval code
+POST /deny?code=ABC123         — deny a request by approval code
+GET  /admin/tools              — dashboard tool catalog
 ```
 
 All management endpoints require `Authorization: Bearer <api_secret>` when `server.api_secret` is set.
@@ -471,6 +475,8 @@ Airlock can also run as a containerized gateway:
 
 ```bash
 docker build -t airlock-bot .
+mkdir -p airlock-config
+cp examples/docker-gateway.yaml airlock-config/airlock.yaml
 docker run --rm \
   --env-file .env \
   -v "$PWD/airlock-config:/config" \
@@ -479,6 +485,9 @@ docker run --rm \
   -p 127.0.0.1:4112:4112 \
   airlock-bot
 ```
+
+The dashboard edits `/config/airlock.yaml` and writes `/config/airlock.bak`, so
+mount a config directory when dashboard editing is enabled.
 
 See [`examples/docker-compose.yaml`](examples/docker-compose.yaml) and
 [`docs/guides/docker-deploy.md`](docs/guides/docker-deploy.md) for a VPS or
