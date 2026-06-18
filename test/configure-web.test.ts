@@ -12,6 +12,8 @@ import {
   readCommandCenterStatus,
   readState,
   recommendedDecision,
+  resolveEditableRuleDecision,
+  resolveEditableRuleMatch,
   saveRules,
   toolFingerprint,
   upsertProvider,
@@ -246,6 +248,42 @@ audit:
       ])
     ).toEqual(['readonly', 'open-world', 'injection']);
   });
+
+  it('resolves visible rule decisions with wildcard specificity', () => {
+    const rules = {
+      allow: ['ticktick/*'],
+      ask: ['ticktick/delete_task'],
+      deny: ['github/*'],
+    };
+
+    expect(resolveEditableRuleDecision(rules, 'ticktick/create_task')).toBe('allow');
+    expect(resolveEditableRuleDecision(rules, 'ticktick/delete_task')).toBe('ask');
+    expect(resolveEditableRuleDecision(rules, 'github/create_pr')).toBe('deny');
+    expect(resolveEditableRuleDecision(rules, 'ticktick/project/archive')).toBe('unset');
+  });
+
+  it('reports whether visible rule decisions came from exact rules or patterns', () => {
+    const rules = {
+      allow: ['ticktick/*', 'github/create_pr'],
+      ask: [],
+      deny: [],
+    };
+
+    expect(resolveEditableRuleMatch(rules, 'ticktick/create_task')).toEqual({
+      decision: 'allow',
+      source: 'pattern',
+      pattern: 'ticktick/*',
+    });
+    expect(resolveEditableRuleMatch(rules, 'github/create_pr')).toEqual({
+      decision: 'allow',
+      source: 'exact',
+      pattern: 'github/create_pr',
+    });
+    expect(resolveEditableRuleMatch(rules, 'slack/post_message')).toEqual({
+      decision: 'unset',
+      source: 'none',
+    });
+  });
 });
 
 describe('configure-web API', () => {
@@ -402,11 +440,20 @@ approvals:
       }
       if (url.endsWith('/hitl/pending')) {
         return Response.json([
-          { id: 'req-1', code: 'ABC123', agentId: 'dev', tool: 'exec/run', args: { command: 'pwd' } },
+          {
+            id: 'req-1',
+            code: 'ABC123',
+            agentId: 'dev',
+            tool: 'exec/run',
+            args: { command: 'pwd' },
+          },
         ]);
       }
       if (url.endsWith('/admin/tools')) {
-        return Response.json({ tools: [{ name: 'exec/run', inputSchema: { type: 'object' } }], errors: [] });
+        return Response.json({
+          tools: [{ name: 'exec/run', inputSchema: { type: 'object' } }],
+          errors: [],
+        });
       }
       if (url.includes('/approve?')) {
         return Response.json({ ok: true });
