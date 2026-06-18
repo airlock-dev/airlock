@@ -26,7 +26,12 @@ approvals:
 
 ## Dashboard
 
-Localhost web UI served from the Airlock process. Live SSE updates, syntax-highlighted argument inspection, keyboard shortcuts, browser notifications, and optional sound alerts. See [Dashboard guide](/guides/dashboard) for details.
+Browser UI with live SSE updates, syntax-highlighted argument inspection,
+keyboard shortcuts, browser notifications, and optional sound alerts. In
+combined mode it is served from the Airlock process as an approval provider. In
+split deployments, run `airlock dashboard` as a standalone admin UI that talks
+to the gateway management API. See [Dashboard guide](/guides/dashboard) for
+details.
 
 ```yaml
 approvals:
