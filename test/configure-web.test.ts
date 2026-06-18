@@ -8,6 +8,7 @@ import {
   createConfigureWebApp,
   createEntity,
   deleteProvider,
+  readAuditLogs,
   readCommandCenterStatus,
   readState,
   recommendedDecision,
@@ -15,6 +16,7 @@ import {
   toolFingerprint,
   upsertProvider,
 } from '../src/configure-web/cli.js';
+import { AuditDb } from '../src/audit/db.js';
 
 describe('configure-web config helpers', () => {
   let dir: string;
@@ -142,6 +144,7 @@ approvals:
     expect(status.summary.ok).toBe(1);
     expect(status.summary.disabled).toBe(1);
     expect(status.summary.tools).toBeGreaterThanOrEqual(1);
+    expect(status.summary.pendingApprovals).toBe(0);
     expect(status.providers.find((provider) => provider.id === 'exec')).toMatchObject({
       type: 'builtin',
       enabled: true,
@@ -156,6 +159,72 @@ approvals:
       toolCount: 0,
       toolFingerprint: '',
     });
+  });
+
+  it('keeps provider config errors scoped to the broken provider', async () => {
+    writeFileSync(
+      configPath,
+      `
+providers:
+  exec: builtin
+  broken:
+    type: stdio
+    command: \${MISSING_AIRLOCK_TEST_COMMAND}
+agents:
+  dev:
+    allow: []
+approvals:
+  provider:
+    type: stdio
+`
+    );
+
+    const status = await readCommandCenterStatus(configPath);
+
+    expect(status.providers.find((provider) => provider.id === 'exec')).toMatchObject({
+      status: 'ok',
+      toolFingerprint: 'exec/run',
+    });
+    expect(status.providers.find((provider) => provider.id === 'broken')).toMatchObject({
+      status: 'down',
+    });
+  });
+
+  it('reads audit logs from the configured audit database', () => {
+    const auditPath = join(dir, 'audit.db');
+    writeFileSync(
+      configPath,
+      readFileSync(configPath, 'utf8') +
+        `
+audit:
+  db_path: ${JSON.stringify(auditPath)}
+`
+    );
+    const db = new AuditDb(auditPath);
+    db.insertAudit({
+      ts: '2026-05-24T10:00:00.000Z',
+      agent_id: 'dev',
+      tool: 'exec/run',
+      args: '{"command":"pwd"}',
+      result: 'success',
+    });
+    db.insertHitl({
+      id: 'req-1',
+      code: 'ABC123',
+      agent_id: 'dev',
+      tool: 'exec/run',
+      args: '{"command":"git status"}',
+      status: 'pending',
+      created_at: '2026-05-24T10:01:00.000Z',
+    });
+    db.close();
+
+    const logs = readAuditLogs(configPath, { agent: 'dev', limit: 10 });
+
+    expect(logs.dbPath).toBe(auditPath);
+    expect(logs.entries).toHaveLength(1);
+    expect(logs.entries[0]).toMatchObject({ agent_id: 'dev', tool: 'exec/run' });
+    expect(logs.pending).toHaveLength(1);
   });
 
   it('fingerprints tool names so renames are detected even when counts match', () => {
@@ -222,6 +291,7 @@ approvals:
 
     const statusRes = await app.inject('/api/status');
     expect(statusRes.statusCode).toBe(200);
+    expect(statusRes.json().summary).toMatchObject({ pendingApprovals: 0 });
     expect(statusRes.json().providers).toContainEqual(
       expect.objectContaining({
         id: 'exec',
@@ -233,6 +303,10 @@ approvals:
     expect(statusRes.json().providers).toContainEqual(
       expect.objectContaining({ id: 'disabled-bad', status: 'disabled' })
     );
+
+    const logsRes = await app.inject('/api/logs');
+    expect(logsRes.statusCode).toBe(200);
+    expect(logsRes.json()).toMatchObject({ entries: [], pending: [] });
 
     await app.close();
     rmSync(dir, { recursive: true, force: true });
