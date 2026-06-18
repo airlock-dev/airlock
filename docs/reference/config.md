@@ -66,12 +66,15 @@ profiles:
       - '*/get*'
       - http/get
   developer:
+    extends: [readonly]
     allow:
       - github/*
       - git/*
     ask:
       - github/create_pr
 ```
+
+Profiles may extend other profiles. Profile inheritance is resolved once at config load, before agents consume profiles. Unknown profile references and profile cycles are fatal config errors.
 
 ## `sandbox_presets`
 

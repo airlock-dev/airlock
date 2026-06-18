@@ -16,6 +16,7 @@ import {
 } from '../config/schema.js';
 import { rememberAllow, type RememberAllowMode } from '../config/mutator.js';
 import { validateConfig, type ConfigDiagnostic } from '../config/loader.js';
+import { applyProfiles } from '../config/profiles.js';
 import { ClientPool } from '../pool/pool.js';
 import { checkSuspiciousPatterns } from '../registry/sanitizer.js';
 import { bestSpecificity } from '../allowlist/pattern.js';
@@ -54,6 +55,7 @@ interface EditableAgent {
 }
 
 interface EditableProfile {
+  extends: string[];
   allow: string[];
   ask: string[];
   deny: string[];
@@ -806,6 +808,7 @@ export function saveRules(configPath: string, body: SaveRulesBody): WebState {
     existing.ask = parseStringArray(body.ask, 'ask');
     existing.deny = parseStringArray(body.deny, 'deny');
   } else {
+    existing.extends = parseStringArray(body.extends, 'extends');
     existing.allow = parseStringArray(body.allow, 'allow');
     existing.ask = parseStringArray(body.ask, 'ask');
     existing.deny = parseStringArray(body.deny, 'deny');
@@ -847,7 +850,7 @@ export function createEntity(configPath: string, body: EntityBody): WebState {
   } else if (base) {
     section[id] = structuredClone(base);
   } else {
-    section[id] = { allow: [], ask: [], deny: [] };
+    section[id] = { extends: [], allow: [], ask: [], deny: [] };
   }
 
   doc[sectionName] = section;
@@ -1164,6 +1167,7 @@ function parseGatewayConfig(doc: Record<string, unknown>): {
         ],
       };
     }
+    applyProfiles(result.data);
     return { config: result.data, diagnostics: validateConfig(result.data) };
   } catch (err) {
     return {
@@ -1219,6 +1223,7 @@ function toEditableProfiles(input: Record<string, unknown>): Record<string, Edit
       return [
         id,
         {
+          extends: stringArray(profile.extends),
           allow: stringArray(profile.allow),
           ask: stringArray(profile.ask),
           deny: stringArray(profile.deny),
@@ -2651,7 +2656,8 @@ const INDEX_HTML = `<!doctype html>
       el('addProvider').style.display = state.activeKind === 'providers' ? 'inline-flex' : 'none';
       el('deleteEntity').style.display = state.activeKind === 'activity' ? 'none' : el('deleteEntity').style.display;
       el('deleteEntity').disabled = !state.activeId || state.activeKind === 'activity';
-      el('profilePanel').style.display = state.activeKind === 'agent' ? 'block' : 'none';
+      el('profilePanel').style.display =
+        state.activeKind === 'agent' || state.activeKind === 'profile' ? 'block' : 'none';
 
       if (!draft) {
         if (state.activeKind === 'providers') {
@@ -2688,7 +2694,9 @@ const INDEX_HTML = `<!doctype html>
         '<span class="pill">deny ' + denyCount + '</span>' +
         tokenPill;
 
-      const profiles = Object.keys(state.config.profiles);
+      const profiles = Object.keys(state.config.profiles).filter(
+        (id) => state.activeKind !== 'profile' || id !== state.activeId
+      );
       el('profileChecks').innerHTML = profiles.length
         ? profiles.map((id) => {
             const checked = (draft.extends || []).includes(id) ? ' checked' : '';

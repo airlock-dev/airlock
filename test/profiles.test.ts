@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { resolveAgentPermissions, applyProfiles } from '../src/config/profiles.js';
+import { resolveAgentPermissions, resolveProfiles, applyProfiles } from '../src/config/profiles.js';
 import { GatewayConfig } from '../src/config/schema.js';
-import type { AgentConfig } from '../src/config/schema.js';
+import type { AgentConfig, ProfileConfig } from '../src/config/schema.js';
 
 function makeAgentConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
   return {
@@ -30,7 +30,7 @@ describe('resolveAgentPermissions()', () => {
       allow: ['exec/run'],
     });
     const profiles = {
-      readonly: { allow: ['github/list*', 'github/get*'], ask: [] },
+      readonly: { extends: [], allow: ['github/list*', 'github/get*'], ask: [], deny: [] },
     };
     const result = resolveAgentPermissions(agent, profiles);
     expect(result.allow).toContain('github/list*');
@@ -44,8 +44,8 @@ describe('resolveAgentPermissions()', () => {
       allow: [],
     });
     const profiles = {
-      readonly: { allow: ['github/list*'], ask: [] },
-      writer: { allow: ['github/create_pr'], ask: ['github/create_pr'] },
+      readonly: { extends: [], allow: ['github/list*'], ask: [], deny: [] },
+      writer: { extends: [], allow: ['github/create_pr'], ask: ['github/create_pr'], deny: [] },
     };
     const result = resolveAgentPermissions(agent, profiles);
     expect(result.allow).toEqual(['github/list*', 'github/create_pr']);
@@ -58,7 +58,7 @@ describe('resolveAgentPermissions()', () => {
       allow: ['github/*'],
     });
     const profiles = {
-      profile1: { allow: ['github/*'], ask: [] },
+      profile1: { extends: [], allow: ['github/*'], ask: [], deny: [] },
     };
     const result = resolveAgentPermissions(agent, profiles);
     expect(result.allow).toEqual(['github/*']);
@@ -71,10 +71,76 @@ describe('resolveAgentPermissions()', () => {
       deny: ['exec/run'],
     });
     const profiles = {
-      dangerous: { allow: [], ask: [], deny: ['github/delete_repo'] },
+      dangerous: { extends: [], allow: [], ask: [], deny: ['github/delete_repo'] },
     };
     const result = resolveAgentPermissions(agent, profiles);
     expect(result.deny).toEqual(['github/delete_repo', 'exec/run']);
+  });
+});
+
+describe('resolveProfiles()', () => {
+  it('recursively resolves profile inheritance', () => {
+    const profiles: Record<string, ProfileConfig> = {
+      githubRead: { extends: [], allow: ['github/list*'], ask: [], deny: [] },
+      linearRead: { extends: [], allow: ['linear/list*'], ask: [], deny: [] },
+      devRo: { extends: ['githubRead', 'linearRead'], allow: ['sentry/list*'], ask: [], deny: [] },
+    };
+
+    const resolved = resolveProfiles(profiles);
+
+    expect(resolved.devRo.extends).toEqual([]);
+    expect(resolved.devRo.allow).toEqual(['github/list*', 'linear/list*', 'sentry/list*']);
+  });
+
+  it('deduplicates diamond inheritance', () => {
+    const profiles: Record<string, ProfileConfig> = {
+      base: { extends: [], allow: ['github/list*'], ask: [], deny: [] },
+      left: { extends: ['base'], allow: ['linear/list*'], ask: [], deny: [] },
+      right: { extends: ['base'], allow: ['sentry/list*'], ask: [], deny: [] },
+      top: { extends: ['left', 'right'], allow: [], ask: [], deny: [] },
+    };
+
+    const resolved = resolveProfiles(profiles);
+
+    expect(resolved.top.allow).toEqual(['github/list*', 'linear/list*', 'sentry/list*']);
+  });
+
+  it('keeps inherited grants and local downgrades for eval precedence', () => {
+    const profiles: Record<string, ProfileConfig> = {
+      base: { extends: [], allow: ['github/*'], ask: [], deny: [] },
+      product: {
+        extends: ['base'],
+        allow: [],
+        ask: ['github/merge_pull_request'],
+        deny: [],
+      },
+    };
+
+    const resolved = resolveProfiles(profiles);
+
+    expect(resolved.product.allow).toEqual(['github/*']);
+    expect(resolved.product.ask).toEqual(['github/merge_pull_request']);
+  });
+
+  it('throws on unknown profile references', () => {
+    const profiles: Record<string, ProfileConfig> = {
+      product: { extends: ['missing'], allow: [], ask: [], deny: [] },
+    };
+
+    expect(() => resolveProfiles(profiles)).toThrow(
+      'Profile "product" extends unknown profile "missing"'
+    );
+  });
+
+  it('throws on profile cycles with the path', () => {
+    const profiles: Record<string, ProfileConfig> = {
+      paWork: { extends: ['product'], allow: [], ask: [], deny: [] },
+      product: { extends: ['paWork'], allow: [], ask: [], deny: [] },
+    };
+
+    expect(() => resolveProfiles(profiles)).toThrow(
+      'Profile extends cycle detected: paWork -> product -> paWork'
+    );
   });
 });
 
@@ -120,14 +186,13 @@ describe('applyProfiles()', () => {
     expect(config.agents['agent1'].allow).toContain('github/list*');
   });
 
-  it('skips unknown profile refs without throwing', () => {
+  it('throws on unknown agent profile refs', () => {
     const config = GatewayConfig.parse({
       profiles: {},
       agents: { agent1: { extends: ['nonexistent'], allow: ['exec/run'] } },
     });
 
-    expect(() => applyProfiles(config)).not.toThrow();
-    expect(config.agents['agent1'].allow).toEqual(['exec/run']);
+    expect(() => applyProfiles(config)).toThrow('Agent extends unknown profile "nonexistent"');
   });
 
   it('leaves agents without extends unchanged', () => {

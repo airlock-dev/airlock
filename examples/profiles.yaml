@@ -1,8 +1,9 @@
 # yaml-language-server: $schema=../schema.json
 # Composable profiles — define reusable permission sets, then mix them into agents.
 #
-# Profiles are union-merged: an agent that extends [readonly, github-write]
-# gets all allow/ask patterns from both profiles, plus its own.
+# Profiles are union-merged recursively: a profile or agent that extends
+# [readonly, github-write] gets all allow/ask/deny patterns from both profiles,
+# plus its own.
 # Precedence still applies: deny > ask > allow > default-deny.
 #
 # Run:  npx tsx src/index.ts --agent helena --config examples/profiles.yaml
@@ -35,6 +36,7 @@ profiles:
     ask: []
 
   github-write:
+    extends: [readonly]
     allow:
       - 'github/create_issue'
       - 'github/create_pr'

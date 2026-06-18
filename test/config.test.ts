@@ -143,6 +143,18 @@ describe('GatewayConfig schema', () => {
     if (!result.success) return;
     expect(result.data.agents['agent1'].deny).toEqual(['github/delete_repo']);
   });
+
+  it('supports profile extends', () => {
+    const result = GatewayConfig.safeParse({
+      profiles: {
+        readonly: { allow: ['github/list*'] },
+        product: { extends: ['readonly'], ask: ['github/create_issue'] },
+      },
+    });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.profiles['product'].extends).toEqual(['readonly']);
+  });
 });
 
 // --- loadConfig ---
@@ -294,6 +306,71 @@ agents:
     const path = join(dir, 'gateway.yaml');
     writeFileSync(path, yaml);
     expect(() => loadConfig(path)).toThrow(/unknown provider/i);
+  });
+
+  it('resolves profile inheritance before validating agent providers', () => {
+    const yaml = `
+providers:
+  github: builtin
+profiles:
+  readonly:
+    allow:
+      - "github/list*"
+  product:
+    extends:
+      - readonly
+    ask:
+      - "github/create_issue"
+agents:
+  dev:
+    extends:
+      - product
+`;
+    const path = join(dir, 'gateway.yaml');
+    writeFileSync(path, yaml);
+    const config = loadConfig(path);
+
+    expect(config.profiles['product'].extends).toEqual([]);
+    expect(config.agents['dev'].extends).toEqual([]);
+    expect(config.agents['dev'].allow).toEqual(['github/list*']);
+    expect(config.agents['dev'].ask).toEqual(['github/create_issue']);
+  });
+
+  it('errors when a profile extends an unknown profile', () => {
+    const yaml = `
+profiles:
+  product:
+    extends:
+      - missing
+agents:
+  dev:
+    extends:
+      - product
+`;
+    const path = join(dir, 'gateway.yaml');
+    writeFileSync(path, yaml);
+
+    expect(() => loadConfig(path)).toThrow(/Profile "product" extends unknown profile "missing"/);
+  });
+
+  it('errors when profile inheritance has a cycle', () => {
+    const yaml = `
+profiles:
+  pa-work:
+    extends:
+      - product
+  product:
+    extends:
+      - pa-work
+agents:
+  dev:
+    extends:
+      - pa-work
+`;
+    const path = join(dir, 'gateway.yaml');
+    writeFileSync(path, yaml);
+
+    expect(() => loadConfig(path)).toThrow(/pa-work -> product -> pa-work/);
   });
 });
 
