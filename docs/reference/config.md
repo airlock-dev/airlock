@@ -161,6 +161,14 @@ agents:
     http: # HTTP domain restrictions
       domain_allowlist: ['api.github.com', '*.sentry.io']
 
+    arg_policy: # Per-tool argument constraints
+      google_workspace/manage_event:
+        calendar_id:
+          equals: work-calendar-id@group.calendar.google.com
+          label: Work
+        action:
+          allow: [create, update, delete]
+
     sandbox: # Agent-level sandbox
       enabled: true
       presets: [local_transform]
@@ -170,6 +178,13 @@ agents:
         alias_of: exec/run
         description: 'Sandboxed Python'
         sandbox_presets: [local_transform]
+      gcal_work_write:
+        alias_of: google_workspace/manage_event
+        description: 'Manage events on the Work calendar only. calendar_id must be work-calendar-id@group.calendar.google.com.'
+        args:
+          calendar_id:
+            equals: work-calendar-id@group.calendar.google.com
+            label: Work
 ```
 
 ## `approvals`

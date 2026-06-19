@@ -125,6 +125,74 @@ agents:
 
 Localhost and RFC-1918 private ranges are blocked by default for HTTP tools, preventing agents from reaching internal services or the Airlock management API itself. See [Security defaults](/concepts/providers-and-tools#security-defaults) for details.
 
+## Argument policy
+
+Some tools expose broad capabilities behind one tool name. For example, a calendar
+tool might take a `calendar_id` argument where one calendar is safe to edit and
+another should remain read-only.
+
+Use `arg_policy` to constrain specific argument values before execution:
+
+```yaml
+agents:
+  helena:
+    allow:
+      - google_workspace/get_events
+      - google_workspace/manage_event
+
+    arg_policy:
+      google_workspace/manage_event:
+        calendar_id:
+          equals: work-calendar-id@group.calendar.google.com
+          label: Work
+        action:
+          allow: [create, update, delete]
+```
+
+Argument policy never rewrites caller arguments. If a constrained argument is
+missing or has the wrong value, Airlock denies the call with an actionable tool
+error that names the argument, the rejected value, and the allowed value. This
+keeps the agent's world-model honest: it retries with the permitted value instead
+of believing it touched a different resource.
+
 ## Tool variants
 
 The same underlying tool can be exposed under multiple names with different permission levels using `tool_overrides` and `alias_of`. See [Sandbox Presets and Variants](/concepts/sandboxing) for this pattern.
+
+Tool variants can also carry argument policy. This is useful when each variant
+represents one constrained resource:
+
+```yaml
+agents:
+  helena:
+    allow:
+      - gcal_work_write
+    ask:
+      - gcal_family_write
+    deny:
+      - google_workspace/manage_event
+
+    tool_overrides:
+      gcal_work_write:
+        alias_of: google_workspace/manage_event
+        description: >
+          Manage events on the Work calendar only.
+          calendar_id must be work-calendar-id@group.calendar.google.com.
+        args:
+          calendar_id:
+            equals: work-calendar-id@group.calendar.google.com
+            label: Work
+
+      gcal_family_write:
+        alias_of: google_workspace/manage_event
+        description: >
+          Manage events on the Family calendar only.
+          calendar_id must be family-calendar-id@group.calendar.google.com.
+        args:
+          calendar_id:
+            equals: family-calendar-id@group.calendar.google.com
+            label: Family
+```
+
+The alias remains the permission unit, so `gcal_work_write` can run
+autonomously while `gcal_family_write` requires approval.

@@ -7,6 +7,7 @@ import { hitlGateMiddleware } from './core/hitl-gate.js';
 import { executeMiddleware } from './core/execute.js';
 import { sandboxMiddleware } from './core/sandbox.js';
 import { schemaValidatorMiddleware } from './core/schema-validator.js';
+import { argPolicyMiddleware } from './core/arg-policy.js';
 import { rateLimiterMiddleware } from './core/rate-limiter.js';
 import { untrustedEnvelopeMiddleware } from './post/untrusted-envelope.js';
 import { stripQueryParamsMiddleware } from './post/strip-query-params.js';
@@ -92,7 +93,7 @@ const DEFAULT_MIDDLEWARE: MiddlewareItemConfig[] = [
  * Builds the complete middleware chain for an agent.
  *
  * Core zone (fixed order, always present):
- *   allowlist → exec-policy → schema-validator → [detectors from config] → hitl-gate → execute
+ *   allowlist → exec-policy → schema-validator → arg-policy → [detectors from config] → hitl-gate → execute
  *
  * Post zone (user-configurable, wraps around core):
  *   Applied in config order, each wraps the downstream response
@@ -133,11 +134,12 @@ export function buildMiddlewareChain(agentConfig: AgentConfig, _deps: Middleware
   const detectors = coreUserMiddleware.filter((m) => m.name !== 'schema-validator');
 
   // Core zone: fixed security-critical order
-  //   allowlist → exec-policy → schema-validator → [detectors] → hitl-gate → sandbox → execute
+  //   allowlist → exec-policy → schema-validator → arg-policy → [detectors] → hitl-gate → sandbox → execute
   const coreMiddlewares: Middleware[] = [
     allowlistMiddleware(),
     execPolicyMiddleware(),
     ...schemaValidators.map((m) => withToolFilter(resolveMiddleware(m), m)),
+    argPolicyMiddleware(),
     ...detectors.map((m) => withToolFilter(resolveMiddleware(m), m)),
     hitlGateMiddleware(),
     sandboxMiddleware(),
