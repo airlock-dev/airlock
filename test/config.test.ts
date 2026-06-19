@@ -155,6 +155,75 @@ describe('GatewayConfig schema', () => {
     if (!result.success) return;
     expect(result.data.profiles['product'].extends).toEqual(['readonly']);
   });
+
+  it('supports per-tool argument policy on agents', () => {
+    const result = GatewayConfig.safeParse({
+      agents: {
+        agent1: {
+          allow: ['google_workspace/manage_event'],
+          arg_policy: {
+            'google_workspace/manage_event': {
+              calendar_id: { equals: 'work-calendar', label: 'Work' },
+              action: { allow: ['create', 'update', 'delete'] },
+            },
+          },
+        },
+      },
+    });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.agents['agent1'].arg_policy).toEqual({
+      'google_workspace/manage_event': {
+        calendar_id: { equals: 'work-calendar', label: 'Work' },
+        action: { allow: ['create', 'update', 'delete'] },
+      },
+    });
+  });
+
+  it('supports argument policy on tool override aliases', () => {
+    const result = GatewayConfig.safeParse({
+      agents: {
+        agent1: {
+          allow: ['gcal_work_write'],
+          tool_overrides: {
+            gcal_work_write: {
+              alias_of: 'google_workspace/manage_event',
+              description:
+                'Manage events on the Work calendar only. calendar_id must be work-calendar.',
+              args: {
+                calendar_id: { equals: 'work-calendar', label: 'Work' },
+              },
+            },
+          },
+        },
+      },
+    });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.agents['agent1'].tool_overrides.gcal_work_write.args).toEqual({
+      calendar_id: { equals: 'work-calendar', label: 'Work' },
+    });
+  });
+
+  it('rejects empty argument policy constraints', () => {
+    const result = GatewayConfig.safeParse({
+      agents: {
+        agent1: {
+          allow: ['google_workspace/manage_event'],
+          arg_policy: {
+            'google_workspace/manage_event': {
+              calendar_id: {},
+              action: { allow: [] },
+            },
+          },
+        },
+      },
+    });
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    expect(result.error.toString()).toContain('must define equals or allow');
+    expect(result.error.toString()).toContain('allow list must contain at least one value');
+  });
 });
 
 // --- loadConfig ---

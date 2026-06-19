@@ -122,11 +122,43 @@ export const SandboxConfig = z.object({
 });
 export type SandboxConfig = z.infer<typeof SandboxConfig>;
 
+export const ToolArgConstraintConfig = z
+  .object({
+    allow: z.array(z.unknown()).optional(),
+    equals: z.unknown().optional(),
+    label: z.string().optional(),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    const hasEquals = Object.prototype.hasOwnProperty.call(value, 'equals');
+    const hasAllow = Object.prototype.hasOwnProperty.call(value, 'allow');
+
+    if (!hasEquals && !hasAllow) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Argument policy constraint must define equals or allow.',
+      });
+    }
+
+    if (hasAllow && value.allow?.length === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['allow'],
+        message: 'Argument policy allow list must contain at least one value.',
+      });
+    }
+  });
+export type ToolArgConstraintConfig = z.infer<typeof ToolArgConstraintConfig>;
+
+export const ToolArgPolicyConfig = z.record(z.record(ToolArgConstraintConfig));
+export type ToolArgPolicyConfig = z.infer<typeof ToolArgPolicyConfig>;
+
 export const ToolOverride = z.object({
   description: z.string().optional(),
   alias_of: z.string().optional(),
   sandbox_presets: SandboxPresetRef.default([]),
   sandbox: SandboxOverrideConfig.optional(),
+  args: z.record(ToolArgConstraintConfig).optional(),
 });
 
 export const AgentExecConfig = z.object({
@@ -197,6 +229,7 @@ export const AgentConfig = z.object({
   ask: z.array(z.string()).default([]),
   deny: z.array(z.string()).default([]),
   tool_overrides: z.record(ToolOverride).default({}),
+  arg_policy: ToolArgPolicyConfig.optional(),
   exec: AgentExecConfig.default({}),
   http: AgentHttpConfig.default({}),
   sandbox: SandboxConfig.default({}),
