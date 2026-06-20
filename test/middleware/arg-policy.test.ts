@@ -56,7 +56,7 @@ describe('argPolicyMiddleware', () => {
       agentConfig: makeAgentConfig({
         arg_policy: {
           'google_workspace/manage_event': {
-            calendar_id: { equals: 'work-calendar', label: 'Work' },
+            calendar_id: [{ equals: 'work-calendar', label: 'Work' }],
           },
         },
       }),
@@ -75,7 +75,7 @@ describe('argPolicyMiddleware', () => {
       agentConfig: makeAgentConfig({
         arg_policy: {
           'google_workspace/manage_event': {
-            calendar_id: { equals: 'work-calendar', label: 'Work' },
+            calendar_id: [{ equals: 'work-calendar', label: 'Work' }],
           },
         },
       }),
@@ -100,7 +100,7 @@ describe('argPolicyMiddleware', () => {
       agentConfig: makeAgentConfig({
         arg_policy: {
           'google_workspace/manage_event': {
-            calendar_id: { equals: 'work-calendar', label: 'Work' },
+            calendar_id: [{ equals: 'work-calendar', label: 'Work' }],
           },
         },
       }),
@@ -120,7 +120,7 @@ describe('argPolicyMiddleware', () => {
       agentConfig: makeAgentConfig({
         arg_policy: {
           'google_workspace/manage_event': {
-            action: { allow: ['create', 'update', 'delete'] },
+            action: [{ allow: ['create', 'update', 'delete'] }],
           },
         },
       }),
@@ -142,7 +142,7 @@ describe('argPolicyMiddleware', () => {
           gcal_work_write: {
             alias_of: 'google_workspace/manage_event',
             args: {
-              calendar_id: { equals: 'work-calendar', label: 'Work' },
+              calendar_id: [{ equals: 'work-calendar', label: 'Work' }],
             },
           },
         },
@@ -154,25 +154,131 @@ describe('argPolicyMiddleware', () => {
     expect(okNext).toHaveBeenCalledOnce();
   });
 
-  it('lets alias-local args override same-name direct policy', () => {
+  it('keeps alias-local args additive instead of replacing direct policy', () => {
     const agentConfig = makeAgentConfig({
       arg_policy: {
         gcal_work_write: {
-          calendar_id: { equals: 'wrong-calendar' },
+          calendar_id: [{ equals: 'wrong-calendar' }],
         },
       },
       tool_overrides: {
         gcal_work_write: {
           alias_of: 'google_workspace/manage_event',
           args: {
-            calendar_id: { equals: 'work-calendar', label: 'Work' },
+            calendar_id: [{ equals: 'work-calendar', label: 'Work' }],
           },
         },
       },
     });
 
     expect(resolveArgPolicy(agentConfig, 'gcal_work_write')).toEqual({
-      calendar_id: { equals: 'work-calendar', label: 'Work' },
+      calendar_id: [{ equals: 'wrong-calendar' }, { equals: 'work-calendar', label: 'Work' }],
     });
+  });
+
+  it('applies canonical policy to alias tools and ANDs alias-local constraints', async () => {
+    okNext.mockClear();
+    const mw = argPolicyMiddleware();
+    const ctx = makeCtx({
+      toolName: 'safe_pr',
+      args: { repo: 'airlock-dev/airlock', head: 'main' },
+      agentConfig: makeAgentConfig({
+        arg_policy: {
+          'github/create_pull_request': {
+            repo: [{ allow: ['airlock-dev/airlock'], label: 'airlock_repos' }],
+          },
+        },
+        tool_overrides: {
+          safe_pr: {
+            alias_of: 'github/create_pull_request',
+            args: {
+              head: [{ glob_allow: ['fix/*'], label: 'safe_fix_branches' }],
+            },
+          },
+        },
+      }),
+    });
+
+    const result = await mw(ctx, okNext);
+    expect(result.text).toContain('head "main" is not permitted');
+    expect(okNext).not.toHaveBeenCalled();
+  });
+
+  it('supports glob, normalization, nested paths, and list-aware membership', async () => {
+    okNext.mockClear();
+    const mw = argPolicyMiddleware();
+    const ctx = makeCtx({
+      toolName: 'gwsWork/manage_event',
+      args: {
+        event: {
+          attendees: [{ email: ' Alice@Example.com ' }, { email: 'bob@example.com' }],
+        },
+      },
+      agentConfig: makeAgentConfig({
+        arg_policy: {
+          'gwsWork/manage_event': {
+            'event.attendees[].email': [
+              {
+                path: 'event.attendees[].email',
+                each_allow: ['alice@example.com', 'bob@example.com'],
+                normalize: ['email'],
+                label: 'trusted_people',
+              },
+            ],
+          },
+        },
+      }),
+    });
+
+    const result = await mw(ctx, okNext);
+    expect(result.text).toBe('ok');
+    expect(okNext).toHaveBeenCalledOnce();
+  });
+
+  it('blocks list-aware membership when one value is outside the set', async () => {
+    okNext.mockClear();
+    const mw = argPolicyMiddleware();
+    const ctx = makeCtx({
+      toolName: 'bluebubbles/send_message',
+      args: { recipients: ['+1 (608) 555-1234', '+1 (999) 555-0000'] },
+      agentConfig: makeAgentConfig({
+        arg_policy: {
+          'bluebubbles/send_message': {
+            recipients: [
+              {
+                each_allow: ['+16085551234'],
+                normalize: ['phone'],
+                label: 'trusted_people',
+              },
+            ],
+          },
+        },
+      }),
+    });
+
+    const result = await mw(ctx, okNext);
+    expect(result.text).toContain('recipients');
+    expect(result.text).toContain('trusted_people');
+    expect(okNext).not.toHaveBeenCalled();
+  });
+
+  it('passes glob constraints', async () => {
+    okNext.mockClear();
+    const mw = argPolicyMiddleware();
+    const ctx = makeCtx({
+      toolName: 'github/push_files',
+      args: { branch: 'fix/arg-scope' },
+      agentConfig: makeAgentConfig({
+        arg_policy: {
+          'github/push_files': {
+            branch: [{ glob_allow: ['fix/*', 'feat/*'], label: 'safe_branches' }],
+          },
+        },
+      }),
+    });
+
+    const result = await mw(ctx, okNext);
+    expect(result.text).toBe('ok');
+    expect(okNext).toHaveBeenCalledOnce();
   });
 });
