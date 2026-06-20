@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.2.37](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.36...airlock-bot-v0.2.37) (2026-06-19)
+
+
+### Features
+
+* add profile inheritance ([#113](https://github.com/airlock-dev/airlock/issues/113)) ([2e92eda](https://github.com/airlock-dev/airlock/commit/2e92edab64962652c7ee26f9060e4dc00975dfaa))
+* add tool argument policy ([#114](https://github.com/airlock-dev/airlock/issues/114)) ([5077222](https://github.com/airlock-dev/airlock/commit/5077222a4e0c83ee4d0b54ebe92a8c41e02a9777))
+* **config:** add agent creation flow ([#110](https://github.com/airlock-dev/airlock/issues/110)) ([f215cb6](https://github.com/airlock-dev/airlock/commit/f215cb635b54710131c9f68439e76a31599279d3))
+
+
+### Bug Fixes
+
+* **configure-web:** distinguish glob-matched rules ([#112](https://github.com/airlock-dev/airlock/issues/112)) ([f8fb396](https://github.com/airlock-dev/airlock/commit/f8fb396644977a57b81a44e2e63636e8c4d49a23))
+
 ## [0.2.36](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.35...airlock-bot-v0.2.36) (2026-06-18)
 
 
