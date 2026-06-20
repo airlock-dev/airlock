@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'util';
 import type {
   AgentConfig,
   GatewayConfig,
@@ -5,7 +6,6 @@ import type {
   ProfileConfig,
   ToolArgConstraintConfig,
   ToolArgPolicyConfig,
-  ValueSetConfig,
 } from './schema.js';
 
 interface ResolvedPermissions {
@@ -44,7 +44,12 @@ function mergeArgScope(
   if (!source) return target;
 
   for (const [dimensionName, valueSetNames] of Object.entries(source)) {
-    target[dimensionName] = [...(target[dimensionName] ?? []), ...valueSetNames];
+    const targetValueSets = (target[dimensionName] ??= []);
+    for (const valueSetName of valueSetNames) {
+      if (!targetValueSets.includes(valueSetName)) {
+        targetValueSets.push(valueSetName);
+      }
+    }
   }
 
   return target;
@@ -76,28 +81,37 @@ function unionPermissions(...sources: PermissionSource[]): ResolvedPermissions {
 
 function toInlineConstraint(
   match: 'in' | 'glob_in' | 'each_in',
-  valueSetName: string,
-  valueSet: ValueSetConfig,
+  label: string,
+  values: unknown[],
+  exposeValues: boolean,
   normalize?: NormalizerName[],
   path?: string
 ): ToolArgConstraintConfig {
   const base = {
-    label: valueSetName,
-    value_set: valueSetName,
-    expose_values: valueSet.expose_values,
+    label,
+    value_set: label,
+    expose_values: exposeValues,
     ...(normalize ? { normalize } : {}),
     ...(path ? { path } : {}),
   };
 
   if (match === 'glob_in') {
-    return { ...base, glob_allow: valueSet.values.map((value) => String(value)) };
+    return { ...base, glob_allow: values.map((value) => String(value)) };
   }
 
   if (match === 'each_in') {
-    return { ...base, each_allow: valueSet.values };
+    return { ...base, each_allow: values };
   }
 
-  return { ...base, allow: valueSet.values };
+  return { ...base, allow: values };
+}
+
+function pushUnique(values: unknown[], nextValues: unknown[]): void {
+  for (const nextValue of nextValues) {
+    if (!values.some((value) => isDeepStrictEqual(value, nextValue))) {
+      values.push(nextValue);
+    }
+  }
 }
 
 function desugarArgScope(config: GatewayConfig, agent: AgentConfig): ToolArgPolicyConfig {
@@ -116,22 +130,34 @@ function desugarArgScope(config: GatewayConfig, agent: AgentConfig): ToolArgPoli
           `arg_scope.${dimensionName} references unknown value_set "${valueSetName}".`
         );
       }
+    }
 
-      for (const [toolName, bindingPath] of Object.entries(dimension.bindings)) {
-        mergeArgPolicy(policy, {
-          [toolName]: {
-            [bindingPath]: [
-              toInlineConstraint(
-                dimension.match,
-                valueSetName,
-                valueSet,
-                dimension.normalize,
-                bindingPath
-              ),
-            ],
-          },
-        });
-      }
+    const valueSets = valueSetNames.map((valueSetName) => ({
+      name: valueSetName,
+      config: config.value_sets[valueSetName],
+    }));
+    const label = valueSets.map(({ name }) => name).join(' + ');
+    const exposeValues = valueSets.every(({ config: valueSet }) => valueSet.expose_values);
+    const values: unknown[] = [];
+    for (const { config: valueSet } of valueSets) {
+      pushUnique(values, valueSet.values);
+    }
+
+    for (const [toolName, bindingPath] of Object.entries(dimension.bindings)) {
+      mergeArgPolicy(policy, {
+        [toolName]: {
+          [bindingPath]: [
+            toInlineConstraint(
+              dimension.match,
+              label,
+              values,
+              exposeValues,
+              dimension.normalize,
+              bindingPath
+            ),
+          ],
+        },
+      });
     }
   }
 

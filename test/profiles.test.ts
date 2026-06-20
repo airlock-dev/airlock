@@ -270,6 +270,49 @@ describe('applyProfiles()', () => {
     });
   });
 
+  it('unions multiple value sets for the same inherited dimension', () => {
+    const config = GatewayConfig.parse({
+      value_sets: {
+        airlock_repos: ['airlock-dev/airlock'],
+        docs_repos: ['airlock-dev/docs'],
+      },
+      arg_dimensions: {
+        github_repo: {
+          match: 'in',
+          bindings: {
+            'github/push_files': 'repo',
+          },
+        },
+      },
+      profiles: {
+        airlock_repo: {
+          arg_scope: { github_repo: 'airlock_repos' },
+        },
+        docs_repo: {
+          arg_scope: { github_repo: 'docs_repos' },
+        },
+      },
+      agents: {
+        autofix: {
+          extends: ['airlock_repo', 'docs_repo'],
+          allow: ['github/push_files'],
+        },
+      },
+    });
+
+    applyProfiles(config);
+
+    expect(config.agents['autofix'].arg_policy?.['github/push_files']?.repo).toEqual([
+      {
+        allow: ['airlock-dev/airlock', 'airlock-dev/docs'],
+        label: 'airlock_repos + docs_repos',
+        value_set: 'airlock_repos + docs_repos',
+        expose_values: true,
+        path: 'repo',
+      },
+    ]);
+  });
+
   it('resolves named value sets in explicit arg policy', () => {
     const config = GatewayConfig.parse({
       value_sets: {
