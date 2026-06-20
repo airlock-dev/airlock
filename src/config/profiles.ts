@@ -297,7 +297,6 @@ export function applyProfiles(config: GatewayConfig): void {
     agent.allow = resolved.allow;
     agent.ask = resolved.ask;
     agent.deny = resolved.deny;
-    agent.arg_scope = resolved.arg_scope;
     agent.arg_policy = resolveNamedSetPolicy(
       config,
       mergeArgPolicy(
@@ -306,6 +305,7 @@ export function applyProfiles(config: GatewayConfig): void {
       ),
       'agents.arg_policy'
     );
+    agent.arg_scope = undefined;
     agent.extends = [];
   }
 }

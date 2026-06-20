@@ -46,11 +46,13 @@ function valuesEqual(a: unknown, b: unknown): boolean {
   return isDeepStrictEqual(a, b);
 }
 
+// `*` is greedy and matches across `/`; this is intentional for nested git refs.
 function globMatches(pattern: string, value: string): boolean {
   const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*');
   return new RegExp(`^${escaped}$`).test(value);
 }
 
+// US/E.164-oriented: store allowlist numbers as +<country><number> for non-US matching.
 function normalizePhone(value: unknown): unknown {
   if (typeof value !== 'string') return value;
   const digits = value.replace(/\D/g, '');
