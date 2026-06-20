@@ -186,6 +186,119 @@ describe('applyProfiles()', () => {
     expect(config.agents['agent1'].allow).toContain('github/list*');
   });
 
+  it('desugars inherited arg scope into concrete argument policies', () => {
+    const config = GatewayConfig.parse({
+      value_sets: {
+        airlock_repos: ['airlock-dev/airlock'],
+        safe_fix_branches: ['fix/*', 'feat/*'],
+      },
+      arg_dimensions: {
+        github_repo: {
+          match: 'in',
+          bindings: {
+            'github/push_files': 'repo',
+            'github/create_pull_request': 'repo',
+          },
+        },
+        github_branch: {
+          match: 'glob_in',
+          bindings: {
+            'github/push_files': 'branch',
+            'github/create_pull_request': 'head',
+          },
+        },
+      },
+      profiles: {
+        airlock_repo: {
+          arg_scope: { github_repo: 'airlock_repos' },
+        },
+        fix_branches: {
+          arg_scope: { github_branch: 'safe_fix_branches' },
+        },
+      },
+      agents: {
+        autofix: {
+          extends: ['airlock_repo', 'fix_branches'],
+          allow: ['github/push_files', 'github/create_pull_request'],
+        },
+      },
+    });
+
+    applyProfiles(config);
+
+    expect(config.agents['autofix'].arg_policy).toEqual({
+      'github/push_files': {
+        repo: [
+          {
+            allow: ['airlock-dev/airlock'],
+            label: 'airlock_repos',
+            value_set: 'airlock_repos',
+            expose_values: true,
+            path: 'repo',
+          },
+        ],
+        branch: [
+          {
+            glob_allow: ['fix/*', 'feat/*'],
+            label: 'safe_fix_branches',
+            value_set: 'safe_fix_branches',
+            expose_values: true,
+            path: 'branch',
+          },
+        ],
+      },
+      'github/create_pull_request': {
+        repo: [
+          {
+            allow: ['airlock-dev/airlock'],
+            label: 'airlock_repos',
+            value_set: 'airlock_repos',
+            expose_values: true,
+            path: 'repo',
+          },
+        ],
+        head: [
+          {
+            glob_allow: ['fix/*', 'feat/*'],
+            label: 'safe_fix_branches',
+            value_set: 'safe_fix_branches',
+            expose_values: true,
+            path: 'head',
+          },
+        ],
+      },
+    });
+  });
+
+  it('resolves named value sets in explicit arg policy', () => {
+    const config = GatewayConfig.parse({
+      value_sets: {
+        sandbox_calendars: ['work-calendar'],
+      },
+      agents: {
+        calendar: {
+          allow: ['gws/manage_event'],
+          arg_policy: {
+            'gws/manage_event': {
+              calendar_id: { in: 'sandbox_calendars' },
+            },
+          },
+        },
+      },
+    });
+
+    applyProfiles(config);
+
+    expect(config.agents['calendar'].arg_policy?.['gws/manage_event']?.calendar_id).toEqual([
+      {
+        allow: ['work-calendar'],
+        label: 'sandbox_calendars',
+        value_set: 'sandbox_calendars',
+        expose_values: true,
+      },
+    ]);
+  });
+
   it('throws on unknown agent profile refs', () => {
     const config = GatewayConfig.parse({
       profiles: {},

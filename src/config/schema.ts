@@ -122,43 +122,134 @@ export const SandboxConfig = z.object({
 });
 export type SandboxConfig = z.infer<typeof SandboxConfig>;
 
+export const ValueSetConfig = z
+  .union([
+    z.array(z.unknown()).nonempty(),
+    z
+      .object({
+        values: z.array(z.unknown()).nonempty(),
+        expose_values: z.boolean().default(true),
+      })
+      .strict(),
+  ])
+  .transform((value) => (Array.isArray(value) ? { values: value, expose_values: true } : value));
+export type ValueSetConfig = z.infer<typeof ValueSetConfig>;
+
+const NormalizerName = z.enum(['phone', 'email', 'lower', 'trim']);
+export type NormalizerName = z.infer<typeof NormalizerName>;
+
 export const ToolArgConstraintConfig = z
   .object({
     allow: z.array(z.unknown()).optional(),
     equals: z.unknown().optional(),
+    in: z.string().optional(),
+    glob_in: z.string().optional(),
+    each_in: z.string().optional(),
+    glob_allow: z.array(z.string()).optional(),
+    each_allow: z.array(z.unknown()).optional(),
+    normalize: z.array(NormalizerName).optional(),
+    path: z.string().optional(),
+    required: z.boolean().optional(),
     label: z.string().optional(),
+    value_set: z.string().optional(),
+    expose_values: z.boolean().optional(),
   })
   .strict()
   .superRefine((value, ctx) => {
-    const hasEquals = Object.prototype.hasOwnProperty.call(value, 'equals');
-    const hasAllow = Object.prototype.hasOwnProperty.call(value, 'allow');
+    const matcherKeys = [
+      'equals',
+      'allow',
+      'in',
+      'glob_in',
+      'each_in',
+      'glob_allow',
+      'each_allow',
+    ] as const;
+    const presentMatchers = matcherKeys.filter((key) =>
+      Object.prototype.hasOwnProperty.call(value, key)
+    );
 
-    if (!hasEquals && !hasAllow) {
+    if (presentMatchers.length === 0) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: 'Argument policy constraint must define equals or allow.',
+        message: 'Argument policy constraint must define exactly one matcher.',
       });
     }
 
-    if (hasAllow && value.allow?.length === 0) {
+    if (presentMatchers.length > 1) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Argument policy constraint must define exactly one matcher.',
+      });
+    }
+
+    if (Object.prototype.hasOwnProperty.call(value, 'allow') && value.allow?.length === 0) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['allow'],
         message: 'Argument policy allow list must contain at least one value.',
       });
     }
+
+    if (
+      Object.prototype.hasOwnProperty.call(value, 'glob_allow') &&
+      value.glob_allow?.length === 0
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['glob_allow'],
+        message: 'Argument policy glob_allow list must contain at least one value.',
+      });
+    }
+
+    if (
+      Object.prototype.hasOwnProperty.call(value, 'each_allow') &&
+      value.each_allow?.length === 0
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['each_allow'],
+        message: 'Argument policy each_allow list must contain at least one value.',
+      });
+    }
   });
 export type ToolArgConstraintConfig = z.infer<typeof ToolArgConstraintConfig>;
 
-export const ToolArgPolicyConfig = z.record(z.record(ToolArgConstraintConfig));
+export const ToolArgConstraintListConfig = z
+  .union([ToolArgConstraintConfig, z.array(ToolArgConstraintConfig).nonempty()])
+  .transform((value) => (Array.isArray(value) ? value : [value]));
+export type ToolArgConstraintListConfig = z.infer<typeof ToolArgConstraintListConfig>;
+
+export const ToolArgPolicyConfig = z.record(z.record(ToolArgConstraintListConfig));
 export type ToolArgPolicyConfig = z.infer<typeof ToolArgPolicyConfig>;
+
+export const ArgScopeConfig = z
+  .record(z.union([z.string(), z.array(z.string()).nonempty()]))
+  .transform((scope) =>
+    Object.fromEntries(
+      Object.entries(scope).map(([dimension, value]) => [
+        dimension,
+        Array.isArray(value) ? value : [value],
+      ])
+    )
+  );
+export type ArgScopeConfig = z.infer<typeof ArgScopeConfig>;
+
+export const ArgDimensionConfig = z
+  .object({
+    match: z.enum(['in', 'glob_in', 'each_in']).default('in'),
+    normalize: z.array(NormalizerName).optional(),
+    bindings: z.record(z.string()),
+  })
+  .strict();
+export type ArgDimensionConfig = z.infer<typeof ArgDimensionConfig>;
 
 export const ToolOverride = z.object({
   description: z.string().optional(),
   alias_of: z.string().optional(),
   sandbox_presets: SandboxPresetRef.default([]),
   sandbox: SandboxOverrideConfig.optional(),
-  args: z.record(ToolArgConstraintConfig).optional(),
+  args: z.record(ToolArgConstraintListConfig).optional(),
 });
 
 export const AgentExecConfig = z.object({
@@ -230,6 +321,7 @@ export const AgentConfig = z.object({
   deny: z.array(z.string()).default([]),
   tool_overrides: z.record(ToolOverride).default({}),
   arg_policy: ToolArgPolicyConfig.optional(),
+  arg_scope: ArgScopeConfig.optional(),
   exec: AgentExecConfig.default({}),
   http: AgentHttpConfig.default({}),
   sandbox: SandboxConfig.default({}),
@@ -242,6 +334,8 @@ export const ProfileConfig = z.object({
   allow: z.array(z.string()).default([]),
   ask: z.array(z.string()).default([]),
   deny: z.array(z.string()).default([]),
+  arg_policy: ToolArgPolicyConfig.optional(),
+  arg_scope: ArgScopeConfig.optional(),
 });
 export type ProfileConfig = z.infer<typeof ProfileConfig>;
 
@@ -545,6 +639,8 @@ function applySandboxPresetsToAgent(
 export const GatewayConfig = z
   .object({
     providers: z.record(ProviderConfig).default({}),
+    value_sets: z.record(ValueSetConfig).default({}),
+    arg_dimensions: z.record(ArgDimensionConfig).default({}),
     profiles: z.record(ProfileConfig).default({}),
     sandbox_presets: z.record(SandboxPresetConfig).default({}),
     clis: z.record(CliConfig).default({}),

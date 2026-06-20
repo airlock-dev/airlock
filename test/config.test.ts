@@ -174,8 +174,8 @@ describe('GatewayConfig schema', () => {
     if (!result.success) return;
     expect(result.data.agents['agent1'].arg_policy).toEqual({
       'google_workspace/manage_event': {
-        calendar_id: { equals: 'work-calendar', label: 'Work' },
-        action: { allow: ['create', 'update', 'delete'] },
+        calendar_id: [{ equals: 'work-calendar', label: 'Work' }],
+        action: [{ allow: ['create', 'update', 'delete'] }],
       },
     });
   });
@@ -201,7 +201,57 @@ describe('GatewayConfig schema', () => {
     expect(result.success).toBe(true);
     if (!result.success) return;
     expect(result.data.agents['agent1'].tool_overrides.gcal_work_write.args).toEqual({
-      calendar_id: { equals: 'work-calendar', label: 'Work' },
+      calendar_id: [{ equals: 'work-calendar', label: 'Work' }],
+    });
+  });
+
+  it('supports value sets, argument dimensions, and profile arg scope', () => {
+    const result = GatewayConfig.safeParse({
+      value_sets: {
+        airlock_repos: ['airlock-dev/airlock'],
+        safe_fix_branches: { values: ['fix/*', 'feat/*'] },
+      },
+      arg_dimensions: {
+        github_repo: {
+          match: 'in',
+          bindings: {
+            'github/create_pull_request': 'repo',
+            'github/push_files': 'repo',
+          },
+        },
+        github_branch: {
+          match: 'glob_in',
+          bindings: {
+            'github/create_pull_request': 'head',
+            'github/push_files': 'branch',
+          },
+        },
+      },
+      profiles: {
+        airlock_autofix: {
+          allow: ['github/create_pull_request', 'github/push_files'],
+          arg_scope: {
+            github_repo: 'airlock_repos',
+            github_branch: 'safe_fix_branches',
+          },
+        },
+      },
+      agents: {
+        agent1: {
+          extends: ['airlock_autofix'],
+        },
+      },
+    });
+
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.value_sets.airlock_repos).toEqual({
+      values: ['airlock-dev/airlock'],
+      expose_values: true,
+    });
+    expect(result.data.profiles.airlock_autofix.arg_scope).toEqual({
+      github_repo: ['airlock_repos'],
+      github_branch: ['safe_fix_branches'],
     });
   });
 
@@ -221,7 +271,7 @@ describe('GatewayConfig schema', () => {
     });
     expect(result.success).toBe(false);
     if (result.success) return;
-    expect(result.error.toString()).toContain('must define equals or allow');
+    expect(result.error.toString()).toContain('must define exactly one matcher');
     expect(result.error.toString()).toContain('allow list must contain at least one value');
   });
 });
