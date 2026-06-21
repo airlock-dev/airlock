@@ -11,6 +11,30 @@ import { VERSION } from '../version.js';
 
 const log = childLogger('mcp-adapter');
 
+const DOWNSTREAM_SESSION_ID_META_KEY = 'downstreamSessionId';
+const MCP_REQUEST_META_KEY = 'mcpRequestMeta';
+
+type McpRequestMeta = Record<string, unknown>;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function nonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function mcpRequestMeta(meta: Record<string, unknown> | undefined): McpRequestMeta | undefined {
+  const downstreamSessionId = meta?.[DOWNSTREAM_SESSION_ID_META_KEY];
+  if (!nonEmptyString(downstreamSessionId)) return undefined;
+
+  const existing = meta?.[MCP_REQUEST_META_KEY];
+  return {
+    ...(isRecord(existing) ? existing : {}),
+    agentId: downstreamSessionId,
+  };
+}
+
 export class McpBackendAdapter implements BackendAdapter {
   readonly id: string;
 
@@ -41,14 +65,17 @@ export class McpBackendAdapter implements BackendAdapter {
     }
     const originalName = toolCall.tool.slice(prefix.length);
     const sandbox = toolCall.meta?.sandbox as ResolvedSandboxConfig | undefined;
+    const requestMeta = mcpRequestMeta(toolCall.meta);
 
     // If sandbox config is present and server is stdio, spawn an ephemeral sandboxed instance
     if (sandbox && this.serverConfig?.type === 'stdio') {
-      return this.callSandboxed(originalName, toolCall.args, sandbox);
+      return this.callSandboxed(originalName, toolCall.args, sandbox, requestMeta);
     }
 
     try {
-      const data = await this.pool.callTool(this.mcpId, originalName, toolCall.args);
+      const data = requestMeta
+        ? await this.pool.callTool(this.mcpId, originalName, toolCall.args, requestMeta)
+        : await this.pool.callTool(this.mcpId, originalName, toolCall.args);
       return { success: true, data };
     } catch (err) {
       return { success: false, error: err instanceof Error ? err.message : String(err) };
@@ -61,7 +88,8 @@ export class McpBackendAdapter implements BackendAdapter {
   private async callSandboxed(
     toolName: string,
     args: Record<string, unknown>,
-    sandbox: ResolvedSandboxConfig
+    sandbox: ResolvedSandboxConfig,
+    requestMeta?: McpRequestMeta
   ): Promise<ToolResult> {
     if (!this.serverConfig || this.serverConfig.type !== 'stdio') {
       return { success: false, error: 'Sandboxed call requires stdio MCP server config' };
@@ -90,7 +118,10 @@ export class McpBackendAdapter implements BackendAdapter {
 
       log.info({ mcpId: this.mcpId, toolName }, 'Ephemeral sandboxed MCP connected');
 
-      const data = await client.callTool({ name: toolName, arguments: args });
+      const request = requestMeta
+        ? { name: toolName, arguments: args, _meta: requestMeta }
+        : { name: toolName, arguments: args };
+      const data = await client.callTool(request);
       return { success: true, data };
     } catch (err) {
       return { success: false, error: err instanceof Error ? err.message : String(err) };

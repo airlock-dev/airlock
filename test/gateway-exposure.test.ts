@@ -61,4 +61,33 @@ describe('Gateway exposure controls', () => {
     expect(hook.status).toBe(404);
     expect(mcp.status).toBe(401);
   });
+
+  it('requires REST session ids for configured MCP provider tools and aliases', () => {
+    const config = GatewayConfig.parse({
+      providers: {
+        messages: { type: 'stdio', command: 'bb-mcp' },
+        exec: 'builtin',
+      },
+      agents: {
+        test: {
+          allow: ['*'],
+          tool_overrides: {
+            reply: { alias_of: 'messages/send_message' },
+            shell: { alias_of: 'exec/run' },
+          },
+        },
+      },
+    });
+    const gateway = new Gateway(config);
+    const requiresSessionId = (
+      gateway as unknown as {
+        requiresToolsApiSessionId(agentId: string, toolName: string): boolean;
+      }
+    ).requiresToolsApiSessionId.bind(gateway);
+
+    expect(requiresSessionId('test', 'messages/get_chat_messages')).toBe(true);
+    expect(requiresSessionId('test', 'reply')).toBe(true);
+    expect(requiresSessionId('test', 'exec/run')).toBe(false);
+    expect(requiresSessionId('test', 'shell')).toBe(false);
+  });
 });

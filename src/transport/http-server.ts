@@ -89,7 +89,11 @@ export async function httpServerPlugin(
         },
       });
 
-      const server = createAgentServer({ ...deps, signal: ac.signal });
+      const server = createAgentServer({
+        ...deps,
+        getDownstreamSessionId: () => transport.sessionId,
+        signal: ac.signal,
+      });
       await connectAgentServer(server, transport);
 
       transport.onclose = () => {

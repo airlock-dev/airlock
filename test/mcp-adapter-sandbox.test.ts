@@ -214,6 +214,30 @@ describe('McpBackendAdapter sandbox', () => {
     });
   });
 
+  it('stamps ephemeral sandboxed calls with downstream agent metadata', async () => {
+    const { McpBackendAdapter } = await import('../src/backend/mcp-adapter.js');
+
+    const pool = makePool();
+    const adapter = new McpBackendAdapter('messages', pool, stdioConfig);
+
+    await adapter.call({
+      tool: 'messages/get_chat_messages',
+      args: { chat_guid: 'chat-1' },
+      agentId: 'agent1',
+      meta: {
+        sandbox: baseSandbox,
+        downstreamSessionId: 'session-agent-1',
+        mcpRequestMeta: { progressToken: 'progress-1' },
+      },
+    });
+
+    expect(mockCallTool).toHaveBeenCalledWith({
+      name: 'get_chat_messages',
+      arguments: { chat_guid: 'chat-1' },
+      _meta: { progressToken: 'progress-1', agentId: 'session-agent-1' },
+    });
+  });
+
   it('does not use ephemeral spawn for SSE servers even with sandbox', async () => {
     const { McpBackendAdapter } = await import('../src/backend/mcp-adapter.js');
 

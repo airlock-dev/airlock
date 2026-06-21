@@ -89,7 +89,11 @@ export async function sseServerPlugin(
     // that the transport is gone so they don't execute into the void.
     const sessionAc = new AbortController();
 
-    const server = createAgentServer({ ...deps, signal: sessionAc.signal });
+    const server = createAgentServer({
+      ...deps,
+      downstreamSessionId: transport.sessionId,
+      signal: sessionAc.signal,
+    });
     await connectAgentServer(server, transport);
 
     // Send periodic SSE comments to keep the connection alive through

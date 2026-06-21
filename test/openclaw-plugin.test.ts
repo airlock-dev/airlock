@@ -306,7 +306,7 @@ describe('airlock-bridge OpenClaw plugin', () => {
         'github/list_prs',
         { repo: 'airlock' },
         'openclaw',
-        expect.any(Object)
+        expect.objectContaining({ downstreamSessionId: expect.stringMatching(/^openclaw:/) })
       );
     });
 

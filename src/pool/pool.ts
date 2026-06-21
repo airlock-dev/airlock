@@ -8,6 +8,7 @@ import { childLogger } from '../util/logger.js';
 const log = childLogger('pool');
 
 type McpClient = StdioMcpClient | SseMcpClient | HttpMcpClient;
+type McpRequestMeta = Record<string, unknown>;
 export type HealthStatus = 'ok' | 'degraded' | 'down';
 
 interface ClientPoolOptions {
@@ -94,11 +95,16 @@ export class ClientPool {
     return this.clients.get(mcpId)?.isReady() ?? false;
   }
 
-  async callTool(mcpId: string, toolName: string, args: Record<string, unknown>): Promise<unknown> {
+  async callTool(
+    mcpId: string,
+    toolName: string,
+    args: Record<string, unknown>,
+    requestMeta?: McpRequestMeta
+  ): Promise<unknown> {
     const client = this.clients.get(mcpId);
     if (!client) throw new Error(`Unknown MCP: ${mcpId}`);
     if (!client.isReady()) throw new Error(`MCP ${mcpId} is not connected`);
-    return client.callTool(toolName, args);
+    return client.callTool(toolName, args, requestMeta);
   }
 
   async reload(newMcps: Record<string, McpServerConfig>): Promise<void> {

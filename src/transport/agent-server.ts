@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
@@ -25,13 +26,22 @@ export interface AgentServerDeps {
   auditLogger: AuditLogger;
   securityConfig?: SecurityConfig;
   chain?: Middleware;
+  /** Opaque id propagated to downstream MCPs as params._meta.agentId. */
+  downstreamSessionId?: string;
+  /** Dynamic variant for transports whose session id is assigned during initialization. */
+  getDownstreamSessionId?: () => string | undefined;
   /** Signals that the transport/session has been closed. */
   signal?: AbortSignal;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 export function createAgentServer(deps: AgentServerDeps): Server {
   const { agentId, registry, allowlist, hitlEngine, hitlBatcher, auditLogger } = deps;
   const getConfig = deps.getAgentConfig ?? (() => deps.agentConfig);
+  const fallbackDownstreamSessionId = randomUUID();
 
   const chain =
     deps.chain ??
@@ -66,6 +76,9 @@ export function createAgentServer(deps: AgentServerDeps): Server {
     const match = allTools.find((t) => sanitize(t.name) === sanitizedName);
     const toolName = match?.name ?? sanitizedName;
     const args = request.params.arguments ?? {};
+    const requestMeta = isRecord(request.params._meta) ? request.params._meta : {};
+    const downstreamSessionId =
+      deps.getDownstreamSessionId?.() ?? deps.downstreamSessionId ?? fallbackDownstreamSessionId;
 
     const ctx: ToolCallContext = {
       callId: generateId(),
@@ -73,7 +86,10 @@ export function createAgentServer(deps: AgentServerDeps): Server {
       agentConfig: getConfig(),
       toolName,
       args,
-      meta: {},
+      meta: {
+        mcpRequestMeta: requestMeta,
+        downstreamSessionId,
+      },
       deps: {
         registry,
         allowlist,

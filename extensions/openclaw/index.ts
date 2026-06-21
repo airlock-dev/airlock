@@ -17,6 +17,7 @@
  */
 
 import { Type } from '@sinclair/typebox';
+import { randomUUID } from 'crypto';
 import type { OpenClawPluginApi } from 'openclaw/plugin-sdk';
 
 interface AirlockTool {
@@ -47,6 +48,7 @@ export default async function register(api: OpenClawPluginApi): Promise<void> {
   );
   const agentId = process.env['AIRLOCK_AGENT'] ?? cfg.agent ?? 'openclaw';
   const secret = process.env['AIRLOCK_SECRET'] ?? cfg.secret ?? '';
+  const sessionId = randomUUID();
 
   const authHeaders: Record<string, string> = secret ? { Authorization: `Bearer ${secret}` } : {};
 
@@ -93,7 +95,7 @@ export default async function register(api: OpenClawPluginApi): Promise<void> {
               const res = await fetch(`${baseUrl}/agents/${agentId}/tools/invoke`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', ...authHeaders },
-                body: JSON.stringify({ tool: airlockName, args: params }),
+                body: JSON.stringify({ tool: airlockName, args: params, session_id: sessionId }),
               });
               result = (await res.json()) as AirlockInvokeResult;
             } catch (err) {

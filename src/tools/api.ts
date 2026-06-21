@@ -9,15 +9,25 @@ import { checkRequestSecurity } from '../security/request.js';
 const log = childLogger('tools-api');
 
 export interface ToolsApiOpts {
-  getDeps: (agentId: string) => AgentServerDeps | undefined;
+  getDeps: (agentId: string, downstreamSessionKey?: string) => AgentServerDeps | undefined;
+  requiresSessionId?: (agentId: string, tool: string) => boolean;
   secret?: string;
   authRequired?: boolean;
   allowedOrigins?: string[];
 }
 
+function nonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
 // eslint-disable-next-line @typescript-eslint/require-await
 export async function toolsApiPlugin(app: FastifyInstance, opts: ToolsApiOpts): Promise<void> {
   const { getDeps } = opts;
+
+  function downstreamSessionKey(agentId: string, explicitSessionId: unknown): string | undefined {
+    if (!nonEmptyString(explicitSessionId)) return undefined;
+    return `${agentId}:${explicitSessionId}`;
+  }
 
   app.addHook('preHandler', async (request, reply) => {
     if (!checkRequestSecurity(request, reply, opts)) {
@@ -37,7 +47,9 @@ export async function toolsApiPlugin(app: FastifyInstance, opts: ToolsApiOpts): 
 
   app.post('/agents/:agentId/tools/invoke', async (request, reply) => {
     const { agentId } = request.params as { agentId: string };
-    const body = request.body as { tool?: string; args?: Record<string, unknown> } | undefined;
+    const body = request.body as
+      | { tool?: string; args?: Record<string, unknown>; session_id?: string }
+      | undefined;
 
     if (!body?.tool) {
       return reply.status(400).send({ error: 'Missing required field: tool' });
@@ -45,9 +57,25 @@ export async function toolsApiPlugin(app: FastifyInstance, opts: ToolsApiOpts): 
 
     const { tool, args = {} } = body;
 
-    const deps = getDeps(agentId);
+    const headerSessionId = request.headers['x-airlock-session-id'];
+    const explicitSessionId =
+      body.session_id ?? (Array.isArray(headerSessionId) ? headerSessionId[0] : headerSessionId);
+    const sessionKey = downstreamSessionKey(agentId, explicitSessionId);
+    const deps = getDeps(agentId, sessionKey);
     if (!deps) {
       return reply.status(404).send({ error: `Unknown agent: ${agentId}` });
+    }
+    if (!sessionKey) {
+      if (opts.requiresSessionId?.(agentId, tool)) {
+        return reply.status(400).send({
+          error:
+            'Missing required field: session_id. REST invocations of downstream MCP tools require a stable session_id; pass session_id in the JSON body or X-Airlock-Session-Id header.',
+        });
+      }
+      log.warn(
+        { agentId, tool },
+        'REST tool invocation missing session_id; downstream MCP freshness identity will not be stamped'
+      );
     }
 
     const getConfig = deps.getAgentConfig ?? (() => deps.agentConfig);
@@ -61,6 +89,7 @@ export async function toolsApiPlugin(app: FastifyInstance, opts: ToolsApiOpts): 
       auditLogger: deps.auditLogger,
       securityConfig: deps.securityConfig ?? { blocked_hosts: [], allowed_local: [] },
     });
+    const downstreamSessionId = deps.downstreamSessionId ?? sessionKey;
 
     const ctx: ToolCallContext = {
       callId: generateId(),
@@ -68,7 +97,7 @@ export async function toolsApiPlugin(app: FastifyInstance, opts: ToolsApiOpts): 
       agentConfig,
       toolName: tool,
       args,
-      meta: {},
+      meta: downstreamSessionId ? { downstreamSessionId } : {},
       deps: {
         registry: deps.registry,
         allowlist: deps.allowlist,

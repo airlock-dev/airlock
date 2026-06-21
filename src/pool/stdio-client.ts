@@ -6,6 +6,8 @@ import { VERSION } from '../version.js';
 
 const log = childLogger('stdio-client');
 
+type McpRequestMeta = Record<string, unknown>;
+
 const BACKOFF_STEPS = [1000, 2000, 4000, 8000, 16000, 30000];
 const MAX_RECONNECT_ATTEMPTS = BACKOFF_STEPS.length;
 
@@ -91,9 +93,16 @@ export class StdioMcpClient {
     return result.tools;
   }
 
-  async callTool(name: string, args: Record<string, unknown>): Promise<unknown> {
+  async callTool(
+    name: string,
+    args: Record<string, unknown>,
+    requestMeta?: McpRequestMeta
+  ): Promise<unknown> {
     if (!this.client || !this.ready) throw new Error(`MCP ${this.id} not connected`);
-    return this.client.callTool({ name, arguments: args });
+    const request = requestMeta
+      ? { name, arguments: args, _meta: requestMeta }
+      : { name, arguments: args };
+    return this.client.callTool(request);
   }
 
   getServerInfo(): { name: string; version: string } | undefined {

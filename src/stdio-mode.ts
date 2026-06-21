@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import { ClientPool } from './pool/pool.js';
 import { requiredMcpsForAgent } from './pool/required-mcps.js';
 import { ToolRegistry } from './registry/registry.js';
@@ -39,6 +40,7 @@ export async function runStdioMode(
   }
 
   log.info({ agentId }, 'Starting Airlock in stdio mode');
+  const downstreamSessionId = randomUUID();
 
   let currentAgentConfig = agentConfig;
 
@@ -164,6 +166,7 @@ export async function runStdioMode(
   // No HTTP server — stdio only
   await runStdioServer({
     agentId,
+    downstreamSessionId,
     agentConfig,
     getAgentConfig: () => currentAgentConfig,
     registry,
