@@ -54,6 +54,50 @@ describe('McpBackendAdapter', () => {
     expect(pool.callTool).toHaveBeenCalledWith('github', 'create_pr', { repo: 'test' });
   });
 
+  it('stamps downstream MCP calls with the session id in agent metadata', async () => {
+    const pool = makePool({
+      callTool: vi.fn().mockResolvedValue({ content: [{ type: 'text', text: 'ok' }] }),
+    });
+    const adapter = new McpBackendAdapter('messages', pool);
+
+    const result = await adapter.call({
+      tool: 'messages/get_chat_messages',
+      args: { chat_guid: 'chat-1' },
+      agentId: 'configured-agent',
+      meta: {
+        downstreamSessionId: 'session-agent-1',
+        mcpRequestMeta: { progressToken: 'progress-1' },
+      },
+    });
+
+    expect(result.success).toBe(true);
+    expect(pool.callTool).toHaveBeenCalledWith(
+      'messages',
+      'get_chat_messages',
+      { chat_guid: 'chat-1' },
+      { progressToken: 'progress-1', agentId: 'session-agent-1' }
+    );
+  });
+
+  it('does not special-case send_message tool names', async () => {
+    const pool = makePool({
+      callTool: vi.fn().mockResolvedValue({ content: [{ type: 'text', text: 'ok' }] }),
+    });
+    const adapter = new McpBackendAdapter('messages', pool);
+
+    const result = await adapter.call({
+      tool: 'messages/send_message',
+      args: { chat_guid: 'chat-1', message: 'hi' },
+      agentId: 'configured-agent',
+    });
+
+    expect(result.success).toBe(true);
+    expect(pool.callTool).toHaveBeenCalledWith('messages', 'send_message', {
+      chat_guid: 'chat-1',
+      message: 'hi',
+    });
+  });
+
   it('rejects tools with wrong prefix', async () => {
     const adapter = new McpBackendAdapter('github', makePool());
 

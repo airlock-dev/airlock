@@ -130,6 +130,26 @@ describe('call_tool — allowlist enforcement', () => {
     expect(JSON.parse((result.content[0] as { text: string }).text)).toEqual(callResult);
   });
 
+  it('passes preserved MCP request metadata and downstream session id to registry calls', async () => {
+    const registry = makeMockRegistry([], { ok: true });
+    const deps = makeDeps({
+      downstreamSessionId: 'session-agent-1',
+      registry: registry as unknown as AgentServerDeps['registry'],
+    });
+    const client = await buildConnectedClient(deps);
+
+    await client.callTool({
+      name: 'github/create_pr',
+      arguments: { repo: 'test' },
+      _meta: { progressToken: 'progress-1' },
+    });
+
+    expect(registry.call).toHaveBeenCalledWith('github/create_pr', { repo: 'test' }, 'agent1', {
+      mcpRequestMeta: { progressToken: 'progress-1' },
+      downstreamSessionId: 'session-agent-1',
+    });
+  });
+
   it('rejects tool not in allowlist with MCP error', async () => {
     const deps = makeDeps();
     const client = await buildConnectedClient(deps);

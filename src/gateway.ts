@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import Fastify from 'fastify';
 import type { FastifyInstance } from 'fastify';
 import { ClientPool } from './pool/pool.js';
@@ -39,6 +40,7 @@ export class Gateway {
   private approvalRoutes!: ApprovalDashboardRoutes;
   private auditLogger!: AuditLogger;
   private app!: FastifyInstance;
+  private downstreamSessionIds = new Map<string, string>();
   private startTime = Date.now();
 
   constructor(
@@ -141,7 +143,10 @@ export class Gateway {
     }
     if (this.config.server.expose_tools_api) {
       await this.app.register(toolsApiPlugin, {
-        getDeps: (agentId: string) => this.buildAgentDeps(agentId),
+        getDeps: (agentId: string, downstreamSessionKey?: string) =>
+          this.buildAgentDeps(agentId, downstreamSessionKey),
+        requiresSessionId: (agentId: string, tool: string) =>
+          this.requiresToolsApiSessionId(agentId, tool),
         ...requestSecurity,
       });
     }
@@ -187,12 +192,16 @@ export class Gateway {
     return providers.length === 1 ? providers[0] : new CompositeHitlProvider(providers);
   }
 
-  buildAgentDeps(agentId: string): AgentServerDeps | undefined {
+  buildAgentDeps(agentId: string, downstreamSessionKey?: string): AgentServerDeps | undefined {
     const agentConfig = this.config.agents[agentId];
     if (!agentConfig) return undefined;
+    const downstreamSessionId = downstreamSessionKey
+      ? this.downstreamSessionIdFor(downstreamSessionKey)
+      : undefined;
 
     return {
       agentId,
+      downstreamSessionId,
       agentConfig,
       getAgentConfig: () => this.config.agents[agentId] ?? agentConfig,
       registry: this.registry,
@@ -203,6 +212,27 @@ export class Gateway {
       auditLogger: this.auditLogger,
       securityConfig: this.config.security,
     };
+  }
+
+  private downstreamSessionIdFor(key: string): string {
+    let id = this.downstreamSessionIds.get(key);
+    if (!id) {
+      id = randomUUID();
+      this.downstreamSessionIds.set(key, id);
+    }
+    return id;
+  }
+
+  private requiresToolsApiSessionId(agentId: string, toolName: string): boolean {
+    const agentConfig = this.config.agents[agentId];
+    if (!agentConfig) return false;
+
+    const resolvedToolName = agentConfig.tool_overrides[toolName]?.alias_of ?? toolName;
+    const separatorIndex = resolvedToolName.indexOf('/');
+    if (separatorIndex <= 0) return false;
+
+    const providerId = resolvedToolName.slice(0, separatorIndex);
+    return providerId in getMcpConfigs(this.config.providers);
   }
 
   async reload(newConfig: Config): Promise<void> {
@@ -240,9 +270,9 @@ export class Gateway {
   }
 }
 
-function withoutDashboardProvider(provider: Config['approvals']['provider']):
-  | Config['approvals']['provider']
-  | undefined {
+function withoutDashboardProvider(
+  provider: Config['approvals']['provider']
+): Config['approvals']['provider'] | undefined {
   if (Array.isArray(provider)) {
     const filtered = provider.filter((entry) => entry.type !== 'dashboard');
     if (filtered.length === 0) return undefined;

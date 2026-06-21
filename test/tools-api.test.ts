@@ -264,6 +264,80 @@ describe('toolsApiPlugin', () => {
         expect.any(Object)
       );
     });
+
+    it('does not invent downstream session metadata when REST session id is missing', async () => {
+      await invoke('myagent', { tool: 'github/list_prs', args: { repo: 'airlock' } });
+
+      const meta = registry.call.mock.calls.at(-1)?.[3] as Record<string, unknown>;
+      expect(meta).not.toHaveProperty('downstreamSessionId');
+    });
+
+    it('rejects missing REST session id when the tool requires downstream session identity', async () => {
+      const sessionApp = Fastify({ logger: false });
+      await sessionApp.register(toolsApiPlugin, {
+        getDeps: (agentId) => (agentId === 'myagent' ? makeDeps() : undefined),
+        requiresSessionId: () => true,
+      });
+      await sessionApp.ready();
+
+      const res = await sessionApp.inject({
+        method: 'POST',
+        url: '/agents/myagent/tools/invoke',
+        headers: { 'content-type': 'application/json' },
+        payload: { tool: 'github/list_prs', args: { repo: 'airlock' } },
+      });
+
+      expect(res.statusCode).toBe(400);
+      expect(res.json().error).toContain('session_id');
+      expect(registry.call).not.toHaveBeenCalled();
+
+      await sessionApp.close();
+    });
+
+    it('uses the provided REST session id for downstream MCP session metadata', async () => {
+      await invoke('myagent', {
+        tool: 'github/list_prs',
+        args: { repo: 'airlock' },
+        session_id: 'session-a',
+      });
+
+      expect(registry.call).toHaveBeenCalledWith(
+        'github/list_prs',
+        { repo: 'airlock' },
+        'myagent',
+        expect.objectContaining({ downstreamSessionId: 'myagent:session-a' })
+      );
+    });
+
+    it('accepts x-airlock-session-id when downstream session identity is required', async () => {
+      const sessionApp = Fastify({ logger: false });
+      await sessionApp.register(toolsApiPlugin, {
+        getDeps: (agentId, sessionKey) =>
+          agentId === 'myagent' ? { ...makeDeps(), downstreamSessionId: sessionKey } : undefined,
+        requiresSessionId: () => true,
+      });
+      await sessionApp.ready();
+
+      const res = await sessionApp.inject({
+        method: 'POST',
+        url: '/agents/myagent/tools/invoke',
+        headers: {
+          'content-type': 'application/json',
+          'x-airlock-session-id': 'session-b',
+        },
+        payload: { tool: 'github/list_prs', args: { repo: 'airlock' } },
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(registry.call).toHaveBeenCalledWith(
+        'github/list_prs',
+        { repo: 'airlock' },
+        'myagent',
+        expect.objectContaining({ downstreamSessionId: 'myagent:session-b' })
+      );
+
+      await sessionApp.close();
+    });
   });
 
   // ─── POST /agents/:agentId/tools/invoke — deny ───────────────────────────────
