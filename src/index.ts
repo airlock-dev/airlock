@@ -8,6 +8,7 @@ import { runDiscover } from './discover/cli.js';
 import { runConfigureAgent } from './configure-agent/cli.js';
 import { runCommandCenter, runConfigureWeb, runDashboard } from './configure-web/cli.js';
 import { runConfigureCli } from './configure-cli/cli.js';
+import { runConfigCheck } from './config/check.js';
 import { runSetupOpenclaw } from './setup-openclaw/cli.js';
 import { logger } from './util/logger.js';
 
@@ -47,6 +48,13 @@ if (subcommand === 'discover') {
     console.error(err instanceof Error ? err.message : String(err));
     process.exit(1);
   });
+} else if (subcommand === 'config' && process.argv[3] === 'check') {
+  try {
+    runConfigCheck(process.argv.slice(4));
+  } catch (err) {
+    console.error(err instanceof Error ? err.message : String(err));
+    process.exit(1);
+  }
 } else if (subcommand === 'setup' && process.argv[3] === 'openclaw') {
   try {
     runSetupOpenclaw(process.argv.slice(4));
@@ -84,6 +92,7 @@ Usage:
   airlock configure-cli <tool> [options]
   airlock configure-agent [options]
   airlock configure-web [options]
+  airlock config check <path>
   airlock setup openclaw
 
 Options:
@@ -102,6 +111,7 @@ Subcommands:
   configure-cli <tool>   Interactive TUI to select and configure CLI commands
   configure-agent        Interactive TUI to build allow/ask/deny lists
   configure-web          Browser UI to edit profiles, agents, and permissions
+  config check <path>    Validate config and fail on errors before deployment
   setup openclaw         Install the airlock-bridge plugin into OpenClaw
 
 Examples:
@@ -134,6 +144,9 @@ Examples:
 
   # Configure profiles and agents in a local web UI
   airlock configure-web --config ./airlock.yaml
+
+  # Validate config before deployment
+  airlock config check ./airlock.yaml
 `);
     process.exit(0);
   }

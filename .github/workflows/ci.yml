@@ -47,6 +47,19 @@ jobs:
       - run: npm run build
         if: needs.changes.outputs.node == 'true'
 
+      - name: Check example configs
+        if: needs.changes.outputs.node == 'true'
+        env:
+          AIRLOCK_API_SECRET: ci-airlock-secret
+          EXAMPLE_AGENT_AIRLOCK_TOKEN: ci-agent-secret
+          GITHUB_TOKEN: ci-github-token
+        run: |
+          node dist/index.js config check examples/gateway.yaml
+          node dist/index.js config check examples/docker-gateway.yaml
+          node dist/index.js config check examples/local-dev.yaml
+          node dist/index.js config check examples/profiles.yaml
+          node dist/index.js config check examples/sandbox-presets.yaml
+
       - name: Run tests with coverage
         if: needs.changes.outputs.node == 'true'
         run: npx vitest run --reporter=verbose --coverage --coverage.reporter=json-summary --coverage.reporter=json

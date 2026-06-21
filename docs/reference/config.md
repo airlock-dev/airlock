@@ -7,6 +7,8 @@ Airlock config is YAML. Everything lives in a single file (typically `airlock.ya
 ```yaml
 providers: # MCP servers and built-ins
 profiles: # Reusable permission sets
+value_sets: # Reusable argument value lists
+arg_dimensions: # Reusable tool-argument bindings for arg_scope
 sandbox_presets: # Reusable sandbox envelopes
 clis: # CLI tools exposed as MCP tools
 apis: # REST APIs exposed as MCP tools
@@ -75,6 +77,38 @@ profiles:
 ```
 
 Profiles may extend other profiles. Profile inheritance is resolved once at config load, before agents consume profiles. Unknown profile references and profile cycles are fatal config errors.
+
+Config parsing is strict: unknown or misspelled keys are fatal instead of being
+silently ignored. Run `airlock config check ./airlock.yaml` before deployment to
+validate schema and semantic checks, including argument policy references.
+
+## `value_sets` and `arg_dimensions`
+
+Reusable argument controls for `arg_scope`.
+
+```yaml
+value_sets:
+  personal_recipients:
+    - '+16085153685' # Quote +1-style strings so YAML does not parse them as numbers.
+
+arg_dimensions:
+  sms_recipient:
+    bindings:
+      twilio/send_sms: to
+
+profiles:
+  personal-sms:
+    arg_scope:
+      sms_recipient:
+        in: personal_recipients
+        label: Personal phone
+```
+
+`arg_scope` references an `arg_dimension`, and the dimension maps that abstract
+scope onto concrete tool arguments. At load time, Airlock expands scopes into
+runtime `arg_policy` constraints. Unknown dimensions, unknown value sets, empty
+bindings, and scopes that would apply no effective constraints are reported at
+config load.
 
 ## `sandbox_presets`
 
@@ -168,6 +202,10 @@ agents:
           label: Work
         action:
           allow: [create, update, delete]
+
+    arg_scope: # Reusable argument constraints via arg_dimensions
+      sms_recipient:
+        in: personal_recipients
 
     sandbox: # Agent-level sandbox
       enabled: true

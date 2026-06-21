@@ -2,7 +2,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { loadConfig } from '../src/config/loader.js';
+import { spawnSync } from 'child_process';
+import { loadConfig, validateConfig } from '../src/config/loader.js';
 import { GatewayConfig, getBuiltinProviders, getMcpConfigs } from '../src/config/schema.js';
 import { rememberAllow } from '../src/config/mutator.js';
 
@@ -221,8 +222,21 @@ describe('GatewayConfig schema', () => {
     });
     expect(result.success).toBe(false);
     if (result.success) return;
-    expect(result.error.toString()).toContain('must define equals or allow');
+    expect(result.error.toString()).toContain('must define equals, allow');
     expect(result.error.toString()).toContain('allow list must contain at least one value');
+  });
+
+  it('rejects unknown keys in profiles with a suggestion', () => {
+    const result = GatewayConfig.safeParse({
+      profiles: {
+        'pa-personal': {
+          scope: {
+            sms_recipient: { in: 'personal_numbers' },
+          },
+        },
+      },
+    });
+    expect(result.success).toBe(false);
   });
 });
 
@@ -440,6 +454,188 @@ agents:
     writeFileSync(path, yaml);
 
     expect(() => loadConfig(path)).toThrow(/pa-work -> product -> pa-work/);
+  });
+
+  it('errors on misspelled security keys instead of silently dropping them', () => {
+    const yaml = `
+profiles:
+  pa-personal:
+    scope:
+      sms_recipient:
+        in: personal_numbers
+agents:
+  dev:
+    extends:
+      - pa-personal
+`;
+    const path = join(dir, 'gateway.yaml');
+    writeFileSync(path, yaml);
+
+    expect(() => loadConfig(path)).toThrow(
+      /Unrecognized key "scope" in profile "pa-personal" \(did you mean "arg_scope"\?\)/
+    );
+  });
+
+  it('errors on unknown value_set references in arg_policy', () => {
+    const yaml = `
+providers:
+  twilio: builtin
+agents:
+  dev:
+    allow:
+      - twilio/send_sms
+    arg_policy:
+      twilio/send_sms:
+        to:
+          in: missing_numbers
+`;
+    const path = join(dir, 'gateway.yaml');
+    writeFileSync(path, yaml);
+
+    expect(() => loadConfig(path)).toThrow(/unknown value_set "missing_numbers"/);
+  });
+
+  it('errors on unknown arg_dimension references in arg_scope', () => {
+    const yaml = `
+providers:
+  twilio: builtin
+value_sets:
+  personal_numbers:
+    - "+16085153685"
+agents:
+  dev:
+    allow:
+      - twilio/send_sms
+    arg_scope:
+      sms_recipient:
+        in: personal_numbers
+`;
+    const path = join(dir, 'gateway.yaml');
+    writeFileSync(path, yaml);
+
+    expect(() => loadConfig(path)).toThrow(/unknown arg_dimension "sms_recipient"/);
+  });
+
+  it('errors when declared arg_scope resolves to no effective constraints', () => {
+    const yaml = `
+providers:
+  twilio: builtin
+value_sets:
+  personal_numbers:
+    - "+16085153685"
+arg_dimensions:
+  sms_recipient:
+    bindings: {}
+agents:
+  dev:
+    allow:
+      - twilio/send_sms
+    arg_scope:
+      sms_recipient:
+        in: personal_numbers
+`;
+    const path = join(dir, 'gateway.yaml');
+    writeFileSync(path, yaml);
+
+    expect(() => loadConfig(path)).toThrow(/resolves to zero effective argument constraints/);
+  });
+
+  it('errors when declared arg_policy resolves to no effective constraints', () => {
+    const yaml = `
+providers:
+  twilio: builtin
+agents:
+  dev:
+    allow:
+      - twilio/send_sms
+    arg_policy: {}
+`;
+    const path = join(dir, 'gateway.yaml');
+    writeFileSync(path, yaml);
+
+    expect(() => loadConfig(path)).toThrow(/resolves to zero effective argument constraints/);
+  });
+
+  it('warns and coerces unquoted YAML phone numbers in value_sets', () => {
+    const config = GatewayConfig.parse({
+      providers: { twilio: 'builtin' },
+      value_sets: {
+        personal_numbers: [16085153685],
+      },
+      arg_dimensions: {
+        sms_recipient: { bindings: { 'twilio/send_sms': 'to' } },
+      },
+      agents: {
+        dev: {
+          allow: ['twilio/send_sms'],
+          arg_scope: {
+            sms_recipient: { in: 'personal_numbers' },
+          },
+        },
+      },
+    });
+
+    const diagnostics = validateConfig(config);
+    expect(diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          level: 'warn',
+          message: expect.stringContaining('quote it ("+16085153685")'),
+        }),
+      ])
+    );
+
+    const path = join(dir, 'gateway.yaml');
+    writeFileSync(
+      path,
+      `
+providers:
+  twilio: builtin
+value_sets:
+  personal_numbers:
+    - +16085153685
+arg_dimensions:
+  sms_recipient:
+    bindings:
+      twilio/send_sms: to
+agents:
+  dev:
+    allow:
+      - twilio/send_sms
+    arg_scope:
+      sms_recipient:
+        in: personal_numbers
+`
+    );
+    const loaded = loadConfig(path);
+    expect(loaded.agents['dev'].arg_policy?.['twilio/send_sms'].to.allow).toEqual(['16085153685']);
+  });
+
+  it('config check exits non-zero for invalid config', () => {
+    const yaml = `
+profiles:
+  pa-personal:
+    scope:
+      sms_recipient:
+        in: personal_numbers
+`;
+    const path = join(dir, 'gateway.yaml');
+    writeFileSync(path, yaml);
+
+    const result = spawnSync(
+      process.execPath,
+      ['--import', 'tsx', 'src/index.ts', 'config', 'check', path],
+      {
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          MISE_TRUSTED_CONFIG_PATHS: process.cwd(),
+        },
+      }
+    );
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('Unrecognized key "scope"');
   });
 });
 

@@ -4,9 +4,11 @@ interface ResolvedPermissions {
   allow: string[];
   ask: string[];
   deny: string[];
+  arg_policy?: AgentConfig['arg_policy'];
+  arg_scope?: AgentConfig['arg_scope'];
 }
 
-type PermissionSource = Pick<ProfileConfig, 'allow' | 'ask' | 'deny'>;
+type PermissionSource = Pick<ProfileConfig, 'allow' | 'ask' | 'deny' | 'arg_policy' | 'arg_scope'>;
 
 function unionPermissions(...sources: PermissionSource[]): ResolvedPermissions {
   const allow = new Set<string>();
@@ -23,7 +25,35 @@ function unionPermissions(...sources: PermissionSource[]): ResolvedPermissions {
     allow: Array.from(allow),
     ask: Array.from(ask),
     deny: Array.from(deny),
+    arg_policy: sources.reduce<AgentConfig['arg_policy']>(
+      (acc, source) => mergeArgPolicy(acc, source.arg_policy),
+      undefined
+    ),
+    arg_scope: sources.reduce<AgentConfig['arg_scope']>(
+      (acc, source) => mergeArgScope(acc, source.arg_scope),
+      undefined
+    ),
   };
+}
+
+function mergeArgPolicy(
+  base: AgentConfig['arg_policy'],
+  override: AgentConfig['arg_policy']
+): AgentConfig['arg_policy'] {
+  if (!base && !override) return undefined;
+  const result: NonNullable<AgentConfig['arg_policy']> = { ...(base ?? {}) };
+  for (const [toolName, policy] of Object.entries(override ?? {})) {
+    result[toolName] = { ...(result[toolName] ?? {}), ...policy };
+  }
+  return result;
+}
+
+function mergeArgScope(
+  base: AgentConfig['arg_scope'],
+  override: AgentConfig['arg_scope']
+): AgentConfig['arg_scope'] {
+  if (!base && !override) return undefined;
+  return { ...(base ?? {}), ...(override ?? {}) };
 }
 
 export function resolveProfiles(
@@ -95,6 +125,8 @@ export function applyProfiles(config: GatewayConfig): void {
     agent.allow = resolved.allow;
     agent.ask = resolved.ask;
     agent.deny = resolved.deny;
+    agent.arg_policy = mergeArgPolicy(resolved.arg_policy, agent.arg_policy);
+    agent.arg_scope = mergeArgScope(resolved.arg_scope, agent.arg_scope);
     agent.extends = [];
   }
 }

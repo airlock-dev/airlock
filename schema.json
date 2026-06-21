@@ -179,6 +179,128 @@
                   "type": "string"
                 },
                 "default": []
+              },
+              "arg_policy": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "object",
+                    "properties": {
+                      "allow": {
+                        "type": "array",
+                        "items": {}
+                      },
+                      "equals": {},
+                      "in": {
+                        "type": "string"
+                      },
+                      "glob_allow": {
+                        "type": "array",
+                        "items": {}
+                      },
+                      "glob_in": {
+                        "type": "string"
+                      },
+                      "each_allow": {
+                        "type": "array",
+                        "items": {}
+                      },
+                      "each_in": {
+                        "type": "string"
+                      },
+                      "label": {
+                        "type": "string"
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "arg_scope": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "object",
+                  "properties": {
+                    "allow": {
+                      "type": "array",
+                      "items": {}
+                    },
+                    "equals": {},
+                    "in": {
+                      "type": "string"
+                    },
+                    "glob_allow": {
+                      "type": "array",
+                      "items": {}
+                    },
+                    "glob_in": {
+                      "type": "string"
+                    },
+                    "each_allow": {
+                      "type": "array",
+                      "items": {}
+                    },
+                    "each_in": {
+                      "type": "string"
+                    },
+                    "label": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            },
+            "additionalProperties": false
+          },
+          "default": {}
+        },
+        "value_sets": {
+          "type": "object",
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {}
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "values": {
+                    "type": "array",
+                    "items": {},
+                    "default": []
+                  }
+                },
+                "additionalProperties": false
+              }
+            ]
+          },
+          "default": {}
+        },
+        "arg_dimensions": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "bindings": {
+                "type": "object",
+                "additionalProperties": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "minItems": 1
+                    }
+                  ]
+                },
+                "default": {}
               }
             },
             "additionalProperties": false
@@ -576,6 +698,23 @@
                             "items": {}
                           },
                           "equals": {},
+                          "in": {
+                            "type": "string"
+                          },
+                          "glob_allow": {
+                            "type": "array",
+                            "items": {}
+                          },
+                          "glob_in": {
+                            "type": "string"
+                          },
+                          "each_allow": {
+                            "type": "array",
+                            "items": {}
+                          },
+                          "each_in": {
+                            "type": "string"
+                          },
                           "label": {
                             "type": "string"
                           }
@@ -600,12 +739,63 @@
                         "items": {}
                       },
                       "equals": {},
+                      "in": {
+                        "type": "string"
+                      },
+                      "glob_allow": {
+                        "type": "array",
+                        "items": {}
+                      },
+                      "glob_in": {
+                        "type": "string"
+                      },
+                      "each_allow": {
+                        "type": "array",
+                        "items": {}
+                      },
+                      "each_in": {
+                        "type": "string"
+                      },
                       "label": {
                         "type": "string"
                       }
                     },
                     "additionalProperties": false
                   }
+                }
+              },
+              "arg_scope": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "object",
+                  "properties": {
+                    "allow": {
+                      "type": "array",
+                      "items": {}
+                    },
+                    "equals": {},
+                    "in": {
+                      "type": "string"
+                    },
+                    "glob_allow": {
+                      "type": "array",
+                      "items": {}
+                    },
+                    "glob_in": {
+                      "type": "string"
+                    },
+                    "each_allow": {
+                      "type": "array",
+                      "items": {}
+                    },
+                    "each_in": {
+                      "type": "string"
+                    },
+                    "label": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
                 }
               },
               "exec": {

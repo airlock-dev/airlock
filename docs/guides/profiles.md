@@ -151,4 +151,6 @@ profiles:
 
 ## Profiles and sandbox presets
 
-Profiles only affect allow/ask/deny rules. Sandbox presets are configured separately at the agent level or per tool variant. See [Sandbox Presets and Variants](/concepts/sandboxing) for details.
+Profiles affect permission rules and argument controls (`arg_policy` / `arg_scope`).
+Sandbox presets are configured separately at the agent level or per tool variant.
+See [Sandbox Presets and Variants](/concepts/sandboxing) for details.

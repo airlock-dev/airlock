@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from 'util';
+import { matchesCommand } from '../../allowlist/pattern.js';
 import type { ToolArgConstraintConfig } from '../../config/schema.js';
 import type { Middleware, ToolCallResponse } from '../types.js';
 
@@ -8,7 +9,10 @@ function hasOwn(obj: Record<string, unknown>, key: string): boolean {
   return Object.prototype.hasOwnProperty.call(obj, key);
 }
 
-function hasConstraintKey(constraint: ToolArgConstraintConfig, key: 'equals' | 'allow'): boolean {
+function hasConstraintKey(
+  constraint: ToolArgConstraintConfig,
+  key: 'equals' | 'allow' | 'glob_allow' | 'each_allow'
+): boolean {
   return Object.prototype.hasOwnProperty.call(constraint, key);
 }
 
@@ -25,9 +29,13 @@ function formatAllowed(constraint: ToolArgConstraintConfig): string {
   }
 
   const values = constraint.allow ?? [];
+  const globValues = constraint.glob_allow ?? [];
+  const eachValues = constraint.each_allow ?? [];
   const formatted = values.map(formatValue).join(', ');
+  const formattedGlob = globValues.map(formatValue).join(', ');
+  const formattedEach = eachValues.map(formatValue).join(', ');
   const label = constraint.label ? ` (${constraint.label})` : '';
-  return `${formatted}${label}`;
+  return `${[formatted, formattedGlob, formattedEach].filter(Boolean).join(', ')}${label}`;
 }
 
 function valuesEqual(a: unknown, b: unknown): boolean {
@@ -100,10 +108,23 @@ export function argPolicyMiddleware(): Middleware {
         return violationResponse(message);
       }
 
-      if (
-        hasConstraintKey(constraint, 'allow') &&
-        !(constraint.allow ?? []).some((allowed) => valuesEqual(actual, allowed))
-      ) {
+      const hasAllowRules =
+        hasConstraintKey(constraint, 'allow') ||
+        hasConstraintKey(constraint, 'glob_allow') ||
+        hasConstraintKey(constraint, 'each_allow');
+      const allowMatches =
+        (constraint.allow ?? []).some((allowed) => valuesEqual(actual, allowed)) ||
+        (typeof actual === 'string' &&
+          (constraint.glob_allow ?? []).some(
+            (allowed) => typeof allowed === 'string' && matchesCommand(allowed, actual)
+          )) ||
+        (Array.isArray(actual) &&
+          hasConstraintKey(constraint, 'each_allow') &&
+          actual.every((item) =>
+            (constraint.each_allow ?? []).some((allowed) => valuesEqual(item, allowed))
+          ));
+
+      if (hasAllowRules && !allowMatches) {
         const message =
           `${argName} ${formatValue(actual)} is not permitted for ${ctx.toolName}. ` +
           `Allowed ${argName}: ${formatAllowed(constraint)}. Retry with one of the allowed values.`;

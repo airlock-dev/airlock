@@ -28,12 +28,12 @@ airlock dashboard \
 
 Options:
 
-| Flag               | Description                                                              |
-| ------------------ | ------------------------------------------------------------------------ |
-| `--config`, `-c`   | Path to airlock.yaml config file                                         |
-| `--port`, `-p`     | Dashboard port (default: 4177)                                           |
-| `--host`           | Bind host (default: `127.0.0.1`)                                         |
-| `--gateway-url`    | Gateway base URL (default: `http://127.0.0.1:4111`)                      |
+| Flag               | Description                                                                                  |
+| ------------------ | -------------------------------------------------------------------------------------------- |
+| `--config`, `-c`   | Path to airlock.yaml config file                                                             |
+| `--port`, `-p`     | Dashboard port (default: 4177)                                                               |
+| `--host`           | Bind host (default: `127.0.0.1`)                                                             |
+| `--gateway-url`    | Gateway base URL (default: `http://127.0.0.1:4111`)                                          |
 | `--gateway-secret` | Gateway admin bearer token (defaults to `AIRLOCK_GATEWAY_SECRET`, then `AIRLOCK_API_SECRET`) |
 
 ## Open the command center
@@ -58,6 +58,17 @@ Lean mode with no HTTP server. Only connects to MCP providers the agent referenc
 
 ```bash
 airlock --agent claude-code --config airlock.yaml
+```
+
+## Check config
+
+Validate config before deployment. The command fails on schema errors,
+unknown references, and argument scopes or policies that would not apply any
+effective runtime constraints. Warnings are printed for suspicious but
+recoverable input, such as YAML parsing `+1...` strings as numbers.
+
+```bash
+airlock config check ./airlock.yaml
 ```
 
 ## Discover CLI tools
