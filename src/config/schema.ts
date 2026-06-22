@@ -2,7 +2,21 @@ import { homedir } from 'os';
 import { z } from 'zod';
 
 // Env var substitution helper
+let resolveEnvVars = true;
+
+export function withEnvVarResolution<T>(resolve: boolean, fn: () => T): T {
+  const previous = resolveEnvVars;
+  resolveEnvVars = resolve;
+  try {
+    return fn();
+  } finally {
+    resolveEnvVars = previous;
+  }
+}
+
 function substituteEnvVars(value: string): string {
+  if (!resolveEnvVars) return value;
+
   return value.replace(/\$\{([^}]+)\}/g, (_, varName: string) => {
     const val = process.env[varName];
     if (val === undefined) {

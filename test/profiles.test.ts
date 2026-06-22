@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { resolveAgentPermissions, resolveProfiles, applyProfiles } from '../src/config/profiles.js';
+import {
+  resolveAgentPermissions,
+  resolveProfiles,
+  applyProfiles,
+  explainAgentPermissions,
+} from '../src/config/profiles.js';
 import { GatewayConfig } from '../src/config/schema.js';
 import type { AgentConfig, ProfileConfig } from '../src/config/schema.js';
 
@@ -359,5 +364,74 @@ describe('applyProfiles()', () => {
 
     applyProfiles(config);
     expect(config.agents['agent1'].allow).toEqual(['exec/run']);
+  });
+});
+
+describe('explainAgentPermissions()', () => {
+  it('shows permission provenance, precedence inputs, and arg_scope bindings', () => {
+    const config = GatewayConfig.parse({
+      value_sets: {
+        airlock_repos: ['airlock-dev/airlock'],
+      },
+      arg_dimensions: {
+        github_repo: {
+          match: 'in',
+          bindings: {
+            'github/push_files': 'repo',
+          },
+        },
+      },
+      profiles: {
+        readonly: {
+          allow: ['github/*'],
+          arg_scope: { github_repo: 'airlock_repos' },
+        },
+        guarded: {
+          extends: ['readonly'],
+          deny: ['github/delete_repo'],
+        },
+      },
+      agents: {
+        dev: {
+          extends: ['guarded'],
+          ask: ['github/push_files'],
+        },
+      },
+    });
+
+    const explanation = explainAgentPermissions(config, 'dev');
+
+    expect(explanation.permissions.allow).toContainEqual({
+      pattern: 'github/*',
+      sources: [{ kind: 'profile', source: 'profile:readonly' }],
+    });
+    expect(explanation.permissions.ask).toContainEqual({
+      pattern: 'github/push_files',
+      sources: [{ kind: 'agent', source: 'agent:dev' }],
+    });
+    expect(explanation.permissions.deny).toContainEqual({
+      pattern: 'github/delete_repo',
+      sources: [{ kind: 'profile', source: 'profile:guarded' }],
+    });
+    expect(explanation.extendsTree[0]).toMatchObject({
+      name: 'dev',
+      extends: [{ name: 'guarded', extends: [{ name: 'readonly' }] }],
+    });
+    expect(explanation.argScope[0]).toMatchObject({
+      dimension: 'github_repo',
+      valueSets: [
+        {
+          name: 'airlock_repos',
+          values: ['airlock-dev/airlock'],
+          sources: [{ kind: 'profile', source: 'profile:readonly' }],
+        },
+      ],
+      bindings: [
+        {
+          tool: 'github/push_files',
+          arg: 'repo',
+        },
+      ],
+    });
   });
 });
