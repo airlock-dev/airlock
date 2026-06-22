@@ -6,9 +6,9 @@
  * the agent's allowlist, HITL gate, sandbox, and audit logging before executing.
  *
  * Configuration (plugin config or environment variable fallbacks):
- *   url    / AIRLOCK_URL     Base URL of the Airlock gateway  (default: http://localhost:4111)
+ *   url    / AIRLOCK_URL     Base URL of Airlock's agent data-plane (default: http://localhost:4111)
  *   agent  / AIRLOCK_AGENT   Agent profile to run as           (default: openclaw)
- *   secret / AIRLOCK_SECRET  Bearer token / api_secret         (default: empty = no auth)
+ *   secret / AIRLOCK_SECRET  Bearer token / agent token        (default: empty = no auth)
  *
  * Install:
  *   mkdir -p ~/.openclaw/extensions/airlock-bridge

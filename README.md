@@ -424,7 +424,16 @@ See [`examples/sandbox-presets.yaml`](examples/sandbox-presets.yaml) for a fulle
 
 ## API
 
-When running in gateway mode, Airlock exposes a management API:
+When running in gateway mode, Airlock can expose a separate management API
+listener for operator/control-plane routes. It is disabled by default and binds
+to `127.0.0.1:4113` when enabled:
+
+```yaml
+server:
+  api_secret: ${AIRLOCK_API_SECRET}
+  management_api:
+    enabled: true
+```
 
 ```
 GET  /health                   — MCP health, pending HITL count, uptime
@@ -438,7 +447,11 @@ POST /deny?code=ABC123         — deny a request by approval code
 GET  /admin/tools              — dashboard tool catalog
 ```
 
-All management endpoints require `Authorization: Bearer <api_secret>` when `server.api_secret` is set.
+All management endpoints require `Authorization: Bearer <api_secret>`.
+The management listener must use a different port than the agent MCP
+data-plane listener (`server.port`, default `4111`). Binding the management API
+beyond loopback requires the explicit `management_api.insecure_remote_bind: true`
+opt-in and trusted network controls.
 
 ## Testing
 
@@ -482,6 +495,7 @@ docker run --rm \
   -v "$PWD/airlock-config:/config" \
   -v airlock-data:/data \
   -p 127.0.0.1:4111:4111 \
+  -p 127.0.0.1:4113:4113 \
   -p 127.0.0.1:4112:4112 \
   airlock-bot
 ```

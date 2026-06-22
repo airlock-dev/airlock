@@ -38,7 +38,7 @@ airlock gateway --config /config/airlock.yaml
 
 airlock dashboard \
   --config /config/airlock.yaml \
-  --gateway-url http://127.0.0.1:4111
+  --gateway-url http://127.0.0.1:4113
 ```
 
 The standalone dashboard talks to the gateway management API for status, audit
@@ -49,7 +49,7 @@ logs, tool discovery, and approval decisions. Set the dashboard secret with
 AIRLOCK_GATEWAY_SECRET="$AIRLOCK_API_SECRET" \
   airlock dashboard \
     --config /config/airlock.yaml \
-    --gateway-url http://127.0.0.1:4111
+    --gateway-url http://127.0.0.1:4113
 ```
 
 Use this mode when the gateway should mount `/config` read-only and the

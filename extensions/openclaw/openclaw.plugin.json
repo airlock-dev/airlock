@@ -8,7 +8,7 @@
     "properties": {
       "url": {
         "type": "string",
-        "description": "Airlock gateway base URL (overrides AIRLOCK_URL env var)"
+        "description": "Airlock agent data-plane base URL (overrides AIRLOCK_URL env var)"
       },
       "agent": {
         "type": "string",
@@ -16,13 +16,13 @@
       },
       "secret": {
         "type": "string",
-        "description": "Airlock API secret / Bearer token (overrides AIRLOCK_SECRET env var)"
+        "description": "Airlock agent token / Bearer token (overrides AIRLOCK_SECRET env var)"
       }
     }
   },
   "uiHints": {
     "url": {
-      "label": "Gateway URL",
+      "label": "Agent API URL",
       "placeholder": "http://localhost:4111"
     },
     "agent": {
@@ -30,9 +30,9 @@
       "placeholder": "openclaw"
     },
     "secret": {
-      "label": "API Secret",
+      "label": "Agent Token",
       "sensitive": true,
-      "placeholder": "your-api-secret"
+      "placeholder": "your-agent-token"
     }
   }
 }

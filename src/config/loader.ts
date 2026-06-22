@@ -1,4 +1,5 @@
 import { readFileSync } from 'fs';
+import { isIP } from 'net';
 import { parse as parseYaml } from 'yaml';
 import { GatewayConfig, getBuiltinProviders } from './schema.js';
 import { applyProfiles } from './profiles.js';
@@ -56,12 +57,29 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
   const sandboxPresetNames = new Set(Object.keys(config.sandbox_presets ?? {}));
 
   const serverHost = config.server.host;
-  const loopbackHosts = new Set(['127.0.0.1', 'localhost', '::1']);
-  const isLoopback = loopbackHosts.has(serverHost);
+  const isLoopback = isLoopbackHost(serverHost);
+  const managementApiEnabled = config.server.management_api.enabled;
   const agentsWithoutTokens = Object.entries(config.agents)
     .filter(([, agent]) => !agent.token)
     .map(([agentId]) => agentId);
-  const requireAgentTokens = config.server.require_agent_tokens || !isLoopback;
+  const requireAgentTokens =
+    config.server.require_agent_tokens || !isLoopback || managementApiEnabled;
+
+  if (config.server.expose_management_api !== undefined) {
+    diagnostics.push({
+      level: 'warn',
+      message: 'server.expose_management_api is deprecated.',
+      suggestion: 'Use server.management_api.enabled instead.',
+    });
+  }
+
+  if (config.server.expose_hook_api !== undefined) {
+    diagnostics.push({
+      level: 'warn',
+      message: 'server.expose_hook_api is deprecated.',
+      suggestion: 'Use server.management_api.expose_hook_api instead.',
+    });
+  }
 
   if (!isLoopback && !config.server.auth_required) {
     diagnostics.push({
@@ -76,7 +94,7 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
     diagnostics.push({
       level: 'error',
       message: 'Per-agent tokens are required, but some agents have no token.',
-      suggestion: `Add token to agents: ${agentsWithoutTokens.join(', ')}. For reverse-proxy exposure on loopback, set server.require_agent_tokens: true to keep this check enabled.`,
+      suggestion: `Add token to agents: ${agentsWithoutTokens.join(', ')}. Per-agent tokens are required for non-loopback data-plane binds, explicit server.require_agent_tokens, and split management API mode.`,
     });
   }
 
@@ -90,18 +108,44 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
       });
     }
 
-    const exposesGlobalSecretRoutes =
-      config.server.expose_management_api || config.server.expose_hook_api;
-
-    if (!config.server.api_secret && exposesGlobalSecretRoutes) {
+    if (!config.server.api_secret && managementApiEnabled) {
       diagnostics.push({
         level: 'error',
         message:
-          'server.auth_required is true, but management or hook APIs are exposed without server.api_secret.',
-        suggestion:
-          'Set server.api_secret, or disable expose_management_api and expose_hook_api.',
+          'server.auth_required is true, but the control-plane management API is enabled without server.api_secret.',
+        suggestion: 'Set server.api_secret, or disable server.management_api.enabled.',
       });
     }
+  }
+
+  if (managementApiEnabled && !config.server.api_secret) {
+    diagnostics.push({
+      level: 'error',
+      message: 'server.management_api.enabled requires server.api_secret.',
+      suggestion: 'Set server.api_secret so control-plane requests require bearer-token auth.',
+    });
+  }
+
+  if (
+    managementApiEnabled &&
+    !isLoopbackHost(config.server.management_api.host) &&
+    !config.server.management_api.insecure_remote_bind
+  ) {
+    diagnostics.push({
+      level: 'error',
+      message: 'server.management_api.host is non-loopback while insecure_remote_bind is false.',
+      suggestion:
+        'Keep server.management_api.host on 127.0.0.1/::1, or explicitly set server.management_api.insecure_remote_bind: true and restrict the control-plane port with network ACLs.',
+    });
+  }
+
+  if (managementApiEnabled && config.server.management_api.port === config.server.port) {
+    diagnostics.push({
+      level: 'error',
+      message: 'Control-plane and data-plane must not share a socket.',
+      suggestion:
+        'Set server.management_api.port to a different port than server.port so admin/audit/approval routes cannot co-host with agent MCP routes.',
+    });
   }
 
   for (const [agentId, agent] of Object.entries(config.agents)) {
@@ -266,6 +310,16 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
   }
 
   return diagnostics;
+}
+
+function isLoopbackHost(host: string): boolean {
+  const normalized = host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host;
+  if (normalized === 'localhost') return true;
+  const ipVersion = isIP(normalized);
+  if (ipVersion === 6) return normalized === '::1';
+  if (ipVersion !== 4) return false;
+  const firstOctet = Number(normalized.split('.')[0]);
+  return firstOctet === 127;
 }
 
 /** Check if two glob patterns could match the same tool name */

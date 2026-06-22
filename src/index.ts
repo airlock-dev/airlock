@@ -112,7 +112,7 @@ Examples:
   airlock gateway --config /etc/airlock/gateway.yaml
 
   # Start standalone admin dashboard for split deployments
-  airlock dashboard --config /etc/airlock/gateway.yaml --gateway-url http://gateway:4111
+  airlock dashboard --config /etc/airlock/gateway.yaml --gateway-url http://gateway:4113
 
   # Connect as a specific agent via stdio (for Claude Code, Cursor, etc.)
   airlock --agent helena

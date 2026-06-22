@@ -8,11 +8,15 @@ server:
   # api_secret: ${AIRLOCK_API_SECRET}
   # auth_required: true
   # require_agent_tokens: true
+  # expose_tools_api: true
   # allowed_origins:
   #   - https://airlock.example.com
-  # expose_management_api: false
-  # expose_tools_api: false
-  # expose_hook_api: false
+  # management_api:
+  #   enabled: false
+  #   host: 127.0.0.1
+  #   port: 4113
+  #   insecure_remote_bind: false
+  #   expose_hook_api: true
 
 # Tool providers — MCP servers and builtins
 providers:

@@ -1,4 +1,5 @@
 import { randomUUID } from 'crypto';
+import { createConnection, isIP } from 'net';
 import Fastify from 'fastify';
 import type { FastifyInstance } from 'fastify';
 import { ClientPool } from './pool/pool.js';
@@ -40,6 +41,7 @@ export class Gateway {
   private approvalRoutes!: ApprovalDashboardRoutes;
   private auditLogger!: AuditLogger;
   private app!: FastifyInstance;
+  private managementApp?: FastifyInstance;
   private downstreamSessionIds = new Map<string, string>();
   private startTime = Date.now();
 
@@ -51,6 +53,7 @@ export class Gateway {
 
   async start(): Promise<void> {
     log.info('Starting Airlock gateway');
+    this.assertManagementApiConfig();
 
     // Audit logger
     this.auditLogger = new AuditLogger(this.config.audit);
@@ -105,7 +108,8 @@ export class Gateway {
 
     await this.registry.refresh();
 
-    // HTTP server
+    // Agent data-plane server. Control-plane routes are registered on a
+    // separate listener below and must never be added to this app.
     this.app = Fastify({ logger: false });
 
     const requestSecurity = {
@@ -114,33 +118,14 @@ export class Gateway {
       allowedOrigins: this.config.server.allowed_origins,
     };
 
-    if (this.config.server.expose_management_api) {
-      await this.app.register(hitlApiPlugin, { engine: this.hitlEngine, ...requestSecurity });
-      await this.app.register(auditApiPlugin, {
-        auditLogger: this.auditLogger,
-        ...requestSecurity,
-      });
-      await this.app.register(async (adminApp) => {
-        adminApp.addHook('preHandler', async (request, reply) => {
-          if (!checkRequestSecurity(request, reply, requestSecurity)) {
-            return;
-          }
-        });
-        this.approvalRoutes.registerRoutes(adminApp);
-        adminApp.get('/admin/tools', async (_request, reply) => {
-          return reply.send({ tools: this.registry.getAllTools(), errors: [] });
-        });
-      });
-    }
-    if (this.config.server.expose_hook_api) {
-      await this.app.register(hookApiPlugin, {
-        allowlist: this.allowlist,
-        hitlEngine: this.hitlEngine,
-        hitlBatcher: this.hitlBatcher,
-        auditLogger: this.auditLogger,
-        ...requestSecurity,
-      });
-    }
+    await this.app.register(sseServerPlugin, {
+      getDeps: (agentId: string) => this.buildAgentDeps(agentId),
+      ...requestSecurity,
+    });
+    await this.app.register(httpServerPlugin, {
+      getDeps: (agentId: string) => this.buildAgentDeps(agentId),
+      ...requestSecurity,
+    });
     if (this.config.server.expose_tools_api) {
       await this.app.register(toolsApiPlugin, {
         getDeps: (agentId: string, downstreamSessionKey?: string) =>
@@ -150,28 +135,128 @@ export class Gateway {
         ...requestSecurity,
       });
     }
-    await this.app.register(sseServerPlugin, {
-      getDeps: (agentId: string) => this.buildAgentDeps(agentId),
-      ...requestSecurity,
-    });
-    await this.app.register(httpServerPlugin, {
-      getDeps: (agentId: string) => this.buildAgentDeps(agentId),
-      ...requestSecurity,
-    });
-
-    if (this.config.server.expose_management_api) {
-      this.app.get('/health', (request, reply) => {
-        if (!checkRequestSecurity(request, reply, requestSecurity)) return;
-        const mcpHealth = this.pool.healthCheck();
-        const pendingApprovals = this.hitlEngine.getPending().length;
-        const uptime = Math.floor((Date.now() - this.startTime) / 1000);
-        return { status: 'ok', mcpHealth, pendingApprovals, uptime };
-      });
-    }
 
     const { port, host } = this.config.server;
     await this.app.listen({ port, host });
-    log.info({ port, host }, 'Airlock gateway listening');
+    log.info({ port, host }, 'Airlock agent data-plane listening');
+
+    if (this.config.server.management_api.enabled) {
+      try {
+        await this.startManagementApi(requestSecurity);
+      } catch (err) {
+        await this.app.close().catch((closeErr) => {
+          log.warn(
+            { err: closeErr },
+            'Failed to close agent data-plane after management API startup failure'
+          );
+        });
+        throw err;
+      }
+    }
+  }
+
+  private async startManagementApi(requestSecurity: {
+    secret?: string;
+    authRequired: boolean;
+    allowedOrigins: string[];
+  }): Promise<void> {
+    const management = this.config.server.management_api;
+    this.managementApp = Fastify({ logger: false });
+
+    await this.managementApp.register(hitlApiPlugin, {
+      engine: this.hitlEngine,
+      ...requestSecurity,
+    });
+    await this.managementApp.register(auditApiPlugin, {
+      auditLogger: this.auditLogger,
+      ...requestSecurity,
+    });
+    await this.managementApp.register((adminApp, _opts, done) => {
+      adminApp.addHook('preHandler', (request, reply, hookDone) => {
+        if (!checkRequestSecurity(request, reply, requestSecurity)) {
+          return;
+        }
+        hookDone();
+      });
+      this.approvalRoutes.registerRoutes(adminApp);
+      adminApp.get('/admin/tools', (_request, reply) => {
+        return reply.send({ tools: this.registry.getAllTools(), errors: [] });
+      });
+      done();
+    });
+
+    if (management.expose_hook_api) {
+      await this.managementApp.register(hookApiPlugin, {
+        allowlist: this.allowlist,
+        hitlEngine: this.hitlEngine,
+        hitlBatcher: this.hitlBatcher,
+        auditLogger: this.auditLogger,
+        ...requestSecurity,
+      });
+    }
+
+    this.managementApp.get('/health', async (request, reply) => {
+      if (!checkRequestSecurity(request, reply, requestSecurity)) return;
+      const dataPlane = await this.dataPlaneHealth();
+      const mcpHealth = this.pool.healthCheck();
+      const pendingApprovals = this.hitlEngine.getPending().length;
+      const uptime = Math.floor((Date.now() - this.startTime) / 1000);
+      const status = dataPlane.status === 'ok' ? 'ok' : 'degraded';
+      return { status, dataPlane, mcpHealth, pendingApprovals, uptime };
+    });
+
+    const { port, host, insecure_remote_bind } = management;
+    if (insecure_remote_bind) {
+      log.warn(
+        { port, host },
+        'Control-plane bound beyond loopback; admin/audit/approval routes may be reachable off-host. Restrict this listener with network ACLs.'
+      );
+    }
+
+    await this.managementApp.listen({ port, host });
+    log.info({ port, host }, 'Airlock control-plane management API listening');
+  }
+
+  private async dataPlaneHealth(): Promise<{
+    status: 'ok' | 'down';
+    host: string;
+    port: number;
+  }> {
+    const address = this.app.server.address();
+    const host =
+      typeof address === 'object' && address !== null ? address.address : this.config.server.host;
+    const port =
+      typeof address === 'object' && address !== null ? address.port : this.config.server.port;
+    const status = await tcpProbe(connectableLoopbackHost(host), port, 250);
+    return { status: status ? 'ok' : 'down', host, port };
+  }
+
+  private assertManagementApiConfig(): void {
+    const management = this.config.server.management_api;
+    if (!management.enabled) return;
+
+    if (!this.config.server.api_secret) {
+      throw new Error('server.management_api.enabled requires server.api_secret.');
+    }
+
+    const tokenlessAgents = Object.entries(this.config.agents)
+      .filter(([, agent]) => !agent.token)
+      .map(([agentId]) => agentId);
+    if (tokenlessAgents.length > 0) {
+      throw new Error(
+        `server.management_api.enabled requires per-agent tokens. Add token to agents: ${tokenlessAgents.join(', ')}.`
+      );
+    }
+
+    if (!isLoopbackHost(management.host) && !management.insecure_remote_bind) {
+      throw new Error(
+        'server.management_api.host is non-loopback while insecure_remote_bind is false. Keep it on 127.0.0.1/::1, or explicitly set server.management_api.insecure_remote_bind: true and restrict the control-plane port with network ACLs.'
+      );
+    }
+
+    if (management.port !== 0 && management.port === this.config.server.port) {
+      throw new Error('Control-plane and data-plane must not share a socket.');
+    }
   }
 
   private buildHitlProvider(approvalForwarder: ApprovalApi): HitlProvider {
@@ -258,6 +343,7 @@ export class Gateway {
     log.info('Stopping Airlock gateway');
     this.pool?.disableReconnect();
     await this.pool?.stop();
+    await this.managementApp?.close();
     await this.app?.close();
     await this.registry?.stopAll();
     await this.hitlProvider?.stop();
@@ -279,4 +365,34 @@ function withoutDashboardProvider(
     return filtered.length === 1 ? filtered[0] : filtered;
   }
   return provider.type === 'dashboard' ? undefined : provider;
+}
+
+function isLoopbackHost(host: string): boolean {
+  const normalized = host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host;
+  if (normalized === 'localhost') return true;
+  const ipVersion = isIP(normalized);
+  if (ipVersion === 6) return normalized === '::1';
+  if (ipVersion !== 4) return false;
+  const firstOctet = Number(normalized.split('.')[0]);
+  return firstOctet === 127;
+}
+
+function connectableLoopbackHost(host: string): string {
+  if (host === '0.0.0.0') return '127.0.0.1';
+  if (host === '::' || host === '[::]') return '::1';
+  return host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host;
+}
+
+function tcpProbe(host: string, port: number, timeoutMs: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = createConnection({ host, port });
+    const done = (ok: boolean) => {
+      socket.destroy();
+      resolve(ok);
+    };
+    socket.setTimeout(timeoutMs);
+    socket.once('connect', () => done(true));
+    socket.once('timeout', () => done(false));
+    socket.once('error', () => done(false));
+  });
 }
