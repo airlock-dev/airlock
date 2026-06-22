@@ -57,13 +57,17 @@ export async function runStdioMode(
   };
 
   const hitlBatcher = new HitlBatcher(config.approvals.batch_window_ms);
-  const hitlProvider = createHitlProvider(config.approvals.provider, approvalForwarder);
+  const hitlProvider = createHitlProvider(config.approvals.provider, approvalForwarder, {
+    configPath,
+    auditLogger,
+  });
 
   hitlEngine = new HitlEngine(auditLogger, hitlProvider, config.approvals.timeout_ms);
 
   hitlBatcher.onBatchReady((_agentId, requests) => {
+    const badgeCount = hitlEngine.getPending().length;
     void hitlProvider
-      .notify(requests)
+      .notify(requests.map((request) => ({ ...request, badgeCount })))
       .catch((err) => log.error({ err }, 'Failed to send approval notification'));
   });
 

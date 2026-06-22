@@ -22,6 +22,8 @@ function makeMockProvider() {
   return {
     init: vi.fn().mockResolvedValue(undefined),
     notify: vi.fn().mockResolvedValue(undefined),
+    updateBadge: vi.fn().mockResolvedValue(undefined),
+    updateApprovalStatus: vi.fn().mockResolvedValue(undefined),
     stop: vi.fn().mockResolvedValue(undefined),
   };
 }
@@ -65,6 +67,17 @@ describe('HitlEngine', () => {
     vi.useRealTimers();
   });
 
+  it('updates badge count when a request times out', async () => {
+    vi.useFakeTimers();
+    const { result } = engine.create({ agentId: 'agent1', tool: 'github/create_pr', args: {} });
+    vi.advanceTimersByTime(6000);
+    expect(await result).toBe('timeout');
+    expect(provider.updateApprovalStatus).toHaveBeenCalledWith(
+      expect.objectContaining({ result: 'timeout', badgeCount: 0 })
+    );
+    vi.useRealTimers();
+  });
+
   it('getPending() returns pending requests', () => {
     engine.create({ agentId: 'agent1', tool: 'github/create_pr', args: { repo: 'test' } });
     const pending = engine.getPending();
@@ -78,6 +91,15 @@ describe('HitlEngine', () => {
     engine.approve(id);
     await result;
     expect(engine.getPending()).toHaveLength(0);
+  });
+
+  it('updates badge count when a request is approved', async () => {
+    const { id, result } = engine.create({ agentId: 'agent1', tool: 'github/create_pr', args: {} });
+    engine.approve(id);
+    await result;
+    expect(provider.updateApprovalStatus).toHaveBeenCalledWith(
+      expect.objectContaining({ id, result: 'approved', badgeCount: 0 })
+    );
   });
 });
 

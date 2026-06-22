@@ -14,6 +14,7 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 20) {
                 headerCard
                 preferencesCard
+                diagnosticsCard
                 shortcutsCard
                 updatesCard
             }
@@ -223,6 +224,39 @@ struct SettingsView: View {
         }
     }
 
+    @ViewBuilder
+    private var diagnosticsCard: some View {
+        if !viewModel.lastNotificationActionError.isEmpty || !viewModel.lastNotificationDeliveryError.isEmpty {
+            settingsCard(title: "Notification Diagnostics", subtitle: "Recent delivery or action failures") {
+                VStack(alignment: .leading, spacing: 14) {
+                    if !viewModel.lastNotificationActionError.isEmpty {
+                        diagnosticRow(
+                            title: "Last action error",
+                            message: viewModel.lastNotificationActionError,
+                            icon: "exclamationmark.triangle.fill"
+                        )
+                    }
+
+                    if !viewModel.lastNotificationDeliveryError.isEmpty {
+                        diagnosticRow(
+                            title: "Last delivery error",
+                            message: viewModel.lastNotificationDeliveryError,
+                            icon: "bell.slash.fill"
+                        )
+                    }
+
+                    HStack {
+                        Spacer()
+                        Button("Clear Diagnostics") {
+                            viewModel.clearNotificationDiagnostics()
+                        }
+                        .controlSize(.small)
+                    }
+                }
+            }
+        }
+    }
+
     private var updatesCard: some View {
         settingsCard(title: "Updates", subtitle: "Version and release info") {
             VStack(alignment: .leading, spacing: 14) {
@@ -350,6 +384,32 @@ struct SettingsView: View {
             Text(value)
                 .font(.system(size: 12, weight: .semibold))
         }
+    }
+
+    private func diagnosticRow(title: String, message: String, icon: String) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: icon)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.red)
+                .frame(width: 18)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.system(size: 12, weight: .semibold))
+                Text(message)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(12)
+        .background(Color.red.opacity(0.08))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .strokeBorder(Color.red.opacity(0.16), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
     private func statusBadge(title: String, tint: Color) -> some View {

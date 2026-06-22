@@ -143,6 +143,10 @@ struct PopoverContentView: View {
         }
         .onChange(of: viewModel.pendingRequests.count) { _, newCount in
             if viewModel.selectedIndex >= newCount { viewModel.selectedIndex = max(0, newCount - 1) }
+            if let detailRequest,
+               !viewModel.pendingRequests.contains(where: { $0.id == detailRequest.id }) {
+                self.detailRequest = nil
+            }
         }
     }
 
@@ -252,8 +256,8 @@ struct HistoryRow: View {
                 }
             }) {
                 HStack(spacing: 8) {
-                    Image(systemName: resolved.action == "approved" ? "checkmark.circle.fill" : "xmark.circle.fill")
-                        .foregroundStyle(resolved.action == "approved" ? .green : .red)
+                    Image(systemName: historyIcon)
+                        .foregroundStyle(historyTint)
                         .font(.system(size: 12))
 
                     Text(title)
@@ -291,5 +295,20 @@ struct HistoryRow: View {
                     .transition(.opacity)
             }
         }
+    }
+
+    private var historyIcon: String {
+        switch resolved.action {
+        case "approved":
+            return "checkmark.circle.fill"
+        case "timeout":
+            return "timer.circle.fill"
+        default:
+            return "xmark.circle.fill"
+        }
+    }
+
+    private var historyTint: Color {
+        resolved.action == "approved" ? .green : .red
     }
 }

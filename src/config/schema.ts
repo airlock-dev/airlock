@@ -373,6 +373,15 @@ export const ApprovalProviderConfig = z.discriminatedUnion('type', [
     port: z.number().int().min(1).max(65535).default(4112),
   }),
   z.object({
+    type: z.literal('ios'),
+    team_id: EnvString,
+    key_id: EnvString,
+    key_path: PathString,
+    bundle_id: z.string(),
+    production: z.boolean().default(true),
+    interruption_level: z.enum(['passive', 'active', 'time-sensitive']).optional(),
+  }),
+  z.object({
     type: z.literal('stdio'),
   }),
 ]);

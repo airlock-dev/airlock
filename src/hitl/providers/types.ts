@@ -7,12 +7,20 @@ export interface HitlNotification {
   tool: string;
   args: Record<string, unknown>;
   timeoutMs: number;
+  badgeCount?: number;
   sandbox?: SandboxDisplayInfo;
 }
 
 export interface HitlProvider {
   init(): Promise<void>;
   notify(requests: HitlNotification[]): Promise<void>;
+  updateBadge?(badgeCount: number): Promise<void>;
+  updateApprovalStatus?(status: {
+    id: string;
+    code: string;
+    result: 'approved' | 'denied' | 'timeout' | 'cancelled';
+    badgeCount: number;
+  }): Promise<void>;
   stop(): Promise<void>;
 }
 

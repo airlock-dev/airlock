@@ -24,6 +24,17 @@ export interface HitlQueueEntry {
   resolved_at?: string;
 }
 
+export interface MobileDeviceEntry {
+  id: string;
+  name: string;
+  platform: 'ios';
+  push_token: string;
+  auth_token_hash: string;
+  created_at: string;
+  updated_at: string;
+  revoked_at?: string;
+}
+
 export class AuditDb {
   private db: Database.Database;
   private stmts!: {
@@ -33,6 +44,12 @@ export class AuditDb {
     getHitlByCode: Database.Statement;
     getHitlById: Database.Statement;
     getPendingHitl: Database.Statement;
+    getHitlHistory: Database.Statement;
+    insertMobileDevice: Database.Statement;
+    updateMobileDevicePushToken: Database.Statement;
+    getMobileDeviceByAuthTokenHash: Database.Statement;
+    getActiveMobileDevices: Database.Statement;
+    revokeMobileDevice: Database.Statement;
     cleanupAudit: Database.Statement;
     cleanupHitl: Database.Statement;
   };
@@ -73,6 +90,18 @@ export class AuditDb {
       );
       CREATE INDEX IF NOT EXISTS idx_hitl_status ON hitl_queue(status);
       CREATE INDEX IF NOT EXISTS idx_hitl_code   ON hitl_queue(code);
+
+      CREATE TABLE IF NOT EXISTS mobile_devices (
+        id              TEXT PRIMARY KEY,
+        name            TEXT NOT NULL,
+        platform        TEXT NOT NULL,
+        push_token      TEXT NOT NULL,
+        auth_token_hash TEXT NOT NULL UNIQUE,
+        created_at      TEXT NOT NULL,
+        updated_at      TEXT NOT NULL,
+        revoked_at      TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_mobile_devices_revoked ON mobile_devices(revoked_at);
     `);
   }
 
@@ -94,6 +123,44 @@ export class AuditDb {
       getPendingHitl: this.db.prepare(
         "SELECT * FROM hitl_queue WHERE status = 'pending' ORDER BY created_at ASC"
       ),
+      getHitlHistory: this.db.prepare(`
+        SELECT * FROM hitl_queue
+        WHERE status != 'pending'
+        ORDER BY COALESCE(resolved_at, created_at) DESC
+        LIMIT ?
+      `),
+      insertMobileDevice: this.db.prepare(`
+        INSERT INTO mobile_devices (
+          id, name, platform, push_token, auth_token_hash, created_at, updated_at, revoked_at
+        )
+        VALUES (
+          @id, @name, @platform, @push_token, @auth_token_hash, @created_at, @updated_at, NULL
+        )
+        ON CONFLICT(auth_token_hash) DO UPDATE SET
+          name = excluded.name,
+          push_token = excluded.push_token,
+          updated_at = excluded.updated_at,
+          revoked_at = NULL
+      `),
+      updateMobileDevicePushToken: this.db.prepare(`
+        UPDATE mobile_devices
+        SET push_token = @push_token, updated_at = @updated_at
+        WHERE id = @id AND revoked_at IS NULL
+      `),
+      getMobileDeviceByAuthTokenHash: this.db.prepare(`
+        SELECT * FROM mobile_devices
+        WHERE auth_token_hash = ? AND revoked_at IS NULL
+      `),
+      getActiveMobileDevices: this.db.prepare(`
+        SELECT * FROM mobile_devices
+        WHERE revoked_at IS NULL
+        ORDER BY created_at ASC
+      `),
+      revokeMobileDevice: this.db.prepare(`
+        UPDATE mobile_devices
+        SET revoked_at = @revoked_at, updated_at = @revoked_at
+        WHERE id = @id AND revoked_at IS NULL
+      `),
       cleanupAudit: this.db.prepare('DELETE FROM audit_log WHERE ts < ?'),
       cleanupHitl: this.db.prepare(
         "DELETE FROM hitl_queue WHERE status != 'pending' AND resolved_at < ?"
@@ -164,6 +231,37 @@ export class AuditDb {
 
   getPendingHitl(): HitlQueueEntry[] {
     return this.stmts.getPendingHitl.all() as HitlQueueEntry[];
+  }
+
+  getHitlHistory(limit = 50): HitlQueueEntry[] {
+    const boundedLimit = Math.max(1, Math.min(limit, 500));
+    return this.stmts.getHitlHistory.all(boundedLimit) as HitlQueueEntry[];
+  }
+
+  upsertMobileDevice(entry: Omit<MobileDeviceEntry, 'revoked_at'>): void {
+    this.stmts.insertMobileDevice.run(entry);
+  }
+
+  updateMobileDevicePushToken(id: string, pushToken: string): void {
+    this.stmts.updateMobileDevicePushToken.run({
+      id,
+      push_token: pushToken,
+      updated_at: new Date().toISOString(),
+    });
+  }
+
+  getMobileDeviceByAuthTokenHash(authTokenHash: string): MobileDeviceEntry | undefined {
+    return this.stmts.getMobileDeviceByAuthTokenHash.get(authTokenHash) as
+      | MobileDeviceEntry
+      | undefined;
+  }
+
+  getActiveMobileDevices(): MobileDeviceEntry[] {
+    return this.stmts.getActiveMobileDevices.all() as MobileDeviceEntry[];
+  }
+
+  revokeMobileDevice(id: string): void {
+    this.stmts.revokeMobileDevice.run({ id, revoked_at: new Date().toISOString() });
   }
 
   cleanup(retentionDays: number): void {

@@ -29,6 +29,12 @@ final class AppViewModel: ObservableObject {
     @AppStorage(Constants.UserDefaultsKeys.displayDensity)
     var displayDensity: String = DisplayDensity.compact.rawValue
 
+    @AppStorage(Constants.UserDefaultsKeys.lastNotificationActionError)
+    var lastNotificationActionError: String = ""
+
+    @AppStorage(Constants.UserDefaultsKeys.lastNotificationDeliveryError)
+    var lastNotificationDeliveryError: String = ""
+
     var density: DisplayDensity {
         DisplayDensity(rawValue: displayDensity) ?? .compact
     }
@@ -39,6 +45,7 @@ final class AppViewModel: ObservableObject {
     private let updateChecker: UpdateChecker
     var onSettingsChanged: (() -> Void)?
     private var sseTask: Task<Void, Never>?
+    private var expirationTask: Task<Void, Never>?
     private var updateCheckTask: Task<Void, Never>?
     private var cancellables = Set<AnyCancellable>()
     /// Lookup of all requests we've ever seen, so history always has metadata
@@ -74,11 +81,16 @@ final class AppViewModel: ObservableObject {
                 }
             }
         }
+
+        notificationManager.onError = { [weak self] message in
+            self?.lastNotificationDeliveryError = message
+        }
     }
 
     func start() {
         notificationManager.requestAuthorization()
         startUpdateChecks()
+        startExpirationChecks()
         connectSSE()
     }
 
@@ -87,6 +99,8 @@ final class AppViewModel: ObservableObject {
         sseTask = nil
         updateCheckTask?.cancel()
         updateCheckTask = nil
+        expirationTask?.cancel()
+        expirationTask = nil
         sseClient.disconnect()
     }
 
@@ -95,23 +109,48 @@ final class AppViewModel: ObservableObject {
     }
 
     func approve(code: String, remember: ApprovalRememberMode? = nil, durationMs: Int? = nil) {
+        guard !markExpiredIfNeeded(code: code) else { return }
         moveToResolved(code: code, action: "approved")
         notificationManager.removeNotification(code: code)
 
         let client = apiClient
-        Task {
-            try? await client.approve(code: code, remember: remember, durationMs: durationMs)
+        Task { [weak self] in
+            do {
+                try await client.approve(code: code, remember: remember, durationMs: durationMs)
+                await MainActor.run {
+                    self?.lastNotificationActionError = ""
+                }
+            } catch {
+                await MainActor.run {
+                    self?.lastNotificationActionError = "Approve \(code) failed: \(error.localizedDescription)"
+                }
+            }
         }
     }
 
     func deny(code: String) {
+        guard !markExpiredIfNeeded(code: code) else { return }
         moveToResolved(code: code, action: "denied")
         notificationManager.removeNotification(code: code)
 
         let client = apiClient
-        Task {
-            try? await client.deny(code: code)
+        Task { [weak self] in
+            do {
+                try await client.deny(code: code)
+                await MainActor.run {
+                    self?.lastNotificationActionError = ""
+                }
+            } catch {
+                await MainActor.run {
+                    self?.lastNotificationActionError = "Deny \(code) failed: \(error.localizedDescription)"
+                }
+            }
         }
+    }
+
+    func clearNotificationDiagnostics() {
+        lastNotificationActionError = ""
+        lastNotificationDeliveryError = ""
     }
 
     func updateSettings() {
@@ -158,6 +197,7 @@ final class AppViewModel: ObservableObject {
     private func handleSSEMessage(_ message: SSEMessage) {
         switch message {
         case .newRequest(let request):
+            pruneExpiredRequests()
             seenRequests[request.code] = request
             // Avoid duplicates.
             if !pendingRequests.contains(where: { $0.code == request.code }) {
@@ -173,6 +213,7 @@ final class AppViewModel: ObservableObject {
 
     private func moveToResolved(code: String, action: String) {
         pendingRequests.removeAll { $0.code == code }
+        selectedIndex = min(selectedIndex, max(0, pendingRequests.count - 1))
         // Skip if already resolved (optimistic UI already added it).
         guard !resolvedRequests.contains(where: { $0.code == code }) else { return }
         let seen = seenRequests[code]
@@ -186,6 +227,38 @@ final class AppViewModel: ObservableObject {
         resolvedRequests.insert(resolved, at: 0)
         if resolvedRequests.count > Constants.maxResolvedRequests {
             resolvedRequests = Array(resolvedRequests.prefix(Constants.maxResolvedRequests))
+        }
+    }
+
+    private func markExpiredIfNeeded(code: String) -> Bool {
+        guard let request = pendingRequests.first(where: { $0.code == code }),
+              request.isExpired()
+        else {
+            return false
+        }
+
+        moveToResolved(code: code, action: "timeout")
+        notificationManager.removeNotification(code: code)
+        return true
+    }
+
+    private func pruneExpiredRequests() {
+        let expiredRequests = pendingRequests.filter { $0.isExpired() }
+        guard !expiredRequests.isEmpty else { return }
+
+        for request in expiredRequests {
+            moveToResolved(code: request.code, action: "timeout")
+            notificationManager.removeNotification(code: request.code)
+        }
+    }
+
+    private func startExpirationChecks() {
+        expirationTask?.cancel()
+        expirationTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(1))
+                self?.pruneExpiredRequests()
+            }
         }
     }
 

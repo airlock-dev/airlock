@@ -1,6 +1,6 @@
 import { AuditDb } from './db.js';
 import { redactFields } from './redactor.js';
-import type { AuditEntry, HitlQueueEntry } from './db.js';
+import type { AuditEntry, HitlQueueEntry, MobileDeviceEntry } from './db.js';
 import type { AuditConfig } from '../config/schema.js';
 
 export class AuditLogger {
@@ -50,6 +50,24 @@ export class AuditLogger {
   }
   getPendingHitl(): HitlQueueEntry[] {
     return this.db.getPendingHitl();
+  }
+  getHitlHistory(limit?: number): HitlQueueEntry[] {
+    return this.db.getHitlHistory(limit);
+  }
+  upsertMobileDevice(entry: Omit<MobileDeviceEntry, 'revoked_at'>): void {
+    this.db.upsertMobileDevice(entry);
+  }
+  updateMobileDevicePushToken(id: string, pushToken: string): void {
+    this.db.updateMobileDevicePushToken(id, pushToken);
+  }
+  getMobileDeviceByAuthTokenHash(authTokenHash: string): MobileDeviceEntry | undefined {
+    return this.db.getMobileDeviceByAuthTokenHash(authTokenHash);
+  }
+  getActiveMobileDevices(): MobileDeviceEntry[] {
+    return this.db.getActiveMobileDevices();
+  }
+  revokeMobileDevice(id: string): void {
+    this.db.revokeMobileDevice(id);
   }
 
   startDailyCleanup(): void {

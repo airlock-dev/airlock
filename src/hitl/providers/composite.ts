@@ -19,6 +19,25 @@ export class CompositeHitlProvider implements HitlProvider {
     }
   }
 
+  async updateBadge(badgeCount: number): Promise<void> {
+    await Promise.allSettled(
+      this.providers.flatMap((p) => (p.updateBadge ? [p.updateBadge(badgeCount)] : []))
+    );
+  }
+
+  async updateApprovalStatus(status: {
+    id: string;
+    code: string;
+    result: 'approved' | 'denied' | 'timeout' | 'cancelled';
+    badgeCount: number;
+  }): Promise<void> {
+    await Promise.allSettled(
+      this.providers.flatMap((p) =>
+        p.updateApprovalStatus ? [p.updateApprovalStatus(status)] : []
+      )
+    );
+  }
+
   async stop(): Promise<void> {
     await Promise.allSettled(this.providers.map((p) => p.stop()));
   }

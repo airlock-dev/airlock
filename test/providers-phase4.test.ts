@@ -1,6 +1,11 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
+import { mkdtempSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { SlackHitlProvider } from '../src/hitl/providers/slack.js';
 import { WebhookHitlProvider } from '../src/hitl/providers/webhook.js';
+import { IOSHitlProvider } from '../src/hitl/providers/ios.js';
+import { ApnsClient } from '../src/mobile/apns.js';
 import type { HitlNotification } from '../src/hitl/providers/types.js';
 
 function makeNotification(overrides: Partial<HitlNotification> = {}): HitlNotification {
@@ -15,7 +20,83 @@ function makeNotification(overrides: Partial<HitlNotification> = {}): HitlNotifi
   };
 }
 
-afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
+
+// ─── IOSHitlProvider ──────────────────────────────────────────────────────────
+
+describe('IOSHitlProvider', () => {
+  it('sends structured approval context for the notification content extension', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'airlock-apns-test-'));
+    const keyPath = join(dir, 'AuthKey_TEST.p8');
+    writeFileSync(keyPath, 'test-key');
+
+    const sendApproval = vi
+      .spyOn(ApnsClient.prototype, 'sendApproval')
+      .mockResolvedValue({ ok: true, status: 200 });
+    const auditLogger = {
+      getActiveMobileDevices: vi
+        .fn()
+        .mockReturnValue([{ id: 'device-1', push_token: 'apns-token' }]),
+    } as unknown as import('../src/audit/logger.js').AuditLogger;
+
+    const provider = new IOSHitlProvider(
+      {
+        teamId: 'TEAMID',
+        keyId: 'KEYID',
+        keyPath,
+        bundleId: 'bot.airlock.companion',
+        production: false,
+      },
+      auditLogger
+    );
+
+    await provider.notify([
+      makeNotification({
+        id: 'approval-1',
+        code: 'XY9Z01',
+        agentId: 'dev',
+        tool: 'echo/add',
+        args: {
+          a: 1,
+          b: 2,
+          purpose: 'expanded notification',
+          nested: { ok: true },
+          extra1: 'one',
+          extra2: 'two',
+          extra3: 'three',
+          extra4: 'four',
+          extra5: 'five',
+        },
+        timeoutMs: 120000,
+      }),
+    ]);
+
+    expect(sendApproval).toHaveBeenCalledOnce();
+    expect(sendApproval.mock.calls[0][1]).toMatchObject({
+      id: 'approval-1',
+      code: 'XY9Z01',
+      agentId: 'dev',
+      tool: 'echo/add',
+      context: {
+        id: 'approval-1',
+        code: 'XY9Z01',
+        agentId: 'dev',
+        tool: 'echo/add',
+        timeoutMs: 120000,
+      },
+    });
+    expect(sendApproval.mock.calls[0][1].body).not.toContain('XY9Z01');
+    expect(sendApproval.mock.calls[0][1].context?.args).toHaveLength(8);
+    expect(sendApproval.mock.calls[0][1].context?.args).toContainEqual({
+      key: 'nested',
+      value: '{"ok":true}',
+    });
+    expect(sendApproval.mock.calls[0][1].context?.expiresAt).toEqual(expect.any(String));
+  });
+});
 
 // ─── SlackHitlProvider ────────────────────────────────────────────────────────
 
@@ -35,7 +116,9 @@ describe('SlackHitlProvider', () => {
     const fetch = vi.fn().mockResolvedValue({ ok: true, status: 200 });
     vi.stubGlobal('fetch', fetch);
 
-    const provider = new SlackHitlProvider({ webhook_url: 'https://hooks.slack.com/services/TEST' });
+    const provider = new SlackHitlProvider({
+      webhook_url: 'https://hooks.slack.com/services/TEST',
+    });
     await provider.notify([makeNotification()]);
 
     expect(fetch).toHaveBeenCalledOnce();
@@ -52,7 +135,9 @@ describe('SlackHitlProvider', () => {
     await provider.notify([makeNotification()]);
 
     const [, opts] = fetch.mock.calls[0];
-    expect(opts.headers?.['Content-Type'] ?? opts.headers?.['content-type']).toBe('application/json');
+    expect(opts.headers?.['Content-Type'] ?? opts.headers?.['content-type']).toBe(
+      'application/json'
+    );
   });
 
   it('notify() body includes the approval code', async () => {
@@ -122,7 +207,10 @@ describe('WebhookHitlProvider', () => {
     const fetch = vi.fn().mockResolvedValue({ ok: true, status: 200 });
     vi.stubGlobal('fetch', fetch);
 
-    const provider = new WebhookHitlProvider({ url: 'https://ops.example.com/approvals', headers: {} });
+    const provider = new WebhookHitlProvider({
+      url: 'https://ops.example.com/approvals',
+      headers: {},
+    });
     await provider.notify([makeNotification()]);
 
     const [url, opts] = fetch.mock.calls[0];
@@ -135,7 +223,9 @@ describe('WebhookHitlProvider', () => {
     vi.stubGlobal('fetch', fetch);
 
     const provider = new WebhookHitlProvider({ url: 'https://example.com/hitl', headers: {} });
-    await provider.notify([makeNotification({ code: 'ABC123', agentId: 'helena', tool: 'github/create_pr' })]);
+    await provider.notify([
+      makeNotification({ code: 'ABC123', agentId: 'helena', tool: 'github/create_pr' }),
+    ]);
 
     const [, opts] = fetch.mock.calls[0];
     const body = JSON.parse(opts.body);

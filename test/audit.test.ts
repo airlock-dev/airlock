@@ -79,23 +79,59 @@ describe('AuditDb', () => {
   });
 
   it('filters by agent_id', () => {
-    db.insertAudit({ ts: new Date().toISOString(), agent_id: 'agent1', tool: 'foo', args: '{}', result: 'success' });
-    db.insertAudit({ ts: new Date().toISOString(), agent_id: 'agent2', tool: 'bar', args: '{}', result: 'success' });
+    db.insertAudit({
+      ts: new Date().toISOString(),
+      agent_id: 'agent1',
+      tool: 'foo',
+      args: '{}',
+      result: 'success',
+    });
+    db.insertAudit({
+      ts: new Date().toISOString(),
+      agent_id: 'agent2',
+      tool: 'bar',
+      args: '{}',
+      result: 'success',
+    });
 
     expect(db.queryAudit({ agent: 'agent1' })).toHaveLength(1);
     expect(db.queryAudit({ agent: 'agent2' })).toHaveLength(1);
   });
 
   it('filters by tool', () => {
-    db.insertAudit({ ts: new Date().toISOString(), agent_id: 'a', tool: 'github/create_pr', args: '{}', result: 'success' });
-    db.insertAudit({ ts: new Date().toISOString(), agent_id: 'a', tool: 'github/list_prs',  args: '{}', result: 'success' });
+    db.insertAudit({
+      ts: new Date().toISOString(),
+      agent_id: 'a',
+      tool: 'github/create_pr',
+      args: '{}',
+      result: 'success',
+    });
+    db.insertAudit({
+      ts: new Date().toISOString(),
+      agent_id: 'a',
+      tool: 'github/list_prs',
+      args: '{}',
+      result: 'success',
+    });
 
     expect(db.queryAudit({ tool: 'github/create_pr' })).toHaveLength(1);
   });
 
   it('filters by since', () => {
-    db.insertAudit({ ts: '2025-01-01T00:00:00Z', agent_id: 'a', tool: 'old', args: '{}', result: 'success' });
-    db.insertAudit({ ts: '2026-01-01T00:00:00Z', agent_id: 'a', tool: 'new', args: '{}', result: 'success' });
+    db.insertAudit({
+      ts: '2025-01-01T00:00:00Z',
+      agent_id: 'a',
+      tool: 'old',
+      args: '{}',
+      result: 'success',
+    });
+    db.insertAudit({
+      ts: '2026-01-01T00:00:00Z',
+      agent_id: 'a',
+      tool: 'new',
+      args: '{}',
+      result: 'success',
+    });
 
     const rows = db.queryAudit({ since: '2025-06-01T00:00:00Z' });
     expect(rows).toHaveLength(1);
@@ -104,15 +140,25 @@ describe('AuditDb', () => {
 
   it('respects limit', () => {
     for (let i = 0; i < 10; i++) {
-      db.insertAudit({ ts: new Date().toISOString(), agent_id: 'a', tool: `tool${i}`, args: '{}', result: 'success' });
+      db.insertAudit({
+        ts: new Date().toISOString(),
+        agent_id: 'a',
+        tool: `tool${i}`,
+        args: '{}',
+        result: 'success',
+      });
     }
     expect(db.queryAudit({ limit: 3 })).toHaveLength(3);
   });
 
   it('inserts and retrieves HITL entries by code', () => {
     db.insertHitl({
-      id: 'req-1', code: 'ABC123', agent_id: 'agent1',
-      tool: 'github/create_pr', args: '{}', status: 'pending',
+      id: 'req-1',
+      code: 'ABC123',
+      agent_id: 'agent1',
+      tool: 'github/create_pr',
+      args: '{}',
+      status: 'pending',
       created_at: new Date().toISOString(),
     });
 
@@ -124,8 +170,12 @@ describe('AuditDb', () => {
 
   it('updates HITL status', () => {
     db.insertHitl({
-      id: 'req-1', code: 'ABC123', agent_id: 'agent1',
-      tool: 'github/create_pr', args: '{}', status: 'pending',
+      id: 'req-1',
+      code: 'ABC123',
+      agent_id: 'agent1',
+      tool: 'github/create_pr',
+      args: '{}',
+      status: 'pending',
       created_at: new Date().toISOString(),
     });
     db.updateHitlStatus('req-1', 'approved');
@@ -136,23 +186,100 @@ describe('AuditDb', () => {
   });
 
   it('getPendingHitl returns only pending rows', () => {
-    db.insertHitl({ id: 'r1', code: 'AAA111', agent_id: 'a', tool: 't', args: '{}', status: 'pending', created_at: new Date().toISOString() });
-    db.insertHitl({ id: 'r2', code: 'BBB222', agent_id: 'a', tool: 't', args: '{}', status: 'approved', created_at: new Date().toISOString() });
+    db.insertHitl({
+      id: 'r1',
+      code: 'AAA111',
+      agent_id: 'a',
+      tool: 't',
+      args: '{}',
+      status: 'pending',
+      created_at: new Date().toISOString(),
+    });
+    db.insertHitl({
+      id: 'r2',
+      code: 'BBB222',
+      agent_id: 'a',
+      tool: 't',
+      args: '{}',
+      status: 'approved',
+      created_at: new Date().toISOString(),
+    });
 
     const pending = db.getPendingHitl();
     expect(pending).toHaveLength(1);
     expect(pending[0].id).toBe('r1');
   });
 
+  it('getHitlHistory returns resolved HITL rows', () => {
+    db.insertHitl({
+      id: 'r1',
+      code: 'AAA111',
+      agent_id: 'a',
+      tool: 't',
+      args: '{}',
+      status: 'pending',
+      created_at: new Date().toISOString(),
+    });
+    db.insertHitl({
+      id: 'r2',
+      code: 'BBB222',
+      agent_id: 'a',
+      tool: 't',
+      args: '{}',
+      status: 'approved',
+      created_at: new Date().toISOString(),
+    });
+    db.updateHitlStatus('r2', 'approved');
+
+    const history = db.getHitlHistory();
+    expect(history).toHaveLength(1);
+    expect(history[0].id).toBe('r2');
+  });
+
+  it('stores and revokes mobile devices', () => {
+    const now = new Date().toISOString();
+    db.upsertMobileDevice({
+      id: 'device-1',
+      name: 'Charles iPhone',
+      platform: 'ios',
+      push_token: 'apns-token',
+      auth_token_hash: 'hash-1',
+      created_at: now,
+      updated_at: now,
+    });
+
+    expect(db.getActiveMobileDevices()).toHaveLength(1);
+    expect(db.getMobileDeviceByAuthTokenHash('hash-1')?.id).toBe('device-1');
+
+    db.updateMobileDevicePushToken('device-1', 'apns-token-2');
+    expect(db.getActiveMobileDevices()[0].push_token).toBe('apns-token-2');
+
+    db.revokeMobileDevice('device-1');
+    expect(db.getActiveMobileDevices()).toHaveLength(0);
+    expect(db.getMobileDeviceByAuthTokenHash('hash-1')).toBeUndefined();
+  });
+
   it('cleanup removes entries older than retention period', () => {
-    db.insertAudit({ ts: '2020-01-01T00:00:00Z', agent_id: 'a', tool: 'old', args: '{}', result: 'success' });
-    db.insertAudit({ ts: new Date().toISOString(), agent_id: 'a', tool: 'new', args: '{}', result: 'success' });
+    db.insertAudit({
+      ts: '2020-01-01T00:00:00Z',
+      agent_id: 'a',
+      tool: 'old',
+      args: '{}',
+      result: 'success',
+    });
+    db.insertAudit({
+      ts: new Date().toISOString(),
+      agent_id: 'a',
+      tool: 'new',
+      args: '{}',
+      result: 'success',
+    });
 
     db.cleanup(30); // 30 days retention — 2020 entry should be gone
 
     const rows = db.queryAudit({});
-    expect(rows.every(r => r.tool !== 'old')).toBe(true);
-    expect(rows.some(r => r.tool === 'new')).toBe(true);
+    expect(rows.every((r) => r.tool !== 'old')).toBe(true);
+    expect(rows.some((r) => r.tool === 'new')).toBe(true);
   });
 });
 
@@ -182,7 +309,12 @@ describe('AuditLogger', () => {
   });
 
   it('stores log entries and retrieves them', () => {
-    logger.log({ agent_id: 'agent1', tool: 'github/create_pr', args: '{"repo":"test"}', result: 'success' });
+    logger.log({
+      agent_id: 'agent1',
+      tool: 'github/create_pr',
+      args: '{"repo":"test"}',
+      result: 'success',
+    });
     const rows = logger.recent(10);
     expect(rows).toHaveLength(1);
     expect(rows[0].result).toBe('success');
@@ -192,7 +324,10 @@ describe('AuditLogger', () => {
     logger.log({
       agent_id: 'agent1',
       tool: 'http/post',
-      args: JSON.stringify({ url: 'https://api.example.com', headers: { authorization: 'Bearer secret123' } }),
+      args: JSON.stringify({
+        url: 'https://api.example.com',
+        headers: { authorization: 'Bearer secret123' },
+      }),
       result: 'success',
     });
 
@@ -210,7 +345,7 @@ describe('AuditLogger', () => {
 
   it('query filters work', () => {
     logger.log({ agent_id: 'agent1', tool: 'github/create_pr', args: '{}', result: 'success' });
-    logger.log({ agent_id: 'agent2', tool: 'slack/send',        args: '{}', result: 'error'   });
+    logger.log({ agent_id: 'agent2', tool: 'slack/send', args: '{}', result: 'error' });
 
     expect(logger.query({ agent: 'agent1' })).toHaveLength(1);
     expect(logger.query({ tool: 'slack/send' })).toHaveLength(1);
