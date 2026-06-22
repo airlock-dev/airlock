@@ -1,0 +1,524 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		0B0000010000000000000001 /* AirlockCompanionIOSApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B0000010000000000000101 /* AirlockCompanionIOSApp.swift */; };
+		0B0000010000000000000002 /* AirlockAPIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B0000010000000000000102 /* AirlockAPIClient.swift */; };
+		0B0000010000000000000003 /* AppViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B0000010000000000000103 /* AppViewModel.swift */; };
+		0B0000010000000000000004 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B0000010000000000000104 /* Models.swift */; };
+		0B0000010000000000000005 /* NotificationManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B0000010000000000000105 /* NotificationManager.swift */; };
+		0B0000010000000000000006 /* Views.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B0000010000000000000106 /* Views.swift */; };
+		0B0000010000000000000007 /* AppAppearance.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B0000010000000000000109 /* AppAppearance.swift */; };
+		0B0000010000000000000008 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 0B000001000000000000010A /* Assets.xcassets */; };
+		0B0000020000000000000001 /* NotificationViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B0000020000000000000101 /* NotificationViewController.swift */; };
+		0B0000020000000000000002 /* AirlockNotificationContentExtension.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = 0B0000020000000000000100 /* AirlockNotificationContentExtension.appex */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		0B0000020000000000000003 /* MainInterface.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 0B0000020000000000000103 /* MainInterface.storyboard */; };
+		0B0000020000000000000004 /* UserNotifications.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0B0000020000000000000104 /* UserNotifications.framework */; };
+		0B0000020000000000000005 /* UserNotificationsUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0B0000020000000000000105 /* UserNotificationsUI.framework */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		0B0000020000000000000900 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 0B0000010000000000000600 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 0B0000020000000000000400;
+			remoteInfo = AirlockNotificationContentExtension;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		0B0000020000000000000502 /* Embed App Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				0B0000020000000000000002 /* AirlockNotificationContentExtension.appex in Embed App Extensions */,
+			);
+			name = "Embed App Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		0B0000010000000000000100 /* AirlockCompanionIOS.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AirlockCompanionIOS.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		0B0000010000000000000101 /* AirlockCompanionIOSApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AirlockCompanionIOSApp.swift; sourceTree = "<group>"; };
+		0B0000010000000000000102 /* AirlockAPIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AirlockAPIClient.swift; sourceTree = "<group>"; };
+		0B0000010000000000000103 /* AppViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppViewModel.swift; sourceTree = "<group>"; };
+		0B0000010000000000000104 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
+		0B0000010000000000000105 /* NotificationManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationManager.swift; sourceTree = "<group>"; };
+		0B0000010000000000000106 /* Views.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views.swift; sourceTree = "<group>"; };
+		0B0000010000000000000107 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		0B0000010000000000000108 /* AirlockCompanionIOS.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = AirlockCompanionIOS.entitlements; sourceTree = "<group>"; };
+		0B0000010000000000000109 /* AppAppearance.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppAppearance.swift; sourceTree = "<group>"; };
+		0B000001000000000000010A /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		0B0000020000000000000100 /* AirlockNotificationContentExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = AirlockNotificationContentExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		0B0000020000000000000101 /* NotificationViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationViewController.swift; sourceTree = "<group>"; };
+		0B0000020000000000000102 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		0B0000020000000000000103 /* MainInterface.storyboard */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; name = MainInterface.storyboard; path = Base.lproj/MainInterface.storyboard; sourceTree = "<group>"; };
+		0B0000020000000000000104 /* UserNotifications.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UserNotifications.framework; path = System/Library/Frameworks/UserNotifications.framework; sourceTree = SDKROOT; };
+		0B0000020000000000000105 /* UserNotificationsUI.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UserNotificationsUI.framework; path = System/Library/Frameworks/UserNotificationsUI.framework; sourceTree = SDKROOT; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		0B0000010000000000000200 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		0B0000020000000000000200 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				0B0000020000000000000005 /* UserNotificationsUI.framework in Frameworks */,
+				0B0000020000000000000004 /* UserNotifications.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		0B0000010000000000000300 = {
+			isa = PBXGroup;
+			children = (
+				0B0000010000000000000301 /* AirlockCompanionIOS */,
+				0B0000020000000000000301 /* AirlockNotificationContentExtension */,
+				0B0000010000000000000302 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		0B0000010000000000000301 /* AirlockCompanionIOS */ = {
+			isa = PBXGroup;
+			children = (
+				0B0000010000000000000101 /* AirlockCompanionIOSApp.swift */,
+				0B0000010000000000000102 /* AirlockAPIClient.swift */,
+				0B0000010000000000000103 /* AppViewModel.swift */,
+				0B0000010000000000000104 /* Models.swift */,
+				0B0000010000000000000105 /* NotificationManager.swift */,
+				0B0000010000000000000106 /* Views.swift */,
+				0B0000010000000000000109 /* AppAppearance.swift */,
+				0B000001000000000000010A /* Assets.xcassets */,
+				0B0000010000000000000107 /* Info.plist */,
+				0B0000010000000000000108 /* AirlockCompanionIOS.entitlements */,
+			);
+			path = AirlockCompanionIOS;
+			sourceTree = "<group>";
+		};
+		0B0000010000000000000302 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				0B0000010000000000000100 /* AirlockCompanionIOS.app */,
+				0B0000020000000000000100 /* AirlockNotificationContentExtension.appex */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		0B0000020000000000000301 /* AirlockNotificationContentExtension */ = {
+			isa = PBXGroup;
+			children = (
+				0B0000020000000000000101 /* NotificationViewController.swift */,
+				0B0000020000000000000103 /* MainInterface.storyboard */,
+				0B0000020000000000000102 /* Info.plist */,
+				0B0000020000000000000104 /* UserNotifications.framework */,
+				0B0000020000000000000105 /* UserNotificationsUI.framework */,
+			);
+			path = AirlockNotificationContentExtension;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		0B0000010000000000000400 /* AirlockCompanionIOS */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 0B0000010000000000000700 /* Build configuration list for PBXNativeTarget "AirlockCompanionIOS" */;
+			buildPhases = (
+				0B0000010000000000000500 /* Sources */,
+				0B0000010000000000000200 /* Frameworks */,
+				0B0000010000000000000501 /* Resources */,
+				0B0000020000000000000502 /* Embed App Extensions */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				0B0000020000000000000901 /* PBXTargetDependency */,
+			);
+			name = AirlockCompanionIOS;
+			productName = AirlockCompanionIOS;
+			productReference = 0B0000010000000000000100 /* AirlockCompanionIOS.app */;
+			productType = "com.apple.product-type.application";
+		};
+		0B0000020000000000000400 /* AirlockNotificationContentExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 0B0000020000000000000700 /* Build configuration list for PBXNativeTarget "AirlockNotificationContentExtension" */;
+			buildPhases = (
+				0B0000020000000000000500 /* Sources */,
+				0B0000020000000000000200 /* Frameworks */,
+				0B0000020000000000000501 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = AirlockNotificationContentExtension;
+			productName = AirlockNotificationContentExtension;
+			productReference = 0B0000020000000000000100 /* AirlockNotificationContentExtension.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		0B0000010000000000000600 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2605;
+				LastUpgradeCheck = 2650;
+				TargetAttributes = {
+					0B0000010000000000000400 = {
+						CreatedOnToolsVersion = 26.5;
+						ProvisioningStyle = Automatic;
+					};
+					0B0000020000000000000400 = {
+						CreatedOnToolsVersion = 26.5;
+						ProvisioningStyle = Automatic;
+					};
+				};
+			};
+			buildConfigurationList = 0B0000010000000000000601 /* Build configuration list for PBXProject "AirlockCompanionIOS" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 0B0000010000000000000300;
+			productRefGroup = 0B0000010000000000000302 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				0B0000010000000000000400 /* AirlockCompanionIOS */,
+				0B0000020000000000000400 /* AirlockNotificationContentExtension */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		0B0000010000000000000501 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				0B0000010000000000000008 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		0B0000020000000000000501 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				0B0000020000000000000003 /* MainInterface.storyboard in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		0B0000010000000000000500 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				0B0000010000000000000001 /* AirlockCompanionIOSApp.swift in Sources */,
+				0B0000010000000000000002 /* AirlockAPIClient.swift in Sources */,
+				0B0000010000000000000003 /* AppViewModel.swift in Sources */,
+				0B0000010000000000000004 /* Models.swift in Sources */,
+				0B0000010000000000000005 /* NotificationManager.swift in Sources */,
+				0B0000010000000000000006 /* Views.swift in Sources */,
+				0B0000010000000000000007 /* AppAppearance.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		0B0000020000000000000500 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				0B0000020000000000000001 /* NotificationViewController.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		0B0000020000000000000901 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 0B0000020000000000000400 /* AirlockNotificationContentExtension */;
+			targetProxy = 0B0000020000000000000900 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		0B0000010000000000000800 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		0B0000010000000000000801 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SDKROOT = iphoneos;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_COMPILATION_MODE = wholemodule;
+				TARGETED_DEVICE_FAMILY = 1;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		0B0000010000000000000802 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = AirlockCompanionIOS/AirlockCompanionIOS.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 5;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = AirlockCompanionIOS/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = bot.airlock.companion;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		0B0000010000000000000803 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = AirlockCompanionIOS/AirlockCompanionIOS.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 5;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = AirlockCompanionIOS/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = bot.airlock.companion;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+		0B0000020000000000000802 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 5;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = AirlockNotificationContentExtension/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = bot.airlock.companion.NotificationContent;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		0B0000020000000000000803 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 5;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = AirlockNotificationContentExtension/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = bot.airlock.companion.NotificationContent;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		0B0000010000000000000601 /* Build configuration list for PBXProject "AirlockCompanionIOS" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				0B0000010000000000000800 /* Debug */,
+				0B0000010000000000000801 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		0B0000010000000000000700 /* Build configuration list for PBXNativeTarget "AirlockCompanionIOS" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				0B0000010000000000000802 /* Debug */,
+				0B0000010000000000000803 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		0B0000020000000000000700 /* Build configuration list for PBXNativeTarget "AirlockNotificationContentExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				0B0000020000000000000802 /* Debug */,
+				0B0000020000000000000803 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 0B0000010000000000000600 /* Project object */;
+}

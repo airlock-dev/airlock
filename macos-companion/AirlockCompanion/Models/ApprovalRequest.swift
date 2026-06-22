@@ -102,6 +102,10 @@ struct ApprovalRequest: Codable, Identifiable, Equatable, Sendable {
         receivedAt.addingTimeInterval(TimeInterval(timeoutMs) / 1000.0)
     }
 
+    func isExpired(at date: Date = Date()) -> Bool {
+        timeoutMs > 0 && deadline <= date
+    }
+
     enum CodingKeys: String, CodingKey {
         case id, code, agentId, tool, args, timeoutMs
     }

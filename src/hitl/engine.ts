@@ -66,6 +66,7 @@ export class HitlEngine implements ApprovalApi {
           this.byCode.delete(code);
           this.auditLogger.updateHitlStatus(id, 'timeout');
           log.warn({ id, code, tool: params.tool }, 'HITL request timed out');
+          this.updateApprovalStatus(req, 'timeout');
           resolve('timeout');
         }, this.timeoutMs);
         timer.unref();
@@ -89,6 +90,7 @@ export class HitlEngine implements ApprovalApi {
     this.byCode.delete(req.code);
     this.auditLogger.updateHitlStatus(req.id, 'approved');
     log.info({ id: req.id, code: req.code }, 'HITL approved');
+    this.updateApprovalStatus(req, 'approved');
     req.resolve('approved');
   }
 
@@ -101,6 +103,7 @@ export class HitlEngine implements ApprovalApi {
     this.byCode.delete(req.code);
     this.auditLogger.updateHitlStatus(req.id, 'cancelled');
     log.info({ id: req.id, code: req.code }, 'HITL cancelled (session disconnected)');
+    this.updateApprovalStatus(req, 'cancelled');
     req.resolve('cancelled');
   }
 
@@ -116,6 +119,7 @@ export class HitlEngine implements ApprovalApi {
     this.byCode.delete(req.code);
     this.auditLogger.updateHitlStatus(req.id, 'denied', reason);
     log.info({ id: req.id, code: req.code, reason }, 'HITL denied');
+    this.updateApprovalStatus(req, 'denied');
     req.resolve('denied');
   }
 
@@ -168,6 +172,7 @@ export class HitlEngine implements ApprovalApi {
 
         if (remaining <= 0) {
           this.auditLogger.updateHitlStatus(row.id, 'timeout');
+          this.updateApprovalStatus({ id: row.id, code: row.code }, 'timeout');
           continue;
         }
       } else {
@@ -192,6 +197,7 @@ export class HitlEngine implements ApprovalApi {
             this.pending.delete(row.id);
             this.byCode.delete(row.code);
             this.auditLogger.updateHitlStatus(row.id, 'timeout');
+            this.updateApprovalStatus(req, 'timeout');
             resolve('timeout');
           }, remaining);
           timer.unref();
@@ -210,11 +216,26 @@ export class HitlEngine implements ApprovalApi {
             args,
             sandbox: undefined,
             timeoutMs: remaining,
+            badgeCount: this.getPending().length,
           },
         ])
         .catch((err) => log.warn({ err }, 'Failed to re-notify recovered HITL request'));
 
       void promise; // tracked in pending map
     }
+  }
+
+  private updateApprovalStatus(req: Pick<PendingRequest, 'id' | 'code'>, result: HitlResult): void {
+    const badgeCount = this.getPending().length;
+    if (this.provider.updateApprovalStatus) {
+      void this.provider
+        .updateApprovalStatus({ id: req.id, code: req.code, result, badgeCount })
+        .catch((err) => log.warn({ err }, 'Failed to update approval status'));
+      return;
+    }
+
+    void this.provider
+      .updateBadge?.(badgeCount)
+      .catch((err) => log.warn({ err }, 'Failed to update approval badge count'));
   }
 }

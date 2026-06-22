@@ -59,6 +59,30 @@ approvals:
 
 For a richer experience, see the [macOS Companion app](https://github.com/airlock-dev/airlock/releases/latest) — a native Swift menu bar app that connects to the dashboard SSE endpoint with notifications, approval history, live countdown timers, and auto-reconnect.
 
+## iOS companion
+
+Native APNs notifications for the Airlock iOS companion app. The iPhone registers
+its APNs token through the mobile management API, and this provider sends each
+approval request to all active registered devices.
+
+```yaml
+approvals:
+  provider:
+    - type: dashboard
+    - type: ios
+      team_id: ${APPLE_TEAM_ID}
+      key_id: ${APNS_KEY_ID}
+      key_path: /config/AuthKey_XXXXXXXXXX.p8
+      bundle_id: com.airlock.companion.ios
+      production: true
+      interruption_level: time-sensitive
+```
+
+The phone must be able to call the Airlock management API when a notification
+action is tapped. For private deployments, Tailscale is a good fit: APNs delivers
+the notification, then the iOS app posts the decision back to the VPS over the
+tailnet.
+
 ## Telegram bot
 
 Long-polls for replies. The bot sends approval requests to the configured chat and waits for `approve <code>` or `deny <code>` replies.

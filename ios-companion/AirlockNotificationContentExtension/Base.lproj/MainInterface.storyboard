@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<document type="com.apple.InterfaceBuilder3.CocoaTouch.Storyboard.XIB" version="3.0" toolsVersion="23504" targetRuntime="iOS.CocoaTouch" propertyAccessControl="none" useAutolayout="YES" useTraitCollections="YES" useSafeAreas="YES" colorMatched="YES" initialViewController="notification-view-controller">
+    <device id="retina6_12" orientation="portrait" appearance="dark"/>
+    <dependencies>
+        <plugIn identifier="com.apple.InterfaceBuilder.IBCocoaTouchPlugin" version="23506"/>
+        <capability name="Safe area layout guides" minToolsVersion="9.0"/>
+        <capability name="documents saved in the Xcode 8 format" minToolsVersion="8.0"/>
+    </dependencies>
+    <scenes>
+        <scene sceneID="notification-scene">
+            <objects>
+                <viewController id="notification-view-controller" userLabel="Notification View Controller" customClass="NotificationViewController" customModuleProvider="target" sceneMemberID="viewController">
+                    <view key="view" contentMode="scaleToFill" simulatedAppContext="notificationCenter" id="notification-root-view">
+                        <rect key="frame" x="0.0" y="0.0" width="393" height="176"/>
+                        <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
+                        <subviews>
+                            <label opaque="NO" clipsSubviews="YES" userInteractionEnabled="NO" contentMode="top" horizontalHuggingPriority="251" verticalHuggingPriority="251" text="AIRLOCK EXTENSION STORYBOARD" textAlignment="center" lineBreakMode="tailTruncation" numberOfLines="0" baselineAdjustment="alignBaselines" adjustsFontSizeToFit="YES" translatesAutoresizingMaskIntoConstraints="NO" id="approval-label">
+                                <rect key="frame" x="18" y="14" width="357" height="148"/>
+                                <fontDescription key="fontDescription" type="boldSystem" pointSize="28"/>
+                                <color key="textColor" white="1" alpha="1" colorSpace="custom" customColorSpace="genericGamma22GrayColorSpace"/>
+                                <nil key="highlightedColor"/>
+                            </label>
+                        </subviews>
+                        <color key="backgroundColor" red="0.76078431372549016" green="0.0" blue="0.76078431372549016" alpha="1" colorSpace="custom" customColorSpace="sRGB"/>
+                        <constraints>
+                            <constraint firstItem="approval-label" firstAttribute="top" secondItem="notification-safe-area" secondAttribute="top" constant="14" id="approval-label-top"/>
+                            <constraint firstItem="approval-label" firstAttribute="leading" secondItem="notification-safe-area" secondAttribute="leading" constant="18" id="approval-label-leading"/>
+                            <constraint firstItem="notification-safe-area" firstAttribute="trailing" secondItem="approval-label" secondAttribute="trailing" constant="18" id="approval-label-trailing"/>
+                            <constraint firstItem="notification-safe-area" firstAttribute="bottom" secondItem="approval-label" secondAttribute="bottom" constant="14" id="approval-label-bottom"/>
+                        </constraints>
+                        <viewLayoutGuide key="safeArea" id="notification-safe-area"/>
+                    </view>
+                    <extendedEdge key="edgesForExtendedLayout"/>
+                    <freeformSimulatedSizeMetrics key="simulatedDestinationMetrics"/>
+                    <size key="freeformSize" width="393" height="176"/>
+                </viewController>
+                <placeholder placeholderIdentifier="IBFirstResponder" id="notification-first-responder" userLabel="First Responder" sceneMemberID="firstResponder"/>
+            </objects>
+        </scene>
+    </scenes>
+</document>

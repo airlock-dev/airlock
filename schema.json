@@ -1514,6 +1514,47 @@
                       "properties": {
                         "type": {
                           "type": "string",
+                          "const": "ios"
+                        },
+                        "team_id": {
+                          "type": "string"
+                        },
+                        "key_id": {
+                          "type": "string"
+                        },
+                        "key_path": {
+                          "type": "string"
+                        },
+                        "bundle_id": {
+                          "type": "string"
+                        },
+                        "production": {
+                          "type": "boolean",
+                          "default": true
+                        },
+                        "interruption_level": {
+                          "type": "string",
+                          "enum": [
+                            "passive",
+                            "active",
+                            "time-sensitive"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "team_id",
+                        "key_id",
+                        "key_path",
+                        "bundle_id"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "type": {
+                          "type": "string",
                           "const": "stdio"
                         }
                       },
@@ -1664,6 +1705,47 @@
                         },
                         "required": [
                           "type"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "type": {
+                            "type": "string",
+                            "const": "ios"
+                          },
+                          "team_id": {
+                            "type": "string"
+                          },
+                          "key_id": {
+                            "type": "string"
+                          },
+                          "key_path": {
+                            "type": "string"
+                          },
+                          "bundle_id": {
+                            "type": "string"
+                          },
+                          "production": {
+                            "type": "boolean",
+                            "default": true
+                          },
+                          "interruption_level": {
+                            "type": "string",
+                            "enum": [
+                              "passive",
+                              "active",
+                              "time-sensitive"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "type",
+                          "team_id",
+                          "key_id",
+                          "key_path",
+                          "bundle_id"
                         ],
                         "additionalProperties": false
                       },

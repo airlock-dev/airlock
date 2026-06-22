@@ -58,7 +58,7 @@ server:
 
 When `management_api.enabled` is false, `/health`, `/hitl/*`, `/audit`, the
 dashboard approval bridge (`/events`, `/approve`, `/deny`, `/version*`),
-`/admin/tools`, and `/hook` are not registered on any listener.
+`/mobile/*`, `/admin/tools`, and `/hook` are not registered on any listener.
 
 Agent-facing REST tool execution is not part of the management API. When
 `server.expose_tools_api` is true, `/agents/:agentId/tools` and
@@ -188,6 +188,66 @@ Deny a pending request by short approval code.
 curl -X POST \
   -H "Authorization: Bearer $AIRLOCK_API_SECRET" \
   "http://localhost:4113/deny?code=ABC123"
+```
+
+## Mobile companion API
+
+The mobile endpoints are exposed with the management API. Registering or
+revoking devices requires the gateway admin bearer token. Queue, history, push
+token update, and decision calls may use either the admin token or the per-device
+token returned during registration.
+
+### `POST /mobile/devices/register`
+
+Register an iOS device for APNs approval notifications.
+
+```bash
+curl -X POST http://localhost:4113/mobile/devices/register \
+  -H "Authorization: Bearer $AIRLOCK_API_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Charles iPhone","platform":"ios","pushToken":"<apns-device-token>"}'
+```
+
+Returns the device id and a one-time-visible device bearer token:
+
+```json
+{
+  "id": "device-id",
+  "name": "Charles iPhone",
+  "platform": "ios",
+  "token": "airlock_mobile_..."
+}
+```
+
+### `GET /mobile/devices`
+
+List active registered mobile devices. Requires the admin bearer token.
+
+### `DELETE /mobile/devices/:id`
+
+Revoke a registered mobile device. Requires the admin bearer token.
+
+### `PUT /mobile/device`
+
+Update the calling device's APNs token after iOS rotates it.
+
+### `GET /mobile/approvals`
+
+List currently pending approvals in the mobile app shape.
+
+### `GET /mobile/approvals/history?limit=50`
+
+List recently resolved approvals from the persisted HITL queue.
+
+### `POST /mobile/approvals/:id/decision`
+
+Approve or deny a pending approval by id or code.
+
+```bash
+curl -X POST http://localhost:4113/mobile/approvals/abc123/decision \
+  -H "Authorization: Bearer $AIRLOCK_MOBILE_DEVICE_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"decision":"approved","remember":"temporary","duration_ms":3600000}'
 ```
 
 ### `GET /admin/tools`

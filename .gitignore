@@ -8,3 +8,8 @@ dist/
 *.js.map
 coverage/
 local/
+.DS_Store
+.build/
+xcuserdata/
+*.xcuserdatad/
+.swiftpm/

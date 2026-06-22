@@ -10,6 +10,7 @@ import { HitlBatcher } from './hitl/batcher.js';
 import { AuditLogger } from './audit/logger.js';
 import { hitlApiPlugin } from './hitl/api.js';
 import { auditApiPlugin } from './audit/api.js';
+import { mobileApiPlugin } from './mobile/api.js';
 import { hookApiPlugin } from './hook/api.js';
 import { toolsApiPlugin } from './tools/api.js';
 import { ApprovalDashboardRoutes } from './hitl/approval-dashboard.js';
@@ -78,8 +79,9 @@ export class Gateway {
 
     // Wire batcher → provider
     this.hitlBatcher.onBatchReady((_agentId, requests) => {
+      const badgeCount = this.hitlEngine.getPending().length;
       void this.hitlProvider
-        .notify(requests)
+        .notify(requests.map((request) => ({ ...request, badgeCount })))
         .catch((err) => log.error({ err }, 'Failed to send approval notifications'));
     });
 
@@ -169,6 +171,12 @@ export class Gateway {
     });
     await this.managementApp.register(auditApiPlugin, {
       auditLogger: this.auditLogger,
+      ...requestSecurity,
+    });
+    await this.managementApp.register(mobileApiPlugin, {
+      auditLogger: this.auditLogger,
+      engine: this.hitlEngine,
+      configPath: this.configPath,
       ...requestSecurity,
     });
     await this.managementApp.register((adminApp, _opts, done) => {
@@ -269,6 +277,7 @@ export class Gateway {
       providers.push(
         createHitlProvider(configuredProvider, approvalForwarder, {
           configPath: this.configPath,
+          auditLogger: this.auditLogger,
         })
       );
     }

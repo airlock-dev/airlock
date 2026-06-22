@@ -201,6 +201,25 @@ approvals:
   batch_window_ms: 10000
 ```
 
+`provider` may also be a list when you want multiple approval surfaces. For
+example, a self-hosted VPS can keep the dashboard enabled while also sending
+native APNs pushes to registered iOS devices:
+
+```yaml
+approvals:
+  provider:
+    - type: dashboard
+      host: 0.0.0.0
+      port: 4112
+    - type: ios
+      team_id: ${APPLE_TEAM_ID}
+      key_id: ${APNS_KEY_ID}
+      key_path: /config/AuthKey_XXXXXXXXXX.p8
+      bundle_id: com.airlock.companion.ios
+      production: true
+      interruption_level: time-sensitive
+```
+
 ## `middleware`
 
 Middleware pipeline config. See [Middleware Pipeline](/concepts/middleware).
@@ -318,10 +337,10 @@ and, when `expose_tools_api` is true, the REST agent tool API
   authentication model as MCP routes.
 - `management_api.enabled` starts a separate control-plane listener for
   `/health`, `/hitl/*`, `/audit`, the dashboard approval bridge (`/events`,
-  `/approve`, `/deny`, `/version*`), `/admin/tools`, and `/hook`. It is disabled
-  by default. When enabled, every agent must set `token` so the management
-  `api_secret` cannot be used as a fallback credential on agent data-plane
-  routes.
+  `/approve`, `/deny`, `/version*`), `/mobile/*`, `/admin/tools`, and `/hook`.
+  It is disabled by default. When enabled, every agent must set `token` so the
+  management `api_secret` cannot be used as a fallback credential on agent
+  data-plane routes.
 - `management_api.host` defaults to `127.0.0.1`. Binding it beyond loopback
   requires `management_api.insecure_remote_bind: true`; without that explicit
   opt-in, config validation refuses to start.

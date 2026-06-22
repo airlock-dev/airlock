@@ -108,7 +108,7 @@ describe('Gateway exposure controls', () => {
       fetch(`http://127.0.0.1:${agentPort}/admin/tools`),
       fetch(`http://127.0.0.1:${agentPort}/audit`),
       fetch(`http://127.0.0.1:${agentPort}/hitl/pending`),
-      fetch(`http://127.0.0.1:${agentPort}/mobile`),
+      fetch(`http://127.0.0.1:${agentPort}/mobile/devices`),
       fetch(`http://127.0.0.1:${agentPort}/hook`, { method: 'POST' }),
     ]);
 
@@ -116,28 +116,39 @@ describe('Gateway exposure controls', () => {
       expect(response.status).toBe(404);
     }
 
-    const [unauthorizedHealth, health, audit, hitl, adminTools, dataPlaneTools, controlPlaneTools] =
-      await Promise.all([
-        fetch(`http://127.0.0.1:${managementPort}/health`),
-        fetch(`http://127.0.0.1:${managementPort}/health`, {
-          headers: { authorization: 'Bearer admin-secret' },
-        }),
-        fetch(`http://127.0.0.1:${managementPort}/audit`, {
-          headers: { authorization: 'Bearer admin-secret' },
-        }),
-        fetch(`http://127.0.0.1:${managementPort}/hitl/pending`, {
-          headers: { authorization: 'Bearer admin-secret' },
-        }),
-        fetch(`http://127.0.0.1:${managementPort}/admin/tools`, {
-          headers: { authorization: 'Bearer admin-secret' },
-        }),
-        fetch(`http://127.0.0.1:${agentPort}/agents/test/tools`, {
-          headers: { authorization: 'Bearer agent-secret' },
-        }),
-        fetch(`http://127.0.0.1:${managementPort}/agents/test/tools`, {
-          headers: { authorization: 'Bearer agent-secret' },
-        }),
-      ]);
+    const [
+      unauthorizedHealth,
+      health,
+      audit,
+      hitl,
+      mobileDevices,
+      adminTools,
+      dataPlaneTools,
+      controlPlaneTools,
+    ] = await Promise.all([
+      fetch(`http://127.0.0.1:${managementPort}/health`),
+      fetch(`http://127.0.0.1:${managementPort}/health`, {
+        headers: { authorization: 'Bearer admin-secret' },
+      }),
+      fetch(`http://127.0.0.1:${managementPort}/audit`, {
+        headers: { authorization: 'Bearer admin-secret' },
+      }),
+      fetch(`http://127.0.0.1:${managementPort}/hitl/pending`, {
+        headers: { authorization: 'Bearer admin-secret' },
+      }),
+      fetch(`http://127.0.0.1:${managementPort}/mobile/devices`, {
+        headers: { authorization: 'Bearer admin-secret' },
+      }),
+      fetch(`http://127.0.0.1:${managementPort}/admin/tools`, {
+        headers: { authorization: 'Bearer admin-secret' },
+      }),
+      fetch(`http://127.0.0.1:${agentPort}/agents/test/tools`, {
+        headers: { authorization: 'Bearer agent-secret' },
+      }),
+      fetch(`http://127.0.0.1:${managementPort}/agents/test/tools`, {
+        headers: { authorization: 'Bearer agent-secret' },
+      }),
+    ]);
 
     expect(unauthorizedHealth.status).toBe(401);
     expect(health.status).toBe(200);
@@ -152,6 +163,7 @@ describe('Gateway exposure controls', () => {
     });
     expect(audit.status).toBe(200);
     expect(hitl.status).toBe(200);
+    expect(mobileDevices.status).toBe(200);
     expect(adminTools.status).toBe(200);
     expect(dataPlaneTools.status).toBe(200);
     expect(controlPlaneTools.status).toBe(404);

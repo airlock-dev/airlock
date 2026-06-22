@@ -5,6 +5,7 @@ import UserNotifications
 @MainActor
 final class NotificationManager: NSObject, ObservableObject, UNUserNotificationCenterDelegate {
     var onAction: ((String, String, ApprovalRememberMode?, Int?) -> Void)?
+    var onError: ((String) -> Void)?
     private var notificationCenter: UNUserNotificationCenter?
     private var isAvailable = false
 
@@ -17,6 +18,7 @@ final class NotificationManager: NSObject, ObservableObject, UNUserNotificationC
     func requestAuthorization() {
         guard Bundle.main.bundleIdentifier != nil else {
             print("NotificationManager: No bundle identifier — notifications disabled (run as .app bundle)")
+            onError?("Notifications are unavailable outside the bundled app.")
             return
         }
 
@@ -27,7 +29,19 @@ final class NotificationManager: NSObject, ObservableObject, UNUserNotificationC
 
         registerCategories()
 
-        center.requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
+        center.requestAuthorization(options: [.alert, .sound, .badge]) { [weak self] granted, error in
+            if let error {
+                Task { @MainActor in
+                    self?.onError?("Notification authorization failed: \(error.localizedDescription)")
+                }
+                return
+            }
+            if !granted {
+                Task { @MainActor in
+                    self?.onError?("Notification permission is disabled in System Settings.")
+                }
+            }
+        }
     }
 
     private func registerCategories() {
@@ -89,7 +103,12 @@ final class NotificationManager: NSObject, ObservableObject, UNUserNotificationC
             trigger: nil
         )
 
-        center.add(notificationRequest)
+        center.add(notificationRequest) { [weak self] error in
+            guard let error else { return }
+            Task { @MainActor in
+                self?.onError?("Notification delivery failed: \(error.localizedDescription)")
+            }
+        }
 
         // Play sound directly as well — UNNotification sounds can be silenced
         // by system notification settings
@@ -113,6 +132,9 @@ final class NotificationManager: NSObject, ObservableObject, UNUserNotificationC
     ) {
         let userInfo = response.notification.request.content.userInfo
         guard let code = userInfo["code"] as? String else {
+            Task { @MainActor in
+                self.onError?("Notification action did not include an approval code.")
+            }
             completionHandler()
             return
         }
@@ -148,6 +170,10 @@ final class NotificationManager: NSObject, ObservableObject, UNUserNotificationC
         if let action {
             Task { @MainActor in
                 self.onAction?(code, action, remember, durationMs)
+            }
+        } else {
+            Task { @MainActor in
+                self.onError?("Unsupported notification action: \(actionIdentifier)")
             }
         }
 
