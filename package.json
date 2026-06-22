@@ -52,6 +52,7 @@
     "lint:fix": "eslint src --fix",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
+    "secrets:staged": "tsx scripts/scan-secrets.ts --staged",
     "schema": "tsx scripts/generate-schema.ts",
     "prepublishOnly": "npm run schema && npm run build"
   },
