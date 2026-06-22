@@ -54,4 +54,14 @@ final class DashboardConnectionTests: XCTestCase {
             ]
         )
     }
+
+    func testPendingRequestUsesManagementAPIAndBearerToken() throws {
+        let client = AirlockAPIClient(baseURL: "http://127.0.0.1:4113", bearerToken: "admin-token")
+
+        let request = try client.makePendingRequest()
+
+        XCTAssertEqual(request.httpMethod, "GET")
+        XCTAssertEqual(request.url?.absoluteString, "http://127.0.0.1:4113/hitl/pending")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer admin-token")
+    }
 }

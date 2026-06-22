@@ -4,6 +4,7 @@ enum Constants {
     static let defaultDashboardURL = "http://127.0.0.1:4113"
     static let sseEventsPath = "/events"
     static let healthPath = "/health"
+    static let pendingPath = "/hitl/pending"
     static let approvePath = "/approve"
     static let denyPath = "/deny"
 
@@ -43,5 +44,10 @@ enum Constants {
         static let tagPrefix = "companion-v"
         static let checkInterval: TimeInterval = 3600
         static let releasesURL = URL(string: "https://api.github.com/repos/\(repositoryOwner)/\(repositoryName)/releases?per_page=20")!
+    }
+
+    enum PendingMaintenance {
+        static let pruneInterval: TimeInterval = 1.0
+        static let reconcileInterval: TimeInterval = 5.0
     }
 }

@@ -20,6 +20,20 @@ final class AirlockAPIClient: Sendable {
         try await post(path: Constants.denyPath, code: code)
     }
 
+    func pendingApprovalCodes() async throws -> Set<String> {
+        let request = try makePendingRequest()
+        let (data, response) = try await URLSession.shared.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse,
+              (200...299).contains(httpResponse.statusCode)
+        else {
+            throw URLError(.badServerResponse)
+        }
+
+        let pending = try JSONDecoder().decode([PendingApprovalSummary].self, from: data)
+        return Set(pending.map(\.code))
+    }
+
     private func post(path: String, code: String, remember: ApprovalRememberMode? = nil, durationMs: Int? = nil) async throws {
         var queryItems = [URLQueryItem(name: "code", value: code)]
         if let remember {
@@ -41,4 +55,12 @@ final class AirlockAPIClient: Sendable {
     func makePostRequest(path: String, queryItems: [URLQueryItem]) throws -> URLRequest {
         try connection.request(path: path, method: "POST", queryItems: queryItems)
     }
+
+    func makePendingRequest() throws -> URLRequest {
+        try connection.request(path: Constants.pendingPath)
+    }
+}
+
+private struct PendingApprovalSummary: Decodable {
+    let code: String
 }

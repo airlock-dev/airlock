@@ -53,22 +53,7 @@ final class SSEClient: ObservableObject {
                     // First, verify the server is reachable with a quick health check.
                     // The SSE endpoint doesn't flush headers until first data,
                     // so we can't rely on the SSE response to confirm connectivity.
-                    var checkReq = try currentConnection.request(path: Constants.healthPath, timeoutInterval: 5)
-                    let (_, checkResp) = try await URLSession.shared.data(for: checkReq)
-                    guard let httpResp = checkResp as? HTTPURLResponse,
-                          httpResp.statusCode == 200 || httpResp.statusCode == 404
-                    else {
-                        throw URLError(.badServerResponse)
-                    }
-                    if httpResp.statusCode == 404 {
-                        checkReq = try currentConnection.request(path: "/", timeoutInterval: 5)
-                        let (_, fallbackResp) = try await URLSession.shared.data(for: checkReq)
-                        guard let fallbackHttpResp = fallbackResp as? HTTPURLResponse,
-                              fallbackHttpResp.statusCode == 200
-                        else {
-                            throw URLError(.badServerResponse)
-                        }
-                    }
+                    try await currentConnection.validateHealth()
 
                     // Server is up — mark as connected and start SSE stream
                     await MainActor.run { weakSelf?.connectionState = .connected }

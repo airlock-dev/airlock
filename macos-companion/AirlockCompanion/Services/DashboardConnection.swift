@@ -1,5 +1,20 @@
 import Foundation
 
+struct DashboardConnectionStatusError: LocalizedError, Equatable {
+    let statusCode: Int
+
+    var errorDescription: String? {
+        switch statusCode {
+        case 401:
+            return "Authentication failed (401)"
+        case 403:
+            return "Authentication forbidden (403)"
+        default:
+            return "Server returned HTTP \(statusCode)"
+        }
+    }
+}
+
 struct DashboardConnection: Sendable {
     let baseURL: String
     let bearerToken: String
@@ -41,11 +56,41 @@ struct DashboardConnection: Sendable {
         return request
     }
 
+    func validateHealth(session: URLSession = .shared) async throws {
+        let healthStatus = try await statusCode(
+            for: request(path: Constants.healthPath, timeoutInterval: 5),
+            session: session
+        )
+
+        switch healthStatus {
+        case 200:
+            return
+        case 404:
+            let rootStatus = try await statusCode(
+                for: request(path: "/", timeoutInterval: 5),
+                session: session
+            )
+            guard rootStatus == 200 else {
+                throw DashboardConnectionStatusError(statusCode: rootStatus)
+            }
+        default:
+            throw DashboardConnectionStatusError(statusCode: healthStatus)
+        }
+    }
+
     private var normalizedBaseURL: String {
         var value = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         while value.hasSuffix("/") {
             value.removeLast()
         }
         return value
+    }
+
+    private func statusCode(for request: URLRequest, session: URLSession) async throws -> Int {
+        let (_, response) = try await session.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw URLError(.badServerResponse)
+        }
+        return httpResponse.statusCode
     }
 }
