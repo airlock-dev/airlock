@@ -6,10 +6,10 @@ enum ApprovalRememberMode: String, Sendable {
 }
 
 final class AirlockAPIClient: Sendable {
-    private let baseURL: String
+    private let connection: DashboardConnection
 
-    init(baseURL: String = Constants.defaultDashboardURL) {
-        self.baseURL = baseURL
+    init(baseURL: String = Constants.defaultDashboardURL, bearerToken: String? = nil) {
+        self.connection = DashboardConnection(baseURL: baseURL, bearerToken: bearerToken)
     }
 
     func approve(code: String, remember: ApprovalRememberMode? = nil, durationMs: Int? = nil) async throws {
@@ -20,10 +20,21 @@ final class AirlockAPIClient: Sendable {
         try await post(path: Constants.denyPath, code: code)
     }
 
-    private func post(path: String, code: String, remember: ApprovalRememberMode? = nil, durationMs: Int? = nil) async throws {
-        guard var components = URLComponents(string: baseURL + path) else {
-            throw URLError(.badURL)
+    func pendingApprovalCodes() async throws -> Set<String> {
+        let request = try makePendingRequest()
+        let (data, response) = try await URLSession.shared.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse,
+              (200...299).contains(httpResponse.statusCode)
+        else {
+            throw URLError(.badServerResponse)
         }
+
+        let pending = try JSONDecoder().decode([PendingApprovalSummary].self, from: data)
+        return Set(pending.map(\.code))
+    }
+
+    private func post(path: String, code: String, remember: ApprovalRememberMode? = nil, durationMs: Int? = nil) async throws {
         var queryItems = [URLQueryItem(name: "code", value: code)]
         if let remember {
             queryItems.append(URLQueryItem(name: "remember", value: remember.rawValue))
@@ -31,15 +42,7 @@ final class AirlockAPIClient: Sendable {
         if let durationMs {
             queryItems.append(URLQueryItem(name: "duration_ms", value: String(durationMs)))
         }
-        components.queryItems = queryItems
-
-        guard let url = components.url else {
-            throw URLError(.badURL)
-        }
-
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-
+        let request = try makePostRequest(path: path, queryItems: queryItems)
         let (_, response) = try await URLSession.shared.data(for: request)
 
         guard let httpResponse = response as? HTTPURLResponse,
@@ -48,4 +51,16 @@ final class AirlockAPIClient: Sendable {
             throw URLError(.badServerResponse)
         }
     }
+
+    func makePostRequest(path: String, queryItems: [URLQueryItem]) throws -> URLRequest {
+        try connection.request(path: path, method: "POST", queryItems: queryItems)
+    }
+
+    func makePendingRequest() throws -> URLRequest {
+        try connection.request(path: Constants.pendingPath)
+    }
+}
+
+private struct PendingApprovalSummary: Decodable {
+    let code: String
 }

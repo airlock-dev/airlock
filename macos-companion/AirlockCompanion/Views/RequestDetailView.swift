@@ -50,7 +50,10 @@ struct RequestDetailView: View {
             }
 
             HStack(spacing: 12) {
-                detailPill(title: "Timeout", value: "\(request.timeoutMs / 1000)s")
+                detailPill(
+                    title: "Timeout",
+                    value: request.timeoutMs > 0 ? "\(request.timeoutMs / 1000)s" : "None"
+                )
                 detailPill(title: "Args", value: "\(request.args.count)")
             }
 

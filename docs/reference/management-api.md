@@ -169,6 +169,10 @@ mode, run `airlock dashboard` with `--gateway-secret`,
 `AIRLOCK_GATEWAY_SECRET`, or `AIRLOCK_API_SECRET`; the dashboard server proxies
 the SSE connection to the gateway with the bearer token.
 
+The macOS Companion app can connect directly to the management API by setting
+its Dashboard URL to `http://127.0.0.1:4113` and its gateway bearer token to
+the same `AIRLOCK_API_SECRET`.
+
 ### `POST /approve?code=ABC123`
 
 Approve a pending request by short approval code. This is the endpoint used by

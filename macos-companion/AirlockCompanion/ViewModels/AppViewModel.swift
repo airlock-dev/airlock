@@ -14,6 +14,8 @@ final class AppViewModel: ObservableObject {
     @AppStorage(Constants.UserDefaultsKeys.dashboardURL)
     var dashboardURL: String = Constants.defaultDashboardURL
 
+    @Published private(set) var gatewayToken: String = ""
+
     @AppStorage(Constants.UserDefaultsKeys.soundEnabled)
     var soundEnabled: Bool = true
 
@@ -43,10 +45,11 @@ final class AppViewModel: ObservableObject {
     let notificationManager: NotificationManager
     private var apiClient: AirlockAPIClient
     private let updateChecker: UpdateChecker
+    private let tokenStore = KeychainTokenStore()
     var onSettingsChanged: (() -> Void)?
     private var sseTask: Task<Void, Never>?
-    private var expirationTask: Task<Void, Never>?
     private var updateCheckTask: Task<Void, Never>?
+    private var pendingMaintenanceTask: Task<Void, Never>?
     private var cancellables = Set<AnyCancellable>()
     /// Lookup of all requests we've ever seen, so history always has metadata
     private var seenRequests: [String: ApprovalRequest] = [:]
@@ -54,11 +57,12 @@ final class AppViewModel: ObservableObject {
     var pendingCount: Int { pendingRequests.count }
 
     init() {
-        let sseClient = SSEClient()
-        self.sseClient = sseClient
         let storedURL = UserDefaults.standard.string(forKey: Constants.UserDefaultsKeys.dashboardURL)
             ?? Constants.defaultDashboardURL
-        self.apiClient = AirlockAPIClient(baseURL: storedURL)
+        let storedToken = Self.loadStoredGatewayToken(using: tokenStore)
+        let sseClient = SSEClient(baseURL: storedURL, bearerToken: storedToken)
+        self.sseClient = sseClient
+        self.apiClient = AirlockAPIClient(baseURL: storedURL, bearerToken: storedToken)
         self.notificationManager = NotificationManager()
         self.updateChecker = UpdateChecker()
         let bundleVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0"
@@ -90,7 +94,7 @@ final class AppViewModel: ObservableObject {
     func start() {
         notificationManager.requestAuthorization()
         startUpdateChecks()
-        startExpirationChecks()
+        startPendingMaintenance()
         connectSSE()
     }
 
@@ -99,8 +103,8 @@ final class AppViewModel: ObservableObject {
         sseTask = nil
         updateCheckTask?.cancel()
         updateCheckTask = nil
-        expirationTask?.cancel()
-        expirationTask = nil
+        pendingMaintenanceTask?.cancel()
+        pendingMaintenanceTask = nil
         sseClient.disconnect()
     }
 
@@ -153,11 +157,26 @@ final class AppViewModel: ObservableObject {
         lastNotificationDeliveryError = ""
     }
 
-    func updateSettings() {
-        sseClient.updateBaseURL(dashboardURL)
-        apiClient = AirlockAPIClient(baseURL: dashboardURL)
+    func updateSettings(reconnect: Bool = false) {
         onSettingsChanged?()
-        connectSSE()
+        if reconnect {
+            sseClient.updateConnection(baseURL: dashboardURL, bearerToken: gatewayToken)
+            apiClient = AirlockAPIClient(baseURL: dashboardURL, bearerToken: gatewayToken)
+            connectSSE()
+        }
+    }
+
+    func testConnection(baseURL: String, bearerToken: String) async throws {
+        try await DashboardConnection(baseURL: baseURL, bearerToken: bearerToken).validateHealth()
+    }
+
+    func saveConnectionSettings(baseURL: String, bearerToken: String) throws {
+        let trimmedToken = bearerToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        try tokenStore.save(trimmedToken)
+
+        dashboardURL = baseURL
+        gatewayToken = trimmedToken
+        updateSettings(reconnect: true)
     }
 
     func approveSelectedRequest() {
@@ -182,7 +201,7 @@ final class AppViewModel: ObservableObject {
 
     private func connectSSE() {
         sseTask?.cancel()
-        sseClient.updateBaseURL(dashboardURL)
+        sseClient.updateConnection(baseURL: dashboardURL, bearerToken: gatewayToken)
 
         let stream = sseClient.connect()
 
@@ -198,6 +217,7 @@ final class AppViewModel: ObservableObject {
         switch message {
         case .newRequest(let request):
             pruneExpiredRequests()
+            guard request.timeoutMs == 0 || request.deadline > Date() else { return }
             seenRequests[request.code] = request
             // Avoid duplicates.
             if !pendingRequests.contains(where: { $0.code == request.code }) {
@@ -206,6 +226,10 @@ final class AppViewModel: ObservableObject {
             notificationManager.showNotification(for: request, soundEnabled: soundEnabled)
 
         case .resolved(let code, let action):
+            if action == "timeout" || action == "cancelled" {
+                removePendingRequests(withCodes: [code])
+                return
+            }
             moveToResolved(code: code, action: action)
             notificationManager.removeNotification(code: code)
         }
@@ -242,22 +266,58 @@ final class AppViewModel: ObservableObject {
         return true
     }
 
-    private func pruneExpiredRequests() {
-        let expiredRequests = pendingRequests.filter { $0.isExpired() }
-        guard !expiredRequests.isEmpty else { return }
+    private func removePendingRequests(withCodes codes: Set<String>) {
+        guard !codes.isEmpty else { return }
+        removePendingRequests { codes.contains($0.code) }
+    }
 
-        for request in expiredRequests {
-            moveToResolved(code: request.code, action: "timeout")
-            notificationManager.removeNotification(code: request.code)
+    private func removePendingRequests(where shouldRemove: (ApprovalRequest) -> Bool) {
+        let removedCodes = Set(pendingRequests.filter(shouldRemove).map(\.code))
+        guard !removedCodes.isEmpty else { return }
+
+        pendingRequests.removeAll { removedCodes.contains($0.code) }
+        for code in removedCodes {
+            notificationManager.removeNotification(code: code)
+        }
+        if selectedIndex >= pendingRequests.count {
+            selectedIndex = max(0, pendingRequests.count - 1)
         }
     }
 
-    private func startExpirationChecks() {
-        expirationTask?.cancel()
-        expirationTask = Task { [weak self] in
+    private func pruneExpiredPendingRequests() {
+        pruneExpiredRequests()
+    }
+
+    private func pruneExpiredRequests() {
+        removePendingRequests { $0.isExpired() }
+    }
+
+    private func reconcilePendingRequests() async {
+        guard !pendingRequests.isEmpty else { return }
+
+        let client = apiClient
+        do {
+            let pendingCodes = try await client.pendingApprovalCodes()
+            removePendingRequests { !pendingCodes.contains($0.code) }
+        } catch {
+        }
+    }
+
+    private func startPendingMaintenance() {
+        pendingMaintenanceTask?.cancel()
+        pendingMaintenanceTask = Task { [weak self] in
+            guard let self else { return }
+            var nextReconcile = Date()
+
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(1))
-                self?.pruneExpiredRequests()
+                self.pruneExpiredPendingRequests()
+
+                if Date() >= nextReconcile {
+                    await self.reconcilePendingRequests()
+                    nextReconcile = Date().addingTimeInterval(Constants.PendingMaintenance.reconcileInterval)
+                }
+
+                try? await Task.sleep(for: .seconds(Constants.PendingMaintenance.pruneInterval))
             }
         }
     }
@@ -283,5 +343,21 @@ final class AppViewModel: ObservableObject {
             availableUpdateVersion = result?.latestVersion
         } catch {
         }
+    }
+
+    private static func loadStoredGatewayToken(using tokenStore: KeychainTokenStore) -> String {
+        let keychainToken = (try? tokenStore.load()) ?? ""
+        let legacyToken = UserDefaults.standard
+            .string(forKey: Constants.UserDefaultsKeys.gatewayToken)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+        if !legacyToken.isEmpty {
+            if keychainToken.isEmpty {
+                try? tokenStore.save(legacyToken)
+            }
+            UserDefaults.standard.removeObject(forKey: Constants.UserDefaultsKeys.gatewayToken)
+        }
+
+        return keychainToken.isEmpty ? legacyToken : keychainToken
     }
 }
