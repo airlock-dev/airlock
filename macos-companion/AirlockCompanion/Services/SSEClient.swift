@@ -21,22 +21,26 @@ enum ConnectionState: Equatable, Sendable {
 final class SSEClient: ObservableObject {
     @Published var connectionState: ConnectionState = .disconnected(nil)
 
-    private var baseURL: String
+    private var connection: DashboardConnection
     private var streamTask: Task<Void, Never>?
 
-    init(baseURL: String = Constants.defaultDashboardURL) {
-        self.baseURL = baseURL
+    init(baseURL: String = Constants.defaultDashboardURL, bearerToken: String? = nil) {
+        self.connection = DashboardConnection(baseURL: baseURL, bearerToken: bearerToken)
     }
 
     func updateBaseURL(_ url: String) {
-        baseURL = url
+        updateConnection(baseURL: url, bearerToken: connection.bearerToken)
+    }
+
+    func updateConnection(baseURL: String, bearerToken: String? = nil) {
+        connection = DashboardConnection(baseURL: baseURL, bearerToken: bearerToken)
     }
 
     func connect() -> AsyncStream<SSEMessage> {
         disconnect()
 
         let (stream, continuation) = AsyncStream<SSEMessage>.makeStream()
-        let currentBaseURL = baseURL
+        let currentConnection = connection
 
         streamTask = Task.detached { [weak self] in
             let weakSelf = self
@@ -46,20 +50,24 @@ final class SSEClient: ObservableObject {
                 await MainActor.run { weakSelf?.connectionState = .connecting }
 
                 do {
-                    guard let sseURL = URL(string: currentBaseURL + Constants.sseEventsPath),
-                          let rootURL = URL(string: currentBaseURL + "/")
-                    else { break }
-
-                    // First, verify the server is reachable with a quick GET /
+                    // First, verify the server is reachable with a quick health check.
                     // The SSE endpoint doesn't flush headers until first data,
                     // so we can't rely on the SSE response to confirm connectivity.
-                    var checkReq = URLRequest(url: rootURL)
-                    checkReq.timeoutInterval = 5
+                    var checkReq = try currentConnection.request(path: Constants.healthPath, timeoutInterval: 5)
                     let (_, checkResp) = try await URLSession.shared.data(for: checkReq)
                     guard let httpResp = checkResp as? HTTPURLResponse,
-                          httpResp.statusCode == 200
+                          httpResp.statusCode == 200 || httpResp.statusCode == 404
                     else {
                         throw URLError(.badServerResponse)
+                    }
+                    if httpResp.statusCode == 404 {
+                        checkReq = try currentConnection.request(path: "/", timeoutInterval: 5)
+                        let (_, fallbackResp) = try await URLSession.shared.data(for: checkReq)
+                        guard let fallbackHttpResp = fallbackResp as? HTTPURLResponse,
+                              fallbackHttpResp.statusCode == 200
+                        else {
+                            throw URLError(.badServerResponse)
+                        }
                     }
 
                     // Server is up — mark as connected and start SSE stream
@@ -79,8 +87,10 @@ final class SSEClient: ObservableObject {
                         delegateQueue: nil
                     )
 
-                    var request = URLRequest(url: sseURL)
-                    request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+                    var request = try currentConnection.request(
+                        path: Constants.sseEventsPath,
+                        accept: "text/event-stream"
+                    )
                     request.timeoutInterval = .infinity
 
                     let task = session.dataTask(with: request)

@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 /**
  * Mock dashboard server for testing the macOS companion app.
- * Simulates Airlock's dashboard provider SSE + HTTP API on port 4112.
+ * Simulates Airlock's management approval API on port 4113.
  *
  * Usage:
  *   node mock-dashboard.mjs
+ *   AIRLOCK_API_SECRET=dev-secret node mock-dashboard.mjs
  *
  * Then press Enter in the terminal to send a fake approval request.
  * The companion app should pick it up via SSE.
@@ -14,7 +15,8 @@ import { createServer } from "http";
 import { randomUUID } from "crypto";
 import { createInterface } from "readline";
 
-const PORT = 4112;
+const PORT = Number(process.env.PORT ?? 4113);
+const REQUIRED_TOKEN = process.env.AIRLOCK_API_SECRET ?? "";
 const clients = new Set();
 const pending = new Map();
 let codeCounter = 0;
@@ -66,6 +68,15 @@ function broadcast(data) {
 
 const server = createServer((req, res) => {
   const url = new URL(req.url ?? "/", `http://localhost:${PORT}`);
+
+  if (REQUIRED_TOKEN) {
+    const auth = req.headers.authorization ?? "";
+    if (auth !== `Bearer ${REQUIRED_TOKEN}`) {
+      res.writeHead(401, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Unauthorized" }));
+      return;
+    }
+  }
 
   // POST /inject with JSON body → broadcast a custom request
   if (req.method === "POST" && url.pathname === "/inject") {
@@ -136,12 +147,21 @@ const server = createServer((req, res) => {
     return;
   }
 
+  if (url.pathname === "/health") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ status: "ok", pendingApprovals: pending.size }));
+    return;
+  }
+
   res.writeHead(404);
   res.end("not found");
 });
 
 server.listen(PORT, "127.0.0.1", () => {
   console.log(`\nMock Airlock dashboard running on http://127.0.0.1:${PORT}`);
+  if (REQUIRED_TOKEN) {
+    console.log("  bearer auth enabled; use AIRLOCK_API_SECRET as the companion token");
+  }
   console.log(`\nCommands:`);
   console.log(`  [Enter]     → send a random approval request`);
   console.log(`  "burst"     → send 3 requests at once`);

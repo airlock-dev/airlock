@@ -5,6 +5,7 @@ import SwiftUI
 struct SettingsView: View {
     @ObservedObject var viewModel: AppViewModel
     @State private var urlText: String = ""
+    @State private var tokenText: String = ""
     @State private var launchAtLogin: Bool = SMAppService.mainApp.status == .enabled
 
     private let shortcutKeys = (65...90).compactMap { UnicodeScalar($0).map(String.init) }
@@ -24,6 +25,7 @@ struct SettingsView: View {
         .background(windowBackground)
         .onAppear {
             urlText = viewModel.dashboardURL
+            tokenText = viewModel.gatewayToken
         }
     }
 
@@ -83,22 +85,34 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
 
                     TextField(
-                        "http://127.0.0.1:4112",
+                        "http://127.0.0.1:4113",
                         text: $urlText
                     )
                     .textFieldStyle(.roundedBorder)
                     .font(.system(size: 13, design: .monospaced))
-                    .onSubmit(applyDashboardURL)
+                    .onSubmit(applyConnectionSettings)
+
+                    Text("Gateway bearer token")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(.secondary)
+
+                    SecureField(
+                        "AIRLOCK_API_SECRET",
+                        text: $tokenText
+                    )
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 13, design: .monospaced))
+                    .onSubmit(applyConnectionSettings)
 
                     HStack {
-                        Text("Press Return to apply a new dashboard URL.")
+                        Text("Press Return to apply connection changes.")
                             .font(.system(size: 11))
                             .foregroundStyle(.tertiary)
 
                         Spacer()
 
                         Button("Apply") {
-                            applyDashboardURL()
+                            applyConnectionSettings()
                         }
                         .controlSize(.small)
                     }
@@ -489,16 +503,20 @@ struct SettingsView: View {
         .ignoresSafeArea()
     }
 
-    private func applyDashboardURL() {
+    private func applyConnectionSettings() {
         let trimmedURL = urlText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedToken = tokenText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedURL.isEmpty else { return }
-        guard trimmedURL != viewModel.dashboardURL else {
+        guard trimmedURL != viewModel.dashboardURL || trimmedToken != viewModel.gatewayToken else {
             urlText = trimmedURL
+            tokenText = trimmedToken
             return
         }
 
         viewModel.dashboardURL = trimmedURL
+        viewModel.gatewayToken = trimmedToken
         urlText = trimmedURL
+        tokenText = trimmedToken
         viewModel.updateSettings()
     }
 }

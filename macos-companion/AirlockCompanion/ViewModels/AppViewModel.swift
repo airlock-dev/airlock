@@ -14,6 +14,9 @@ final class AppViewModel: ObservableObject {
     @AppStorage(Constants.UserDefaultsKeys.dashboardURL)
     var dashboardURL: String = Constants.defaultDashboardURL
 
+    @AppStorage(Constants.UserDefaultsKeys.gatewayToken)
+    var gatewayToken: String = ""
+
     @AppStorage(Constants.UserDefaultsKeys.soundEnabled)
     var soundEnabled: Bool = true
 
@@ -54,11 +57,13 @@ final class AppViewModel: ObservableObject {
     var pendingCount: Int { pendingRequests.count }
 
     init() {
-        let sseClient = SSEClient()
-        self.sseClient = sseClient
         let storedURL = UserDefaults.standard.string(forKey: Constants.UserDefaultsKeys.dashboardURL)
             ?? Constants.defaultDashboardURL
-        self.apiClient = AirlockAPIClient(baseURL: storedURL)
+        let storedToken = UserDefaults.standard.string(forKey: Constants.UserDefaultsKeys.gatewayToken)
+            ?? ""
+        let sseClient = SSEClient(baseURL: storedURL, bearerToken: storedToken)
+        self.sseClient = sseClient
+        self.apiClient = AirlockAPIClient(baseURL: storedURL, bearerToken: storedToken)
         self.notificationManager = NotificationManager()
         self.updateChecker = UpdateChecker()
         let bundleVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0"
@@ -154,8 +159,8 @@ final class AppViewModel: ObservableObject {
     }
 
     func updateSettings() {
-        sseClient.updateBaseURL(dashboardURL)
-        apiClient = AirlockAPIClient(baseURL: dashboardURL)
+        sseClient.updateConnection(baseURL: dashboardURL, bearerToken: gatewayToken)
+        apiClient = AirlockAPIClient(baseURL: dashboardURL, bearerToken: gatewayToken)
         onSettingsChanged?()
         connectSSE()
     }
@@ -182,7 +187,7 @@ final class AppViewModel: ObservableObject {
 
     private func connectSSE() {
         sseTask?.cancel()
-        sseClient.updateBaseURL(dashboardURL)
+        sseClient.updateConnection(baseURL: dashboardURL, bearerToken: gatewayToken)
 
         let stream = sseClient.connect()
 

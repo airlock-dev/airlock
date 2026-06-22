@@ -1,13 +1,15 @@
 import Foundation
 
 enum Constants {
-    static let defaultDashboardURL = "http://127.0.0.1:4112"
+    static let defaultDashboardURL = "http://127.0.0.1:4113"
     static let sseEventsPath = "/events"
+    static let healthPath = "/health"
     static let approvePath = "/approve"
     static let denyPath = "/deny"
 
     enum UserDefaultsKeys {
         static let dashboardURL = "dashboardURL"
+        static let gatewayToken = "gatewayToken"
         static let soundEnabled = "soundEnabled"
         static let approveShortcutKey = "approveShortcutKey"
         static let denyShortcutKey = "denyShortcutKey"
