@@ -23,6 +23,7 @@ import type { HitlProvider, ApprovalApi } from './hitl/providers/types.js';
 import { createHitlProvider } from './hitl/provider-factory.js';
 import { getMcpConfigs } from './config/schema.js';
 import { buildAdapters } from './backend/factory.js';
+import { ActivityStream } from './activity/stream.js';
 import { childLogger } from './util/logger.js';
 import { checkRequestSecurity, type RequestSecurityOptions } from './security/request.js';
 
@@ -44,6 +45,7 @@ export class Gateway {
   private app!: FastifyInstance;
   private managementApp?: FastifyInstance;
   private downstreamSessionIds = new Map<string, string>();
+  private activityStream = new ActivityStream();
   private startTime = Date.now();
   private dataPlaneRequestSecurity: RequestSecurityOptions = {};
   private managementRequestSecurity: RequestSecurityOptions = {};
@@ -71,7 +73,7 @@ export class Gateway {
       deny: (code, reason) => this.hitlEngine.deny(code, reason),
     };
 
-    this.approvalRoutes = new ApprovalDashboardRoutes(approvalForwarder);
+    this.approvalRoutes = new ApprovalDashboardRoutes(approvalForwarder, this.activityStream);
     this.hitlProvider = this.buildHitlProvider(approvalForwarder);
 
     this.hitlEngine = new HitlEngine(
@@ -97,7 +99,7 @@ export class Gateway {
     await this.pool.initialize();
 
     // Build adapters from config (MCP, builtins, CLIs, APIs)
-    const adapters = buildAdapters(this.config, this.pool);
+    const adapters = this.buildAdapters();
 
     // Allowlist + registry
     this.allowlist = new AllowlistEngine(this.config.agents);
@@ -185,6 +187,9 @@ export class Gateway {
       this.approvalRoutes.registerRoutes(adminApp);
       adminApp.get('/admin/tools', (_request, reply) => {
         return reply.send({ tools: this.registry.getAllTools(), errors: [] });
+      });
+      adminApp.get('/activity', (_request, reply) => {
+        return reply.send({ events: this.activityStream.recent() });
       });
       done();
     });
@@ -375,7 +380,7 @@ export class Gateway {
     this.allowlist.reload(newConfig.agents);
     this.registry.reloadAgents(newConfig.agents);
     // Rebuild adapters to pick up new CLIs/APIs
-    const adapters = buildAdapters(newConfig, this.pool);
+    const adapters = this.buildAdapters();
     this.registry.setAdapters(adapters);
     await this.registry.refresh();
     log.info('Config reloaded: providers, allowlist, registry, and agent configs updated');
@@ -400,6 +405,16 @@ export class Gateway {
   /** SIGKILL any child processes that survived graceful stop. */
   forceKill(): void {
     this.pool?.forceKill();
+  }
+
+  private buildAdapters() {
+    return buildAdapters(this.config, this.pool, {
+      airlock: {
+        hitlEngine: this.hitlEngine,
+        hitlBatcher: this.hitlBatcher,
+        activityStream: this.activityStream,
+      },
+    });
   }
 }
 

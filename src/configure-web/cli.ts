@@ -3215,6 +3215,9 @@ const INDEX_HTML = `<!doctype html>
           refreshStatus().catch(() => {});
           render();
         }
+        if (message.type === 'activity') {
+          notifyActivity(message.event);
+        }
       };
       events.onerror = () => {
         events.close();
@@ -3227,6 +3230,17 @@ const INDEX_HTML = `<!doctype html>
       new Notification('Airlock: ' + request.tool, {
         body: 'agent: ' + request.agentId + '\\n' + request.code,
         tag: request.code,
+        silent: !el('approvalSound').checked
+      });
+    }
+
+    function notifyActivity(event) {
+      if (!event || event.kind !== 'notification') return;
+      if (!el('approvalNotifs').checked) return;
+      if (!('Notification' in window) || Notification.permission !== 'granted') return;
+      new Notification(event.title || 'Airlock notification', {
+        body: event.body || '',
+        tag: event.id,
         silent: !el('approvalSound').checked
       });
     }

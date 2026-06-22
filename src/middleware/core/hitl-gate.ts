@@ -1,4 +1,5 @@
 import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
+import type { AirlockCallContext } from '../../airlock/context.js';
 import type { SandboxDisplayInfo } from '../../sandbox/index.js';
 import type { Middleware, ToolCallResponse } from '../types.js';
 
@@ -11,8 +12,12 @@ function errorResponse(message: string): ToolCallResponse {
 
 function serializeAuditArgs(args: Record<string, unknown>, meta: Record<string, unknown>): string {
   const sandbox = meta.sandbox_info;
-  if (!sandbox) return JSON.stringify(args);
-  return JSON.stringify({ ...args, _airlock: { sandbox } });
+  const context = meta.airlockContext as AirlockCallContext | undefined;
+  if (!sandbox && !context) return JSON.stringify(args);
+  return JSON.stringify({
+    ...args,
+    _airlock: { ...(context ?? {}), ...(sandbox ? { sandbox } : {}) },
+  });
 }
 
 function redactApprovalArgs(
@@ -28,11 +33,13 @@ export function hitlGateMiddleware(): Middleware {
 
     const { hitlEngine, hitlBatcher, auditLogger } = ctx.deps;
     const sandboxInfo = ctx.meta.sandbox_info as SandboxDisplayInfo | undefined;
+    const airlockContext = ctx.meta.airlockContext as AirlockCallContext | undefined;
     const approvalArgs = redactApprovalArgs(auditLogger, ctx.args);
     const ticket = hitlEngine.create({
       agentId: ctx.agentId,
       tool: ctx.toolName,
       args: approvalArgs,
+      ...(airlockContext ? { context: airlockContext } : {}),
       sandbox: sandboxInfo,
     });
 
@@ -42,6 +49,7 @@ export function hitlGateMiddleware(): Middleware {
       agentId: ctx.agentId,
       tool: ctx.toolName,
       args: approvalArgs,
+      ...(airlockContext ? { context: airlockContext } : {}),
       ...(sandboxInfo ? { sandbox: sandboxInfo } : {}),
       timeoutMs: hitlEngine.timeoutMs,
     });

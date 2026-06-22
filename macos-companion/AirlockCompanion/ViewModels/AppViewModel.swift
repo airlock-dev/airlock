@@ -232,6 +232,9 @@ final class AppViewModel: ObservableObject {
             }
             moveToResolved(code: code, action: action)
             notificationManager.removeNotification(code: code)
+
+        case .activity(let event):
+            notificationManager.showNotification(for: event, soundEnabled: soundEnabled)
         }
     }
 

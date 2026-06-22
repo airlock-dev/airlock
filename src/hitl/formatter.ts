@@ -33,6 +33,8 @@ export function formatNotification(req: HitlNotification): string {
     ``,
     `Agent: ${req.agentId}`,
     `Tool:  ${req.tool}`,
+    req.context?.reason ? `Reason: ${req.context.reason}` : undefined,
+    req.context?.note ? `Note: ${req.context.note}` : undefined,
     argLines,
     sandboxLines,
     ``,

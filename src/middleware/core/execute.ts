@@ -1,10 +1,15 @@
 import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
+import type { AirlockCallContext } from '../../airlock/context.js';
 import type { Middleware, ToolCallResponse } from '../types.js';
 
 function serializeAuditArgs(args: Record<string, unknown>, meta: Record<string, unknown>): string {
   const sandbox = meta.sandbox_info;
-  if (!sandbox) return JSON.stringify(args);
-  return JSON.stringify({ ...args, _airlock: { sandbox } });
+  const context = meta.airlockContext as AirlockCallContext | undefined;
+  if (!sandbox && !context) return JSON.stringify(args);
+  return JSON.stringify({
+    ...args,
+    _airlock: { ...(context ?? {}), ...(sandbox ? { sandbox } : {}) },
+  });
 }
 
 export function executeMiddleware(): Middleware {

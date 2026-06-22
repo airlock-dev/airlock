@@ -3,6 +3,7 @@ import type { BackendAdapter } from '../backend/types.js';
 import type { AllowlistEngine } from '../allowlist/engine.js';
 import type { AgentConfig } from '../config/schema.js';
 import { sanitizeToolDescription } from './sanitizer.js';
+import { addAskPolicyGuidance } from './airlock-policy.js';
 import { childLogger } from '../util/logger.js';
 
 const log = childLogger('registry');
@@ -51,10 +52,7 @@ export class ToolRegistry {
 
     const filtered = this.cachedTools
       .filter((t) => this.allowlist.evaluate(agentId, t.name) !== 'deny')
-      .map((t) => ({
-        ...t,
-        description: sanitizeToolDescription(t.name, t.description, overrides[t.name]?.description),
-      }));
+      .map((t) => this.applyAgentView(agentId, t, overrides[t.name]?.description));
 
     // Add alias tools from tool_overrides that have alias_of
     for (const [aliasName, override] of Object.entries(overrides)) {
@@ -71,9 +69,7 @@ export class ToolRegistry {
       if (this.allowlist.evaluate(agentId, aliasName) === 'deny') continue;
 
       filtered.push({
-        ...baseTool,
-        name: aliasName,
-        description: sanitizeToolDescription(aliasName, baseTool.description, override.description),
+        ...this.applyAgentView(agentId, { ...baseTool, name: aliasName }, override.description),
       });
     }
 
@@ -118,6 +114,15 @@ export class ToolRegistry {
   async stopAll(): Promise<void> {
     await Promise.allSettled(this.adapters.map((a) => a.stop()));
   }
+
+  private applyAgentView(agentId: string, tool: Tool, overrideDescription?: string): Tool {
+    const decision = this.allowlist.evaluate(agentId, tool.name);
+    const sanitized: Tool = {
+      ...tool,
+      description: sanitizeToolDescription(tool.name, tool.description, overrideDescription),
+    };
+    return decision === 'ask' ? addAskPolicyGuidance(sanitized) : sanitized;
+  }
 }
 
 /** Map adapter ID conventions to the tool name prefix they own. */
@@ -126,6 +131,7 @@ function getAdapterPrefix(adapter: BackendAdapter): string | null {
   if (id.startsWith('mcp:')) return id.slice(4) + '/';
   if (id === 'builtin:exec') return 'exec/';
   if (id === 'builtin:http') return 'http/';
+  if (id === 'builtin:airlock') return 'airlock/';
   if (id.startsWith('cli:')) return id.slice(4) + '/';
   if (id.startsWith('api:')) return id.slice(4) + '/';
   return null;

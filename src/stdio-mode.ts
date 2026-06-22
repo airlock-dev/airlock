@@ -13,6 +13,7 @@ import type { Config } from './config/loader.js';
 import type { ApprovalApi } from './hitl/providers/types.js';
 import { getMcpConfigs } from './config/schema.js';
 import { buildAdapters } from './backend/factory.js';
+import { ActivityStream } from './activity/stream.js';
 import { childLogger } from './util/logger.js';
 
 const log = childLogger('stdio-mode');
@@ -61,6 +62,7 @@ export async function runStdioMode(
     configPath,
     auditLogger,
   });
+  const activityStream = new ActivityStream();
 
   hitlEngine = new HitlEngine(auditLogger, hitlProvider, config.approvals.timeout_ms);
 
@@ -89,7 +91,9 @@ export async function runStdioMode(
   await pool.initialize();
 
   // Build adapters from config (MCP, builtins, CLIs, APIs)
-  const adapters = buildAdapters(config, pool);
+  const adapters = buildAdapters(config, pool, {
+    airlock: { hitlEngine, hitlBatcher, activityStream },
+  });
 
   const allowlist = new AllowlistEngine(config.agents);
   const registry = new ToolRegistry(adapters, allowlist, config.agents);
@@ -117,7 +121,9 @@ export async function runStdioMode(
         .then(() => {
           allowlist.reload(newConfig.agents);
           registry.reloadAgents(newConfig.agents);
-          const newAdapters = buildAdapters(newConfig, pool);
+          const newAdapters = buildAdapters(newConfig, pool, {
+            airlock: { hitlEngine, hitlBatcher, activityStream },
+          });
           registry.setAdapters(newAdapters);
           return registry.refresh();
         })

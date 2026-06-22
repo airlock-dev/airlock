@@ -4,6 +4,7 @@ import { parse as parseYaml } from 'yaml';
 import { GatewayConfig, getBuiltinProviders, withEnvVarResolution } from './schema.js';
 import { applyProfiles } from './profiles.js';
 import { matches } from '../allowlist/pattern.js';
+import { AIRLOCK_NON_ASK_TOOLS } from '../airlock/tools.js';
 import { childLogger } from '../util/logger.js';
 import type { z } from 'zod';
 
@@ -358,6 +359,17 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
 
     // Check for unreachable ask: ask pattern also matched by deny
     for (const askPattern of agent.ask) {
+      const forbiddenAirlockTool = AIRLOCK_NON_ASK_TOOLS.find((tool) => matches(askPattern, tool));
+      if (forbiddenAirlockTool) {
+        diagnostics.push({
+          level: 'error',
+          agent: agentId,
+          message: `"${askPattern}" puts ${forbiddenAirlockTool} behind ask, which is not allowed.`,
+          suggestion:
+            'Move Airlock human-attention tools to allow or deny. They cannot require approval without creating recursive approval.',
+        });
+      }
+
       for (const denyPattern of agent.deny) {
         if (
           matches(denyPattern, askPattern) ||

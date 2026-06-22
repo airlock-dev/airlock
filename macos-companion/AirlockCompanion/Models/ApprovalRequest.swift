@@ -159,3 +159,15 @@ struct ResolvedRequest: Identifiable, Equatable, Sendable {
         self.resolvedAt = resolvedAt
     }
 }
+
+// MARK: - ActivityEvent
+
+struct ActivityEvent: Codable, Identifiable, Equatable, Sendable {
+    let id: String
+    let kind: String
+    let agentId: String
+    let title: String
+    let body: String
+    let severity: String
+    let createdAt: String
+}

@@ -117,6 +117,31 @@ final class NotificationManager: NSObject, ObservableObject, UNUserNotificationC
         }
     }
 
+    func showNotification(for event: ActivityEvent, soundEnabled: Bool = true) {
+        guard let center = notificationCenter else { return }
+        guard event.kind == "notification" else { return }
+
+        let content = UNMutableNotificationContent()
+        content.title = event.title
+        content.body = event.body
+
+        if soundEnabled {
+            content.sound = .default
+        }
+
+        let notificationRequest = UNNotificationRequest(
+            identifier: event.id,
+            content: content,
+            trigger: nil
+        )
+
+        center.add(notificationRequest)
+
+        if soundEnabled {
+            NSSound(named: .init("Blow"))?.play()
+        }
+    }
+
     func removeNotification(code: String) {
         guard let center = notificationCenter else { return }
         center.removeDeliveredNotifications(withIdentifiers: [code])

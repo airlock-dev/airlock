@@ -3,6 +3,7 @@ import Foundation
 enum SSEMessage: Sendable {
     case newRequest(ApprovalRequest)
     case resolved(code: String, action: String)
+    case activity(ActivityEvent)
 
     static func parse(from data: Data) -> SSEMessage? {
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -28,6 +29,15 @@ enum SSEMessage: Sendable {
                 return nil
             }
             return .resolved(code: code, action: action)
+
+        case "activity":
+            guard let eventDict = json["event"],
+                  let eventData = try? JSONSerialization.data(withJSONObject: eventDict),
+                  let event = try? JSONDecoder().decode(ActivityEvent.self, from: eventData)
+            else {
+                return nil
+            }
+            return .activity(event)
 
         default:
             return nil

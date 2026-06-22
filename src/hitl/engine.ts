@@ -1,6 +1,7 @@
 import { generateId, generateApprovalCode } from '../util/id.js';
 import type { AuditLogger } from '../audit/logger.js';
 import type { SandboxDisplayInfo } from '../sandbox/index.js';
+import type { AirlockCallContext } from '../airlock/context.js';
 import type { HitlProvider, ApprovalApi } from './providers/types.js';
 import { childLogger } from '../util/logger.js';
 
@@ -20,6 +21,7 @@ interface PendingRequest {
   agentId: string;
   tool: string;
   args: Record<string, unknown>;
+  context?: AirlockCallContext;
   sandbox?: SandboxDisplayInfo;
   resolve: (result: HitlResult) => void;
   timer?: NodeJS.Timeout; // undefined when timeoutMs === 0 (no timeout)
@@ -57,6 +59,7 @@ export class HitlEngine implements ApprovalApi {
     agentId: string;
     tool: string;
     args: Record<string, unknown>;
+    context?: AirlockCallContext;
     sandbox?: SandboxDisplayInfo;
   }): HitlTicket {
     const id = generateId();
@@ -69,7 +72,7 @@ export class HitlEngine implements ApprovalApi {
       code,
       agent_id: params.agentId,
       tool: params.tool,
-      args: JSON.stringify(approvalArgs),
+      args: JSON.stringify(withContext(approvalArgs, params.context)),
       status: 'pending',
       created_at: new Date().toISOString(),
     });
@@ -148,6 +151,7 @@ export class HitlEngine implements ApprovalApi {
     agentId: string;
     tool: string;
     args: Record<string, unknown>;
+    context?: AirlockCallContext;
   }> {
     return Array.from(this.pending.values()).map((r) => ({
       id: r.id,
@@ -155,6 +159,7 @@ export class HitlEngine implements ApprovalApi {
       agentId: r.agentId,
       tool: r.tool,
       args: r.args,
+      ...(r.context ? { context: r.context } : {}),
       ...(r.sandbox ? { sandbox: r.sandbox } : {}),
     }));
   }
@@ -198,6 +203,9 @@ export class HitlEngine implements ApprovalApi {
         remaining = 0; // no timeout
       }
 
+      const context = readContext(args);
+      const cleanArgs = stripStoredContext(args);
+
       // Re-arm without re-notifying (provider may not be ready yet)
       const promise = new Promise<HitlResult>((resolve) => {
         const req: PendingRequest = {
@@ -205,7 +213,8 @@ export class HitlEngine implements ApprovalApi {
           code: row.code,
           agentId: row.agent_id,
           tool: row.tool,
-          args,
+          args: cleanArgs,
+          ...(context ? { context } : {}),
           resolve,
         };
         this.pending.set(row.id, req);
@@ -232,7 +241,8 @@ export class HitlEngine implements ApprovalApi {
             code: row.code,
             agentId: row.agent_id,
             tool: row.tool,
-            args,
+            args: cleanArgs,
+            ...(context ? { context } : {}),
             sandbox: undefined,
             timeoutMs: remaining,
             badgeCount: this.getPending().length,
@@ -257,4 +267,27 @@ export class HitlEngine implements ApprovalApi {
       .updateBadge?.(badgeCount)
       .catch((err) => log.warn({ err }, 'Failed to update approval badge count'));
   }
+}
+
+function withContext(
+  args: Record<string, unknown>,
+  context: AirlockCallContext | undefined
+): Record<string, unknown> {
+  if (!context) return args;
+  return { ...args, _airlock: context };
+}
+
+function readContext(args: Record<string, unknown>): AirlockCallContext | undefined {
+  const raw = args._airlock;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const source = raw as Record<string, unknown>;
+  const context: AirlockCallContext = {};
+  if (typeof source.reason === 'string') context.reason = source.reason;
+  if (typeof source.note === 'string') context.note = source.note;
+  return context.reason || context.note ? context : undefined;
+}
+
+function stripStoredContext(args: Record<string, unknown>): Record<string, unknown> {
+  const { _airlock: _ignored, ...cleanArgs } = args;
+  return cleanArgs;
 }

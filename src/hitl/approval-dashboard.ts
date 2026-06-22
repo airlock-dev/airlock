@@ -4,6 +4,7 @@ import { rememberAllow, type RememberAllowMode } from '../config/mutator.js';
 import { childLogger } from '../util/logger.js';
 import { VERSION } from '../version.js';
 import type { ApprovalApi, HitlNotification, HitlProvider } from './providers/types.js';
+import type { ActivityStream } from '../activity/stream.js';
 
 const log = childLogger('hitl-dashboard');
 
@@ -13,10 +14,17 @@ const CACHE_TTL_MS = 60 * 60 * 1000;
 export class ApprovalDashboardRoutes implements HitlProvider {
   private clients = new Set<ServerResponse>();
   private pending = new Map<string, HitlNotification>();
+  private unsubscribeActivity?: () => void;
 
-  constructor(private approvalApi: ApprovalApi) {}
+  constructor(
+    private approvalApi: ApprovalApi,
+    private activityStream?: ActivityStream
+  ) {}
 
   init(): Promise<void> {
+    this.unsubscribeActivity = this.activityStream?.subscribe((event) => {
+      this.broadcast({ type: 'activity', event });
+    });
     return Promise.resolve();
   }
 
@@ -45,6 +53,8 @@ export class ApprovalDashboardRoutes implements HitlProvider {
       }
     }
     this.clients.clear();
+    this.unsubscribeActivity?.();
+    this.unsubscribeActivity = undefined;
     return Promise.resolve();
   }
 
@@ -59,14 +69,17 @@ export class ApprovalDashboardRoutes implements HitlProvider {
     for (const pendingRequest of this.pending.values()) {
       reply.raw.write(`data: ${JSON.stringify({ type: 'new', request: pendingRequest })}\n\n`);
     }
+    for (const event of [...(this.activityStream?.recent() ?? [])].reverse()) {
+      reply.raw.write(`data: ${JSON.stringify({ type: 'activity', event })}\n\n`);
+    }
     request.raw.on('close', () => this.clients.delete(reply.raw));
   }
 
-  private async handleApprove(
+  private handleApprove(
     request: FastifyRequest,
     reply: FastifyReply,
     configPath?: string
-  ): Promise<{ ok: true } | { error: string }> {
+  ): { ok: true } | { error: string } {
     const query = request.query as Record<string, unknown>;
     const code = typeof query.code === 'string' ? query.code : '';
     if (!code) return { ok: true };
@@ -88,10 +101,7 @@ export class ApprovalDashboardRoutes implements HitlProvider {
     return { ok: true };
   }
 
-  private handleDeny(
-    request: FastifyRequest,
-    _reply: FastifyReply
-  ): { ok: true } {
+  private handleDeny(request: FastifyRequest, _reply: FastifyReply): { ok: true } {
     const query = request.query as Record<string, unknown>;
     const code = typeof query.code === 'string' ? query.code : '';
     if (code) {
@@ -103,7 +113,9 @@ export class ApprovalDashboardRoutes implements HitlProvider {
     return { ok: true };
   }
 
-  private async handleLatestVersion(reply: FastifyReply): Promise<{ latest?: string; error?: string }> {
+  private async handleLatestVersion(
+    reply: FastifyReply
+  ): Promise<{ latest?: string; error?: string }> {
     const now = Date.now();
     if (latestVersionCache && now - latestVersionCache.fetchedAt < CACHE_TTL_MS) {
       return { latest: latestVersionCache.version };
@@ -153,7 +165,10 @@ export class ApprovalDashboardRoutes implements HitlProvider {
       log.info(result, 'Updated config from approval decision');
       return { status: 200 };
     } catch (err) {
-      log.error({ err, code: pendingRequest.code, remember }, 'Failed to update config from approval decision');
+      log.error(
+        { err, code: pendingRequest.code, remember },
+        'Failed to update config from approval decision'
+      );
       return { status: 500, error: 'Failed to update config' };
     }
   }

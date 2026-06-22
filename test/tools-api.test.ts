@@ -54,6 +54,10 @@ function makeMockRegistry(tools: Tool[] = [], callResult: unknown = { ok: true }
   };
 }
 
+function withReason(args: Record<string, unknown> = {}): Record<string, unknown> {
+  return { ...args, _airlock: { reason: 'Testing approval-gated behavior.' } };
+}
+
 const SAMPLE_TOOLS: Tool[] = [
   {
     name: 'github/list_prs',
@@ -249,8 +253,7 @@ describe('toolsApiPlugin', () => {
     it('still falls back to the global secret for agents without tokens', async () => {
       const tokenApp = Fastify({ logger: false });
       await tokenApp.register(toolsApiPlugin, {
-        getDeps: (agentId) =>
-          agentId === 'myagent' ? makeDeps(agentId, AGENT_CONFIG) : undefined,
+        getDeps: (agentId) => (agentId === 'myagent' ? makeDeps(agentId, AGENT_CONFIG) : undefined),
         secret: 'global-secret',
       });
       await tokenApp.ready();
@@ -522,7 +525,7 @@ describe('toolsApiPlugin', () => {
         method: 'POST',
         url: '/agents/askagent/tools/invoke',
         headers: { 'content-type': 'application/json' },
-        payload: { tool: 'github/list_prs', args: {} },
+        payload: { tool: 'github/list_prs', args: withReason() },
       });
 
       await vi.waitFor(() => {
@@ -544,7 +547,7 @@ describe('toolsApiPlugin', () => {
         method: 'POST',
         url: '/agents/askagent/tools/invoke',
         headers: { 'content-type': 'application/json' },
-        payload: { tool: 'github/list_prs' },
+        payload: { tool: 'github/list_prs', args: withReason() },
       });
 
       await vi.waitFor(() => {
@@ -581,7 +584,7 @@ describe('toolsApiPlugin', () => {
         method: 'POST',
         url: '/agents/askagent/tools/invoke',
         headers: { 'content-type': 'application/json' },
-        payload: { tool: 'github/list_prs' },
+        payload: { tool: 'github/list_prs', args: withReason() },
       });
       const body = res.json() as { success: boolean; error: string };
       expect(body.success).toBe(false);

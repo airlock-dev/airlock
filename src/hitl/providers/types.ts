@@ -1,4 +1,5 @@
 import type { SandboxDisplayInfo } from '../../sandbox/index.js';
+import type { AirlockCallContext } from '../../airlock/context.js';
 
 export interface HitlNotification {
   id: string;
@@ -9,6 +10,7 @@ export interface HitlNotification {
   timeoutMs: number;
   badgeCount?: number;
   sandbox?: SandboxDisplayInfo;
+  context?: AirlockCallContext;
 }
 
 export interface HitlProvider {

@@ -42,6 +42,17 @@ Denied tools are not just blocked at call time — they are completely removed f
 
 This is important because agents often try to use tools they can see, even if they're told not to. Hiding the tool entirely removes the temptation and the attack surface.
 
+## Approval context
+
+Tools routed through `ask` are annotated in the MCP tool schema. Agents must
+include `_airlock.reason` with the call, explaining why they are requesting the
+action now. Airlock strips `_airlock` before forwarding the call to the upstream
+tool, but includes the reason in the approval request shown to the user.
+
+The built-in notification tools `airlock/ask_user`, `airlock/notify_user`, and
+`airlock/log` cannot themselves be routed through `ask`; they must be allowed or
+denied.
+
 ## Glob patterns
 
 Allow, ask, and deny lists support glob-style wildcards:
