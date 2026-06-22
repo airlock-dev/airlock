@@ -4,13 +4,13 @@ pre-commit:
     typecheck:
       run: node_modules/.bin/tsc --noEmit
     lint:
-      glob: "src/**/*.ts"
+      glob: 'src/**/*.ts'
       run: node_modules/.bin/eslint --max-warnings 0 {staged_files}
     format:
-      glob: "**/*.{ts,js,md,yaml,yml}"
+      glob: '**/*.{ts,js,md,yaml,yml}'
       run: node_modules/.bin/prettier --check {staged_files}
     secrets:
-      run: gitleaks protect --staged --no-banner
+      run: npm run secrets:staged
     schema:
-      glob: "src/config/schema.ts"
+      glob: 'src/config/schema.ts'
       run: npm run schema && git diff --exit-code schema.json || (echo "schema.json is out of date — run 'npm run schema' and stage it" && exit 1)
