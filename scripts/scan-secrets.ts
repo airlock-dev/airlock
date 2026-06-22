@@ -1,38 +1,26 @@
 #!/usr/bin/env tsx
 import { spawnSync } from 'node:child_process';
+import { readFileSync, statSync } from 'node:fs';
 import { type SecretFinding, formatSecretFindings, scanSecrets } from '../src/security/secrets.js';
 
 const MAX_FILE_BYTES = 1024 * 1024;
 
 const args = new Set(process.argv.slice(2));
 const stagedOnly = args.has('--staged');
+const allFiles = args.has('--all');
 
-if (!stagedOnly) {
-  console.error('Usage: tsx scripts/scan-secrets.ts --staged');
+if (stagedOnly === allFiles) {
+  console.error('Usage: tsx scripts/scan-secrets.ts --staged|--all');
   process.exit(2);
 }
-
-const files = git(['diff', '--cached', '--name-only', '--diff-filter=ACMR'])
-  .trim()
-  .split('\n')
-  .filter(Boolean);
 
 const findings: SecretFinding[] = [];
 const skipped: string[] = [];
 
-for (const file of files) {
-  const stagedPath = `:${file}`;
-  const size = Number(git(['cat-file', '-s', stagedPath]).trim());
-  if (size > MAX_FILE_BYTES) {
-    skipped.push(`${file} (larger than ${MAX_FILE_BYTES} bytes)`);
-    continue;
-  }
-
-  const content = gitBytes(['show', stagedPath]);
-
-  if (!isLikelyText(content)) continue;
-
-  findings.push(...scanSecrets(file, content.toString('utf8')));
+if (stagedOnly) {
+  scanStagedFiles();
+} else {
+  scanWorkingTree();
 }
 
 if (findings.length > 0) {
@@ -50,6 +38,52 @@ if (skipped.length > 0) {
 }
 
 console.log('Secret scan passed.');
+
+function scanStagedFiles(): void {
+  const files = git(['diff', '--cached', '--name-only', '--diff-filter=ACMR'])
+    .trim()
+    .split('\n')
+    .filter(Boolean);
+
+  for (const file of files) {
+    const stagedPath = `:${file}`;
+    const size = Number(git(['cat-file', '-s', stagedPath]).trim());
+    if (size > MAX_FILE_BYTES) {
+      skipped.push(`${file} (larger than ${MAX_FILE_BYTES} bytes)`);
+      continue;
+    }
+
+    scanFileContent(file, gitBytes(['show', stagedPath]));
+  }
+}
+
+function scanWorkingTree(): void {
+  const files = git(['ls-files', '-z', '--cached', '--others', '--exclude-standard'])
+    .split('\0')
+    .filter(Boolean);
+
+  for (const file of files) {
+    let size: number;
+    try {
+      size = statSync(file).size;
+    } catch {
+      continue;
+    }
+
+    if (size > MAX_FILE_BYTES) {
+      skipped.push(`${file} (larger than ${MAX_FILE_BYTES} bytes)`);
+      continue;
+    }
+
+    scanFileContent(file, readFileSync(file));
+  }
+}
+
+function scanFileContent(file: string, content: Buffer): void {
+  if (!isLikelyText(content)) return;
+
+  findings.push(...scanSecrets(file, content.toString('utf8')));
+}
 
 function git(args: string[]): string {
   const result = spawnSync('git', args, {

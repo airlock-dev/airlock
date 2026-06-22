@@ -32,6 +32,12 @@ describe('scanSecrets()', () => {
     expect(findings).toEqual([]);
   });
 
+  it('allows code references assigned to secret-shaped variable names', () => {
+    const findings = scanSecrets('src/server.ts', 'const token = deps.agentConfig.token;');
+
+    expect(findings).toEqual([]);
+  });
+
   it('redacts findings in formatter output', () => {
     const secret = `github_pat_${'abcdefghijklmnopqrstuvwxyz'}1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ`;
     const findings = scanSecrets('config.yaml', `token: ${secret}`);

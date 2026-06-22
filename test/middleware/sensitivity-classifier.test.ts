@@ -29,48 +29,73 @@ function makeNext(text: string): () => Promise<ToolCallResponse> {
 
 describe('sensitivityClassifierMiddleware — heuristic', () => {
   it('detects JWT tokens in response and logs (no escalation on response phase)', async () => {
-    const mw = sensitivityClassifierMiddleware({ mode: 'escalate', threshold: 0.5, backend: 'heuristic' });
+    const mw = sensitivityClassifierMiddleware({
+      mode: 'escalate',
+      threshold: 0.5,
+      backend: 'heuristic',
+    });
     const ctx = makeCtx();
-    await mw(ctx, makeNext('token: eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abc123def456'));
+    const token = `eyJhbGciOiJIUzI1NiJ9.${'eyJzdWIiOiIxMjM0NTY3ODkwIn0'}.abc123def456`;
+    await mw(ctx, makeNext(`token: ${token}`));
     expect(ctx.meta.needsApproval).toBeUndefined();
     expect(ctx.deps.auditLogger.log).toHaveBeenCalledWith(
-      expect.objectContaining({ result: 'sensitivity_response' }),
+      expect.objectContaining({ result: 'sensitivity_response' })
     );
   });
 
   it('detects internal IPs', async () => {
-    const mw = sensitivityClassifierMiddleware({ mode: 'detect', threshold: 0.3, backend: 'heuristic' });
+    const mw = sensitivityClassifierMiddleware({
+      mode: 'detect',
+      threshold: 0.3,
+      backend: 'heuristic',
+    });
     const ctx = makeCtx();
     await mw(ctx, makeNext('server at 192.168.1.100'));
     expect(ctx.deps.auditLogger.log).toHaveBeenCalled();
   });
 
   it('detects password fields in response and logs (no escalation on response phase)', async () => {
-    const mw = sensitivityClassifierMiddleware({ mode: 'escalate', threshold: 0.7, backend: 'heuristic' });
+    const mw = sensitivityClassifierMiddleware({
+      mode: 'escalate',
+      threshold: 0.7,
+      backend: 'heuristic',
+    });
     const ctx = makeCtx();
     await mw(ctx, makeNext('password: "hunter2"'));
     expect(ctx.meta.needsApproval).toBeUndefined();
     expect(ctx.deps.auditLogger.log).toHaveBeenCalledWith(
-      expect.objectContaining({ result: 'sensitivity_response' }),
+      expect.objectContaining({ result: 'sensitivity_response' })
     );
   });
 
   it('detects phone numbers at low threshold', async () => {
-    const mw = sensitivityClassifierMiddleware({ mode: 'detect', threshold: 0.2, backend: 'heuristic' });
+    const mw = sensitivityClassifierMiddleware({
+      mode: 'detect',
+      threshold: 0.2,
+      backend: 'heuristic',
+    });
     const ctx = makeCtx();
     await mw(ctx, makeNext('Call me at (555) 123-4567'));
     expect(ctx.deps.auditLogger.log).toHaveBeenCalled();
   });
 
   it('detects emails at low threshold', async () => {
-    const mw = sensitivityClassifierMiddleware({ mode: 'detect', threshold: 0.2, backend: 'heuristic' });
+    const mw = sensitivityClassifierMiddleware({
+      mode: 'detect',
+      threshold: 0.2,
+      backend: 'heuristic',
+    });
     const ctx = makeCtx();
     await mw(ctx, makeNext('user@example.com'));
     expect(ctx.deps.auditLogger.log).toHaveBeenCalled();
   });
 
   it('does not escalate when already escalated', async () => {
-    const mw = sensitivityClassifierMiddleware({ mode: 'escalate', threshold: 0.7, backend: 'heuristic' });
+    const mw = sensitivityClassifierMiddleware({
+      mode: 'escalate',
+      threshold: 0.7,
+      backend: 'heuristic',
+    });
     const ctx = makeCtx({ meta: { needsApproval: true } });
     await mw(ctx, makeNext('SSN: 123-45-6789'));
     // needsApproval was already true, so it stays true but no duplicate set
@@ -78,12 +103,17 @@ describe('sensitivityClassifierMiddleware — heuristic', () => {
   });
 
   it('scans args in pre-execution phase', async () => {
-    const mw = sensitivityClassifierMiddleware({ mode: 'escalate', threshold: 0.7, backend: 'heuristic' });
-    const ctx = makeCtx({ args: { data: 'AKIAIOSFODNN7EXAMPLE' } });
+    const mw = sensitivityClassifierMiddleware({
+      mode: 'escalate',
+      threshold: 0.7,
+      backend: 'heuristic',
+    });
+    const key = `AKIA${'IOSFODNN7'}EXAMPLE`;
+    const ctx = makeCtx({ args: { data: key } });
     await mw(ctx, makeNext('clean output'));
     expect(ctx.meta.needsApproval).toBe(true);
     expect(ctx.deps.auditLogger.log).toHaveBeenCalledWith(
-      expect.objectContaining({ result: 'sensitivity_args' }),
+      expect.objectContaining({ result: 'sensitivity_args' })
     );
   });
 });

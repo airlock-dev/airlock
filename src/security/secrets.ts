@@ -85,7 +85,11 @@ export function scanSecrets(file: string, text: string): SecretFinding[] {
         if (!secret) continue;
 
         const secretStart = match.index + match[0].indexOf(secret);
-        if (isAllowedPlaceholder(secret) || (rule.entropyRequired && !looksHighEntropy(secret))) {
+        if (
+          isAllowedPlaceholder(secret) ||
+          (rule.id === 'generic-secret-assignment' && isLikelyCodeReference(secret)) ||
+          (rule.entropyRequired && !looksHighEntropy(secret))
+        ) {
           continue;
         }
 
@@ -144,6 +148,10 @@ function redactLine(line: string, start: number, length: number): string {
 
 function isAllowedPlaceholder(secret: string): boolean {
   return placeholderPatterns.some((pattern) => pattern.test(secret));
+}
+
+function isLikelyCodeReference(secret: string): boolean {
+  return /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+$/.test(secret);
 }
 
 function looksHighEntropy(secret: string): boolean {
