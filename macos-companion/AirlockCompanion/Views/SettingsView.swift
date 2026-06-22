@@ -28,6 +28,12 @@ struct SettingsView: View {
             urlText = viewModel.dashboardURL
             tokenText = viewModel.gatewayToken
         }
+        .onChange(of: urlText) { _, _ in
+            testConnectionState = nil
+        }
+        .onChange(of: tokenText) { _, _ in
+            testConnectionState = nil
+        }
     }
 
     private var headerCard: some View {
@@ -81,7 +87,7 @@ struct SettingsView: View {
         settingsCard(title: "General", subtitle: "Connection and notifications") {
             VStack(alignment: .leading, spacing: 14) {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Dashboard URL")
+                    Text("Airlock URL")
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(.secondary)
 
@@ -93,36 +99,27 @@ struct SettingsView: View {
                     .font(.system(size: 13, design: .monospaced))
                     .onSubmit(applyConnectionSettings)
 
-                    Text("Gateway bearer token")
+                    Text("Admin API token")
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(.secondary)
 
-                    SecureField(
-                        "AIRLOCK_API_SECRET",
-                        text: $tokenText
-                    )
+                    SecureField("Paste AIRLOCK_API_SECRET", text: $tokenText)
                     .textFieldStyle(.roundedBorder)
                     .font(.system(size: 13, design: .monospaced))
                     .onSubmit(applyConnectionSettings)
 
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack(spacing: 10) {
-                            connectionIndicator
+                    HStack(spacing: 10) {
+                        connectionIndicator
 
-                            Button(testConnectionState == .testing ? "Testing" : "Test connection") {
-                                testConnectionSettings()
-                            }
-                            .controlSize(.small)
-                            .disabled(testConnectionState == .testing)
+                        Button(testConnectionState == .testing ? "Testing" : "Test connection") {
+                            testConnectionSettings()
                         }
-
-                        if let testConnectionState {
-                            testConnectionIndicator(testConnectionState)
-                        }
+                        .controlSize(.small)
+                        .disabled(testConnectionState == .testing)
                     }
 
                     HStack {
-                        Text("Press Return to apply connection changes.")
+                        Text("Press Return or Apply to save.")
                             .font(.system(size: 11))
                             .foregroundStyle(.tertiary)
 
@@ -336,11 +333,14 @@ struct SettingsView: View {
     }
 
     private var connectionIndicator: some View {
-        statusPill(connectionStatus)
+        statusPill(displayedConnectionStatus)
     }
 
-    private func testConnectionIndicator(_ state: TestConnectionState) -> some View {
-        statusPill(state.status)
+    private var displayedConnectionStatus: (title: String, detail: String?, tint: Color) {
+        if hasConnectionError {
+            return connectionStatus
+        }
+        return testConnectionState?.status ?? connectionStatus
     }
 
     private func statusPill(_ status: (title: String, detail: String?, tint: Color)) -> some View {
@@ -375,11 +375,11 @@ struct SettingsView: View {
         switch viewModel.connectionState {
         case .connected:
             if viewModel.gatewayToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                return ("Connected", "no bearer token", .orange)
+                return ("Connected", "no token saved", .orange)
             }
-            return ("Connected and authenticated", nil, .green)
+            return ("Connected", "authenticated", .green)
         case .connecting:
-            return ("Checking connection", nil, .orange)
+            return ("Connecting", nil, .orange)
         case .disconnected(let error):
             guard let error, !error.isEmpty else {
                 return ("Disconnected", nil, .red)
@@ -387,10 +387,17 @@ struct SettingsView: View {
             if error.localizedCaseInsensitiveContains("authentication") ||
                 error.contains("401") ||
                 error.contains("403") {
-                return ("Authentication failed", error, .red)
+                return ("Not authorized", "check token", .red)
             }
             return ("Disconnected", error, .red)
         }
+    }
+
+    private var hasConnectionError: Bool {
+        if case .disconnected(let error) = viewModel.connectionState {
+            return error != nil
+        }
+        return false
     }
 
     private enum TestConnectionState: Equatable {
@@ -404,16 +411,16 @@ struct SettingsView: View {
                 return ("Testing connection", nil, .orange)
             case .succeeded(let authenticated):
                 if authenticated {
-                    return ("Test passed", "authenticated", .green)
+                    return ("Connection test passed", "token accepted", .green)
                 }
-                return ("Test passed", "no bearer token", .orange)
+                return ("Connection test passed", "no token used", .orange)
             case .failed(let error):
                 if error.localizedCaseInsensitiveContains("authentication") ||
                     error.contains("401") ||
                     error.contains("403") {
-                    return ("Test failed", error, .red)
+                    return ("Connection test failed", "token rejected", .red)
                 }
-                return ("Test failed", error, .red)
+                return ("Connection test failed", error, .red)
             }
         }
     }
@@ -625,7 +632,7 @@ struct SettingsView: View {
         let trimmedURL = urlText.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedToken = tokenText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedURL.isEmpty else {
-            testConnectionState = .failed("Dashboard URL is required")
+            testConnectionState = .failed("Airlock URL is required")
             return
         }
 
