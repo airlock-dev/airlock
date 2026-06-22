@@ -1,10 +1,10 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { AgentServerDeps } from '../transport/agent-server.js';
 import type { ToolCallContext } from '../middleware/types.js';
 import { buildMiddlewareChain } from '../middleware/chain-builder.js';
 import { generateId } from '../util/id.js';
 import { childLogger } from '../util/logger.js';
-import { checkRequestSecurity } from '../security/request.js';
+import { checkBearerAuth, checkOrigin } from '../security/request.js';
 
 const log = childLogger('tools-api');
 
@@ -20,6 +20,10 @@ function nonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 // eslint-disable-next-line @typescript-eslint/require-await
 export async function toolsApiPlugin(app: FastifyInstance, opts: ToolsApiOpts): Promise<void> {
   const { getDeps } = opts;
@@ -29,11 +33,22 @@ export async function toolsApiPlugin(app: FastifyInstance, opts: ToolsApiOpts): 
     return `${agentId}:${explicitSessionId}`;
   }
 
-  app.addHook('preHandler', async (request, reply) => {
-    if (!checkRequestSecurity(request, reply, opts)) {
-      return;
+  function checkAgentAuth(
+    request: FastifyRequest,
+    reply: FastifyReply,
+    deps: AgentServerDeps
+  ): boolean {
+    if (!checkOrigin(request, reply, opts.allowedOrigins)) return false;
+
+    const token = deps.agentConfig.token;
+    if (token) {
+      return checkBearerAuth(request, reply, { secret: token, authRequired: true });
     }
-  });
+    return checkBearerAuth(request, reply, {
+      secret: opts.secret,
+      authRequired: opts.authRequired,
+    });
+  }
 
   app.get('/agents/:agentId/tools', async (request, reply) => {
     const { agentId } = request.params as { agentId: string };
@@ -41,6 +56,8 @@ export async function toolsApiPlugin(app: FastifyInstance, opts: ToolsApiOpts): 
     if (!deps) {
       return reply.status(404).send({ error: `Unknown agent: ${agentId}` });
     }
+    if (!checkAgentAuth(request, reply, deps)) return;
+
     const tools = deps.registry.getFiltered(agentId);
     return reply.send({ tools });
   });
@@ -56,11 +73,20 @@ export async function toolsApiPlugin(app: FastifyInstance, opts: ToolsApiOpts): 
     }
 
     const { tool, args = {} } = body;
+    if (!isRecord(args)) {
+      return reply.status(400).send({ error: 'Field "args" must be a JSON object' });
+    }
 
     const headerSessionId = request.headers['x-airlock-session-id'];
     const explicitSessionId =
       body.session_id ?? (Array.isArray(headerSessionId) ? headerSessionId[0] : headerSessionId);
     const sessionKey = downstreamSessionKey(agentId, explicitSessionId);
+    const authDeps = getDeps(agentId);
+    if (!authDeps) {
+      return reply.status(404).send({ error: `Unknown agent: ${agentId}` });
+    }
+    if (!checkAgentAuth(request, reply, authDeps)) return;
+
     const deps = getDeps(agentId, sessionKey);
     if (!deps) {
       return reply.status(404).send({ error: `Unknown agent: ${agentId}` });
@@ -80,6 +106,10 @@ export async function toolsApiPlugin(app: FastifyInstance, opts: ToolsApiOpts): 
 
     const getConfig = deps.getAgentConfig ?? (() => deps.agentConfig);
     const agentConfig = getConfig();
+    const ac = new AbortController();
+    const abort = () => ac.abort();
+    request.raw.once('aborted', abort);
+    reply.raw.once('close', abort);
 
     const chain = buildMiddlewareChain(agentConfig, {
       registry: deps.registry,
@@ -107,6 +137,7 @@ export async function toolsApiPlugin(app: FastifyInstance, opts: ToolsApiOpts): 
         securityConfig: deps.securityConfig ?? { blocked_hosts: [], allowed_local: [] },
       },
       startedAt: Date.now(),
+      signal: ac.signal,
     };
 
     try {
@@ -139,6 +170,9 @@ export async function toolsApiPlugin(app: FastifyInstance, opts: ToolsApiOpts): 
         error: err instanceof Error ? err.message : String(err),
         metadata: { duration_ms },
       });
+    } finally {
+      request.raw.off('aborted', abort);
+      reply.raw.off('close', abort);
     }
   });
 }

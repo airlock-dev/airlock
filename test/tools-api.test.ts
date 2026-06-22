@@ -72,6 +72,10 @@ const SAMPLE_TOOLS: Tool[] = [
 ];
 
 const AGENT_CONFIG = makeAgentConfig({ allow: ['github/*', 'exec/run'] });
+const TOKEN_AGENT_CONFIG = makeAgentConfig({
+  token: 'agent-secret',
+  allow: ['github/*', 'exec/run'],
+});
 
 // ─── Setup ──────────────────────────────────────────────────────────────────
 
@@ -138,6 +142,23 @@ describe('toolsApiPlugin', () => {
     });
   }
 
+  async function registerTokenApp(config = TOKEN_AGENT_CONFIG): Promise<FastifyInstance> {
+    const tokenApp = Fastify({ logger: false });
+    const tokenAllowlist = new AllowlistEngine({ tokenagent: config });
+    await tokenApp.register(toolsApiPlugin, {
+      getDeps: (agentId) =>
+        agentId === 'tokenagent'
+          ? {
+              ...makeDeps(agentId, config),
+              allowlist: tokenAllowlist,
+            }
+          : undefined,
+      secret: 'global-secret',
+    });
+    await tokenApp.ready();
+    return tokenApp;
+  }
+
   // ─── Auth ──────────────────────────────────────────────────────────────────
 
   describe('auth', () => {
@@ -164,6 +185,85 @@ describe('toolsApiPlugin', () => {
     it('returns 200 with valid secret', async () => {
       const res = await getTools('myagent');
       expect(res.statusCode).toBe(200);
+    });
+
+    it('accepts the per-agent token when the agent has one', async () => {
+      const tokenApp = await registerTokenApp();
+
+      const res = await tokenApp.inject({
+        method: 'GET',
+        url: '/agents/tokenagent/tools',
+        headers: { authorization: 'Bearer agent-secret' },
+      });
+
+      expect(res.statusCode).toBe(200);
+
+      await tokenApp.close();
+    });
+
+    it('does not allow the global secret to access an agent with its own token', async () => {
+      const tokenApp = await registerTokenApp();
+
+      const res = await tokenApp.inject({
+        method: 'GET',
+        url: '/agents/tokenagent/tools',
+        headers: { authorization: 'Bearer global-secret' },
+      });
+
+      expect(res.statusCode).toBe(401);
+      expect(res.json()).toEqual({ error: 'Unauthorized' });
+
+      await tokenApp.close();
+    });
+
+    it('requires the per-agent token for invoke requests too', async () => {
+      const tokenApp = await registerTokenApp();
+
+      const denied = await tokenApp.inject({
+        method: 'POST',
+        url: '/agents/tokenagent/tools/invoke',
+        headers: {
+          'content-type': 'application/json',
+          authorization: 'Bearer global-secret',
+        },
+        payload: { tool: 'github/list_prs', args: {} },
+      });
+      expect(denied.statusCode).toBe(401);
+      expect(registry.call).not.toHaveBeenCalled();
+
+      const allowed = await tokenApp.inject({
+        method: 'POST',
+        url: '/agents/tokenagent/tools/invoke',
+        headers: {
+          'content-type': 'application/json',
+          authorization: 'Bearer agent-secret',
+        },
+        payload: { tool: 'github/list_prs', args: {} },
+      });
+      expect(allowed.statusCode).toBe(200);
+      expect(allowed.json().success).toBe(true);
+
+      await tokenApp.close();
+    });
+
+    it('still falls back to the global secret for agents without tokens', async () => {
+      const tokenApp = Fastify({ logger: false });
+      await tokenApp.register(toolsApiPlugin, {
+        getDeps: (agentId) =>
+          agentId === 'myagent' ? makeDeps(agentId, AGENT_CONFIG) : undefined,
+        secret: 'global-secret',
+      });
+      await tokenApp.ready();
+
+      const res = await tokenApp.inject({
+        method: 'GET',
+        url: '/agents/myagent/tools',
+        headers: { authorization: 'Bearer global-secret' },
+      });
+
+      expect(res.statusCode).toBe(200);
+
+      await tokenApp.close();
     });
 
     it('allows requests when no secret is configured', async () => {
@@ -235,6 +335,14 @@ describe('toolsApiPlugin', () => {
         'myagent',
         expect.any(Object)
       );
+    });
+
+    it('returns 400 when args is not an object', async () => {
+      const res = await invoke('myagent', { tool: 'github/list_prs', args: 'repo=airlock' });
+
+      expect(res.statusCode).toBe(400);
+      expect(res.json().error).toContain('args');
+      expect(registry.call).not.toHaveBeenCalled();
     });
   });
 
