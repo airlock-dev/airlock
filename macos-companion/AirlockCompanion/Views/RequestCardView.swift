@@ -46,10 +46,20 @@ struct RequestCardView: View {
 
                 Spacer()
 
-                CountdownTimerView(
-                    deadline: request.deadline,
-                    totalDuration: TimeInterval(request.timeoutMs) / 1000.0
-                )
+                if request.timeoutMs > 0 {
+                    CountdownTimerView(
+                        deadline: request.deadline,
+                        totalDuration: TimeInterval(request.timeoutMs) / 1000.0
+                    )
+                } else {
+                    Text("No timeout")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5)
+                        .background(Color(nsColor: .controlBackgroundColor))
+                        .clipShape(Capsule())
+                }
             }
 
             // Args section - keep cards cheap; rich highlighting lives in detail.

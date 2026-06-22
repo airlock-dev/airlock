@@ -105,14 +105,20 @@ struct SettingsView: View {
                     .font(.system(size: 13, design: .monospaced))
                     .onSubmit(applyConnectionSettings)
 
-                    HStack(spacing: 10) {
-                        connectionIndicator
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack(spacing: 10) {
+                            connectionIndicator
 
-                        Button(testConnectionState == .testing ? "Testing" : "Test connection") {
-                            testConnectionSettings()
+                            Button(testConnectionState == .testing ? "Testing" : "Test connection") {
+                                testConnectionSettings()
+                            }
+                            .controlSize(.small)
+                            .disabled(testConnectionState == .testing)
                         }
-                        .controlSize(.small)
-                        .disabled(testConnectionState == .testing)
+
+                        if let testConnectionState {
+                            testConnectionIndicator(testConnectionState)
+                        }
                     }
 
                     HStack {
@@ -330,9 +336,15 @@ struct SettingsView: View {
     }
 
     private var connectionIndicator: some View {
-        let status = testConnectionState?.status ?? connectionStatus
+        statusPill(connectionStatus)
+    }
 
-        return HStack(spacing: 8) {
+    private func testConnectionIndicator(_ state: TestConnectionState) -> some View {
+        statusPill(state.status)
+    }
+
+    private func statusPill(_ status: (title: String, detail: String?, tint: Color)) -> some View {
+        HStack(spacing: 8) {
             Circle()
                 .fill(status.tint)
                 .frame(width: 8, height: 8)
@@ -599,12 +611,14 @@ struct SettingsView: View {
             return
         }
 
-        viewModel.dashboardURL = trimmedURL
-        viewModel.gatewayToken = trimmedToken
-        urlText = trimmedURL
-        tokenText = trimmedToken
-        testConnectionState = nil
-        viewModel.updateSettings(reconnect: true)
+        do {
+            try viewModel.saveConnectionSettings(baseURL: trimmedURL, bearerToken: trimmedToken)
+            urlText = trimmedURL
+            tokenText = trimmedToken
+            testConnectionState = nil
+        } catch {
+            testConnectionState = .failed(error.localizedDescription)
+        }
     }
 
     private func testConnectionSettings() {

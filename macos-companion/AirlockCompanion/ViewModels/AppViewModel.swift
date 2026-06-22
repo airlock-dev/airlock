@@ -14,8 +14,7 @@ final class AppViewModel: ObservableObject {
     @AppStorage(Constants.UserDefaultsKeys.dashboardURL)
     var dashboardURL: String = Constants.defaultDashboardURL
 
-    @AppStorage(Constants.UserDefaultsKeys.gatewayToken)
-    var gatewayToken: String = ""
+    @Published private(set) var gatewayToken: String = ""
 
     @AppStorage(Constants.UserDefaultsKeys.soundEnabled)
     var soundEnabled: Bool = true
@@ -46,6 +45,7 @@ final class AppViewModel: ObservableObject {
     let notificationManager: NotificationManager
     private var apiClient: AirlockAPIClient
     private let updateChecker: UpdateChecker
+    private let tokenStore = KeychainTokenStore()
     var onSettingsChanged: (() -> Void)?
     private var sseTask: Task<Void, Never>?
     private var updateCheckTask: Task<Void, Never>?
@@ -59,8 +59,7 @@ final class AppViewModel: ObservableObject {
     init() {
         let storedURL = UserDefaults.standard.string(forKey: Constants.UserDefaultsKeys.dashboardURL)
             ?? Constants.defaultDashboardURL
-        let storedToken = UserDefaults.standard.string(forKey: Constants.UserDefaultsKeys.gatewayToken)
-            ?? ""
+        let storedToken = Self.loadStoredGatewayToken(using: tokenStore)
         let sseClient = SSEClient(baseURL: storedURL, bearerToken: storedToken)
         self.sseClient = sseClient
         self.apiClient = AirlockAPIClient(baseURL: storedURL, bearerToken: storedToken)
@@ -169,6 +168,15 @@ final class AppViewModel: ObservableObject {
 
     func testConnection(baseURL: String, bearerToken: String) async throws {
         try await DashboardConnection(baseURL: baseURL, bearerToken: bearerToken).validateHealth()
+    }
+
+    func saveConnectionSettings(baseURL: String, bearerToken: String) throws {
+        let trimmedToken = bearerToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        try tokenStore.save(trimmedToken)
+
+        dashboardURL = baseURL
+        gatewayToken = trimmedToken
+        updateSettings(reconnect: true)
     }
 
     func approveSelectedRequest() {
@@ -335,5 +343,21 @@ final class AppViewModel: ObservableObject {
             availableUpdateVersion = result?.latestVersion
         } catch {
         }
+    }
+
+    private static func loadStoredGatewayToken(using tokenStore: KeychainTokenStore) -> String {
+        let keychainToken = (try? tokenStore.load()) ?? ""
+        let legacyToken = UserDefaults.standard
+            .string(forKey: Constants.UserDefaultsKeys.gatewayToken)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+        if !legacyToken.isEmpty {
+            if keychainToken.isEmpty {
+                try? tokenStore.save(legacyToken)
+            }
+            UserDefaults.standard.removeObject(forKey: Constants.UserDefaultsKeys.gatewayToken)
+        }
+
+        return keychainToken.isEmpty ? legacyToken : keychainToken
     }
 }
