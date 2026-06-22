@@ -8,6 +8,7 @@ import { runDiscover } from './discover/cli.js';
 import { runConfigureAgent } from './configure-agent/cli.js';
 import { runCommandCenter, runConfigureWeb, runDashboard } from './configure-web/cli.js';
 import { runConfigureCli } from './configure-cli/cli.js';
+import { runIntrospection } from './introspect/cli.js';
 import { runSetupOpenclaw } from './setup-openclaw/cli.js';
 import { logger } from './util/logger.js';
 
@@ -54,6 +55,17 @@ if (subcommand === 'discover') {
     console.error(err instanceof Error ? err.message : String(err));
     process.exit(1);
   }
+} else if (
+  subcommand === 'config' ||
+  subcommand === 'explain' ||
+  subcommand === 'who-can' ||
+  subcommand === 'tools' ||
+  subcommand === 'lint'
+) {
+  runIntrospection(process.argv.slice(2)).catch((err) => {
+    console.error(err instanceof Error ? err.message : String(err));
+    process.exit(1);
+  });
 } else {
   runGateway(process.argv.slice(2));
 }
@@ -85,6 +97,11 @@ Usage:
   airlock configure-agent [options]
   airlock configure-web [options]
   airlock setup openclaw
+  airlock config check [options]
+  airlock explain <agent> [options]
+  airlock who-can <tool-or-glob> [options]
+  airlock tools [options]
+  airlock lint [options]
 
 Options:
   -c, --config <path>    Config file path (default: ./airlock.yaml)
@@ -103,6 +120,11 @@ Subcommands:
   configure-agent        Interactive TUI to build allow/ask/deny lists
   configure-web          Browser UI to edit profiles, agents, and permissions
   setup openclaw         Install the airlock-bridge plugin into OpenClaw
+  config check           Validate a local config without starting listeners
+  explain                Explain an agent's effective permissions
+  who-can                Reverse-lookup which agents can use a tool
+  tools                  Enumerate live provider tools
+  lint                   Static config hygiene warnings
 
 Examples:
   # Start full gateway server
@@ -122,6 +144,12 @@ Examples:
 
   # Open the local Airlock command center
   airlock run --config ./airlock.yaml
+
+  # Validate local config for CI or pre-reload checks
+  airlock config check --config ./airlock.yaml --strict
+
+  # Explain one agent's effective permissions
+  airlock explain helena --config ./airlock.yaml
 
   # Discover CLI tool commands
   airlock discover cli git --output git-commands.yaml

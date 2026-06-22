@@ -8,12 +8,55 @@ import type {
   ToolArgPolicyConfig,
 } from './schema.js';
 
-interface ResolvedPermissions {
+export interface ResolvedPermissions {
   allow: string[];
   ask: string[];
   deny: string[];
   arg_policy?: ToolArgPolicyConfig;
   arg_scope?: Record<string, string[]>;
+}
+
+export interface PermissionProvenance {
+  source: string;
+  kind: 'profile' | 'agent';
+}
+
+export interface PermissionWithProvenance {
+  pattern: string;
+  sources: PermissionProvenance[];
+}
+
+export interface ArgScopeExplanation {
+  dimension: string;
+  valueSets: {
+    name: string;
+    values: unknown[];
+    exposeValues: boolean;
+    sources: PermissionProvenance[];
+  }[];
+  bindings: {
+    tool: string;
+    arg: string;
+    constraint: ToolArgConstraintConfig;
+  }[];
+}
+
+export interface AgentPermissionExplanation {
+  agent: string;
+  extendsTree: ExtendsTreeNode[];
+  permissions: {
+    allow: PermissionWithProvenance[];
+    ask: PermissionWithProvenance[];
+    deny: PermissionWithProvenance[];
+  };
+  argScope: ArgScopeExplanation[];
+  argPolicy?: ToolArgPolicyConfig;
+}
+
+export interface ExtendsTreeNode {
+  name: string;
+  kind: 'agent' | 'profile';
+  extends: ExtendsTreeNode[];
 }
 
 type PermissionSource = Pick<
@@ -114,7 +157,7 @@ function pushUnique(values: unknown[], nextValues: unknown[]): void {
   }
 }
 
-function desugarArgScope(config: GatewayConfig, agent: AgentConfig): ToolArgPolicyConfig {
+export function desugarArgScope(config: GatewayConfig, agent: AgentConfig): ToolArgPolicyConfig {
   const policy: ToolArgPolicyConfig = {};
 
   for (const [dimensionName, valueSetNames] of Object.entries(agent.arg_scope ?? {})) {
@@ -275,6 +318,251 @@ export function resolveAgentPermissions(
   });
 
   return unionPermissions(...inherited, agentConfig);
+}
+
+export function explainAgentPermissions(
+  config: GatewayConfig,
+  agentName: string
+): AgentPermissionExplanation {
+  const agent = config.agents[agentName];
+  if (!agent) {
+    throw new Error(`Unknown agent "${agentName}".`);
+  }
+
+  // Reuse the shared resolver first. This preserves cycle/unknown-profile
+  // behavior and ensures the explanation is based on the same merged config
+  // shape used by runtime profile application.
+  const resolvedProfiles = resolveProfiles(config.profiles);
+  const resolved = resolveAgentPermissions(agent, resolvedProfiles);
+  const sourceEntries = collectAgentSources(config, agentName);
+  const provenance = unionPermissionsWithProvenance(sourceEntries);
+  const argScope = explainArgScope(config, sourceEntries, resolved.arg_scope ?? {});
+  const argPolicy = resolveNamedSetPolicy(
+    config,
+    mergeArgPolicy(
+      desugarArgScope(config, { ...agent, arg_scope: resolved.arg_scope }),
+      resolved.arg_policy
+    ),
+    'agents.arg_policy'
+  );
+
+  return {
+    agent: agentName,
+    extendsTree: [buildAgentExtendsTree(config, agentName)],
+    permissions: {
+      allow: resolved.allow.map((pattern) => ({
+        pattern,
+        sources: provenance.allow.get(pattern) ?? [],
+      })),
+      ask: resolved.ask.map((pattern) => ({
+        pattern,
+        sources: provenance.ask.get(pattern) ?? [],
+      })),
+      deny: resolved.deny.map((pattern) => ({
+        pattern,
+        sources: provenance.deny.get(pattern) ?? [],
+      })),
+    },
+    argScope,
+    ...(argPolicy ? { argPolicy } : {}),
+  };
+}
+
+interface SourceEntry {
+  provenance: PermissionProvenance;
+  source: PermissionSource;
+}
+
+function collectAgentSources(config: GatewayConfig, agentName: string): SourceEntry[] {
+  const agent = config.agents[agentName];
+  if (!agent) throw new Error(`Unknown agent "${agentName}".`);
+  const entries = agent.extends.flatMap((profileName) =>
+    collectProfileSources(config.profiles, profileName, [])
+  );
+  entries.push({
+    provenance: { kind: 'agent', source: `agent:${agentName}` },
+    source: agent,
+  });
+  return entries;
+}
+
+function collectProfileSources(
+  profiles: Record<string, ProfileConfig>,
+  profileName: string,
+  path: string[]
+): SourceEntry[] {
+  const profile = profiles[profileName];
+  if (!profile) {
+    const parentName = path.length > 0 ? path[path.length - 1] : profileName;
+    throw new Error(`Profile "${parentName}" extends unknown profile "${profileName}".`);
+  }
+  if (path.includes(profileName)) {
+    const cyclePath = [...path.slice(path.indexOf(profileName)), profileName].join(' -> ');
+    throw new Error(`Profile extends cycle detected: ${cyclePath}.`);
+  }
+
+  return [
+    ...profile.extends.flatMap((parentName) =>
+      collectProfileSources(profiles, parentName, [...path, profileName])
+    ),
+    {
+      provenance: { kind: 'profile', source: `profile:${profileName}` },
+      source: profile,
+    },
+  ];
+}
+
+function unionPermissionsWithProvenance(entries: SourceEntry[]): {
+  allow: Map<string, PermissionProvenance[]>;
+  ask: Map<string, PermissionProvenance[]>;
+  deny: Map<string, PermissionProvenance[]>;
+  argScope: Map<string, Map<string, PermissionProvenance[]>>;
+} {
+  const allow = new Map<string, PermissionProvenance[]>();
+  const ask = new Map<string, PermissionProvenance[]>();
+  const deny = new Map<string, PermissionProvenance[]>();
+  const argScope = new Map<string, Map<string, PermissionProvenance[]>>();
+
+  for (const entry of entries) {
+    for (const pattern of entry.source.allow) pushProvenance(allow, pattern, entry.provenance);
+    for (const pattern of entry.source.ask) pushProvenance(ask, pattern, entry.provenance);
+    for (const pattern of entry.source.deny) pushProvenance(deny, pattern, entry.provenance);
+    for (const [dimensionName, valueSetNames] of Object.entries(entry.source.arg_scope ?? {})) {
+      const byValueSet = getOrCreate(
+        argScope,
+        dimensionName,
+        () => new Map<string, PermissionProvenance[]>()
+      );
+      for (const valueSetName of valueSetNames) {
+        pushProvenance(byValueSet, valueSetName, entry.provenance);
+      }
+    }
+  }
+
+  return { allow, ask, deny, argScope };
+}
+
+function pushProvenance(
+  target: Map<string, PermissionProvenance[]>,
+  key: string,
+  provenance: PermissionProvenance
+): void {
+  const entries = getOrCreate(target, key, () => []);
+  if (
+    !entries.some((entry) => entry.kind === provenance.kind && entry.source === provenance.source)
+  ) {
+    entries.push(provenance);
+  }
+}
+
+function getOrCreate<K, V>(target: Map<K, V>, key: K, create: () => V): V {
+  const existing = target.get(key);
+  if (existing !== undefined) return existing;
+  const next = create();
+  target.set(key, next);
+  return next;
+}
+
+function explainArgScope(
+  config: GatewayConfig,
+  sourceEntries: SourceEntry[],
+  resolvedArgScope: Record<string, string[]>
+): ArgScopeExplanation[] {
+  const provenance = unionPermissionsWithProvenance(sourceEntries).argScope;
+
+  return Object.entries(resolvedArgScope).map(([dimensionName, valueSetNames]) => {
+    const dimension = config.arg_dimensions[dimensionName];
+    if (!dimension) {
+      throw new Error(`arg_scope references unknown arg_dimension "${dimensionName}".`);
+    }
+
+    const valueSets = valueSetNames.map((valueSetName) => {
+      const valueSet = config.value_sets[valueSetName];
+      if (!valueSet) {
+        throw new Error(
+          `arg_scope.${dimensionName} references unknown value_set "${valueSetName}".`
+        );
+      }
+      return {
+        name: valueSetName,
+        values: valueSet.expose_values ? valueSet.values : [],
+        exposeValues: valueSet.expose_values,
+        sources: provenance.get(dimensionName)?.get(valueSetName) ?? [],
+      };
+    });
+
+    const policy = desugarArgScope(config, {
+      ...emptyAgentConfig(),
+      arg_scope: { [dimensionName]: valueSetNames },
+    });
+
+    return {
+      dimension: dimensionName,
+      valueSets,
+      bindings: Object.entries(dimension.bindings).map(([tool, arg]) => {
+        const constraint = policy[tool]?.[arg]?.[0];
+        if (!constraint) {
+          throw new Error(
+            `arg_dimension "${dimensionName}" did not resolve binding ${tool}.${arg}.`
+          );
+        }
+        return { tool, arg, constraint };
+      }),
+    };
+  });
+}
+
+function emptyAgentConfig(): AgentConfig {
+  return {
+    extends: [],
+    allow: [],
+    remember_allow: [],
+    ask: [],
+    deny: [],
+    tool_overrides: {},
+    exec: { allow: [], ask: [], deny: [], env: {}, default_timeout_ms: 30000 },
+    http: { domain_allowlist: [], max_response_bytes: 1048576, timeout_ms: 30000 },
+    sandbox: {
+      enabled: false,
+      presets: [],
+      filesystem: { allow_write: ['.', '/tmp'], deny_read: [], deny_write: [] },
+      network: { allowed_domains: [], denied_domains: [] },
+      overrides: {},
+    },
+  };
+}
+
+function buildAgentExtendsTree(config: GatewayConfig, agentName: string): ExtendsTreeNode {
+  const agent = config.agents[agentName];
+  if (!agent) throw new Error(`Unknown agent "${agentName}".`);
+  return {
+    name: agentName,
+    kind: 'agent',
+    extends: agent.extends.map((profileName) => buildProfileExtendsTree(config, profileName, [])),
+  };
+}
+
+function buildProfileExtendsTree(
+  config: GatewayConfig,
+  profileName: string,
+  path: string[]
+): ExtendsTreeNode {
+  const profile = config.profiles[profileName];
+  if (!profile) {
+    const parentName = path.length > 0 ? path[path.length - 1] : profileName;
+    throw new Error(`Profile "${parentName}" extends unknown profile "${profileName}".`);
+  }
+  if (path.includes(profileName)) {
+    const cyclePath = [...path.slice(path.indexOf(profileName)), profileName].join(' -> ');
+    throw new Error(`Profile extends cycle detected: ${cyclePath}.`);
+  }
+  return {
+    name: profileName,
+    kind: 'profile',
+    extends: profile.extends.map((parentName) =>
+      buildProfileExtendsTree(config, parentName, [...path, profileName])
+    ),
+  };
 }
 
 export function applyProfiles(config: GatewayConfig): void {
