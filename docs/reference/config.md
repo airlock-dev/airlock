@@ -293,8 +293,10 @@ If `server.host` is not loopback, Airlock requires
 bound to loopback behind a reverse proxy, set `require_agent_tokens: true` to
 enforce the same profile isolation.
 
-- `api_secret` protects management, hook, tools API, and MCP routes for agents
-  without their own token.
+- `api_secret` protects management and hook APIs, and acts as the fallback
+  credential for tools API and MCP routes when an agent has no token. If an
+  agent has `token`, `/agents/:agentId/tools*` and MCP routes require that
+  agent token instead.
 - `auth_required` rejects unauthenticated requests even when no secret/token is
   configured.
 - `require_agent_tokens` requires every configured agent to have its own token.

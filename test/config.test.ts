@@ -381,6 +381,26 @@ agents:
     expect(config.agents['agent1'].token).toBe('agent-secret');
   });
 
+  it('allows tools API exposure with per-agent tokens and no global admin secret', () => {
+    const yaml = `
+server:
+  auth_required: true
+  require_agent_tokens: true
+  expose_management_api: false
+  expose_tools_api: true
+  expose_hook_api: false
+agents:
+  agent1:
+    token: agent-secret
+`;
+    const path = join(dir, 'gateway.yaml');
+    writeFileSync(path, yaml);
+    const config = loadConfig(path);
+    expect(config.server.expose_tools_api).toBe(true);
+    expect(config.server.api_secret).toBeUndefined();
+    expect(config.agents['agent1'].token).toBe('agent-secret');
+  });
+
   it('errors when per-agent tokens are required and an agent has no token', () => {
     const yaml = `
 server:

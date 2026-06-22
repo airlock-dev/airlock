@@ -58,10 +58,6 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
   const serverHost = config.server.host;
   const loopbackHosts = new Set(['127.0.0.1', 'localhost', '::1']);
   const isLoopback = loopbackHosts.has(serverHost);
-  const exposesNonMcpRoutes =
-    config.server.expose_management_api ||
-    config.server.expose_tools_api ||
-    config.server.expose_hook_api;
   const agentsWithoutTokens = Object.entries(config.agents)
     .filter(([, agent]) => !agent.token)
     .map(([agentId]) => agentId);
@@ -94,13 +90,16 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
       });
     }
 
-    if (!config.server.api_secret && exposesNonMcpRoutes) {
+    const exposesGlobalSecretRoutes =
+      config.server.expose_management_api || config.server.expose_hook_api;
+
+    if (!config.server.api_secret && exposesGlobalSecretRoutes) {
       diagnostics.push({
         level: 'error',
         message:
-          'server.auth_required is true, but non-MCP APIs are exposed without server.api_secret.',
+          'server.auth_required is true, but management or hook APIs are exposed without server.api_secret.',
         suggestion:
-          'Set server.api_secret, or disable expose_management_api, expose_tools_api, and expose_hook_api.',
+          'Set server.api_secret, or disable expose_management_api and expose_hook_api.',
       });
     }
   }
