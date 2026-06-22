@@ -47,7 +47,7 @@ RUN chmod 0755 /usr/local/bin/airlock-entrypoint /usr/local/bin/airlock-healthch
 USER airlock
 
 VOLUME ["/config", "/data"]
-EXPOSE 4111 4112
+EXPOSE 4111 4112 4113
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD ["node", "/usr/local/bin/airlock-healthcheck.mjs"]

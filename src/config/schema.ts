@@ -439,17 +439,43 @@ export const AuditConfig = z.object({
 });
 export type AuditConfig = z.infer<typeof AuditConfig>;
 
-export const ServerConfig = z.object({
-  port: z.number().int().min(1).max(65535).default(4111),
+export const ManagementApiConfig = z.object({
+  enabled: z.boolean().default(false),
   host: z.string().default('127.0.0.1'),
-  api_secret: EnvString.optional(),
-  auth_required: z.boolean().default(false),
-  require_agent_tokens: z.boolean().default(false),
-  allowed_origins: z.array(z.string()).default([]),
-  expose_management_api: z.boolean().default(true),
-  expose_tools_api: z.boolean().default(true),
+  port: z.number().int().min(1).max(65535).default(4113),
+  insecure_remote_bind: z.boolean().default(false),
   expose_hook_api: z.boolean().default(true),
 });
+export type ManagementApiConfig = z.infer<typeof ManagementApiConfig>;
+
+export const ServerConfig = z
+  .object({
+    port: z.number().int().min(1).max(65535).default(4111),
+    host: z.string().default('127.0.0.1'),
+    api_secret: EnvString.optional(),
+    auth_required: z.boolean().default(false),
+    require_agent_tokens: z.boolean().default(false),
+    allowed_origins: z.array(z.string()).default([]),
+    expose_tools_api: z.boolean().default(true),
+    management_api: ManagementApiConfig.default({}),
+    // Deprecated compatibility aliases. Runtime code must use management_api.
+    expose_management_api: z.boolean().optional(),
+    expose_hook_api: z.boolean().optional(),
+  })
+  .transform((server) => {
+    const management_api = {
+      ...server.management_api,
+      ...(server.expose_management_api !== undefined
+        ? { enabled: server.expose_management_api }
+        : {}),
+      ...(server.expose_hook_api !== undefined ? { expose_hook_api: server.expose_hook_api } : {}),
+    };
+
+    return {
+      ...server,
+      management_api,
+    };
+  });
 export type ServerConfig = z.infer<typeof ServerConfig>;
 
 // --- CLI backend config ---

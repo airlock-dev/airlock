@@ -32,6 +32,7 @@ docker run --rm \
   -v airlock-data:/data \
   -v airlock-npm-cache:/home/airlock/.npm \
   -p 127.0.0.1:4111:4111 \
+  -p 127.0.0.1:4113:4113 \
   -p 127.0.0.1:4112:4112 \
   airlock-bot
 ```
@@ -62,9 +63,9 @@ docker compose -f compose.yaml up --build -d
 
 The compose example runs two services:
 
-| Service | Command | Config Mount | Purpose |
-| --- | --- | --- | --- |
-| `airlock-gateway` | `airlock gateway` | `/config:ro` | MCP/runtime enforcement |
+| Service             | Command             | Config Mount | Purpose                           |
+| ------------------- | ------------------- | ------------ | --------------------------------- |
+| `airlock-gateway`   | `airlock gateway`   | `/config:ro` | MCP/runtime enforcement           |
 | `airlock-dashboard` | `airlock dashboard` | `/config:rw` | Admin UI, config edits, approvals |
 
 Edit `airlock-config/airlock.yaml` for your providers and agents. The dashboard
@@ -92,15 +93,26 @@ server:
   api_secret: ${AIRLOCK_API_SECRET}
   auth_required: true
   require_agent_tokens: true
-  expose_management_api: true
-  expose_tools_api: false
-  expose_hook_api: false
+  expose_tools_api: true
+  management_api:
+    enabled: true
+    host: 0.0.0.0
+    port: 4113
+    insecure_remote_bind: true
+    expose_hook_api: false
 ```
 
 In split mode, `airlock gateway` strips the in-process dashboard approval
-provider and exposes an authenticated approval/event bridge on the gateway
-management API. The standalone dashboard talks to that bridge with
+provider and exposes an authenticated approval/event bridge on the separate
+gateway management API. The standalone dashboard talks to that bridge with
 `AIRLOCK_GATEWAY_SECRET` or `--gateway-secret`.
+
+Keep the management API on loopback when the dashboard runs in the same network
+namespace. In split Compose mode, the dashboard reaches the gateway across the
+Compose network, so the example sets `management_api.host: 0.0.0.0` and the
+required `management_api.insecure_remote_bind: true`. Expose that port only on
+trusted networks. Never publish the management API on the same agent-reachable
+route as `/agents/*`.
 
 For combined mode, bind the dashboard approval UI to `0.0.0.0` only when the
 port is private or protected by your reverse proxy:
@@ -117,21 +129,23 @@ approvals:
 
 A typical VPS deployment has two private upstreams:
 
-| Upstream | Port | Purpose |
-| --- | --- | --- |
-| `airlock-mcp` | `4111` | MCP transport and optional management API |
-| `airlock-dashboard` | `4112` | Browser dashboard and approval flow |
+| Upstream             | Port   | Purpose                             |
+| -------------------- | ------ | ----------------------------------- |
+| `airlock-agent`      | `4111` | Agent MCP and REST tool data-plane  |
+| `airlock-management` | `4113` | Management API control-plane        |
+| `airlock-dashboard`  | `4112` | Browser dashboard and approval flow |
 
 Recommended edge controls:
 
 - Put TLS in front of both ports.
 - Keep the dashboard behind an authenticated proxy, private network, or platform
   access control.
-- Keep MCP clients on bearer tokens even behind the proxy:
+- Keep agent clients on bearer tokens even behind the proxy:
   `auth_required: true` and `require_agent_tokens: true`.
-- Disable APIs you do not need: `expose_tools_api: false` and
-  `expose_hook_api: false`. Split dashboard mode needs
-  `expose_management_api: true` on the private gateway network.
+- Disable APIs you do not need with `server.expose_tools_api: false` for the
+  data-plane REST tools API and `management_api.expose_hook_api: false` for the
+  control-plane hook API. Split dashboard mode needs
+  `management_api.enabled: true` on a trusted management route.
 - Use a narrow browser `allowed_origins` list for the gateway origin you expose.
 
 ## Extending the Image

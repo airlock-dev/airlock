@@ -1812,17 +1812,44 @@
               },
               "default": []
             },
-            "expose_management_api": {
-              "type": "boolean",
-              "default": true
-            },
             "expose_tools_api": {
               "type": "boolean",
               "default": true
             },
+            "management_api": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean",
+                  "default": false
+                },
+                "host": {
+                  "type": "string",
+                  "default": "127.0.0.1"
+                },
+                "port": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 65535,
+                  "default": 4113
+                },
+                "insecure_remote_bind": {
+                  "type": "boolean",
+                  "default": false
+                },
+                "expose_hook_api": {
+                  "type": "boolean",
+                  "default": true
+                }
+              },
+              "additionalProperties": false,
+              "default": {}
+            },
+            "expose_management_api": {
+              "type": "boolean"
+            },
             "expose_hook_api": {
-              "type": "boolean",
-              "default": true
+              "type": "boolean"
             }
           },
           "additionalProperties": false,

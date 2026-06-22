@@ -279,11 +279,15 @@ server:
   api_secret: '${AIRLOCK_API_SECRET}'
   auth_required: true
   require_agent_tokens: true
+  expose_tools_api: true
   allowed_origins:
     - https://airlock.example.com
-  expose_management_api: false
-  expose_tools_api: false
-  expose_hook_api: false
+  management_api:
+    enabled: true
+    host: 127.0.0.1
+    port: 4113
+    insecure_remote_bind: false
+    expose_hook_api: true
 ```
 
 For a self-hosted or remote deployment, keep Airlock behind a TLS/authenticated
@@ -292,6 +296,11 @@ If `server.host` is not loopback, Airlock requires
 `auth_required: true` and per-agent tokens at config load time. When Airlock is
 bound to loopback behind a reverse proxy, set `require_agent_tokens: true` to
 enforce the same profile isolation.
+
+The `server` listener is the agent data-plane. It serves MCP transports
+(`/agents/:agentId/mcp`, `/agents/:agentId/sse`, `/agents/:agentId/messages`)
+and, when `expose_tools_api` is true, the REST agent tool API
+(`/agents/:agentId/tools` and `/agents/:agentId/tools/invoke`).
 
 - `api_secret` protects management and hook APIs, and acts as the fallback
   credential for tools API and MCP routes when an agent has no token. If an
@@ -304,12 +313,25 @@ enforce the same profile isolation.
   for tokenless profiles.
 - `allowed_origins` is an exact allowlist for browser `Origin` headers. Requests
   without `Origin` are allowed so non-browser MCP clients keep working.
-- `expose_management_api` controls `/health`, `/hitl/*`, `/audit`, the
-  dashboard approval bridge (`/events`, `/approve`, `/deny`, `/version*`), and
-  `/admin/tools`.
-- `expose_tools_api` controls `/agents/:agentId/tools` and
-  `/agents/:agentId/tools/invoke`.
-- `expose_hook_api` controls `/hook`.
+- `expose_tools_api` controls the REST agent tool API on the data-plane
+  listener. It is an agent-facing execution API and uses the same per-agent
+  authentication model as MCP routes.
+- `management_api.enabled` starts a separate control-plane listener for
+  `/health`, `/hitl/*`, `/audit`, the dashboard approval bridge (`/events`,
+  `/approve`, `/deny`, `/version*`), `/admin/tools`, and `/hook`. It is disabled
+  by default. When enabled, every agent must set `token` so the management
+  `api_secret` cannot be used as a fallback credential on agent data-plane
+  routes.
+- `management_api.host` defaults to `127.0.0.1`. Binding it beyond loopback
+  requires `management_api.insecure_remote_bind: true`; without that explicit
+  opt-in, config validation refuses to start.
+- `management_api.port` defaults to `4113` and must not equal `server.port`.
+  The agent data-plane and control-plane cannot share a socket.
+- `management_api.expose_hook_api` controls `/hook` on the management listener.
+
+`expose_management_api` and `expose_hook_api` are deprecated aliases for one
+release. They still map into `management_api`, but new configs should use the
+explicit block above.
 
 For a public MCP-only listener, disable the non-MCP APIs and use per-agent tokens:
 
@@ -319,11 +341,11 @@ server:
   host: 127.0.0.1
   auth_required: true
   require_agent_tokens: true
+  expose_tools_api: false
   allowed_origins:
     - https://airlock.example.com
-  expose_management_api: false
-  expose_tools_api: false
-  expose_hook_api: false
+  management_api:
+    enabled: false
 
 agents:
   claude-code:

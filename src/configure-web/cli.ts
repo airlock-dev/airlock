@@ -192,7 +192,7 @@ Options:
   -c, --config <path>             Airlock config file (default: ./airlock.yaml)
   -p, --port <port>               Web UI port (default: 4177)
       --host <host>               Bind host (default: 127.0.0.1)
-      --gateway-url <url>         Gateway URL (default: http://127.0.0.1:4111)
+      --gateway-url <url>         Gateway management API URL (default: http://127.0.0.1:4113)
       --gateway-secret <secret>   Gateway admin bearer token (default: AIRLOCK_GATEWAY_SECRET or AIRLOCK_API_SECRET)
   -h, --help                      Show this help
 `;
@@ -208,7 +208,7 @@ export async function runDashboard(argv: string[]): Promise<void> {
       config: { type: 'string', short: 'c', default: './airlock.yaml' },
       port: { type: 'string', short: 'p', default: '4177' },
       host: { type: 'string', default: '127.0.0.1' },
-      'gateway-url': { type: 'string', default: 'http://127.0.0.1:4111' },
+      'gateway-url': { type: 'string', default: 'http://127.0.0.1:4113' },
       'gateway-secret': { type: 'string' },
       help: { type: 'boolean', short: 'h', default: false },
     },
@@ -223,7 +223,7 @@ export async function runDashboard(argv: string[]): Promise<void> {
   const configPath = values.config ?? './airlock.yaml';
   const port = Number(values.port ?? '4177');
   const host = values.host ?? '127.0.0.1';
-  const gatewayUrl = values['gateway-url'] ?? 'http://127.0.0.1:4111';
+  const gatewayUrl = values['gateway-url'] ?? 'http://127.0.0.1:4113';
   const gatewaySecret =
     values['gateway-secret'] ??
     process.env['AIRLOCK_GATEWAY_SECRET'] ??

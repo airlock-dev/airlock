@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { loadConfig } from '../src/config/loader.js';
+import { loadConfig, validateConfig } from '../src/config/loader.js';
 import { GatewayConfig, getBuiltinProviders, getMcpConfigs } from '../src/config/schema.js';
 import { rememberAllow } from '../src/config/mutator.js';
 
@@ -14,9 +14,31 @@ describe('GatewayConfig schema', () => {
     expect(result.success).toBe(true);
     if (!result.success) return;
     expect(result.data.server.port).toBe(4111);
+    expect(result.data.server.expose_tools_api).toBe(true);
+    expect(result.data.server.management_api).toMatchObject({
+      enabled: false,
+      host: '127.0.0.1',
+      port: 4113,
+      insecure_remote_bind: false,
+    });
     expect(result.data.approvals.timeout_ms).toBe(300000);
     expect(result.data.security.blocked_hosts).toContain('localhost');
     expect(result.data.audit.retention_days).toBe(90);
+  });
+
+  it('maps deprecated management exposure aliases into the management_api block', () => {
+    const result = GatewayConfig.safeParse({
+      server: {
+        expose_management_api: true,
+        expose_hook_api: false,
+      },
+    });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.server.management_api).toMatchObject({
+      enabled: true,
+      expose_hook_api: false,
+    });
   });
 
   it('substitutes ${VAR} with environment variable', () => {
@@ -348,9 +370,8 @@ agents:
     const yaml = `
 server:
   auth_required: true
-  expose_management_api: false
-  expose_tools_api: false
-  expose_hook_api: false
+  management_api:
+    enabled: false
 agents:
   agent1: {}
 `;
@@ -366,9 +387,8 @@ server:
   require_agent_tokens: true
   allowed_origins:
     - https://airlock.internal
-  expose_management_api: false
-  expose_tools_api: false
-  expose_hook_api: false
+  management_api:
+    enabled: false
 agents:
   agent1:
     token: agent-secret
@@ -377,28 +397,91 @@ agents:
     writeFileSync(path, yaml);
     const config = loadConfig(path);
     expect(config.server.auth_required).toBe(true);
-    expect(config.server.expose_management_api).toBe(false);
+    expect(config.server.management_api.enabled).toBe(false);
     expect(config.agents['agent1'].token).toBe('agent-secret');
   });
 
-  it('allows tools API exposure with per-agent tokens and no global admin secret', () => {
+  it('errors when the management API is enabled without an api_secret', () => {
     const yaml = `
 server:
-  auth_required: true
-  require_agent_tokens: true
-  expose_management_api: false
-  expose_tools_api: true
-  expose_hook_api: false
+  management_api:
+    enabled: true
 agents:
   agent1:
     token: agent-secret
 `;
     const path = join(dir, 'gateway.yaml');
     writeFileSync(path, yaml);
-    const config = loadConfig(path);
-    expect(config.server.expose_tools_api).toBe(true);
-    expect(config.server.api_secret).toBeUndefined();
-    expect(config.agents['agent1'].token).toBe('agent-secret');
+    expect(() => loadConfig(path)).toThrow(/management_api\.enabled requires server\.api_secret/i);
+  });
+
+  it('errors when the management API is enabled with tokenless agents', () => {
+    const yaml = `
+server:
+  api_secret: admin-secret
+  management_api:
+    enabled: true
+agents:
+  agent1: {}
+`;
+    const path = join(dir, 'gateway.yaml');
+    writeFileSync(path, yaml);
+    expect(() => loadConfig(path)).toThrow(/Per-agent tokens are required/i);
+  });
+
+  it('errors when the management API binds beyond loopback without insecure_remote_bind', () => {
+    const yaml = `
+server:
+  api_secret: admin-secret
+  management_api:
+    enabled: true
+    host: 0.0.0.0
+agents:
+  agent1:
+    token: agent-secret
+`;
+    const path = join(dir, 'gateway.yaml');
+    writeFileSync(path, yaml);
+    expect(() => loadConfig(path)).toThrow(/insecure_remote_bind/i);
+  });
+
+  it('errors when the management API shares the data-plane port', () => {
+    const yaml = `
+server:
+  port: 4111
+  api_secret: admin-secret
+  management_api:
+    enabled: true
+    port: 4111
+agents:
+  agent1:
+    token: agent-secret
+`;
+    const path = join(dir, 'gateway.yaml');
+    writeFileSync(path, yaml);
+    expect(() => loadConfig(path)).toThrow(/must not share a socket/i);
+  });
+
+  it('warns when deprecated management exposure aliases are used', () => {
+    const config = GatewayConfig.parse({
+      server: {
+        api_secret: 'admin-secret',
+        expose_management_api: true,
+      },
+      agents: {
+        agent1: { token: 'agent-secret' },
+      },
+    });
+
+    const diagnostics = validateConfig(config);
+    expect(diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          level: 'warn',
+          message: expect.stringContaining('expose_management_api is deprecated'),
+        }),
+      ])
+    );
   });
 
   it('errors when per-agent tokens are required and an agent has no token', () => {

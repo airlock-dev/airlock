@@ -10,7 +10,7 @@ services:
       - .env
     environment:
       AIRLOCK_CONFIG: /config/airlock.yaml
-      AIRLOCK_HEALTH_PORT: '4111'
+      AIRLOCK_HEALTH_PORT: '4113'
     volumes:
       # Runtime gateway can hot-reload this file but cannot modify policy.
       - ./airlock-config:/config:ro
@@ -21,6 +21,7 @@ services:
       # Bind to loopback by default. Put your TLS/auth proxy on the same host,
       # or change these bindings only for a trusted private network.
       - 127.0.0.1:4111:4111
+      - 127.0.0.1:4113:4113
     read_only: true
     tmpfs:
       - /tmp:rw,nosuid,nodev,size=256m
@@ -33,7 +34,7 @@ services:
 
   airlock-dashboard:
     image: airlock-bot:local
-    command: dashboard --config /config/airlock.yaml --host 0.0.0.0 --port 4112 --gateway-url http://airlock-gateway:4111
+    command: dashboard --config /config/airlock.yaml --host 0.0.0.0 --port 4112 --gateway-url http://airlock-gateway:4113
     restart: unless-stopped
     env_file:
       - .env

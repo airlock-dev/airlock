@@ -9,12 +9,12 @@ When the plugin is active, OpenClaw's agent can call any tool Airlock manages, a
 ```
 OpenClaw agent
   └─ airlock_github_list_prs()          ← tool registered by the plugin
-       └─ POST /agents/openclaw/tools/invoke  → Airlock HTTP API
+       └─ POST /agents/openclaw/tools/invoke  → Airlock agent data-plane
             └─ allowlist / HITL gate / execute
                  └─ github MCP server
 ```
 
-The plugin fetches your agent's tool list from Airlock at startup and registers each one with OpenClaw under an `airlock_` prefix. Tool calls are forwarded to Airlock over HTTP; approvals route back through the OpenClaw HITL provider.
+The plugin fetches your agent's tool list from Airlock at startup and registers each one with OpenClaw under an `airlock_` prefix. Tool calls are forwarded to Airlock over the data-plane REST tools endpoints; approvals route back through the OpenClaw HITL provider.
 
 ## Setup
 
@@ -23,6 +23,7 @@ The plugin fetches your agent's tool list from Airlock at startup and registers 
 ```yaml
 agents:
   openclaw:
+    token: ${OPENCLAW_AIRLOCK_TOKEN}
     allow:
       - 'github/*'
       - 'exec/run'
@@ -34,6 +35,14 @@ Start the Airlock gateway if it isn't already running:
 
 ```sh
 airlock --config airlock.yaml
+```
+
+The bridge uses Airlock's REST tools API on the agent data-plane. Keep
+`server.expose_tools_api` enabled:
+
+```yaml
+server:
+  expose_tools_api: true
 ```
 
 ### 2. Install the plugin
@@ -58,12 +67,12 @@ After restart you should see:
 
 ## Configuration
 
-By default the plugin connects to `http://localhost:4111` as agent `openclaw` with no authentication. Override with environment variables in your shell profile if your setup differs:
+By default the plugin connects to the Airlock agent data-plane at `http://localhost:4111` as agent `openclaw`. Override with environment variables in your shell profile if your setup differs:
 
 ```sh
 export AIRLOCK_URL=http://localhost:4111
 export AIRLOCK_AGENT=openclaw
-export AIRLOCK_SECRET=your-api-secret   # matches server.api_secret in airlock.yaml
+export AIRLOCK_SECRET=your-agent-token  # matches agents.openclaw.token in airlock.yaml
 ```
 
 Alternatively, use OpenClaw's plugin config:
@@ -71,7 +80,7 @@ Alternatively, use OpenClaw's plugin config:
 ```sh
 openclaw config set extensions.airlock-bridge.url http://localhost:4111
 openclaw config set extensions.airlock-bridge.agent openclaw
-openclaw config set extensions.airlock-bridge.secret your-api-secret
+openclaw config set extensions.airlock-bridge.secret your-agent-token
 ```
 
 ## Approvals
@@ -94,8 +103,8 @@ The `session_key` is the OpenClaw session where approval messages appear — typ
 
 **No tools registered** — Check that Airlock is running and `AIRLOCK_URL` points to the right host and port. The plugin logs the error on `gateway_start` if the fetch fails.
 
-**401 Unauthorized** — `AIRLOCK_SECRET` doesn't match `server.api_secret` in your `airlock.yaml`.
+**401 Unauthorized** — `AIRLOCK_SECRET` doesn't match the configured agent token in your `airlock.yaml`.
 
-**Tool calls denied** — The tool isn't in the agent's `allow` or `ask` list. Add it or check the tool name with `GET /agents/openclaw/tools`.
+**Tool calls denied** — The tool isn't in the agent's `allow` or `ask` list. Add it or check the tool name with `GET /agents/openclaw/tools` on the agent data-plane.
 
 **Approval messages not appearing** — Verify the `session_key` in the `approvals.provider` config matches a real active OpenClaw session.

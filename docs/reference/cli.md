@@ -23,17 +23,17 @@ and talks to the gateway management API for status, audit, and approvals.
 ```bash
 airlock dashboard \
   --config airlock.yaml \
-  --gateway-url http://127.0.0.1:4111
+  --gateway-url http://127.0.0.1:4113
 ```
 
 Options:
 
-| Flag               | Description                                                              |
-| ------------------ | ------------------------------------------------------------------------ |
-| `--config`, `-c`   | Path to airlock.yaml config file                                         |
-| `--port`, `-p`     | Dashboard port (default: 4177)                                           |
-| `--host`           | Bind host (default: `127.0.0.1`)                                         |
-| `--gateway-url`    | Gateway base URL (default: `http://127.0.0.1:4111`)                      |
+| Flag               | Description                                                                                  |
+| ------------------ | -------------------------------------------------------------------------------------------- |
+| `--config`, `-c`   | Path to airlock.yaml config file                                                             |
+| `--port`, `-p`     | Dashboard port (default: 4177)                                                               |
+| `--host`           | Bind host (default: `127.0.0.1`)                                                             |
+| `--gateway-url`    | Gateway management API URL (default: `http://127.0.0.1:4113`)                                |
 | `--gateway-secret` | Gateway admin bearer token (defaults to `AIRLOCK_GATEWAY_SECRET`, then `AIRLOCK_API_SECRET`) |
 
 ## Open the command center

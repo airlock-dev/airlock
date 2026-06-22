@@ -1,6 +1,8 @@
 # Hook Endpoint
 
-Airlock exposes a `/hook` endpoint for external tools that want a policy and approval decision without speaking MCP directly.
+Airlock can expose a `/hook` endpoint on the management API listener for
+external tools that want a policy and approval decision without speaking MCP
+directly.
 
 ## What it does
 
@@ -9,7 +11,7 @@ Non-MCP clients — CI scripts, Claude Code hooks, custom integrations — can P
 ## Request format
 
 ```bash
-curl -X POST http://localhost:4111/hook \
+curl -X POST http://localhost:4113/hook \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $AIRLOCK_API_SECRET" \
   -d '{
@@ -56,6 +58,9 @@ If `server.api_secret` is configured, the endpoint requires `Authorization: Bear
 ```yaml
 server:
   api_secret: ${AIRLOCK_API_SECRET}
+  management_api:
+    enabled: true
+    expose_hook_api: true
 ```
 
 ## Use cases
@@ -68,7 +73,7 @@ Use Claude Code's hook system to route tool calls through Airlock:
 {
   "hooks": {
     "pre_tool_use": {
-      "command": "curl -s -X POST http://localhost:4111/hook -H 'Content-Type: application/json' -d '{\"client\":\"claude-code\",\"tool\":\"$TOOL\",\"input\":$INPUT}'"
+      "command": "curl -s -X POST http://localhost:4113/hook -H 'Content-Type: application/json' -d '{\"client\":\"claude-code\",\"tool\":\"$TOOL\",\"input\":$INPUT}'"
     }
   }
 }
@@ -79,7 +84,7 @@ Use Claude Code's hook system to route tool calls through Airlock:
 Check if a deployment or sensitive operation is approved:
 
 ```bash
-RESULT=$(curl -s -X POST http://localhost:4111/hook \
+RESULT=$(curl -s -X POST http://localhost:4113/hook \
   -H "Authorization: Bearer $AIRLOCK_SECRET" \
   -H "Content-Type: application/json" \
   -d '{"client":"ci","agent":"deploy-bot","tool":"deploy/production","input":{"version":"v1.2.3"}}')

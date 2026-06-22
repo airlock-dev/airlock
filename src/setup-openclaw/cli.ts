@@ -53,6 +53,6 @@ Override with environment variables if needed:
 
   export AIRLOCK_URL=http://localhost:4111
   export AIRLOCK_AGENT=openclaw
-  export AIRLOCK_SECRET=your-api-secret
+  export AIRLOCK_SECRET=your-agent-token
 `);
 }

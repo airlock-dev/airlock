@@ -507,7 +507,7 @@ approvals:
     });
 
     const app = createConfigureWebApp(configPath, {
-      remoteGateway: { url: 'http://gateway:4111', secret: 'admin-secret' },
+      remoteGateway: { url: 'http://gateway:4113', secret: 'admin-secret' },
     });
     await app.ready();
 
@@ -515,7 +515,7 @@ approvals:
       summary: { pendingApprovals: 1 },
     });
     expect((await app.inject('/api/logs')).json()).toMatchObject({
-      dbPath: 'gateway:http://gateway:4111',
+      dbPath: 'gateway:http://gateway:4113',
       pending: [expect.objectContaining({ code: 'ABC123', agent_id: 'dev' })],
     });
     expect((await app.inject('/api/tools')).json()).toMatchObject({
