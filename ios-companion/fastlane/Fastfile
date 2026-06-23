@@ -1,0 +1,99 @@
+default_platform(:ios)
+
+def required_env(name)
+  value = ENV[name]
+  return value unless value.nil? || value.empty?
+
+  UI.user_error!("Missing #{name}. Add it to ios-companion/.env.local.")
+end
+
+def app_store_connect_key_options
+  options = {
+    key_id: required_env("APP_STORE_CONNECT_API_KEY_ID"),
+    issuer_id: required_env("APP_STORE_CONNECT_API_ISSUER_ID"),
+    duration: 1200,
+    in_house: false
+  }
+
+  key_content = ENV["APP_STORE_CONNECT_API_KEY_CONTENT"]
+  key_path = ENV["APP_STORE_CONNECT_API_KEY_PATH"]
+  if key_content && !key_content.empty?
+    options[:key_content] = key_content
+  elsif key_path && !key_path.empty?
+    options[:key_filepath] = File.expand_path(key_path)
+  else
+    UI.user_error!(
+      "Missing APP_STORE_CONNECT_API_KEY_PATH or APP_STORE_CONNECT_API_KEY_CONTENT. Add one to ios-companion/.env.local."
+    )
+  end
+
+  options
+end
+
+def env_list(name)
+  value = ENV[name]
+  return [] if value.nil? || value.strip.empty?
+
+  value.split(",").map(&:strip).reject(&:empty?)
+end
+
+def validate_testflight_groups!(groups)
+  return if groups.empty?
+
+  app = Spaceship::ConnectAPI::App.find("bot.airlock.companion")
+  UI.user_error!("Could not find App Store Connect app for bot.airlock.companion.") if app.nil?
+
+  available_groups = app.get_beta_groups.map(&:name)
+  missing_groups = groups - available_groups
+  return if missing_groups.empty?
+
+  available = available_groups.empty? ? "none" : available_groups.join(", ")
+  UI.user_error!(
+    "Unknown TestFlight group(s): #{missing_groups.join(", ")}. Available groups: #{available}."
+  )
+end
+
+platform :ios do
+  desc "Build Airlock Companion and upload it to TestFlight from this Mac"
+  lane :beta do
+    api_key = app_store_connect_api_key(app_store_connect_key_options)
+    testflight_groups = env_list("AIRLOCK_IOS_TESTFLIGHT_GROUPS")
+    validate_testflight_groups!(testflight_groups)
+
+    build_number = ENV["AIRLOCK_IOS_BUILD_NUMBER"]
+    build_number = Time.now.utc.strftime("%Y%m%d%H%M") if build_number.nil? || build_number.empty?
+
+    team_id = required_env("AIRLOCK_IOS_TEAM_ID")
+    xcargs = ["CURRENT_PROJECT_VERSION=#{build_number}", "-allowProvisioningUpdates"]
+    xcargs << "DEVELOPMENT_TEAM=#{team_id}"
+
+    export_options = {
+      method: "app-store",
+      signingStyle: "automatic"
+    }
+    export_options[:teamID] = team_id
+
+    build_app(
+      project: "AirlockCompanionIOS.xcodeproj",
+      scheme: "AirlockCompanionIOS",
+      configuration: "Release",
+      clean: true,
+      export_method: "app-store",
+      output_directory: "build",
+      output_name: "AirlockCompanionIOS.ipa",
+      xcargs: xcargs.join(" "),
+      export_options: export_options
+    )
+
+    upload_options = {
+      api_key: api_key,
+      ipa: "build/AirlockCompanionIOS.ipa",
+      skip_waiting_for_build_processing: testflight_groups.empty?,
+      uses_non_exempt_encryption: false,
+      changelog: ENV["AIRLOCK_IOS_RELEASE_NOTES"]
+    }
+    upload_options[:groups] = testflight_groups unless testflight_groups.empty?
+
+    upload_to_testflight(upload_options)
+  end
+end

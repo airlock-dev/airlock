@@ -13,3 +13,16 @@ local/
 xcuserdata/
 *.xcuserdatad/
 .swiftpm/
+ios-companion/.env*
+!ios-companion/.env.example
+ios-companion/.bundle/
+ios-companion/.appstoreconnect/
+ios-companion/vendor/bundle/
+ios-companion/build/
+ios-companion/fastlane/README.md
+ios-companion/fastlane/report.xml
+ios-companion/fastlane/Preview.html
+ios-companion/fastlane/screenshots/
+ios-companion/fastlane/test_output/
+*.ipa
+*.xcarchive
