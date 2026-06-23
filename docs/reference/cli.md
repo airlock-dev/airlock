@@ -60,6 +60,73 @@ Lean mode with no HTTP server. Only connects to MCP providers the agent referenc
 airlock --agent claude-code --config airlock.yaml
 ```
 
+## Validate local config
+
+Run static validation without starting listeners or connecting to providers:
+
+```bash
+airlock config check --config airlock.yaml --strict
+airlock config check --config airlock.yaml --strict --no-resolve
+```
+
+Options:
+
+| Flag             | Description                                                |
+| ---------------- | ---------------------------------------------------------- |
+| `--config`, `-c` | Path to airlock.yaml config file                           |
+| `--strict`       | Treat unknown keys as errors, including typos like `scope` |
+| `--no-resolve`   | Validate `${VAR}` references without requiring secrets     |
+| `--fail-on`      | Non-zero threshold: `error` (default) or `warn`            |
+| `--json`         | Print machine-readable diagnostics                         |
+
+Use `--no-resolve` for CI and pre-commit checks that should validate shape, references, inheritance, and precedence without loading production secrets.
+
+## Explain an agent
+
+Show an agent's effective allow/ask/deny sets after profile inheritance, including provenance, arg scope, and precedence notes:
+
+```bash
+airlock explain claude-code --config airlock.yaml
+```
+
+By default this is offline and reads only the config file. Add `--expand` to connect to providers and expand matching patterns to concrete live tools:
+
+```bash
+airlock explain claude-code --config airlock.yaml --expand --json
+```
+
+## Reverse lookup permissions
+
+List agents and their effective decision for a tool name or glob-like pattern:
+
+```bash
+airlock who-can "supabase/*" --config airlock.yaml
+airlock who-can github/delete_repo --level deny --json
+```
+
+Decisions are computed through the shared allowlist engine and may be `allow`, `ask`, `deny`, or `default-deny`.
+
+## Enumerate live tools
+
+Connect to configured providers and list the live tool surface:
+
+```bash
+airlock tools --config airlock.yaml
+airlock tools --provider github --grep pull --json
+```
+
+This command may start provider clients. Static commands such as `config check`, `explain` without `--expand`, `who-can`, and `lint` do not.
+
+## Lint config hygiene
+
+Run static hygiene checks over a valid resolved config:
+
+```bash
+airlock lint --config airlock.yaml
+```
+
+Warnings include unreferenced profiles, value sets, and argument dimensions; deny rules that do not overlap any grant; agents with an empty effective surface; and missing environment-variable references.
+
 ## Discover CLI tools
 
 Parse `--help` output and generate Airlock config:

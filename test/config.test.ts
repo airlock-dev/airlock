@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { loadConfig, validateConfig } from '../src/config/loader.js';
+import { loadConfig, loadConfigDetailed, validateConfig } from '../src/config/loader.js';
 import { GatewayConfig, getBuiltinProviders, getMcpConfigs } from '../src/config/schema.js';
 import { rememberAllow } from '../src/config/mutator.js';
 
@@ -353,6 +353,45 @@ agents:
     expect(config.server.api_secret).toBe('supersecret');
   });
 
+  it('can validate structure without resolving env vars', () => {
+    delete process.env['TEST_AGENT_SECRET'];
+    const yaml = `
+server:
+  auth_required: true
+  api_secret: "\${TEST_AGENT_SECRET}"
+agents:
+  agent1:
+    token: "\${TEST_AGENT_SECRET}"
+    allow:
+      - "github/*"
+providers:
+  github: builtin
+`;
+    const path = join(dir, 'gateway.yaml');
+    writeFileSync(path, yaml);
+
+    expect(() => loadConfig(path)).toThrow(/TEST_AGENT_SECRET/);
+
+    const result = loadConfigDetailed(path, { resolveEnv: false });
+    expect(result.diagnostics.filter((diagnostic) => diagnostic.level === 'error')).toEqual([]);
+    expect(result.config?.server.api_secret).toBe('${TEST_AGENT_SECRET}');
+    expect(result.config?.agents['agent1'].token).toBe('${TEST_AGENT_SECRET}');
+  });
+
+  it('substitutes env vars in the management API secret', () => {
+    process.env['TEST_MANAGEMENT_SECRET'] = 'management-supersecret';
+    const yaml = `
+server:
+  management_api:
+    api_secret: "\${TEST_MANAGEMENT_SECRET}"
+`;
+    const path = join(dir, 'gateway.yaml');
+    writeFileSync(path, yaml);
+    const config = loadConfig(path);
+    delete process.env['TEST_MANAGEMENT_SECRET'];
+    expect(config.server.management_api.api_secret).toBe('management-supersecret');
+  });
+
   it('errors when binding beyond loopback without required auth', () => {
     const yaml = `
 server:
@@ -401,7 +440,7 @@ agents:
     expect(config.agents['agent1'].token).toBe('agent-secret');
   });
 
-  it('errors when the management API is enabled without an api_secret', () => {
+  it('errors when the management API is enabled without any control-plane credential', () => {
     const yaml = `
 server:
   management_api:
@@ -412,7 +451,64 @@ agents:
 `;
     const path = join(dir, 'gateway.yaml');
     writeFileSync(path, yaml);
-    expect(() => loadConfig(path)).toThrow(/management_api\.enabled requires server\.api_secret/i);
+    expect(() => loadConfig(path)).toThrow(
+      /management_api\.enabled requires server\.management_api\.api_secret or server\.api_secret/i
+    );
+  });
+
+  it('warns when management API falls back to server.api_secret', () => {
+    const config = GatewayConfig.parse({
+      server: {
+        api_secret: 'shared-secret',
+        management_api: {
+          enabled: true,
+        },
+      },
+      agents: {
+        agent1: { token: 'agent-secret' },
+      },
+    });
+
+    const diagnostics = validateConfig(config);
+    expect(diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          level: 'warn',
+          message:
+            'management_api is using server.api_secret; set server.management_api.api_secret to separate the control-plane secret from the data-plane fallback.',
+        }),
+      ])
+    );
+  });
+
+  it('warns when management and data-plane secrets resolve to the same value', () => {
+    process.env['TEST_SHARED_AIRLOCK_SECRET'] = 'same-secret';
+    const yaml = `
+server:
+  api_secret: "\${TEST_SHARED_AIRLOCK_SECRET}"
+  management_api:
+    enabled: true
+    api_secret: "\${TEST_SHARED_AIRLOCK_SECRET}"
+agents:
+  agent1:
+    token: agent-secret
+`;
+    const path = join(dir, 'gateway.yaml');
+    writeFileSync(path, yaml);
+    const config = loadConfig(path);
+    delete process.env['TEST_SHARED_AIRLOCK_SECRET'];
+
+    const diagnostics = validateConfig(config);
+    expect(diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          level: 'warn',
+          message: expect.stringContaining(
+            'server.management_api.api_secret matches server.api_secret'
+          ),
+        }),
+      ])
+    );
   });
 
   it('errors when the management API is enabled with tokenless agents', () => {
@@ -593,6 +689,67 @@ agents:
     writeFileSync(path, yaml);
 
     expect(() => loadConfig(path)).toThrow(/pa-work -> product -> pa-work/);
+  });
+
+  it('reports unknown keys in strict config checks', () => {
+    const yaml = `
+providers:
+  github: builtin
+agents:
+  dev:
+    allow:
+      - "github/*"
+    scope:
+      github_repo: airlock_repos
+`;
+    const path = join(dir, 'gateway.yaml');
+    writeFileSync(path, yaml);
+
+    const result = loadConfigDetailed(path, { strict: true });
+
+    expect(result.diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          level: 'error',
+          message: 'Unknown config key "agents.dev.scope".',
+          suggestion: 'Did you mean "arg_scope"?',
+        }),
+      ])
+    );
+  });
+
+  it('reports missing arg_scope value_set references without starting the gateway', () => {
+    const yaml = `
+providers:
+  github: builtin
+arg_dimensions:
+  github_repo:
+    bindings:
+      github/push_files: repo
+profiles:
+  repo_bound:
+    arg_scope:
+      github_repo: missing_repos
+agents:
+  dev:
+    extends:
+      - repo_bound
+    allow:
+      - "github/push_files"
+`;
+    const path = join(dir, 'gateway.yaml');
+    writeFileSync(path, yaml);
+
+    const result = loadConfigDetailed(path);
+
+    expect(result.diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          level: 'error',
+          message: expect.stringContaining('missing_repos'),
+        }),
+      ])
+    );
   });
 });
 

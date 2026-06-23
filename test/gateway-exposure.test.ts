@@ -77,10 +77,11 @@ describe('Gateway exposure controls', () => {
       server: {
         port: 1,
         host: '127.0.0.1',
-        api_secret: 'admin-secret',
+        api_secret: 'data-secret',
         auth_required: true,
         management_api: {
           enabled: true,
+          api_secret: 'admin-secret',
           port: 1,
           host: '127.0.0.1',
         },
@@ -125,6 +126,8 @@ describe('Gateway exposure controls', () => {
       adminTools,
       dataPlaneTools,
       controlPlaneTools,
+      rejectedDataSecretHealth,
+      dashboardVersion,
     ] = await Promise.all([
       fetch(`http://127.0.0.1:${managementPort}/health`),
       fetch(`http://127.0.0.1:${managementPort}/health`, {
@@ -148,9 +151,16 @@ describe('Gateway exposure controls', () => {
       fetch(`http://127.0.0.1:${managementPort}/agents/test/tools`, {
         headers: { authorization: 'Bearer agent-secret' },
       }),
+      fetch(`http://127.0.0.1:${managementPort}/health`, {
+        headers: { authorization: 'Bearer data-secret' },
+      }),
+      fetch(`http://127.0.0.1:${managementPort}/version`, {
+        headers: { authorization: 'Bearer admin-secret' },
+      }),
     ]);
 
     expect(unauthorizedHealth.status).toBe(401);
+    expect(rejectedDataSecretHealth.status).toBe(401);
     expect(health.status).toBe(200);
     await expect(health.json()).resolves.toMatchObject({
       status: 'ok',
@@ -167,6 +177,50 @@ describe('Gateway exposure controls', () => {
     expect(adminTools.status).toBe(200);
     expect(dataPlaneTools.status).toBe(200);
     expect(controlPlaneTools.status).toBe(404);
+    expect(dashboardVersion.status).toBe(200);
+  });
+
+  it('falls back to server.api_secret for the data-plane when an agent has no token', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'airlock-gateway-data-fallback-'));
+    tempDirs.push(dir);
+
+    const config = GatewayConfig.parse({
+      agents: {
+        test: {},
+      },
+      server: {
+        port: 1,
+        host: '127.0.0.1',
+        api_secret: 'data-secret',
+        auth_required: true,
+        management_api: {
+          enabled: false,
+        },
+      },
+      audit: {
+        db_path: join(dir, 'audit.db'),
+      },
+    });
+    config.server.port = 0;
+
+    const gateway = new Gateway(config);
+    gateways.push(gateway);
+    await gateway.start();
+
+    const app = (gateway as unknown as { app: FastifyInstance }).app;
+    const port = (app.server.address() as AddressInfo).port;
+
+    const [allowed, rejected] = await Promise.all([
+      fetch(`http://127.0.0.1:${port}/agents/test/tools`, {
+        headers: { authorization: 'Bearer data-secret' },
+      }),
+      fetch(`http://127.0.0.1:${port}/agents/test/tools`, {
+        headers: { authorization: 'Bearer management-secret' },
+      }),
+    ]);
+
+    expect(allowed.status).toBe(200);
+    expect(rejected.status).toBe(401);
   });
 
   it('refuses unsafe management listener configs before binding sockets', async () => {
@@ -178,7 +232,7 @@ describe('Gateway exposure controls', () => {
       },
     });
     await expect(new Gateway(missingSecret).start()).rejects.toThrow(
-      /requires server\.api_secret/i
+      /requires server\.management_api\.api_secret or server\.api_secret/i
     );
 
     const tokenlessAgent = GatewayConfig.parse({

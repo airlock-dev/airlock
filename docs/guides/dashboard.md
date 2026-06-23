@@ -43,10 +43,10 @@ airlock dashboard \
 
 The standalone dashboard talks to the gateway management API for status, audit
 logs, tool discovery, and approval decisions. Set the dashboard secret with
-`--gateway-secret`, `AIRLOCK_GATEWAY_SECRET`, or `AIRLOCK_API_SECRET`:
+`--gateway-secret`, `AIRLOCK_GATEWAY_SECRET`, or `MANAGEMENT_API_SECRET`:
 
 ```bash
-AIRLOCK_GATEWAY_SECRET="$AIRLOCK_API_SECRET" \
+AIRLOCK_GATEWAY_SECRET="$MANAGEMENT_API_SECRET" \
   airlock dashboard \
     --config /config/airlock.yaml \
     --gateway-url http://127.0.0.1:4113
@@ -107,7 +107,7 @@ The dashboard checks npm for newer versions of `airlock-bot` and shows an upgrad
 
 ## Combining with the macOS Companion
 
-The [macOS Companion app](https://github.com/airlock-dev/airlock/releases/latest) can connect to the same dashboard SSE endpoint, or directly to the split management API at `http://127.0.0.1:4113` when you set its gateway bearer token to `AIRLOCK_API_SECRET`. You can use both simultaneously — the dashboard in a browser tab and the companion in your menu bar.
+The [macOS Companion app](https://github.com/airlock-dev/airlock/releases/latest) can connect to the same dashboard SSE endpoint, or directly to the split management API at `http://127.0.0.1:4113` when you set its gateway bearer token to `MANAGEMENT_API_SECRET`. You can use both simultaneously — the dashboard in a browser tab and the companion in your menu bar.
 
 ## Graceful degradation
 

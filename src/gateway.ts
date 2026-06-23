@@ -45,7 +45,8 @@ export class Gateway {
   private managementApp?: FastifyInstance;
   private downstreamSessionIds = new Map<string, string>();
   private startTime = Date.now();
-  private requestSecurity: RequestSecurityOptions = {};
+  private dataPlaneRequestSecurity: RequestSecurityOptions = {};
+  private managementRequestSecurity: RequestSecurityOptions = {};
 
   constructor(
     private config: Config,
@@ -116,15 +117,16 @@ export class Gateway {
     // separate listener below and must never be added to this app.
     this.app = Fastify({ logger: false });
 
-    const getRequestSecurity = () => this.requestSecurity;
+    const getDataPlaneRequestSecurity = () => this.dataPlaneRequestSecurity;
+    const getManagementRequestSecurity = () => this.managementRequestSecurity;
 
     await this.app.register(sseServerPlugin, {
       getDeps: (agentId: string) => this.buildAgentDeps(agentId),
-      getRequestSecurity,
+      getRequestSecurity: getDataPlaneRequestSecurity,
     });
     await this.app.register(httpServerPlugin, {
       getDeps: (agentId: string) => this.buildAgentDeps(agentId),
-      getRequestSecurity,
+      getRequestSecurity: getDataPlaneRequestSecurity,
     });
     if (this.config.server.expose_tools_api) {
       await this.app.register(toolsApiPlugin, {
@@ -132,7 +134,7 @@ export class Gateway {
           this.buildAgentDeps(agentId, downstreamSessionKey),
         requiresSessionId: (agentId: string, tool: string) =>
           this.requiresToolsApiSessionId(agentId, tool),
-        getRequestSecurity,
+        getRequestSecurity: getDataPlaneRequestSecurity,
       });
     }
 
@@ -142,7 +144,7 @@ export class Gateway {
 
     if (this.config.server.management_api.enabled) {
       try {
-        await this.startManagementApi(getRequestSecurity);
+        await this.startManagementApi(getManagementRequestSecurity);
       } catch (err) {
         await this.app.close().catch((closeErr) => {
           log.warn(
@@ -237,8 +239,10 @@ export class Gateway {
     const management = config.server.management_api;
     if (!management.enabled) return;
 
-    if (!config.server.api_secret) {
-      throw new Error('server.management_api.enabled requires server.api_secret.');
+    if (!management.api_secret && !config.server.api_secret) {
+      throw new Error(
+        'server.management_api.enabled requires server.management_api.api_secret or server.api_secret.'
+      );
     }
 
     const tokenlessAgents = Object.entries(config.agents)
@@ -262,9 +266,13 @@ export class Gateway {
   }
 
   private updateRequestSecurity(config: Config): void {
-    this.requestSecurity.secret = config.server.api_secret;
-    this.requestSecurity.authRequired = config.server.auth_required;
-    this.requestSecurity.allowedOrigins = config.server.allowed_origins;
+    this.dataPlaneRequestSecurity.secret = config.server.api_secret;
+    this.dataPlaneRequestSecurity.authRequired = config.server.auth_required;
+    this.dataPlaneRequestSecurity.allowedOrigins = config.server.allowed_origins;
+    this.managementRequestSecurity.secret =
+      config.server.management_api.api_secret ?? config.server.api_secret;
+    this.managementRequestSecurity.authRequired = true;
+    this.managementRequestSecurity.allowedOrigins = config.server.allowed_origins;
   }
 
   private assertReloadCompatible(newConfig: Config): void {

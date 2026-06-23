@@ -13,7 +13,7 @@ Non-MCP clients — CI scripts, Claude Code hooks, custom integrations — can P
 ```bash
 curl -X POST http://localhost:4113/hook \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $AIRLOCK_API_SECRET" \
+  -H "Authorization: Bearer $MANAGEMENT_API_SECRET" \
   -d '{
     "client": "claude-code",
     "tool": "bash",
@@ -53,13 +53,17 @@ The normalized name is what gets evaluated against the agent's policy.
 
 ## Authentication
 
-If `server.api_secret` is configured, the endpoint requires `Authorization: Bearer <secret>`. The comparison uses `timingSafeEqual` — no timing side-channel.
+If `server.management_api.api_secret` is configured, the endpoint requires
+`Authorization: Bearer <management secret>`. If it is unset, Airlock falls back
+to `server.api_secret` for backward compatibility and emits a deprecation
+warning. The comparison uses `timingSafeEqual` — no timing side-channel.
 
 ```yaml
 server:
   api_secret: ${AIRLOCK_API_SECRET}
   management_api:
     enabled: true
+    api_secret: ${MANAGEMENT_API_SECRET}
     expose_hook_api: true
 ```
 

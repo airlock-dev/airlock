@@ -14,6 +14,7 @@ server:
     - https://airlock.example.com
   management_api:
     enabled: true
+    api_secret: ${MANAGEMENT_API_SECRET}
     host: 0.0.0.0
     port: 4113
     insecure_remote_bind: true

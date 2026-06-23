@@ -1,7 +1,7 @@
 import { readFileSync } from 'fs';
 import { isIP } from 'net';
 import { parse as parseYaml } from 'yaml';
-import { GatewayConfig, getBuiltinProviders } from './schema.js';
+import { GatewayConfig, getBuiltinProviders, withEnvVarResolution } from './schema.js';
 import { applyProfiles } from './profiles.js';
 import { matches } from '../allowlist/pattern.js';
 import { childLogger } from '../util/logger.js';
@@ -18,16 +18,101 @@ export interface ConfigDiagnostic {
   suggestion?: string;
 }
 
-export function loadConfig(path: string): Config {
-  const raw = readFileSync(path, 'utf-8');
-  const parsed: unknown = parseYaml(raw);
-  const result = GatewayConfig.safeParse(parsed);
-  if (!result.success) {
-    throw new Error(`Invalid config at ${path}:\n${result.error.toString()}`);
+export interface LoadConfigOptions {
+  strict?: boolean;
+  resolveEnv?: boolean;
+}
+
+export interface LoadConfigResult {
+  config?: Config;
+  rawConfig?: Config;
+  diagnostics: ConfigDiagnostic[];
+}
+
+export function loadConfigDetailed(
+  path: string,
+  options: LoadConfigOptions = {}
+): LoadConfigResult {
+  let raw: string;
+  try {
+    raw = readFileSync(path, 'utf-8');
+  } catch (err) {
+    return {
+      diagnostics: [
+        {
+          level: 'error',
+          message: `Could not read config at ${path}: ${err instanceof Error ? err.message : String(err)}`,
+        },
+      ],
+    };
   }
-  applyProfiles(result.data);
-  const diagnostics = validateConfig(result.data);
-  for (const d of diagnostics) {
+
+  let parsed: unknown;
+  try {
+    parsed = parseYaml(raw);
+  } catch (err) {
+    return {
+      diagnostics: [
+        {
+          level: 'error',
+          message: `Invalid YAML at ${path}: ${err instanceof Error ? err.message : String(err)}`,
+        },
+      ],
+    };
+  }
+
+  const diagnostics = options.strict ? findUnknownKeys(parsed) : [];
+  const resolveEnv = options.resolveEnv ?? true;
+  let result: ReturnType<typeof GatewayConfig.safeParse>;
+  try {
+    result = withEnvVarResolution(resolveEnv, () => GatewayConfig.safeParse(parsed));
+  } catch (err) {
+    diagnostics.push({
+      level: 'error',
+      message: `Invalid config at ${path}:\n${err instanceof Error ? err.message : String(err)}`,
+      suggestion: resolveEnv
+        ? 'Set the referenced environment variable, or run config check with --no-resolve for structural validation without secrets.'
+        : undefined,
+    });
+    return { diagnostics: dedupeDiagnostics(diagnostics) };
+  }
+  if (!result.success) {
+    diagnostics.push({
+      level: 'error',
+      message: `Invalid config at ${path}:\n${result.error.toString()}`,
+    });
+    return { diagnostics: dedupeDiagnostics(diagnostics) };
+  }
+
+  const rawConfig = structuredClone(result.data);
+
+  diagnostics.push(...validateConfig(result.data));
+
+  if (!diagnostics.some((diagnostic) => diagnostic.level === 'error')) {
+    try {
+      applyProfiles(result.data);
+    } catch (err) {
+      diagnostics.push({
+        level: 'error',
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  if (!diagnostics.some((diagnostic) => diagnostic.level === 'error')) {
+    diagnostics.push(...validateConfig(result.data));
+  }
+
+  return {
+    config: result.data,
+    rawConfig,
+    diagnostics: dedupeDiagnostics(diagnostics),
+  };
+}
+
+export function loadConfig(path: string, options: LoadConfigOptions = {}): Config {
+  const result = loadConfigDetailed(path, options);
+  for (const d of result.diagnostics) {
     const ctx = d.agent ? { agent: d.agent } : {};
     const msg = d.suggestion ? `${d.message}\n  → ${d.suggestion}` : d.message;
     if (d.level === 'error') {
@@ -38,14 +123,17 @@ export function loadConfig(path: string): Config {
       log.info(ctx, msg);
     }
   }
-  const errors = diagnostics.filter((d) => d.level === 'error');
+  const errors = result.diagnostics.filter((d) => d.level === 'error');
   if (errors.length > 0) {
     throw new Error(
       `Config validation failed with ${errors.length} error(s):\n` +
         errors.map((e) => `  - ${e.agent ? `[${e.agent}] ` : ''}${e.message}`).join('\n')
     );
   }
-  return result.data;
+  if (!result.config) {
+    throw new Error(`Config validation failed without a parsed config.`);
+  }
+  return result.config;
 }
 
 export function validateConfig(config: Config): ConfigDiagnostic[] {
@@ -59,6 +147,7 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
   const serverHost = config.server.host;
   const isLoopback = isLoopbackHost(serverHost);
   const managementApiEnabled = config.server.management_api.enabled;
+  const managementApiSecret = config.server.management_api.api_secret;
   const agentsWithoutTokens = Object.entries(config.agents)
     .filter(([, agent]) => !agent.token)
     .map(([agentId]) => agentId);
@@ -108,21 +197,49 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
       });
     }
 
-    if (!config.server.api_secret && managementApiEnabled) {
+    if (!managementApiSecret && !config.server.api_secret && managementApiEnabled) {
       diagnostics.push({
         level: 'error',
         message:
-          'server.auth_required is true, but the control-plane management API is enabled without server.api_secret.',
-        suggestion: 'Set server.api_secret, or disable server.management_api.enabled.',
+          'server.auth_required is true, but the control-plane management API is enabled without a credential.',
+        suggestion:
+          'Set server.management_api.api_secret, set server.api_secret as a temporary fallback, or disable server.management_api.enabled.',
       });
     }
   }
 
-  if (managementApiEnabled && !config.server.api_secret) {
+  if (managementApiEnabled && !managementApiSecret && !config.server.api_secret) {
     diagnostics.push({
       level: 'error',
-      message: 'server.management_api.enabled requires server.api_secret.',
-      suggestion: 'Set server.api_secret so control-plane requests require bearer-token auth.',
+      message:
+        'server.management_api.enabled requires server.management_api.api_secret or server.api_secret.',
+      suggestion:
+        'Set server.management_api.api_secret so control-plane requests require bearer-token auth.',
+    });
+  }
+
+  if (managementApiEnabled && !managementApiSecret && config.server.api_secret) {
+    diagnostics.push({
+      level: 'warn',
+      message:
+        'management_api is using server.api_secret; set server.management_api.api_secret to separate the control-plane secret from the data-plane fallback.',
+      suggestion:
+        'Generate a fresh management secret, set server.management_api.api_secret, and update management clients to use it.',
+    });
+  }
+
+  if (
+    managementApiEnabled &&
+    managementApiSecret &&
+    config.server.api_secret &&
+    managementApiSecret === config.server.api_secret
+  ) {
+    diagnostics.push({
+      level: 'warn',
+      message:
+        'server.management_api.api_secret matches server.api_secret; rotate one secret to separate the control-plane credential from the data-plane fallback.',
+      suggestion:
+        'Use different resolved values for server.management_api.api_secret and server.api_secret.',
     });
   }
 
@@ -161,6 +278,13 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
       }
     }
 
+    diagnostics.push(
+      ...validateArgScopeRefs(config, agent.arg_scope, `agents.${agentId}.arg_scope`, agentId)
+    );
+    diagnostics.push(
+      ...validateArgPolicyRefs(config, agent.arg_policy, `agents.${agentId}.arg_policy`, agentId)
+    );
+
     for (const presetName of agent.sandbox.presets) {
       if (!sandboxPresetNames.has(presetName)) {
         diagnostics.push({
@@ -173,6 +297,14 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
     }
 
     for (const [toolName, override] of Object.entries(agent.tool_overrides)) {
+      diagnostics.push(
+        ...validateArgPolicyRefs(
+          config,
+          override.args ? { [toolName]: override.args } : undefined,
+          `agents.${agentId}.tool_overrides.${toolName}.args`,
+          agentId
+        )
+      );
       for (const presetName of override.sandbox_presets ?? []) {
         if (!sandboxPresetNames.has(presetName)) {
           diagnostics.push({
@@ -265,7 +397,7 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
     }
 
     // Check empty agent
-    if (agent.allow.length === 0 && agent.ask.length === 0) {
+    if (agent.extends.length === 0 && agent.allow.length === 0 && agent.ask.length === 0) {
       diagnostics.push({
         level: 'info',
         agent: agentId,
@@ -282,6 +414,24 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
         suggestion: 'Add http: builtin to your providers block.',
       });
     }
+  }
+
+  for (const [profileId, profile] of Object.entries(config.profiles)) {
+    for (const ref of profile.extends) {
+      if (!profileNames.has(ref)) {
+        diagnostics.push({
+          level: 'error',
+          message: `Profile "${profileId}" extends unknown profile "${ref}".`,
+          suggestion: `Add "${ref}" to your profiles block, or check for typos.`,
+        });
+      }
+    }
+    diagnostics.push(
+      ...validateArgScopeRefs(config, profile.arg_scope, `profiles.${profileId}.arg_scope`)
+    );
+    diagnostics.push(
+      ...validateArgPolicyRefs(config, profile.arg_policy, `profiles.${profileId}.arg_policy`)
+    );
   }
 
   // Validate CLI configs
@@ -310,6 +460,229 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
   }
 
   return diagnostics;
+}
+
+function validateArgScopeRefs(
+  config: Config,
+  argScope: Record<string, string[]> | undefined,
+  location: string,
+  agent?: string
+): ConfigDiagnostic[] {
+  const diagnostics: ConfigDiagnostic[] = [];
+  if (!argScope) return diagnostics;
+
+  const providerNames = new Set(Object.keys(config.providers));
+  for (const [dimensionName, valueSetNames] of Object.entries(argScope)) {
+    const dimension = config.arg_dimensions[dimensionName];
+    if (!dimension) {
+      diagnostics.push({
+        level: 'error',
+        agent,
+        message: `${location} references unknown arg_dimension "${dimensionName}".`,
+        suggestion: `Add "${dimensionName}" to arg_dimensions, or check for typos.`,
+      });
+      continue;
+    }
+
+    for (const valueSetName of valueSetNames) {
+      if (!config.value_sets[valueSetName]) {
+        diagnostics.push({
+          level: 'error',
+          agent,
+          message: `${location}.${dimensionName} references unknown value_set "${valueSetName}".`,
+          suggestion: `Add "${valueSetName}" to value_sets, or check for typos.`,
+        });
+      }
+    }
+
+    for (const toolName of Object.keys(dimension.bindings)) {
+      const providerName = toolName.split('/')[0];
+      if (providerName && !providerNames.has(providerName)) {
+        diagnostics.push({
+          level: 'warn',
+          agent,
+          message: `arg_dimensions.${dimensionName}.bindings references tool "${toolName}" from unknown provider "${providerName}".`,
+          suggestion:
+            'Declare the provider, remove the binding, or leave it only if this config fragment is merged with providers elsewhere.',
+        });
+      }
+    }
+  }
+
+  return diagnostics;
+}
+
+function validateArgPolicyRefs(
+  config: Config,
+  argPolicy: Config['agents'][string]['arg_policy'],
+  location: string,
+  agent?: string
+): ConfigDiagnostic[] {
+  const diagnostics: ConfigDiagnostic[] = [];
+  if (!argPolicy) return diagnostics;
+
+  for (const [toolName, toolPolicy] of Object.entries(argPolicy)) {
+    for (const [argName, constraints] of Object.entries(toolPolicy)) {
+      for (const constraint of constraints) {
+        const valueSetName = constraint.in ?? constraint.glob_in ?? constraint.each_in;
+        if (valueSetName && !config.value_sets[valueSetName]) {
+          diagnostics.push({
+            level: 'error',
+            agent,
+            message: `${location}.${toolName}.${argName} references unknown value_set "${valueSetName}".`,
+            suggestion: `Add "${valueSetName}" to value_sets, or check for typos.`,
+          });
+        }
+      }
+    }
+  }
+
+  return diagnostics;
+}
+
+function dedupeDiagnostics(diagnostics: ConfigDiagnostic[]): ConfigDiagnostic[] {
+  const seen = new Set<string>();
+  const result: ConfigDiagnostic[] = [];
+  for (const diagnostic of diagnostics) {
+    const key = `${diagnostic.level}\0${diagnostic.agent ?? ''}\0${diagnostic.message}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(diagnostic);
+  }
+  return result;
+}
+
+function findUnknownKeys(value: unknown): ConfigDiagnostic[] {
+  const diagnostics: ConfigDiagnostic[] = [];
+  checkObjectKeys(diagnostics, value, [], rootKeys);
+  return diagnostics;
+}
+
+const rootKeys = new Set([
+  'providers',
+  'value_sets',
+  'arg_dimensions',
+  'profiles',
+  'sandbox_presets',
+  'clis',
+  'apis',
+  'agents',
+  'approvals',
+  'security',
+  'audit',
+  'server',
+]);
+const providerKeys = new Set([
+  'type',
+  'enabled',
+  'command',
+  'args',
+  'env',
+  'url',
+  'headers',
+  'oauth',
+  'oauth_callback_port',
+  'oauth_callback_url',
+  'client_id',
+  'client_secret',
+]);
+const agentKeys = new Set([
+  'token',
+  'extends',
+  'allow',
+  'remember_allow',
+  'ask',
+  'deny',
+  'tool_overrides',
+  'arg_policy',
+  'arg_scope',
+  'exec',
+  'http',
+  'sandbox',
+  'middleware',
+]);
+const profileKeys = new Set(['extends', 'allow', 'ask', 'deny', 'arg_policy', 'arg_scope']);
+const serverKeys = new Set([
+  'port',
+  'host',
+  'api_secret',
+  'auth_required',
+  'require_agent_tokens',
+  'allowed_origins',
+  'expose_tools_api',
+  'management_api',
+  'expose_management_api',
+  'expose_hook_api',
+]);
+const managementApiKeys = new Set([
+  'enabled',
+  'host',
+  'port',
+  'insecure_remote_bind',
+  'expose_hook_api',
+]);
+const argDimensionKeys = new Set(['match', 'normalize', 'bindings']);
+
+function checkObjectKeys(
+  diagnostics: ConfigDiagnostic[],
+  value: unknown,
+  path: string[],
+  allowed: Set<string>
+): void {
+  if (!isRecord(value)) return;
+  for (const key of Object.keys(value)) {
+    if (!allowed.has(key)) {
+      const fullPath = [...path, key].join('.');
+      diagnostics.push({
+        level: 'error',
+        message: `Unknown config key "${fullPath}".`,
+        suggestion: unknownKeySuggestion(key, path),
+      });
+    }
+  }
+
+  if (path.length === 0) {
+    checkRecordChildren(diagnostics, value.providers, ['providers'], providerKeys);
+    checkRecordChildren(diagnostics, value.agents, ['agents'], agentKeys);
+    checkRecordChildren(diagnostics, value.profiles, ['profiles'], profileKeys);
+    checkRecordChildren(diagnostics, value.arg_dimensions, ['arg_dimensions'], argDimensionKeys);
+    checkObjectKeys(diagnostics, value.server, ['server'], serverKeys);
+  } else if (path.join('.') === 'server') {
+    checkObjectKeys(
+      diagnostics,
+      value.management_api,
+      ['server', 'management_api'],
+      managementApiKeys
+    );
+  }
+}
+
+function checkRecordChildren(
+  diagnostics: ConfigDiagnostic[],
+  value: unknown,
+  path: string[],
+  allowed: Set<string>
+): void {
+  if (!isRecord(value)) return;
+  for (const [name, child] of Object.entries(value)) {
+    if (isRecord(child)) {
+      checkObjectKeys(diagnostics, child, [...path, name], allowed);
+    }
+  }
+}
+
+function unknownKeySuggestion(key: string, path: string[]): string | undefined {
+  if (key === 'scope' && (path[0] === 'agents' || path[0] === 'profiles')) {
+    return 'Did you mean "arg_scope"?';
+  }
+  if (key === 'mcps') return 'Use "providers" to declare MCP servers and builtins.';
+  if (key === 'hitl')
+    return 'Use "ask" for agent tool routing or "approvals" for approval providers.';
+  return undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
 }
 
 function isLoopbackHost(host: string): boolean {

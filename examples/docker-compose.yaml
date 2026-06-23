@@ -40,7 +40,7 @@ services:
       - .env
     environment:
       AIRLOCK_CONFIG: /config/airlock.yaml
-      AIRLOCK_GATEWAY_SECRET: ${AIRLOCK_API_SECRET}
+      AIRLOCK_GATEWAY_SECRET: ${MANAGEMENT_API_SECRET}
       AIRLOCK_HEALTH_PORT: '4112'
     volumes:
       # Dashboard owns config mutation and writes /config/airlock.bak.
