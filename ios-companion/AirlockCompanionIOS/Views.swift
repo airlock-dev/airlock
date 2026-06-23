@@ -21,7 +21,7 @@ struct QueueView: View {
                             Button {
                                 viewModel.approve(approval)
                             } label: {
-                                Label("Approve", systemImage: "checkmark")
+                                Label(approval.approveLabel, systemImage: "checkmark")
                             }
                             .tint(.green)
                         }
@@ -122,36 +122,74 @@ private struct QueueApprovalDetailView: View {
 struct HistoryView: View {
     @ObservedObject var viewModel: AppViewModel
 
+    private var recentItems: [RecentItem] {
+        let activity = viewModel.activityEvents.map(RecentItem.activity)
+        let approvals = viewModel.history.map(RecentItem.approval)
+        return (activity + approvals).sorted { $0.date > $1.date }
+    }
+
     var body: some View {
         List {
-            ForEach(viewModel.history) { approval in
-                NavigationLink {
-                    ApprovalDetailView(
-                        approval: approval,
-                        mode: .history,
-                        decisionBehavior: viewModel.decisionBehavior,
-                        hapticsEnabled: viewModel.hapticsEnabled,
-                        onApprove: {},
-                        onDeny: {},
-                        onAllowOneHour: {},
-                        onAlwaysAllow: {}
-                    )
-                    .id(approval.id)
-                } label: {
-                    ApprovalRow(approval: approval, isPending: false)
+            if !recentItems.isEmpty {
+                Section("Recent") {
+                    ForEach(recentItems) { item in
+                        switch item {
+                        case .activity(let event):
+                            ActivityRow(event: event)
+                        case .approval(let approval):
+                            NavigationLink {
+                                ApprovalDetailView(
+                                    approval: approval,
+                                    mode: .history,
+                                    decisionBehavior: viewModel.decisionBehavior,
+                                    hapticsEnabled: viewModel.hapticsEnabled,
+                                    onApprove: {},
+                                    onDeny: {},
+                                    onAllowOneHour: {},
+                                    onAlwaysAllow: {}
+                                )
+                                .id(approval.id)
+                            } label: {
+                                ApprovalRow(approval: approval, isPending: false)
+                            }
+                        }
+                    }
                 }
             }
         }
         .overlay {
-            if viewModel.history.isEmpty {
+            if viewModel.history.isEmpty && viewModel.activityEvents.isEmpty {
                 ContentUnavailableView("No History", systemImage: "clock")
             }
         }
         .refreshable {
             await viewModel.refreshNow()
         }
-        .navigationTitle("History")
+        .navigationTitle("Recent")
         .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+private enum RecentItem: Identifiable {
+    case activity(ActivityEvent)
+    case approval(ApprovalRequest)
+
+    var id: String {
+        switch self {
+        case .activity(let event):
+            return "activity-\(event.id)"
+        case .approval(let approval):
+            return "approval-\(approval.id)"
+        }
+    }
+
+    var date: Date {
+        switch self {
+        case .activity(let event):
+            return event.createdAt
+        case .approval(let approval):
+            return approval.resolvedAt ?? approval.createdAt
+        }
     }
 }
 
@@ -387,10 +425,10 @@ struct ApprovalRow: View {
             }
 
             VStack(alignment: .leading, spacing: 4) {
-                Text(approval.tool)
+                Text(approval.displayTitle)
                     .font(.headline)
                     .lineLimit(1)
-                Text(approval.agentId)
+                Text(approval.displaySubtitle)
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -418,6 +456,7 @@ struct ApprovalRow: View {
     }
 
     private var iconName: String {
+        if approval.isUserQuestion { return "questionmark.bubble" }
         if isPending { return "lock.open.trianglebadge.exclamationmark" }
         switch approval.status {
         case "approved":
@@ -430,13 +469,65 @@ struct ApprovalRow: View {
     }
 
     private var iconBackground: Color {
+        if approval.isUserQuestion { return .blue.opacity(0.16) }
         if isPending { return .orange.opacity(0.18) }
         return approval.status == "approved" ? .green.opacity(0.18) : .red.opacity(0.16)
     }
 
     private var iconForeground: Color {
+        if approval.isUserQuestion { return .blue }
         if isPending { return .orange }
         return approval.status == "approved" ? .green : .red
+    }
+}
+
+struct ActivityRow: View {
+    let event: ActivityEvent
+
+    var body: some View {
+        HStack(spacing: 12) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(iconBackground)
+                    .frame(width: 42, height: 42)
+                Image(systemName: iconName)
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(iconForeground)
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(event.displayTitle)
+                    .font(.headline)
+                    .lineLimit(1)
+                Text(event.agentId.isEmpty ? event.kind : "\(event.agentId) · \(event.kind)")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                if !event.displayBody.isEmpty {
+                    Text(event.displayBody)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+            }
+
+            Spacer()
+
+            RelativeTimeText(date: event.createdAt)
+        }
+        .padding(.vertical, 4)
+    }
+
+    private var iconName: String {
+        event.kind == "notification" ? "info.circle.fill" : "text.alignleft"
+    }
+
+    private var iconBackground: Color {
+        event.kind == "notification" ? .blue.opacity(0.16) : .gray.opacity(0.12)
+    }
+
+    private var iconForeground: Color {
+        event.kind == "notification" ? .blue : .secondary
     }
 }
 
@@ -462,9 +553,9 @@ struct ApprovalDetailView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text(approval.tool)
+                    Text(approval.displayTitle)
                         .font(.title2.weight(.semibold))
-                    Text(approval.agentId)
+                    Text(approval.displaySubtitle)
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                     HStack {
@@ -473,6 +564,28 @@ struct ApprovalDetailView: View {
                     }
                     .font(.caption.monospaced())
                     .foregroundStyle(.secondary)
+                }
+
+                if approval.isUserQuestion, let context = approval.questionContext {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Context")
+                            .font(.headline)
+                        Text(context)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(12)
+                    .background(Color(.secondarySystemGroupedBackground))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                }
+
+                if let reason = approval.requestReason {
+                    DetailTextBlock(title: "Request reason", value: reason)
+                }
+
+                if let note = approval.requestNote {
+                    DetailTextBlock(title: "Request note", value: note)
                 }
 
                 if let status = approval.status, mode == .history {
@@ -523,7 +636,7 @@ struct ApprovalDetailView: View {
                                         Button {
                                             resolve(.approved, action: onApprove)
                                         } label: {
-                                            Label("Approve", systemImage: "checkmark")
+                                            Label(approval.approveLabel, systemImage: "checkmark")
                                                 .frame(maxWidth: .infinity)
                                         }
                                         .buttonStyle(.borderedProminent)
@@ -539,22 +652,24 @@ struct ApprovalDetailView: View {
                                         .tint(.red)
                                     }
 
-                                    HStack {
-                                        Button {
-                                            resolve(.allowOneHour, action: onAllowOneHour)
-                                        } label: {
-                                            Label("1 Hour", systemImage: "timer")
-                                                .frame(maxWidth: .infinity)
-                                        }
-                                        .buttonStyle(.bordered)
+                                    if !approval.isUserQuestion {
+                                        HStack {
+                                            Button {
+                                                resolve(.allowOneHour, action: onAllowOneHour)
+                                            } label: {
+                                                Label("1 Hour", systemImage: "timer")
+                                                    .frame(maxWidth: .infinity)
+                                            }
+                                            .buttonStyle(.bordered)
 
-                                        Button {
-                                            resolve(.alwaysAllow, action: onAlwaysAllow)
-                                        } label: {
-                                            Label("Always", systemImage: "infinity")
-                                                .frame(maxWidth: .infinity)
+                                            Button {
+                                                resolve(.alwaysAllow, action: onAlwaysAllow)
+                                            } label: {
+                                                Label("Always", systemImage: "infinity")
+                                                    .frame(maxWidth: .infinity)
+                                            }
+                                            .buttonStyle(.bordered)
                                         }
-                                        .buttonStyle(.bordered)
                                     }
                                 }
                                 .disabled(actionFeedback != nil)
@@ -568,7 +683,7 @@ struct ApprovalDetailView: View {
             .padding()
         }
         .background(Color(.systemGroupedBackground))
-        .navigationTitle("Approval")
+        .navigationTitle(approval.isUserQuestion ? "Question" : "Approval")
         .navigationBarTitleDisplayMode(.inline)
     }
 
@@ -593,6 +708,25 @@ struct ApprovalDetailView: View {
     private func playDecisionHaptic() {
         guard hapticsEnabled else { return }
         UIImpactFeedbackGenerator(style: .soft).impactOccurred(intensity: 0.55)
+    }
+}
+
+private struct DetailTextBlock: View {
+    let title: String
+    let value: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.headline)
+            Text(value)
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(Color(.secondarySystemGroupedBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 }
 

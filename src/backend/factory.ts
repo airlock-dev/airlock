@@ -4,6 +4,7 @@ import type { ClientPool } from '../pool/pool.js';
 import { McpBackendAdapter } from './mcp-adapter.js';
 import { ExecBackendAdapter } from './exec-adapter.js';
 import { HttpBackendAdapter } from './http-adapter.js';
+import { AirlockBackendAdapter, type AirlockBackendDeps } from './airlock-adapter.js';
 import { CliBackendAdapter } from './cli/adapter.js';
 import { OpenApiAdapter } from './openapi/adapter.js';
 import { getBuiltinProviders, getMcpConfigs } from '../config/schema.js';
@@ -12,7 +13,15 @@ import { getBuiltinProviders, getMcpConfigs } from '../config/schema.js';
  * Build all BackendAdapter instances from the gateway config.
  * MCP adapters wrap the existing ClientPool; CLI and API adapters are standalone.
  */
-export function buildAdapters(config: Config, pool: ClientPool): BackendAdapter[] {
+export interface AdapterRuntimeDeps {
+  airlock?: AirlockBackendDeps;
+}
+
+export function buildAdapters(
+  config: Config,
+  pool: ClientPool,
+  runtime: AdapterRuntimeDeps = {}
+): BackendAdapter[] {
   const adapters: BackendAdapter[] = [];
 
   // MCP adapters — one per connected MCP server
@@ -28,6 +37,9 @@ export function buildAdapters(config: Config, pool: ClientPool): BackendAdapter[
   }
   if (builtins.has('http')) {
     adapters.push(new HttpBackendAdapter(config.agents, config.security));
+  }
+  if (builtins.has('airlock')) {
+    adapters.push(new AirlockBackendAdapter(runtime.airlock));
   }
 
   // CLI adapters — one per clis.{key} entry

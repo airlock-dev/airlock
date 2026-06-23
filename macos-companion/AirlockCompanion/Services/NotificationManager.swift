@@ -85,10 +85,15 @@ final class NotificationManager: NSObject, ObservableObject, UNUserNotificationC
         guard let center = notificationCenter else { return }
 
         let content = UNMutableNotificationContent()
-        content.title = "\(request.agentId): \(request.tool)"
-        let argsStr = request.argsDisplayString
-        if !argsStr.isEmpty {
-            content.body = argsStr
+        content.title = request.displayTitle
+        content.subtitle = request.displaySubtitle
+        let lines = [
+            request.requestReason.map { "Request reason: \($0)" },
+            request.requestNote.map { "Request note: \($0)" },
+            request.argsDisplayString.isEmpty ? nil : request.argsDisplayString
+        ].compactMap { $0 }
+        if !lines.isEmpty {
+            content.body = lines.joined(separator: "\n")
         }
         content.categoryIdentifier = Constants.NotificationCategory.approvalRequest
         content.userInfo = ["code": request.code]
@@ -112,6 +117,31 @@ final class NotificationManager: NSObject, ObservableObject, UNUserNotificationC
 
         // Play sound directly as well — UNNotification sounds can be silenced
         // by system notification settings
+        if soundEnabled {
+            NSSound(named: .init("Blow"))?.play()
+        }
+    }
+
+    func showNotification(for event: ActivityEvent, soundEnabled: Bool = true) {
+        guard let center = notificationCenter else { return }
+        guard event.kind == "notification" else { return }
+
+        let content = UNMutableNotificationContent()
+        content.title = event.title
+        content.body = event.body
+
+        if soundEnabled {
+            content.sound = .default
+        }
+
+        let notificationRequest = UNNotificationRequest(
+            identifier: event.id,
+            content: content,
+            trigger: nil
+        )
+
+        center.add(notificationRequest)
+
         if soundEnabled {
             NSSound(named: .init("Blow"))?.play()
         }

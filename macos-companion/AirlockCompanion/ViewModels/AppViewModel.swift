@@ -6,6 +6,7 @@ import Combine
 final class AppViewModel: ObservableObject {
     @Published var pendingRequests: [ApprovalRequest] = []
     @Published var resolvedRequests: [ResolvedRequest] = []
+    @Published var activityEvents: [ActivityEvent] = []
     @Published var connectionState: ConnectionState = .disconnected(nil)
     @Published var selectedIndex: Int = 0
     @Published private(set) var appVersion: String
@@ -232,6 +233,18 @@ final class AppViewModel: ObservableObject {
             }
             moveToResolved(code: code, action: action)
             notificationManager.removeNotification(code: code)
+
+        case .activity(let event):
+            upsertActivityEvent(event)
+            notificationManager.showNotification(for: event, soundEnabled: soundEnabled)
+        }
+    }
+
+    private func upsertActivityEvent(_ event: ActivityEvent) {
+        activityEvents.removeAll { $0.id == event.id }
+        activityEvents.insert(event, at: 0)
+        if activityEvents.count > Constants.maxResolvedRequests {
+            activityEvents = Array(activityEvents.prefix(Constants.maxResolvedRequests))
         }
     }
 
@@ -246,12 +259,23 @@ final class AppViewModel: ObservableObject {
             action: action,
             tool: seen?.tool ?? "",
             agentId: seen?.agentId ?? "",
+            title: seen?.displayTitle ?? "",
+            detail: resolvedDetail(for: seen),
             argsDisplay: seen?.argsDisplayString ?? ""
         )
         resolvedRequests.insert(resolved, at: 0)
         if resolvedRequests.count > Constants.maxResolvedRequests {
             resolvedRequests = Array(resolvedRequests.prefix(Constants.maxResolvedRequests))
         }
+    }
+
+    private func resolvedDetail(for request: ApprovalRequest?) -> String {
+        guard let request else { return "" }
+        if let reason = request.requestReason { return reason }
+        if request.isUserQuestion, let context = request.questionContext { return context }
+        if let note = request.requestNote { return note }
+        if !request.isUserQuestion, !request.argsDisplayString.isEmpty { return request.argsDisplayString }
+        return request.displaySubtitle
     }
 
     private func markExpiredIfNeeded(code: String) -> Bool {

@@ -145,6 +145,20 @@ interface AuditLogResult {
   error?: string;
 }
 
+interface ActivityEvent {
+  id: string;
+  kind: 'notification' | 'log';
+  agentId: string;
+  title: string;
+  body: string;
+  severity: 'info' | 'success' | 'warning' | 'error';
+  createdAt: string;
+}
+
+interface ActivityResult {
+  events: ActivityEvent[];
+}
+
 export interface ConfigureWebOptions {
   approvals?: {
     registerRoutes(app: FastifyInstance, configPath?: string): void;
@@ -337,6 +351,18 @@ export function createConfigureWebApp(configPath: string, options: ConfigureWebO
         pending: [],
         error: err instanceof Error ? err.message : String(err),
       };
+    }
+  });
+
+  app.get('/api/activity', async (_request, reply) => {
+    try {
+      if (options.remoteGateway) {
+        return await remoteGatewayJson<ActivityResult>(options.remoteGateway, '/activity');
+      }
+      return { events: [] };
+    } catch (err) {
+      reply.code(500);
+      return { events: [], error: err instanceof Error ? err.message : String(err) };
     }
   });
 
@@ -1640,6 +1666,17 @@ const INDEX_HTML = `<!doctype html>
       border-color: #f1d99a;
       background: #fffaf0;
     }
+    .log-row.question {
+      border-color: #c8d7ef;
+      background: #f3f7ff;
+    }
+    .log-row.notification {
+      border-color: #c8d7ef;
+      background: #f7fbff;
+    }
+    .log-row.log {
+      background: #fbfcfe;
+    }
     .log-cell {
       min-width: 0;
       overflow-wrap: anywhere;
@@ -2203,6 +2240,7 @@ const INDEX_HTML = `<!doctype html>
       config: null,
       status: null,
       audit: { dbPath: '', entries: [], pending: [] },
+      activityEvents: [],
       livePending: {},
       currentApprovalCode: '',
       activityAgentId: '',
@@ -2289,7 +2327,12 @@ const INDEX_HTML = `<!doctype html>
         for (const [key, value] of Object.entries(state.auditFilters)) {
           if (String(value || '').trim()) params.set(key, String(value).trim());
         }
-        state.audit = await api('/api/logs' + (params.toString() ? '?' + params.toString() : ''));
+        const [audit, activity] = await Promise.all([
+          api('/api/logs' + (params.toString() ? '?' + params.toString() : '')),
+          api('/api/activity')
+        ]);
+        state.audit = audit;
+        state.activityEvents = Array.isArray(activity.events) ? activity.events : [];
         render();
       } catch (error) {
         alert(error.message);
@@ -2390,12 +2433,14 @@ const INDEX_HTML = `<!doctype html>
 
     function normalizePending(request, live) {
       const args = live ? request.args : parseArgs(request.args);
+      const context = request.context || airlockContext(args);
       return {
         id: request.id || '',
         code: request.code || '',
         agentId: request.agentId || request.agent_id || '',
         tool: request.tool || '',
-        args,
+        args: stripAirlockContext(args),
+        context,
         status: request.status || 'pending',
         createdAt: request.createdAt || request.created_at || '',
         timeoutMs: request.timeoutMs || 0,
@@ -2414,19 +2459,37 @@ const INDEX_HTML = `<!doctype html>
       }
     }
 
+    function airlockContext(args) {
+      const raw = args && typeof args === 'object' ? args._airlock : undefined;
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+      const context = {};
+      if (typeof raw.reason === 'string' && raw.reason.trim()) context.reason = raw.reason.trim();
+      if (typeof raw.note === 'string' && raw.note.trim()) context.note = raw.note.trim();
+      return context.reason || context.note ? context : undefined;
+    }
+
+    function stripAirlockContext(args) {
+      if (!args || typeof args !== 'object' || Array.isArray(args) || !('_airlock' in args)) return args;
+      const clean = { ...args };
+      delete clean._airlock;
+      return clean;
+    }
+
     function renderActivity() {
       el('activitySurface').hidden = state.activeKind !== 'activity';
       renderActivityAgentFilter();
       const agentId = state.auditFilters.agent || state.activityAgentId || '';
       const pending = pendingApprovals(agentId);
       const entries = state.audit.entries || [];
+      const activity = activityEvents(agentId);
       const rows = [
         ...pending.map(pendingRow),
+        ...activity.map(activityRow),
         ...entries.map(auditRow)
       ];
       el('pendingBadge').textContent = 'pending ' + pending.length;
       el('activityMeta').textContent = state.audit.dbPath
-        ? 'Audit log: ' + state.audit.dbPath + (agentId ? ' · agent ' + agentId : '')
+        ? 'Activity events ' + activity.length + ' · Audit log: ' + state.audit.dbPath + (agentId ? ' · agent ' + agentId : '')
         : 'Audit log not loaded yet';
       el('activityList').innerHTML = rows.length
         ? rows.join('')
@@ -2450,6 +2513,10 @@ const INDEX_HTML = `<!doctype html>
       });
     }
 
+    function activityEvents(agentId = '') {
+      return (state.activityEvents || []).filter((event) => !agentId || event.agentId === agentId);
+    }
+
     function renderActivityAgentFilter() {
       const agents = Object.keys(state.config.agents);
       if (!state.activityAgentId) state.activityAgentId = agents[0] || '';
@@ -2461,20 +2528,23 @@ const INDEX_HTML = `<!doctype html>
     }
 
     function pendingRow(entry) {
-      return '<div class="log-row pending" data-pending-row data-code="' + escapeHtml(entry.code) + '">' +
-        '<div class="log-cell"><strong>pending approval</strong><br>' + escapeHtml(formatTime(entry.createdAt)) + '</div>' +
+      const question = isUserQuestion(entry);
+      return '<div class="log-row pending' + (question ? ' question' : '') + '" data-pending-row data-code="' + escapeHtml(entry.code) + '">' +
+        '<div class="log-cell"><strong>' + escapeHtml(question ? 'pending question' : 'pending approval') + '</strong><br>' + escapeHtml(formatTime(entry.createdAt)) + '</div>' +
         '<div class="log-cell">' + escapeHtml(entry.agentId) + '</div>' +
-        '<div class="log-cell">' + escapeHtml(entry.tool) + '<br><span class="subtle">code ' + escapeHtml(entry.code) + '</span></div>' +
-        '<div class="log-cell"><span class="tag tag-warn">' + escapeHtml(entry.status) + '</span></div>' +
-        '<pre class="log-args">' + escapeHtml(prettyJson(entry.args)) + '</pre>' +
-        '<div class="approval-actions">' + approvalButtons(entry.code) + '</div>' +
+        '<div class="log-cell">' + escapeHtml(question ? questionText(entry) : entry.tool) + '<br><span class="subtle">' + escapeHtml(question ? entry.tool : 'code ' + entry.code) + '</span></div>' +
+        '<div class="log-cell"><span class="tag tag-warn">' + escapeHtml(question ? 'question' : entry.status) + '</span></div>' +
+        '<pre class="log-args">' + escapeHtml(question ? questionPreview(entry) : approvalPreview(entry)) + '</pre>' +
+        '<div class="approval-actions">' + approvalButtons(entry.code, { remember: !question, approveLabel: question ? 'Confirm' : 'Approve' }) + '</div>' +
       '</div>';
     }
 
-    function approvalButtons(code) {
-      return '<button class="approve" data-approval-action="approve" data-code="' + escapeHtml(code) + '">Approve</button>' +
-        '<button class="approve" data-approval-action="approve" data-code="' + escapeHtml(code) + '" data-remember="temporary" data-duration="3600000">Allow 1h</button>' +
-        '<button class="approve" data-approval-action="approve" data-code="' + escapeHtml(code) + '" data-remember="always">Always Allow</button>' +
+    function approvalButtons(code, options = {}) {
+      const approveLabel = options.approveLabel || 'Approve';
+      const remember = options.remember !== false;
+      return '<button class="approve" data-approval-action="approve" data-code="' + escapeHtml(code) + '">' + escapeHtml(approveLabel) + '</button>' +
+        (remember ? '<button class="approve" data-approval-action="approve" data-code="' + escapeHtml(code) + '" data-remember="temporary" data-duration="3600000">Allow 1h</button>' : '') +
+        (remember ? '<button class="approve" data-approval-action="approve" data-code="' + escapeHtml(code) + '" data-remember="always">Always Allow</button>' : '') +
         '<button class="deny" data-approval-action="deny" data-code="' + escapeHtml(code) + '">Deny</button>';
     }
 
@@ -2509,14 +2579,19 @@ const INDEX_HTML = `<!doctype html>
       const pending = findPendingApproval(code);
       if (!pending) return;
       state.currentApprovalCode = code;
-      el('approvalModalTitle').textContent = pending.tool;
+      const question = isUserQuestion(pending);
+      el('approvalModalTitle').textContent = question ? questionText(pending) : pending.tool;
       el('approvalModalMeta').textContent = 'agent ' + pending.agentId + ' · code ' + pending.code;
       el('approvalModalBody').innerHTML =
         '<div class="detail-label">Status</div><div>' + escapeHtml(pending.status) + '</div>' +
         '<div class="detail-label">Created</div><div>' + escapeHtml(formatTime(pending.createdAt)) + '</div>' +
         (pending.timeoutMs ? '<div class="detail-label">Timeout</div><div>' + Math.round(pending.timeoutMs / 1000) + 's</div>' : '') +
+        (requestReason(pending) ? '<div class="detail-label">Request reason</div><div>' + escapeHtml(requestReason(pending)) + '</div>' : '') +
+        (requestNote(pending) ? '<div class="detail-label">Request note</div><div>' + escapeHtml(requestNote(pending)) + '</div>' : '') +
+        (question ? '<div class="detail-label">Question</div><div>' + escapeHtml(questionText(pending)) + '</div>' : '') +
+        (question && questionContext(pending) ? '<div class="detail-label">Context</div><div>' + escapeHtml(questionContext(pending)) + '</div>' : '') +
         '<div class="detail-label">Arguments</div><pre class="log-args">' + escapeHtml(prettyJson(pending.args)) + '</pre>';
-      el('approvalModalFooter').innerHTML = approvalButtons(pending.code);
+      el('approvalModalFooter').innerHTML = approvalButtons(pending.code, { remember: !question, approveLabel: question ? 'Confirm' : 'Approve' });
       el('approvalModal').classList.add('open');
       el('approvalModalFooter').querySelectorAll('[data-approval-action]').forEach((button) => {
         button.addEventListener('click', () => {
@@ -2533,6 +2608,57 @@ const INDEX_HTML = `<!doctype html>
     function closeApprovalModal() {
       el('approvalModal').classList.remove('open');
       state.currentApprovalCode = '';
+    }
+
+    function isUserQuestion(entry) {
+      return entry.tool === 'airlock/ask_user';
+    }
+
+    function questionText(entry) {
+      const value = entry.args?.question ?? entry.args?.title ?? entry.args?.message;
+      return typeof value === 'string' && value.trim() ? value.trim() : 'Question from agent';
+    }
+
+    function questionContext(entry) {
+      const value = entry.args?.context ?? entry.args?.reason;
+      return typeof value === 'string' && value.trim() ? value.trim() : '';
+    }
+
+    function questionPreview(entry) {
+      const lines = ['question: ' + questionText(entry)];
+      const context = questionContext(entry);
+      if (context) lines.push('context: ' + context);
+      return lines.join('\\n');
+    }
+
+    function requestReason(entry) {
+      const value = entry.context?.reason;
+      return typeof value === 'string' && value.trim() ? value.trim() : '';
+    }
+
+    function requestNote(entry) {
+      const value = entry.context?.note;
+      return typeof value === 'string' && value.trim() ? value.trim() : '';
+    }
+
+    function approvalPreview(entry) {
+      const lines = [];
+      const reason = requestReason(entry);
+      const note = requestNote(entry);
+      if (reason) lines.push('request reason: ' + reason);
+      if (note) lines.push('request note: ' + note);
+      lines.push(prettyJson(entry.args));
+      return lines.join('\\n');
+    }
+
+    function activityRow(event) {
+      const tag = event.kind === 'notification' ? 'tag-warn' : resultTagClass(event.severity || 'info');
+      return '<div class="log-row ' + escapeHtml(event.kind) + '">' +
+        '<div class="log-cell"><strong>' + escapeHtml(event.kind) + '</strong><br>' + escapeHtml(formatTime(event.createdAt)) + '</div>' +
+        '<div class="log-cell">' + escapeHtml(event.agentId || '') + '</div>' +
+        '<div class="log-cell">' + escapeHtml(event.title || '') + '<br><span class="subtle">' + escapeHtml(event.body || '') + '</span></div>' +
+        '<div class="log-cell"><span class="tag ' + tag + '">' + escapeHtml(event.severity || 'info') + '</span></div>' +
+      '</div>';
     }
 
     function auditRow(entry) {
@@ -3215,6 +3341,11 @@ const INDEX_HTML = `<!doctype html>
           refreshStatus().catch(() => {});
           render();
         }
+        if (message.type === 'activity') {
+          upsertActivityEvent(message.event);
+          notifyActivity(message.event);
+          render();
+        }
       };
       events.onerror = () => {
         events.close();
@@ -3224,11 +3355,34 @@ const INDEX_HTML = `<!doctype html>
     function notifyApproval(request) {
       if (!el('approvalNotifs').checked) return;
       if (!('Notification' in window) || Notification.permission !== 'granted') return;
+      const pending = normalizePending(request, true);
+      const lines = ['agent: ' + pending.agentId, pending.code];
+      const reason = requestReason(pending);
+      if (reason) lines.push('request reason: ' + reason);
       new Notification('Airlock: ' + request.tool, {
-        body: 'agent: ' + request.agentId + '\\n' + request.code,
+        body: lines.join('\\n'),
         tag: request.code,
         silent: !el('approvalSound').checked
       });
+    }
+
+    function notifyActivity(event) {
+      if (!event || event.kind !== 'notification') return;
+      if (!el('approvalNotifs').checked) return;
+      if (!('Notification' in window) || Notification.permission !== 'granted') return;
+      new Notification(event.title || 'Airlock notification', {
+        body: event.body || '',
+        tag: event.id,
+        silent: !el('approvalSound').checked
+      });
+    }
+
+    function upsertActivityEvent(event) {
+      if (!event || !event.id) return;
+      state.activityEvents = [
+        event,
+        ...(state.activityEvents || []).filter((existing) => existing.id !== event.id)
+      ].slice(0, 200);
     }
 
     async function checkVersion() {

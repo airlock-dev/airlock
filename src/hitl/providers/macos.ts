@@ -52,7 +52,11 @@ export class MacosHitlProvider implements HitlProvider {
 
     const timeoutSec = Math.ceil(req.timeoutMs / 1000);
     const tool = req.tool.replace(/^[^/]+\//, '');
-    const lines = [`Tool:  ${tool}`, `Agent: ${req.agentId}`, '', ...argLines];
+    const contextLines = [
+      req.context?.reason ? `Request reason: ${req.context.reason}` : undefined,
+      req.context?.note ? `Request note:   ${req.context.note}` : undefined,
+    ].filter((line): line is string => Boolean(line));
+    const lines = [`Tool:  ${tool}`, `Agent: ${req.agentId}`, ...contextLines, '', ...argLines];
     const escaped = escapeAppleScript(lines.join('\n'));
     const title = escapeAppleScript(`Airlock — ${tool}`);
 

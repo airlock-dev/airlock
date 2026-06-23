@@ -2,6 +2,8 @@ import { describe, it, expect, vi } from 'vitest';
 import { McpBackendAdapter } from '../src/backend/mcp-adapter.js';
 import { ExecBackendAdapter } from '../src/backend/exec-adapter.js';
 import { HttpBackendAdapter } from '../src/backend/http-adapter.js';
+import { AirlockBackendAdapter } from '../src/backend/airlock-adapter.js';
+import { ActivityStream } from '../src/activity/stream.js';
 import type { ClientPool } from '../src/pool/pool.js';
 import type { AgentConfig, SecurityConfig } from '../src/config/schema.js';
 import { GatewayConfig } from '../src/config/schema.js';
@@ -218,5 +220,48 @@ describe('HttpBackendAdapter', () => {
   it('has correct id', () => {
     const adapter = new HttpBackendAdapter({}, security);
     expect(adapter.id).toBe('builtin:http');
+  });
+});
+
+// --- AirlockBackendAdapter ---
+
+describe('AirlockBackendAdapter', () => {
+  it('lists ask, notify, and log tools', async () => {
+    const adapter = new AirlockBackendAdapter();
+    const tools = await adapter.listTools();
+    expect(tools.map((tool) => tool.name)).toEqual([
+      'airlock/ask_user',
+      'airlock/notify_user',
+      'airlock/log',
+    ]);
+  });
+
+  it('emits notification activity', async () => {
+    const activityStream = new ActivityStream();
+    const adapter = new AirlockBackendAdapter({ activityStream });
+
+    const result = await adapter.call({
+      tool: 'airlock/notify_user',
+      agentId: 'agent1',
+      args: { title: 'Done', body: 'Tests passed', severity: 'success' },
+    });
+
+    expect(result.success).toBe(true);
+    expect(activityStream.recent()).toMatchObject([
+      { kind: 'notification', agentId: 'agent1', title: 'Done', body: 'Tests passed' },
+    ]);
+  });
+
+  it('emits quiet log activity', async () => {
+    const activityStream = new ActivityStream();
+    const adapter = new AirlockBackendAdapter({ activityStream });
+
+    await adapter.call({
+      tool: 'airlock/log',
+      agentId: 'agent1',
+      args: { title: 'Checkpoint', body: 'Reached validation step' },
+    });
+
+    expect(activityStream.recent()[0]).toMatchObject({ kind: 'log', title: 'Checkpoint' });
   });
 });

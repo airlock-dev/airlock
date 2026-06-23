@@ -85,9 +85,19 @@ enum JSONValue: Codable, Equatable, Sendable {
             return "{\(items)}"
         }
     }
+
+    var plainString: String? {
+        if case .string(let value) = self { return value }
+        return nil
+    }
 }
 
 // MARK: - ApprovalRequest
+
+struct ApprovalContext: Codable, Equatable, Sendable {
+    let reason: String?
+    let note: String?
+}
 
 struct ApprovalRequest: Codable, Identifiable, Equatable, Sendable {
     let id: String
@@ -95,6 +105,7 @@ struct ApprovalRequest: Codable, Identifiable, Equatable, Sendable {
     let agentId: String
     let tool: String
     let args: [String: JSONValue]
+    let context: ApprovalContext?
     let timeoutMs: Int
     let receivedAt: Date
 
@@ -107,15 +118,16 @@ struct ApprovalRequest: Codable, Identifiable, Equatable, Sendable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, code, agentId, tool, args, timeoutMs
+        case id, code, agentId, tool, args, context, timeoutMs
     }
 
-    init(id: String, code: String, agentId: String, tool: String, args: [String: JSONValue], timeoutMs: Int, receivedAt: Date = Date()) {
+    init(id: String, code: String, agentId: String, tool: String, args: [String: JSONValue], context: ApprovalContext? = nil, timeoutMs: Int, receivedAt: Date = Date()) {
         self.id = id
         self.code = code
         self.agentId = agentId
         self.tool = tool
         self.args = args
+        self.context = context
         self.timeoutMs = timeoutMs
         self.receivedAt = receivedAt
     }
@@ -127,6 +139,7 @@ struct ApprovalRequest: Codable, Identifiable, Equatable, Sendable {
         agentId = try container.decode(String.self, forKey: .agentId)
         tool = try container.decode(String.self, forKey: .tool)
         args = try container.decode([String: JSONValue].self, forKey: .args)
+        context = try container.decodeIfPresent(ApprovalContext.self, forKey: .context)
         timeoutMs = try container.decode(Int.self, forKey: .timeoutMs)
         receivedAt = Date()
     }
@@ -135,6 +148,45 @@ struct ApprovalRequest: Codable, Identifiable, Equatable, Sendable {
         args.sorted(by: { $0.key < $1.key })
             .map { "  \($0.key): \($0.value.displayString)" }
             .joined(separator: "\n")
+    }
+
+    var requestReason: String? {
+        let trimmed = context?.reason?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed?.isEmpty == false ? trimmed : nil
+    }
+
+    var requestNote: String? {
+        let trimmed = context?.note?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed?.isEmpty == false ? trimmed : nil
+    }
+
+    var isUserQuestion: Bool {
+        tool == "airlock/ask_user"
+    }
+
+    var questionText: String {
+        args["question"]?.plainString?.trimmingCharacters(in: .whitespacesAndNewlines)
+            ?? args["title"]?.plainString?.trimmingCharacters(in: .whitespacesAndNewlines)
+            ?? args["message"]?.plainString?.trimmingCharacters(in: .whitespacesAndNewlines)
+            ?? "Question from agent"
+    }
+
+    var questionContext: String? {
+        let value = args["context"]?.plainString ?? args["reason"]?.plainString
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed?.isEmpty == false ? trimmed : nil
+    }
+
+    var displayTitle: String {
+        isUserQuestion ? questionText : tool
+    }
+
+    var displaySubtitle: String {
+        isUserQuestion ? "\(agentId) · user question" : agentId
+    }
+
+    var approveLabel: String {
+        isUserQuestion ? "Confirm" : "Approve"
     }
 }
 
@@ -146,16 +198,80 @@ struct ResolvedRequest: Identifiable, Equatable, Sendable {
     let action: String
     let tool: String
     let agentId: String
+    let title: String
+    let detail: String
     let argsDisplay: String
     let resolvedAt: Date
 
-    init(code: String, action: String, tool: String = "", agentId: String = "", argsDisplay: String = "", resolvedAt: Date = Date()) {
+    init(
+        code: String,
+        action: String,
+        tool: String = "",
+        agentId: String = "",
+        title: String = "",
+        detail: String = "",
+        argsDisplay: String = "",
+        resolvedAt: Date = Date()
+    ) {
         self.id = code
         self.code = code
         self.action = action
         self.tool = tool
         self.agentId = agentId
+        self.title = title
+        self.detail = detail
         self.argsDisplay = argsDisplay
         self.resolvedAt = resolvedAt
     }
+
+    var displayTitle: String {
+        if !title.isEmpty { return title }
+        if !agentId.isEmpty && !tool.isEmpty { return "\(agentId): \(tool)" }
+        if !tool.isEmpty { return tool }
+        return code
+    }
+
+    var displayDetail: String {
+        if !detail.isEmpty { return detail }
+        if !agentId.isEmpty { return agentId }
+        return action
+    }
+}
+
+// MARK: - ActivityEvent
+
+struct ActivityEvent: Codable, Identifiable, Equatable, Sendable {
+    let id: String
+    let kind: String
+    let agentId: String
+    let title: String
+    let body: String
+    let severity: String
+    let createdAt: String
+
+    var displayTitle: String {
+        title.isEmpty ? (kind == "notification" ? "Airlock notification" : "Airlock log") : title
+    }
+
+    var displayBody: String {
+        body.isEmpty ? agentId : body
+    }
+
+    var createdDate: Date {
+        Self.iso8601WithFractionalSeconds.date(from: createdAt)
+            ?? Self.iso8601.date(from: createdAt)
+            ?? .distantPast
+    }
+
+    private static let iso8601: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter
+    }()
+
+    private static let iso8601WithFractionalSeconds: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
 }

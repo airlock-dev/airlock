@@ -2,6 +2,7 @@ import { createHash, randomBytes } from 'crypto';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { AuditLogger } from '../audit/logger.js';
 import type { HitlEngine } from '../hitl/engine.js';
+import type { ActivityStream, AirlockActivityEvent } from '../activity/stream.js';
 import { rememberAllow, type RememberAllowMode } from '../config/mutator.js';
 import { checkRequestSecurity, type RequestSecurityOptions } from '../security/request.js';
 import { generateId } from '../util/id.js';
@@ -9,6 +10,7 @@ import { generateId } from '../util/id.js';
 interface MobileApiOptions {
   auditLogger: AuditLogger;
   engine: HitlEngine;
+  activityStream?: ActivityStream;
   configPath?: string;
   secret?: string;
   authRequired?: boolean;
@@ -41,10 +43,15 @@ interface MobileApproval {
   args: Record<string, unknown>;
   status?: string;
   reason?: string;
+  note?: string;
   createdAt: string;
   timeoutMs?: number;
   expiresAt?: string;
   resolvedAt?: string;
+}
+
+interface MobileActivityResponse {
+  events: AirlockActivityEvent[];
 }
 
 export function mobileApiPlugin(app: FastifyInstance, opts: MobileApiOptions): void {
@@ -140,6 +147,8 @@ export function mobileApiPlugin(app: FastifyInstance, opts: MobileApiOptions): v
         const createdAt = auditLogger.getHitlById(entry.id)?.created_at ?? new Date().toISOString();
         return {
           ...entry,
+          ...(entry.context?.reason ? { reason: entry.context.reason } : {}),
+          ...(entry.context?.note ? { note: entry.context.note } : {}),
           createdAt,
           timeoutMs: engine.timeoutMs,
           ...(engine.timeoutMs > 0
@@ -158,6 +167,16 @@ export function mobileApiPlugin(app: FastifyInstance, opts: MobileApiOptions): v
       approvals: auditLogger.getHitlHistory(parsedLimit).map(toMobileApproval),
     };
   });
+
+  app.get(
+    '/mobile/activity',
+    async (request, reply): Promise<MobileActivityResponse | undefined> => {
+      if (!checkMobileOrAdminAuth(request, reply, opts)) return;
+      return {
+        events: opts.activityStream?.recent() ?? [],
+      };
+    }
+  );
 
   app.post('/mobile/approvals/:id/decision', async (request, reply) => {
     if (!checkMobileOrAdminAuth(request, reply, opts)) return;
@@ -223,14 +242,18 @@ function checkMobileOrAdminAuth(
 }
 
 function toMobileApproval(row: ReturnType<AuditLogger['getHitlHistory']>[number]): MobileApproval {
+  const args = parseJsonObject(row.args);
+  const context = parseAirlockContext(args);
+  const cleanArgs = stripAirlockContext(args);
   return {
     id: row.id,
     code: row.code,
     agentId: row.agent_id,
     tool: row.tool,
-    args: parseJsonObject(row.args),
+    args: cleanArgs,
     status: row.status,
-    ...(row.reason ? { reason: row.reason } : {}),
+    ...(row.reason ? { reason: row.reason } : context.reason ? { reason: context.reason } : {}),
+    ...(context.note ? { note: context.note } : {}),
     createdAt: row.created_at,
     ...(row.resolved_at ? { resolvedAt: row.resolved_at } : {}),
   };
@@ -244,6 +267,21 @@ function parseJsonObject(value: string): Record<string, unknown> {
   } catch {
     return {};
   }
+}
+
+function parseAirlockContext(args: Record<string, unknown>): { reason?: string; note?: string } {
+  const raw = args._airlock;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  const source = raw as Record<string, unknown>;
+  return {
+    ...(typeof source.reason === 'string' ? { reason: source.reason } : {}),
+    ...(typeof source.note === 'string' ? { note: source.note } : {}),
+  };
+}
+
+function stripAirlockContext(args: Record<string, unknown>): Record<string, unknown> {
+  const { _airlock: _ignored, ...cleanArgs } = args;
+  return cleanArgs;
 }
 
 function applyRemember(

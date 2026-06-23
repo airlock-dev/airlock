@@ -6,6 +6,7 @@ import { join } from 'path';
 import { AuditLogger } from '../src/audit/logger.js';
 import { mobileApiPlugin } from '../src/mobile/api.js';
 import { HitlEngine } from '../src/hitl/engine.js';
+import { ActivityStream } from '../src/activity/stream.js';
 import type { AuditConfig } from '../src/config/schema.js';
 
 function makeProvider() {
@@ -21,6 +22,7 @@ describe('mobileApiPlugin', () => {
   let app: FastifyInstance;
   let auditLogger: AuditLogger;
   let engine: HitlEngine;
+  let activityStream: ActivityStream;
 
   beforeEach(async () => {
     dir = mkdtempSync(join(tmpdir(), 'airlock-mobile-test-'));
@@ -31,10 +33,12 @@ describe('mobileApiPlugin', () => {
     };
     auditLogger = new AuditLogger(config);
     engine = new HitlEngine(auditLogger, makeProvider(), 300000);
+    activityStream = new ActivityStream();
     app = Fastify({ logger: false });
     await app.register(mobileApiPlugin, {
       auditLogger,
       engine,
+      activityStream,
       secret: 'admin-secret',
       authRequired: true,
     });
@@ -65,6 +69,10 @@ describe('mobileApiPlugin', () => {
       agentId: 'codex',
       tool: 'exec/run',
       args: { cmd: 'git status' },
+      context: {
+        reason: 'Need to verify the working tree before pushing.',
+        note: 'Read-only command.',
+      },
     });
 
     const pending = await app.inject({
@@ -74,11 +82,13 @@ describe('mobileApiPlugin', () => {
     });
     expect(pending.statusCode).toBe(200);
     const pendingBody = pending.json<{
-      approvals: Array<{ timeoutMs?: number; expiresAt?: string }>;
+      approvals: Array<{ timeoutMs?: number; expiresAt?: string; reason?: string; note?: string }>;
     }>();
     expect(pendingBody.approvals).toHaveLength(1);
     expect(pendingBody.approvals[0].timeoutMs).toBe(300000);
     expect(pendingBody.approvals[0].expiresAt).toEqual(expect.any(String));
+    expect(pendingBody.approvals[0].reason).toBe('Need to verify the working tree before pushing.');
+    expect(pendingBody.approvals[0].note).toBe('Read-only command.');
 
     const decision = await app.inject({
       method: 'POST',
@@ -124,5 +134,33 @@ describe('mobileApiPlugin', () => {
       headers: { authorization: `Bearer ${registered.token}` },
     });
     expect(pending.statusCode).toBe(401);
+  });
+
+  it('returns recent Airlock activity to mobile clients', async () => {
+    activityStream.emit({
+      kind: 'notification',
+      agentId: 'codex',
+      title: 'Heads up',
+      body: 'The agent needs your attention.',
+    });
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/mobile/activity',
+      headers: { authorization: 'Bearer admin-secret' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      events: [
+        {
+          kind: 'notification',
+          agentId: 'codex',
+          title: 'Heads up',
+          body: 'The agent needs your attention.',
+          severity: 'info',
+        },
+      ],
+    });
   });
 });

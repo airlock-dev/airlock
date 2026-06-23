@@ -51,6 +51,7 @@ providers:
   # Built-ins
   exec: builtin
   http: builtin
+  airlock: builtin
   python: builtin
 ```
 

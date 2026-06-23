@@ -52,6 +52,10 @@ function makeMockRegistry(tools: Tool[] = [], callResult: unknown = { ok: true }
   };
 }
 
+function withReason(args: Record<string, unknown> = {}): Record<string, unknown> {
+  return { ...args, _airlock: { reason: 'Testing approval-gated behavior.' } };
+}
+
 async function buildConnectedClient(deps: AgentServerDeps): Promise<Client> {
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   const server = createAgentServer(deps);
@@ -282,7 +286,10 @@ describe('call_tool — HITL gate', () => {
     const client = await buildConnectedClient(deps);
 
     // Start the call — it will block waiting for HITL
-    const callPromise = client.callTool({ name: 'github/create_pr', arguments: { repo: 'test' } });
+    const callPromise = client.callTool({
+      name: 'github/create_pr',
+      arguments: withReason({ repo: 'test' }),
+    });
 
     // Wait a tick for the engine to register the request
     await new Promise((r) => setTimeout(r, 10));
@@ -315,7 +322,7 @@ describe('call_tool — HITL gate', () => {
     });
     const client = await buildConnectedClient(deps);
 
-    const callPromise = client.callTool({ name: 'github/create_pr', arguments: {} });
+    const callPromise = client.callTool({ name: 'github/create_pr', arguments: withReason() });
     await new Promise((r) => setTimeout(r, 10));
     hitlEngine.deny(hitlEngine.getPending()[0].code, 'not now');
 
@@ -345,7 +352,7 @@ describe('call_tool — HITL gate', () => {
     });
     const client = await buildConnectedClient(deps);
 
-    const callPromise = client.callTool({ name: 'github/create_pr', arguments: {} });
+    const callPromise = client.callTool({ name: 'github/create_pr', arguments: withReason() });
     vi.advanceTimersByTime(600);
     vi.useRealTimers();
 
@@ -378,7 +385,7 @@ describe('call_tool — HITL gate', () => {
     });
     const client = await buildConnectedClient(deps);
 
-    const callPromise = client.callTool({ name: 'github/create_pr', arguments: {} });
+    const callPromise = client.callTool({ name: 'github/create_pr', arguments: withReason() });
     await new Promise((r) => setTimeout(r, 200)); // let batcher window close
 
     expect(batched).toHaveLength(1);
@@ -413,7 +420,7 @@ describe('call_tool — HITL gate', () => {
     });
     const client = await buildConnectedClient(deps);
 
-    const callPromise = client.callTool({ name: 'github/create_pr', arguments: {} });
+    const callPromise = client.callTool({ name: 'github/create_pr', arguments: withReason() });
     await new Promise((r) => setTimeout(r, 10));
 
     // Verify it's pending, then simulate session disconnect
@@ -452,9 +459,9 @@ describe('call_tool — HITL gate', () => {
     });
     const client = await buildConnectedClient(deps);
 
-    await expect(client.callTool({ name: 'github/create_pr', arguments: {} })).rejects.toThrow(
-      'disconnected'
-    );
+    await expect(
+      client.callTool({ name: 'github/create_pr', arguments: withReason() })
+    ).rejects.toThrow('disconnected');
 
     expect(hitlEngine.getPending()).toHaveLength(0);
   });
@@ -481,7 +488,7 @@ describe('call_tool — HITL gate', () => {
     });
     const client = await buildConnectedClient(deps);
 
-    const callPromise = client.callTool({ name: 'github/create_pr', arguments: {} });
+    const callPromise = client.callTool({ name: 'github/create_pr', arguments: withReason() });
     await new Promise((r) => setTimeout(r, 10));
     hitlEngine.approve(hitlEngine.getPending()[0].code);
 
@@ -517,7 +524,7 @@ describe('call_tool — HITL gate', () => {
 
     const callPromise = client.callTool({
       name: 'exec/run',
-      arguments: { command: 'git status --short' },
+      arguments: withReason({ command: 'git status --short' }),
     });
     await new Promise((r) => setTimeout(r, 10));
 

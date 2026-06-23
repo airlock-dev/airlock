@@ -100,6 +100,10 @@ function makeMockProvider() {
   return { init: vi.fn(), notify: vi.fn(), stop: vi.fn() };
 }
 
+function withReason(args: Record<string, unknown> = {}): Record<string, unknown> {
+  return { ...args, _airlock: { reason: 'Testing approval-gated behavior.' } };
+}
+
 async function withLocalHttpServer(
   handler: (req: IncomingMessage, res: ServerResponse) => void
 ): Promise<{ url: string; close: () => Promise<void> }> {
@@ -284,7 +288,7 @@ describe('e2e: call_tool — HITL gate with real downstream', () => {
 
     const callPromise = stack.testClient.callTool({
       name: 'tools/echo',
-      arguments: { message: 'needs approval' },
+      arguments: withReason({ message: 'needs approval' }),
     });
 
     await new Promise((r) => setTimeout(r, 20));
@@ -311,7 +315,7 @@ describe('e2e: call_tool — HITL gate with real downstream', () => {
 
     const callPromise = stack.testClient.callTool({
       name: 'tools/add',
-      arguments: { a: 1, b: 2 },
+      arguments: withReason({ a: 1, b: 2 }),
     });
 
     await new Promise((r) => setTimeout(r, 20));
@@ -426,7 +430,7 @@ describe('e2e: exec/run — per-command policy', () => {
 
     const callPromise = stack.testClient.callTool({
       name: 'exec/run',
-      arguments: { command: 'echo secret-data' },
+      arguments: withReason({ command: 'echo secret-data' }),
     });
 
     await new Promise((r) => setTimeout(r, 20));
@@ -460,7 +464,7 @@ describe('e2e: exec/run — per-command policy', () => {
 
     const callPromise = stack.testClient.callTool({
       name: 'exec/run',
-      arguments: { command: 'echo danger-zone' },
+      arguments: withReason({ command: 'echo danger-zone' }),
     });
 
     await new Promise((r) => setTimeout(r, 20));
@@ -590,7 +594,7 @@ describe('e2e: http/* — security and policy', () => {
       stack = await buildStack(config, { ...SECURITY, allowed_local: ['127.0.0.1'] });
       const callPromise = stack.testClient.callTool({
         name: 'http/post',
-        arguments: { url: local.url, body: '{"test":1}' },
+        arguments: withReason({ url: local.url, body: '{"test":1}' }),
       });
 
       await new Promise((r) => setTimeout(r, 20));
@@ -619,7 +623,7 @@ describe('e2e: http/* — security and policy', () => {
 
     const callPromise = stack.testClient.callTool({
       name: 'http/get',
-      arguments: { url: 'http://example.com' },
+      arguments: withReason({ url: 'http://example.com' }),
     });
 
     await new Promise((r) => setTimeout(r, 20));
@@ -668,7 +672,7 @@ describe('e2e: external MCP — HITL wildcard patterns', () => {
 
     const callPromise = stack.testClient.callTool({
       name: 'tools/add',
-      arguments: { a: 1, b: 2 },
+      arguments: withReason({ a: 1, b: 2 }),
     });
 
     await new Promise((r) => setTimeout(r, 20));
@@ -696,7 +700,7 @@ describe('e2e: external MCP — HITL wildcard patterns', () => {
     // tools/add should require HITL
     const addPromise = stack.testClient.callTool({
       name: 'tools/add',
-      arguments: { a: 10, b: 20 },
+      arguments: withReason({ a: 10, b: 20 }),
     });
 
     await new Promise((r) => setTimeout(r, 20));
@@ -752,7 +756,7 @@ describe('e2e: external MCP — HITL wildcard patterns', () => {
 
     const callPromise = testClient.callTool({
       name: 'tools/echo',
-      arguments: { message: 'will timeout' },
+      arguments: withReason({ message: 'will timeout' }),
     });
 
     vi.advanceTimersByTime(600);
@@ -805,7 +809,7 @@ describe('e2e: mixed policy — allow + ask + deny across tool types', () => {
     // exec — hitl-gated command blocks
     const deployPromise = stack.testClient.callTool({
       name: 'exec/run',
-      arguments: { command: 'echo deploy-prod' },
+      arguments: withReason({ command: 'echo deploy-prod' }),
     });
     await new Promise((r) => setTimeout(r, 20));
     expect(stack.hitlEngine.getPending()).toHaveLength(1);

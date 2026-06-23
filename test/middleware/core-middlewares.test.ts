@@ -2,7 +2,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { allowlistMiddleware } from '../../src/middleware/core/allowlist.js';
 import { execPolicyMiddleware } from '../../src/middleware/core/exec-policy.js';
 import { hitlGateMiddleware } from '../../src/middleware/core/hitl-gate.js';
-import { rateLimiterMiddleware, resetRateLimiterState } from '../../src/middleware/core/rate-limiter.js';
+import {
+  rateLimiterMiddleware,
+  resetRateLimiterState,
+} from '../../src/middleware/core/rate-limiter.js';
 import type { ToolCallContext, ToolCallResponse } from '../../src/middleware/types.js';
 
 const okResponse: ToolCallResponse = { result: 'ok', text: 'ok' };
@@ -13,7 +16,11 @@ function makeCtx(overrides: Partial<ToolCallContext> = {}): ToolCallContext {
     callId: 'test',
     agentId: 'agent1',
     agentConfig: {
-      allow: [], ask: [], deny: [], tool_overrides: {}, middleware: [],
+      allow: [],
+      ask: [],
+      deny: [],
+      tool_overrides: {},
+      middleware: [],
       exec: { allow: [], ask: [], deny: ['*'], env: {}, default_timeout_ms: 5000 },
       http: { domain_allowlist: [], max_response_bytes: 1048576, timeout_ms: 5000 },
     },
@@ -50,10 +57,29 @@ describe('allowlistMiddleware', () => {
 
   it('sets needsApproval for ask decision', async () => {
     const mw = allowlistMiddleware();
-    const ctx = makeCtx();
+    const ctx = makeCtx({ args: { _airlock: { reason: 'Need to test approval gating.' } } });
     (ctx.deps.allowlist.evaluate as any).mockReturnValue('ask');
     await mw(ctx, okNext);
     expect(ctx.meta.needsApproval).toBe(true);
+    expect(ctx.meta.airlockContext).toEqual({ reason: 'Need to test approval gating.' });
+    expect(ctx.args).toEqual({});
+  });
+
+  it('rejects ask decisions without an Airlock reason', async () => {
+    const mw = allowlistMiddleware();
+    const ctx = makeCtx();
+    (ctx.deps.allowlist.evaluate as any).mockReturnValue('ask');
+    await expect(mw(ctx, okNext)).rejects.toThrow('_airlock.reason');
+  });
+
+  it('rejects recursive ask configuration for Airlock attention tools', async () => {
+    const mw = allowlistMiddleware();
+    const ctx = makeCtx({
+      toolName: 'airlock/notify_user',
+      args: { _airlock: { reason: 'Need a recursive ask.' } },
+    });
+    (ctx.deps.allowlist.evaluate as any).mockReturnValue('ask');
+    await expect(mw(ctx, okNext)).rejects.toThrow('cannot be configured with ask');
   });
 });
 

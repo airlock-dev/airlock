@@ -36,10 +36,11 @@ providers:
 
 ### Built-in providers
 
-Two built-in providers are always available:
+Airlock ships with these built-in providers:
 
 - **exec** — shell command execution via `exec/run`, with per-agent command policies
 - **http** — HTTP requests via `http/get`, `http/post`, `http/put`, `http/delete`, `http/patch`, `http/head`, with domain allowlists and blocked host enforcement
+- **airlock** — notification and human prompt tools: `airlock/ask_user`, `airlock/notify_user`, and `airlock/log`
 
 Additionally, the built-in **python** provider offers `python/eval` — a sandboxed Python execution environment using macOS `sandbox-exec` for kernel-level isolation.
 
@@ -47,8 +48,13 @@ Additionally, the built-in **python** provider offers `python/eval` — a sandbo
 providers:
   exec: builtin
   http: builtin
+  airlock: builtin
   python: builtin
 ```
+
+The `airlock` tools must be either allowed or denied. Airlock rejects configs
+that route `airlock/ask_user`, `airlock/notify_user`, or `airlock/log` through
+`ask`, because those tools are themselves notification and approval surfaces.
 
 ### CLI tools
 

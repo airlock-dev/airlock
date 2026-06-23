@@ -8,7 +8,7 @@ struct PopoverContentView: View {
     let onOpenSettingsRequest: () -> Void
     @Environment(\.openSettings) private var openSettings
     @AppStorage(Constants.UserDefaultsKeys.displayDensity) private var densityString: String = DisplayDensity.compact.rawValue
-    @State private var showHistory = false
+    @State private var showRecent = true
     @State private var detailRequest: ApprovalRequest?
     @State private var detailArgsScrollView: NSScrollView? = nil
     @FocusState private var isFocused: Bool
@@ -88,10 +88,13 @@ struct PopoverContentView: View {
                     EmptyStateView(connectionState: viewModel.connectionState)
                 }
 
-                // History
-                if !viewModel.resolvedRequests.isEmpty {
+                if !viewModel.activityEvents.isEmpty || !viewModel.resolvedRequests.isEmpty {
                     Divider()
-                    HistoryView(resolvedRequests: viewModel.resolvedRequests, isExpanded: $showHistory)
+                    RecentEventsView(
+                        activityEvents: viewModel.activityEvents,
+                        resolvedRequests: viewModel.resolvedRequests,
+                        isExpanded: $showRecent
+                    )
                 }
             }
         }
@@ -174,11 +177,41 @@ struct PopoverContentView: View {
     }
 }
 
-// MARK: - History
+// MARK: - Recent
 
-struct HistoryView: View {
+private enum RecentItem: Identifiable {
+    case activity(ActivityEvent)
+    case resolved(ResolvedRequest)
+
+    var id: String {
+        switch self {
+        case .activity(let event):
+            return "activity-\(event.id)"
+        case .resolved(let request):
+            return "resolved-\(request.id)"
+        }
+    }
+
+    var date: Date {
+        switch self {
+        case .activity(let event):
+            return event.createdDate
+        case .resolved(let request):
+            return request.resolvedAt
+        }
+    }
+}
+
+private struct RecentEventsView: View {
+    let activityEvents: [ActivityEvent]
     let resolvedRequests: [ResolvedRequest]
     @Binding var isExpanded: Bool
+
+    private var items: [RecentItem] {
+        let activity = activityEvents.map(RecentItem.activity)
+        let resolved = resolvedRequests.map(RecentItem.resolved)
+        return (activity + resolved).sorted { $0.date > $1.date }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -188,11 +221,11 @@ struct HistoryView: View {
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
 
-                    Text("History")
+                    Text("Recent")
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(.secondary)
 
-                    Text("\(resolvedRequests.count)")
+                    Text("\(items.count)")
                         .font(.system(size: 10))
                         .foregroundStyle(.tertiary)
 
@@ -214,9 +247,9 @@ struct HistoryView: View {
             if isExpanded {
                 ScrollView {
                     VStack(spacing: 0) {
-                        ForEach(resolvedRequests) { resolved in
-                            HistoryRow(resolved: resolved)
-                            if resolved.id != resolvedRequests.last?.id {
+                        ForEach(items) { item in
+                            RecentEventRow(item: item)
+                            if item.id != items.last?.id {
                                 Divider().padding(.leading, 36)
                             }
                         }
@@ -224,53 +257,113 @@ struct HistoryView: View {
                     .padding(.trailing, 6)
                 }
                 .scrollIndicators(.hidden)
-                .frame(maxHeight: 200)
+                .frame(maxHeight: 160)
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
     }
 }
 
-struct HistoryRow: View {
-    let resolved: ResolvedRequest
+private struct RecentEventRow: View {
+    let item: RecentItem
     @State private var isExpanded = false
 
-    private var timeAgo: String {
-        let interval = Date().timeIntervalSince(resolved.resolvedAt)
-        if interval < 60 { return "just now" }
-        if interval < 3600 { return "\(Int(interval / 60))m ago" }
-        return "\(Int(interval / 3600))h ago"
+    private var title: String {
+        switch item {
+        case .activity(let event):
+            return event.displayTitle
+        case .resolved(let resolved):
+            return resolved.displayTitle
+        }
     }
 
-    private var title: String {
-        if !resolved.agentId.isEmpty && !resolved.tool.isEmpty { return "\(resolved.agentId): \(resolved.tool)" }
-        if !resolved.tool.isEmpty { return resolved.tool }
-        return resolved.code
+    private var detail: String {
+        switch item {
+        case .activity(let event):
+            return event.displayBody
+        case .resolved(let resolved):
+            return resolved.displayDetail
+        }
+    }
+
+    private var argsDisplay: String {
+        guard case .resolved(let resolved) = item else { return "" }
+        return resolved.argsDisplay
+    }
+
+    private var trailingLabel: String {
+        switch item {
+        case .activity(let event):
+            return event.kind
+        case .resolved(let resolved):
+            return timeAgo(since: resolved.resolvedAt)
+        }
+    }
+
+    private var iconName: String {
+        switch item {
+        case .activity(let event):
+            return event.kind == "notification" ? "info.circle.fill" : "text.alignleft"
+        case .resolved(let resolved):
+            switch resolved.action {
+            case "approved":
+                return "checkmark.circle.fill"
+            case "timeout":
+                return "timer.circle.fill"
+            default:
+                return "xmark.circle.fill"
+            }
+        }
+    }
+
+    private var iconTint: Color {
+        switch item {
+        case .activity(let event):
+            return event.kind == "notification" ? .blue : .secondary
+        case .resolved(let resolved):
+            switch resolved.action {
+            case "approved":
+                return .green
+            case "timeout":
+                return .orange
+            default:
+                return .red
+            }
+        }
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Button(action: {
-                if !resolved.argsDisplay.isEmpty {
+                if !argsDisplay.isEmpty {
                     withAnimation(.spring(duration: 0.2)) { isExpanded.toggle() }
                 }
             }) {
                 HStack(spacing: 8) {
-                    Image(systemName: historyIcon)
-                        .foregroundStyle(historyTint)
+                    Image(systemName: iconName)
+                        .foregroundStyle(iconTint)
                         .font(.system(size: 12))
 
-                    Text(title)
-                        .font(.system(size: 11, weight: .medium))
-                        .lineLimit(1)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(title)
+                            .font(.system(size: 11, weight: .medium))
+                            .lineLimit(1)
+
+                        if !detail.isEmpty {
+                            Text(detail)
+                                .font(.system(size: 10))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(2)
+                        }
+                    }
 
                     Spacer()
 
-                    Text(timeAgo)
-                        .font(.system(size: 10))
+                    Text(trailingLabel)
+                        .font(.system(size: 10, weight: .medium))
                         .foregroundStyle(.tertiary)
 
-                    if !resolved.argsDisplay.isEmpty {
+                    if !argsDisplay.isEmpty {
                         Image(systemName: "chevron.right")
                             .font(.system(size: 8, weight: .semibold))
                             .foregroundStyle(.tertiary)
@@ -278,15 +371,15 @@ struct HistoryRow: View {
                     }
                 }
                 .padding(.horizontal, 16)
-                .padding(.vertical, 5)
+                .padding(.vertical, 6)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .focusable(false)
             .focusEffectDisabled()
 
-            if isExpanded && !resolved.argsDisplay.isEmpty {
-                Text(resolved.argsDisplay)
+            if isExpanded && !argsDisplay.isEmpty {
+                Text(argsDisplay)
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundStyle(.secondary)
                     .lineLimit(5)
@@ -297,18 +390,10 @@ struct HistoryRow: View {
         }
     }
 
-    private var historyIcon: String {
-        switch resolved.action {
-        case "approved":
-            return "checkmark.circle.fill"
-        case "timeout":
-            return "timer.circle.fill"
-        default:
-            return "xmark.circle.fill"
-        }
-    }
-
-    private var historyTint: Color {
-        resolved.action == "approved" ? .green : .red
+    private func timeAgo(since date: Date) -> String {
+        let interval = Date().timeIntervalSince(date)
+        if interval < 60 { return "just now" }
+        if interval < 3600 { return "\(Int(interval / 60))m ago" }
+        return "\(Int(interval / 3600))h ago"
     }
 }

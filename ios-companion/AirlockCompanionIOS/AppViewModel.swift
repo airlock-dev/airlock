@@ -16,6 +16,7 @@ final class AppViewModel: ObservableObject {
 
     @Published var pending: [ApprovalRequest] = []
     @Published var history: [ApprovalRequest] = []
+    @Published var activityEvents: [ActivityEvent] = []
     @Published var isRefreshing = false
     @Published var connectionMessage = "Not connected"
     @Published var lastError: String?
@@ -149,8 +150,10 @@ final class AppViewModel: ObservableObject {
         do {
             async let pending = client.pendingApprovals()
             async let history = client.approvalHistory()
+            async let activity = client.activityEvents()
             self.pending = try await pending
             self.history = try await history
+            self.activityEvents = try await activity
             connectionMessage = "Connected"
             lastError = nil
             await updateAppBadge()

@@ -1,3 +1,4 @@
+import type { AirlockActivityEvent } from '../../activity/stream.js';
 import type { HitlProvider, HitlNotification } from './types.js';
 import { childLogger } from '../../util/logger.js';
 
@@ -36,6 +37,17 @@ export class CompositeHitlProvider implements HitlProvider {
         p.updateApprovalStatus ? [p.updateApprovalStatus(status)] : []
       )
     );
+  }
+
+  async notifyActivity(event: AirlockActivityEvent): Promise<void> {
+    const results = await Promise.allSettled(
+      this.providers.flatMap((p) => (p.notifyActivity ? [p.notifyActivity(event)] : []))
+    );
+    for (const r of results) {
+      if (r.status === 'rejected') {
+        log.error({ err: r.reason }, 'HITL provider activity notification failed');
+      }
+    }
   }
 
   async stop(): Promise<void> {

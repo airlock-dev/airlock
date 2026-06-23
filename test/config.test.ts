@@ -626,6 +626,20 @@ agents:
     expect(() => loadConfig(path)).toThrow(/unknown provider/i);
   });
 
+  it('errors when Airlock attention tools are configured with ask', () => {
+    const yaml = `
+providers:
+  airlock: builtin
+agents:
+  agent1:
+    ask:
+      - "airlock/*"
+`;
+    const path = join(dir, 'gateway.yaml');
+    writeFileSync(path, yaml);
+    expect(() => loadConfig(path)).toThrow(/airlock\/ask_user behind ask/i);
+  });
+
   it('resolves profile inheritance before validating agent providers', () => {
     const yaml = `
 providers:

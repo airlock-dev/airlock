@@ -609,13 +609,22 @@ struct SettingsView: View {
     }
 
     private func applyConnectionSettings() {
+        _ = saveConnectionSettingsIfNeeded(showMissingURLError: false)
+    }
+
+    private func saveConnectionSettingsIfNeeded(showMissingURLError: Bool) -> Bool {
         let trimmedURL = urlText.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedToken = tokenText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedURL.isEmpty else { return }
+        guard !trimmedURL.isEmpty else {
+            if showMissingURLError {
+                testConnectionState = .failed("Airlock URL is required")
+            }
+            return false
+        }
         guard trimmedURL != viewModel.dashboardURL || trimmedToken != viewModel.gatewayToken else {
             urlText = trimmedURL
             tokenText = trimmedToken
-            return
+            return true
         }
 
         do {
@@ -623,25 +632,24 @@ struct SettingsView: View {
             urlText = trimmedURL
             tokenText = trimmedToken
             testConnectionState = nil
+            return true
         } catch {
             testConnectionState = .failed(error.localizedDescription)
+            return false
         }
     }
 
     private func testConnectionSettings() {
-        let trimmedURL = urlText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let trimmedToken = tokenText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedURL.isEmpty else {
-            testConnectionState = .failed("Airlock URL is required")
-            return
-        }
+        guard saveConnectionSettingsIfNeeded(showMissingURLError: true) else { return }
+        let savedURL = viewModel.dashboardURL
+        let savedToken = viewModel.gatewayToken
 
         testConnectionState = .testing
         Task {
             do {
-                try await viewModel.testConnection(baseURL: trimmedURL, bearerToken: trimmedToken)
+                try await viewModel.testConnection(baseURL: savedURL, bearerToken: savedToken)
                 await MainActor.run {
-                    testConnectionState = .succeeded(authenticated: !trimmedToken.isEmpty)
+                    testConnectionState = .succeeded(authenticated: !savedToken.isEmpty)
                 }
             } catch {
                 await MainActor.run {

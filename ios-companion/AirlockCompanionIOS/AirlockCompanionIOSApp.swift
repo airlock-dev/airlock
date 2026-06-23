@@ -42,7 +42,7 @@ struct RootView: View {
                 HistoryView(viewModel: viewModel)
             }
             .tabItem {
-                Label("History", systemImage: "clock.arrow.circlepath")
+                Label("Recent", systemImage: "clock.arrow.circlepath")
             }
 
             NavigationStack {

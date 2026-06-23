@@ -93,6 +93,10 @@ function makeAgentConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
   };
 }
 
+function withReason(args: Record<string, unknown> = {}): Record<string, unknown> {
+  return { ...args, _airlock: { reason: 'Testing approval-gated behavior.' } };
+}
+
 function makeMockAuditLogger() {
   return {
     log: vi.fn(),
@@ -657,7 +661,10 @@ describe('http-transport: HITL approval gate', () => {
   it('blocks tool call until operator approves, then returns result', async () => {
     const { client } = await connect(srv.port);
 
-    const callPromise = client.callTool({ name: 'tools_echo', arguments: { message: 'approved' } });
+    const callPromise = client.callTool({
+      name: 'tools_echo',
+      arguments: withReason({ message: 'approved' }),
+    });
 
     await vi.waitFor(() => expect(srv.hitlEngine.getPending().length).toBe(1), { timeout: 5000 });
 
@@ -675,7 +682,10 @@ describe('http-transport: HITL approval gate', () => {
     const { client } = await connect(srv.port);
 
     try {
-      const callPromise = client.callTool({ name: 'tools_echo', arguments: { message: 'denied' } });
+      const callPromise = client.callTool({
+        name: 'tools_echo',
+        arguments: withReason({ message: 'denied' }),
+      });
 
       await vi.waitFor(() => expect(srv.hitlEngine.getPending().length).toBe(1), { timeout: 5000 });
 
@@ -694,8 +704,8 @@ describe('http-transport: HITL approval gate', () => {
   it('handles multiple concurrent HITL requests on the same session', async () => {
     const { client } = await connect(srv.port);
 
-    const p1 = client.callTool({ name: 'tools_echo', arguments: { message: 'one' } });
-    const p2 = client.callTool({ name: 'tools_add', arguments: { a: 3, b: 4 } });
+    const p1 = client.callTool({ name: 'tools_echo', arguments: withReason({ message: 'one' }) });
+    const p2 = client.callTool({ name: 'tools_add', arguments: withReason({ a: 3, b: 4 }) });
 
     await vi.waitFor(() => expect(srv.hitlEngine.getPending().length).toBe(2), { timeout: 5000 });
 
@@ -714,8 +724,14 @@ describe('http-transport: HITL approval gate', () => {
     const b = await connect(srv.port);
 
     try {
-      const pa = a.client.callTool({ name: 'tools_echo', arguments: { message: 'session-a' } });
-      const pb = b.client.callTool({ name: 'tools_echo', arguments: { message: 'session-b' } });
+      const pa = a.client.callTool({
+        name: 'tools_echo',
+        arguments: withReason({ message: 'session-a' }),
+      });
+      const pb = b.client.callTool({
+        name: 'tools_echo',
+        arguments: withReason({ message: 'session-b' }),
+      });
 
       await vi.waitFor(() => expect(srv.hitlEngine.getPending().length).toBe(2), { timeout: 5000 });
 
@@ -786,7 +802,7 @@ describe('http-transport: HITL timeout', () => {
     try {
       const result = await client.callTool({
         name: 'tools_echo',
-        arguments: { message: 'timeout' },
+        arguments: withReason({ message: 'timeout' }),
       });
       expect(result.isError).toBe(true);
       expect((result.content[0] as { text: string }).text).toMatch(/timed out/i);

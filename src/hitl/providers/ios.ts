@@ -1,6 +1,7 @@
 import type { AuditLogger } from '../../audit/logger.js';
 import { childLogger } from '../../util/logger.js';
 import { ApnsClient, type ApnsApprovalContext, type ApnsConfig } from '../../mobile/apns.js';
+import type { AirlockActivityEvent } from '../../activity/stream.js';
 import type { HitlNotification, HitlProvider } from './types.js';
 
 const log = childLogger('hitl-ios');
@@ -136,6 +137,42 @@ export class IOSHitlProvider implements HitlProvider {
     });
   }
 
+  async notifyActivity(event: AirlockActivityEvent): Promise<void> {
+    if (event.kind !== 'notification') return;
+
+    const devices = this.auditLogger.getActiveMobileDevices();
+    if (devices.length === 0) {
+      log.debug('No iOS devices registered for APNs activity notification');
+      return;
+    }
+
+    const results = await Promise.allSettled(
+      devices.map((device) => this.apns.sendActivity(device.push_token, event))
+    );
+
+    results.forEach((result, index) => {
+      const device = devices[index];
+      if (!device) return;
+      if (result.status === 'rejected') {
+        log.warn(
+          { err: result.reason, deviceId: device.id },
+          'Failed to send APNs activity notification'
+        );
+        return;
+      }
+      if (!result.value.ok) {
+        log.warn(
+          {
+            deviceId: device.id,
+            status: result.value.status,
+            reason: result.value.reason,
+          },
+          'APNs rejected activity notification'
+        );
+      }
+    });
+  }
+
   stop(): Promise<void> {
     return Promise.resolve();
   }
@@ -143,13 +180,18 @@ export class IOSHitlProvider implements HitlProvider {
 
 function approvalBody(request: HitlNotification): string {
   const entries = Object.entries(request.args).sort(([a], [b]) => a.localeCompare(b));
-  if (entries.length === 0) return 'No arguments';
+  const contextLines = [
+    request.context?.reason ? `Request reason: ${request.context.reason}` : undefined,
+    request.context?.note ? `Request note: ${request.context.note}` : undefined,
+  ].filter((line): line is string => Boolean(line));
+
+  if (entries.length === 0) return (contextLines.join('\n') || 'No arguments').slice(0, 900);
 
   const lines = entries.slice(0, 6).map(([key, value]) => `${key}: ${formatValue(value)}`);
   if (entries.length > lines.length) {
     lines.push(`+${entries.length - lines.length} more`);
   }
-  return lines.join('\n').slice(0, 900);
+  return [...contextLines, ...lines].join('\n').slice(0, 900);
 }
 
 function approvalContext(request: HitlNotification): ApnsApprovalContext {
@@ -158,6 +200,8 @@ function approvalContext(request: HitlNotification): ApnsApprovalContext {
     code: request.code,
     agentId: request.agentId,
     tool: request.tool,
+    ...(request.context?.reason ? { reason: request.context.reason } : {}),
+    ...(request.context?.note ? { note: request.context.note } : {}),
     args: Object.entries(request.args)
       .sort(([a], [b]) => a.localeCompare(b))
       .slice(0, 8)

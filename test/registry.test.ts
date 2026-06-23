@@ -58,11 +58,12 @@ const SECURITY: SecurityConfig = {
 
 function makeAgentConfig(
   allow: string[],
-  overrides: Record<string, { description?: string }> = {}
+  overrides: Record<string, { description?: string }> = {},
+  ask: string[] = []
 ): AgentConfig {
   return {
     allow,
-    ask: [],
+    ask,
     deny: [],
     tool_overrides: overrides,
     exec: { allow: [], ask: [], deny: [], env: {}, default_timeout_ms: 30000 },
@@ -150,6 +151,25 @@ describe('ToolRegistry', () => {
     await registry.refresh();
     const tool = registry.getFiltered('agent1').find((t) => t.name === 'github/create_pr');
     expect(tool?.description).toBe('Custom description');
+  });
+
+  it('getFiltered adds Airlock policy guidance and reason schema for ask tools', async () => {
+    const adapter = makeMcpAdapter('github', [
+      makeTool('create_pr', 'Create pull request'),
+      makeTool('list_prs', 'List pull requests'),
+    ]);
+    const agents = { agent1: makeAgentConfig(['github/*'], {}, ['github/create_pr']) };
+    const allowlist = new AllowlistEngine(agents);
+    const registry = new ToolRegistry([adapter], allowlist, agents);
+
+    await registry.refresh();
+    const tool = registry.getFiltered('agent1').find((t) => t.name === 'github/create_pr');
+    const readTool = registry.getFiltered('agent1').find((t) => t.name === 'github/list_prs');
+
+    expect(tool?.description).toContain('Policy: ask');
+    expect(readTool?.description).toBe('List pull requests');
+    expect((tool?.inputSchema as any).required).toContain('_airlock');
+    expect((tool?.inputSchema as any).properties._airlock.required).toEqual(['reason']);
   });
 
   it('call() routes to correct adapter', async () => {

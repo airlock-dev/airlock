@@ -135,8 +135,8 @@ final class NotificationViewController: UIViewController, UNNotificationContentE
     }
 
     private func render(_ context: ApprovalNotificationContext) {
-        titleLabel.text = context.tool
-        metaLabel.text = context.agentId
+        titleLabel.text = context.displayTitle
+        metaLabel.text = context.displayMeta
         timeoutLabel.text = context.timeoutText
         timeoutLabel.textColor = context.timeoutColor
 
@@ -215,19 +215,36 @@ final class NotificationViewController: UIViewController, UNNotificationContentE
 private struct ApprovalNotificationContext {
     var agentId: String
     var tool: String
+    var reason: String?
+    var note: String?
     var args: [ApprovalArgument]
     var expiresAt: Date?
+
+    var displayTitle: String {
+        if isUserQuestion, let questionText {
+            return questionText
+        }
+        return tool
+    }
+
+    var displayMeta: String {
+        isUserQuestion ? "\(agentId) · user question" : agentId
+    }
 
     static let loading = ApprovalNotificationContext(
         agentId: "Airlock",
         tool: "Approval",
+        reason: nil,
+        note: nil,
         args: [],
         expiresAt: nil
     )
 
-    init(agentId: String, tool: String, args: [ApprovalArgument], expiresAt: Date?) {
+    init(agentId: String, tool: String, reason: String? = nil, note: String? = nil, args: [ApprovalArgument], expiresAt: Date?) {
         self.agentId = agentId
         self.tool = tool
+        self.reason = reason
+        self.note = note
         self.args = args
         self.expiresAt = expiresAt
     }
@@ -246,12 +263,31 @@ private struct ApprovalNotificationContext {
         tool = approval?["tool"] as? String
             ?? userInfo["tool"] as? String
             ?? Self.tool(from: content.title)
+        reason = Self.trimmed(approval?["reason"] as? String)
+        note = Self.trimmed(approval?["note"] as? String)
         args = rawArgs?.compactMap(ApprovalArgument.init(rawValue:)) ?? Self.args(from: content.body)
         expiresAt = Self.parseDate(approval?["expiresAt"] as? String ?? approval?["expires_at"] as? String)
     }
 
     var visibleArguments: [ApprovalArgument] {
-        args.filter { $0.key != "code" }.sorted { $0.key < $1.key }
+        let contextArgs = [
+            reason.map { ApprovalArgument(key: "request_reason", value: $0) },
+            note.map { ApprovalArgument(key: "request_note", value: $0) }
+        ].compactMap { $0 }
+        let argumentArgs = args.filter { $0.key != "code" && $0.key != "reason" && $0.key != "note" }
+            .sorted { $0.key < $1.key }
+        return contextArgs + argumentArgs
+    }
+
+    private var isUserQuestion: Bool {
+        tool == "airlock/ask_user"
+    }
+
+    private var questionText: String? {
+        args.first { ["question", "title", "message"].contains($0.key) }?
+            .value
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .nilIfEmpty
     }
 
     var timeoutText: String {
@@ -278,6 +314,11 @@ private struct ApprovalNotificationContext {
             return date
         }
         return ISO8601DateFormatter.airlock.date(from: value)
+    }
+
+    private static func trimmed(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed?.isEmpty == false ? trimmed : nil
     }
 
     private static func agentId(from title: String) -> String {
