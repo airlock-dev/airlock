@@ -2433,12 +2433,14 @@ const INDEX_HTML = `<!doctype html>
 
     function normalizePending(request, live) {
       const args = live ? request.args : parseArgs(request.args);
+      const context = request.context || airlockContext(args);
       return {
         id: request.id || '',
         code: request.code || '',
         agentId: request.agentId || request.agent_id || '',
         tool: request.tool || '',
-        args,
+        args: stripAirlockContext(args),
+        context,
         status: request.status || 'pending',
         createdAt: request.createdAt || request.created_at || '',
         timeoutMs: request.timeoutMs || 0,
@@ -2455,6 +2457,22 @@ const INDEX_HTML = `<!doctype html>
       } catch {
         return { value: String(value) };
       }
+    }
+
+    function airlockContext(args) {
+      const raw = args && typeof args === 'object' ? args._airlock : undefined;
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+      const context = {};
+      if (typeof raw.reason === 'string' && raw.reason.trim()) context.reason = raw.reason.trim();
+      if (typeof raw.note === 'string' && raw.note.trim()) context.note = raw.note.trim();
+      return context.reason || context.note ? context : undefined;
+    }
+
+    function stripAirlockContext(args) {
+      if (!args || typeof args !== 'object' || Array.isArray(args) || !('_airlock' in args)) return args;
+      const clean = { ...args };
+      delete clean._airlock;
+      return clean;
     }
 
     function renderActivity() {
@@ -2516,7 +2534,7 @@ const INDEX_HTML = `<!doctype html>
         '<div class="log-cell">' + escapeHtml(entry.agentId) + '</div>' +
         '<div class="log-cell">' + escapeHtml(question ? questionText(entry) : entry.tool) + '<br><span class="subtle">' + escapeHtml(question ? entry.tool : 'code ' + entry.code) + '</span></div>' +
         '<div class="log-cell"><span class="tag tag-warn">' + escapeHtml(question ? 'question' : entry.status) + '</span></div>' +
-        '<pre class="log-args">' + escapeHtml(question ? questionPreview(entry) : prettyJson(entry.args)) + '</pre>' +
+        '<pre class="log-args">' + escapeHtml(question ? questionPreview(entry) : approvalPreview(entry)) + '</pre>' +
         '<div class="approval-actions">' + approvalButtons(entry.code, { remember: !question, approveLabel: question ? 'Confirm' : 'Approve' }) + '</div>' +
       '</div>';
     }
@@ -2568,6 +2586,8 @@ const INDEX_HTML = `<!doctype html>
         '<div class="detail-label">Status</div><div>' + escapeHtml(pending.status) + '</div>' +
         '<div class="detail-label">Created</div><div>' + escapeHtml(formatTime(pending.createdAt)) + '</div>' +
         (pending.timeoutMs ? '<div class="detail-label">Timeout</div><div>' + Math.round(pending.timeoutMs / 1000) + 's</div>' : '') +
+        (approvalReason(pending) ? '<div class="detail-label">Reason</div><div>' + escapeHtml(approvalReason(pending)) + '</div>' : '') +
+        (approvalNote(pending) ? '<div class="detail-label">Note</div><div>' + escapeHtml(approvalNote(pending)) + '</div>' : '') +
         (question ? '<div class="detail-label">Question</div><div>' + escapeHtml(questionText(pending)) + '</div>' : '') +
         (question && questionContext(pending) ? '<div class="detail-label">Context</div><div>' + escapeHtml(questionContext(pending)) + '</div>' : '') +
         '<div class="detail-label">Arguments</div><pre class="log-args">' + escapeHtml(prettyJson(pending.args)) + '</pre>';
@@ -2608,6 +2628,26 @@ const INDEX_HTML = `<!doctype html>
       const lines = ['question: ' + questionText(entry)];
       const context = questionContext(entry);
       if (context) lines.push('context: ' + context);
+      return lines.join('\\n');
+    }
+
+    function approvalReason(entry) {
+      const value = entry.context?.reason;
+      return typeof value === 'string' && value.trim() ? value.trim() : '';
+    }
+
+    function approvalNote(entry) {
+      const value = entry.context?.note;
+      return typeof value === 'string' && value.trim() ? value.trim() : '';
+    }
+
+    function approvalPreview(entry) {
+      const lines = [];
+      const reason = approvalReason(entry);
+      const note = approvalNote(entry);
+      if (reason) lines.push('reason: ' + reason);
+      if (note) lines.push('note: ' + note);
+      lines.push(prettyJson(entry.args));
       return lines.join('\\n');
     }
 
@@ -3315,8 +3355,12 @@ const INDEX_HTML = `<!doctype html>
     function notifyApproval(request) {
       if (!el('approvalNotifs').checked) return;
       if (!('Notification' in window) || Notification.permission !== 'granted') return;
+      const pending = normalizePending(request, true);
+      const lines = ['agent: ' + pending.agentId, pending.code];
+      const reason = approvalReason(pending);
+      if (reason) lines.push('reason: ' + reason);
       new Notification('Airlock: ' + request.tool, {
-        body: 'agent: ' + request.agentId + '\\n' + request.code,
+        body: lines.join('\\n'),
         tag: request.code,
         silent: !el('approvalSound').checked
       });

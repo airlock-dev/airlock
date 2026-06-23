@@ -69,6 +69,10 @@ describe('mobileApiPlugin', () => {
       agentId: 'codex',
       tool: 'exec/run',
       args: { cmd: 'git status' },
+      context: {
+        reason: 'Need to verify the working tree before pushing.',
+        note: 'Read-only command.',
+      },
     });
 
     const pending = await app.inject({
@@ -78,11 +82,13 @@ describe('mobileApiPlugin', () => {
     });
     expect(pending.statusCode).toBe(200);
     const pendingBody = pending.json<{
-      approvals: Array<{ timeoutMs?: number; expiresAt?: string }>;
+      approvals: Array<{ timeoutMs?: number; expiresAt?: string; reason?: string; note?: string }>;
     }>();
     expect(pendingBody.approvals).toHaveLength(1);
     expect(pendingBody.approvals[0].timeoutMs).toBe(300000);
     expect(pendingBody.approvals[0].expiresAt).toEqual(expect.any(String));
+    expect(pendingBody.approvals[0].reason).toBe('Need to verify the working tree before pushing.');
+    expect(pendingBody.approvals[0].note).toBe('Read-only command.');
 
     const decision = await app.inject({
       method: 'POST',

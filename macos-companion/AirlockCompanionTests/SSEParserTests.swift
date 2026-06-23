@@ -14,6 +14,10 @@ final class SSEParserTests: XCTestCase {
                 "code": "HUMAN-1234",
                 "agentId": "agent1",
                 "tool": "readFile",
+                "context": {
+                    "reason": "Need to inspect a config file.",
+                    "note": "Read-only request."
+                },
                 "args": { "path": "/etc/passwd" },
                 "timeoutMs": 30000
             }
@@ -32,6 +36,8 @@ final class SSEParserTests: XCTestCase {
         XCTAssertEqual(request.agentId, "agent1")
         XCTAssertEqual(request.tool, "readFile")
         XCTAssertEqual(request.timeoutMs, 30000)
+        XCTAssertEqual(request.approvalReason, "Need to inspect a config file.")
+        XCTAssertEqual(request.approvalNote, "Read-only request.")
         XCTAssertEqual(request.args["path"], .string("/etc/passwd"))
     }
 

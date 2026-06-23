@@ -75,6 +75,14 @@ struct RequestDetailView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 8))
             }
 
+            if let reason = request.approvalReason {
+                contextBox(title: "Reason", value: reason)
+            }
+
+            if let note = request.approvalNote {
+                contextBox(title: "Note", value: note)
+            }
+
             if request.args.isEmpty {
                 Text("No arguments")
                     .font(.system(size: 12))
@@ -128,6 +136,21 @@ struct RequestDetailView: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
+        .background(.quaternary.opacity(0.45))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func contextBox(title: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.system(size: 12))
+                .textSelection(.enabled)
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(.quaternary.opacity(0.45))
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }

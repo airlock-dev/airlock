@@ -28,6 +28,8 @@ export interface ApnsApprovalContext {
   code: string;
   agentId: string;
   tool: string;
+  reason?: string;
+  note?: string;
   args: Array<{ key: string; value: string }>;
   timeoutMs: number;
   expiresAt?: string;

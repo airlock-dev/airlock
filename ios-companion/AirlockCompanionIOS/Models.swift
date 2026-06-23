@@ -86,6 +86,7 @@ struct ApprovalRequest: Codable, Identifiable, Equatable, Sendable {
     let args: [String: JSONValue]
     let status: String?
     let reason: String?
+    let note: String?
     let createdAt: Date
     let timeoutMs: Int?
     let expiresAt: Date?
@@ -94,6 +95,9 @@ struct ApprovalRequest: Codable, Identifiable, Equatable, Sendable {
     var argsPreview: String {
         if isUserQuestion {
             return questionContext ?? "User response requested"
+        }
+        if let approvalReason {
+            return approvalReason
         }
         let keys = args.keys.sorted()
         if keys.isEmpty { return "No arguments" }
@@ -133,6 +137,16 @@ struct ApprovalRequest: Codable, Identifiable, Equatable, Sendable {
     var questionContext: String? {
         let value = args["context"]?.plainString ?? args["reason"]?.plainString
         let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed?.isEmpty == false ? trimmed : nil
+    }
+
+    var approvalReason: String? {
+        let trimmed = reason?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed?.isEmpty == false ? trimmed : nil
+    }
+
+    var approvalNote: String? {
+        let trimmed = note?.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed?.isEmpty == false ? trimmed : nil
     }
 

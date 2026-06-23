@@ -554,6 +554,14 @@ struct ApprovalDetailView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 8))
                 }
 
+                if let reason = approval.approvalReason {
+                    DetailTextBlock(title: "Reason", value: reason)
+                }
+
+                if let note = approval.approvalNote {
+                    DetailTextBlock(title: "Note", value: note)
+                }
+
                 if let status = approval.status, mode == .history {
                     Label(historyStatusTitle(status), systemImage: historyStatusIcon(status))
                         .foregroundStyle(status == "approved" ? .green : .red)
@@ -674,6 +682,25 @@ struct ApprovalDetailView: View {
     private func playDecisionHaptic() {
         guard hapticsEnabled else { return }
         UIImpactFeedbackGenerator(style: .soft).impactOccurred(intensity: 0.55)
+    }
+}
+
+private struct DetailTextBlock: View {
+    let title: String
+    let value: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.headline)
+            Text(value)
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(Color(.secondarySystemGroupedBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 }
 

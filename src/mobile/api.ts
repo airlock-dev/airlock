@@ -43,6 +43,7 @@ interface MobileApproval {
   args: Record<string, unknown>;
   status?: string;
   reason?: string;
+  note?: string;
   createdAt: string;
   timeoutMs?: number;
   expiresAt?: string;
@@ -146,6 +147,8 @@ export function mobileApiPlugin(app: FastifyInstance, opts: MobileApiOptions): v
         const createdAt = auditLogger.getHitlById(entry.id)?.created_at ?? new Date().toISOString();
         return {
           ...entry,
+          ...(entry.context?.reason ? { reason: entry.context.reason } : {}),
+          ...(entry.context?.note ? { note: entry.context.note } : {}),
           createdAt,
           timeoutMs: engine.timeoutMs,
           ...(engine.timeoutMs > 0
@@ -239,14 +242,18 @@ function checkMobileOrAdminAuth(
 }
 
 function toMobileApproval(row: ReturnType<AuditLogger['getHitlHistory']>[number]): MobileApproval {
+  const args = parseJsonObject(row.args);
+  const context = parseAirlockContext(args);
+  const cleanArgs = stripAirlockContext(args);
   return {
     id: row.id,
     code: row.code,
     agentId: row.agent_id,
     tool: row.tool,
-    args: parseJsonObject(row.args),
+    args: cleanArgs,
     status: row.status,
-    ...(row.reason ? { reason: row.reason } : {}),
+    ...(row.reason ? { reason: row.reason } : context.reason ? { reason: context.reason } : {}),
+    ...(context.note ? { note: context.note } : {}),
     createdAt: row.created_at,
     ...(row.resolved_at ? { resolvedAt: row.resolved_at } : {}),
   };
@@ -260,6 +267,21 @@ function parseJsonObject(value: string): Record<string, unknown> {
   } catch {
     return {};
   }
+}
+
+function parseAirlockContext(args: Record<string, unknown>): { reason?: string; note?: string } {
+  const raw = args._airlock;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  const source = raw as Record<string, unknown>;
+  return {
+    ...(typeof source.reason === 'string' ? { reason: source.reason } : {}),
+    ...(typeof source.note === 'string' ? { note: source.note } : {}),
+  };
+}
+
+function stripAirlockContext(args: Record<string, unknown>): Record<string, unknown> {
+  const { _airlock: _ignored, ...cleanArgs } = args;
+  return cleanArgs;
 }
 
 function applyRemember(

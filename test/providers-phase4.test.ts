@@ -70,6 +70,10 @@ describe('IOSHitlProvider', () => {
           extra4: 'four',
           extra5: 'five',
         },
+        context: {
+          reason: 'Need to push the reviewed auth fix.',
+          note: 'Tests passed locally.',
+        },
         timeoutMs: 120000,
       }),
     ]);
@@ -80,11 +84,14 @@ describe('IOSHitlProvider', () => {
       code: 'XY9Z01',
       agentId: 'dev',
       tool: 'echo/add',
+      body: expect.stringContaining('Reason: Need to push the reviewed auth fix.'),
       context: {
         id: 'approval-1',
         code: 'XY9Z01',
         agentId: 'dev',
         tool: 'echo/add',
+        reason: 'Need to push the reviewed auth fix.',
+        note: 'Tests passed locally.',
         timeoutMs: 120000,
       },
     });
