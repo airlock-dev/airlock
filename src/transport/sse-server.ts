@@ -3,7 +3,13 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { createAgentServer, connectAgentServer } from './agent-server.js';
 import type { AgentServerDeps } from './agent-server.js';
 import { childLogger } from '../util/logger.js';
-import { checkBearerAuth, checkOrigin, checkRequestSecurity } from '../security/request.js';
+import {
+  checkBearerAuth,
+  checkOrigin,
+  checkRequestSecurity,
+  currentRequestSecurity,
+  type RequestSecurityOptions,
+} from '../security/request.js';
 
 const log = childLogger('sse-server');
 
@@ -15,12 +21,12 @@ export async function sseServerPlugin(
   app: FastifyInstance,
   opts: {
     getDeps: (agentId: string) => AgentServerDeps | undefined;
-    secret?: string;
-    authRequired?: boolean;
-    allowedOrigins?: string[];
-  }
+	    secret?: string;
+	    authRequired?: boolean;
+	    allowedOrigins?: string[];
+	    getRequestSecurity?: () => RequestSecurityOptions;
+	  }
 ): Promise<void> {
-  const { secret } = opts;
   const sessions = new Map<string, { transport: SSEServerTransport; profileId: string }>();
 
   // Don't parse request bodies — handlePostMessage reads the raw stream
@@ -38,7 +44,8 @@ export async function sseServerPlugin(
     reply: FastifyReply,
     deps: AgentServerDeps
   ): boolean {
-    if (!checkOrigin(request, reply, opts.allowedOrigins)) return false;
+    const requestSecurity = currentRequestSecurity(opts);
+    if (!checkOrigin(request, reply, requestSecurity.allowedOrigins)) return false;
 
     const token = deps.agentConfig.token;
     if (token) {
@@ -46,8 +53,8 @@ export async function sseServerPlugin(
     }
     // No per-agent token — fall back to global api_secret
     return checkBearerAuth(request, reply, {
-      secret,
-      authRequired: opts.authRequired,
+      secret: requestSecurity.secret,
+      authRequired: requestSecurity.authRequired,
     });
   }
 

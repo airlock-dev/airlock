@@ -43,16 +43,7 @@ export function createAgentServer(deps: AgentServerDeps): Server {
   const getConfig = deps.getAgentConfig ?? (() => deps.agentConfig);
   const fallbackDownstreamSessionId = randomUUID();
 
-  const chain =
-    deps.chain ??
-    buildMiddlewareChain(getConfig(), {
-      registry,
-      allowlist,
-      hitlEngine,
-      hitlBatcher,
-      auditLogger,
-      securityConfig: deps.securityConfig ?? { blocked_hosts: [], allowed_local: [] },
-    });
+  const staticChain = deps.chain;
 
   const server = new Server({ name: 'airlock', version: VERSION }, { capabilities: { tools: {} } });
 
@@ -80,10 +71,22 @@ export function createAgentServer(deps: AgentServerDeps): Server {
     const downstreamSessionId =
       deps.getDownstreamSessionId?.() ?? deps.downstreamSessionId ?? fallbackDownstreamSessionId;
 
+    const agentConfig = getConfig();
+    const chain =
+      staticChain ??
+      buildMiddlewareChain(agentConfig, {
+        registry,
+        allowlist,
+        hitlEngine,
+        hitlBatcher,
+        auditLogger,
+        securityConfig: deps.securityConfig ?? { blocked_hosts: [], allowed_local: [] },
+      });
+
     const ctx: ToolCallContext = {
       callId: generateId(),
       agentId,
-      agentConfig: getConfig(),
+      agentConfig,
       toolName,
       args,
       meta: {

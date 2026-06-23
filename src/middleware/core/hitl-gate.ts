@@ -15,16 +15,24 @@ function serializeAuditArgs(args: Record<string, unknown>, meta: Record<string, 
   return JSON.stringify({ ...args, _airlock: { sandbox } });
 }
 
+function redactApprovalArgs(
+  auditLogger: { redactArgs?: (args: Record<string, unknown>) => Record<string, unknown> },
+  args: Record<string, unknown>
+): Record<string, unknown> {
+  return auditLogger.redactArgs?.(args) ?? args;
+}
+
 export function hitlGateMiddleware(): Middleware {
   return async (ctx, next) => {
     if (!ctx.meta.needsApproval) return next();
 
     const { hitlEngine, hitlBatcher, auditLogger } = ctx.deps;
     const sandboxInfo = ctx.meta.sandbox_info as SandboxDisplayInfo | undefined;
+    const approvalArgs = redactApprovalArgs(auditLogger, ctx.args);
     const ticket = hitlEngine.create({
       agentId: ctx.agentId,
       tool: ctx.toolName,
-      args: ctx.args,
+      args: approvalArgs,
       sandbox: sandboxInfo,
     });
 
@@ -33,7 +41,7 @@ export function hitlGateMiddleware(): Middleware {
       code: ticket.code,
       agentId: ctx.agentId,
       tool: ctx.toolName,
-      args: ctx.args,
+      args: approvalArgs,
       ...(sandboxInfo ? { sandbox: sandboxInfo } : {}),
       timeoutMs: hitlEngine.timeoutMs,
     });

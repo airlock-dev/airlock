@@ -1,16 +1,17 @@
 import type { FastifyInstance } from 'fastify';
 import type { AuditLogger } from './logger.js';
-import { checkRequestSecurity } from '../security/request.js';
+import { checkRequestSecurity, type RequestSecurityOptions } from '../security/request.js';
 
 // eslint-disable-next-line @typescript-eslint/require-await
 export async function auditApiPlugin(
   app: FastifyInstance,
   opts: {
     auditLogger: AuditLogger;
-    secret?: string;
-    authRequired?: boolean;
-    allowedOrigins?: string[];
-  }
+	    secret?: string;
+	    authRequired?: boolean;
+	    allowedOrigins?: string[];
+	    getRequestSecurity?: () => RequestSecurityOptions;
+	  }
 ): Promise<void> {
   const { auditLogger } = opts;
 

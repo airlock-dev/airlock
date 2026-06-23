@@ -3,7 +3,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { AuditLogger } from '../audit/logger.js';
 import type { HitlEngine } from '../hitl/engine.js';
 import { rememberAllow, type RememberAllowMode } from '../config/mutator.js';
-import { checkRequestSecurity } from '../security/request.js';
+import { checkRequestSecurity, type RequestSecurityOptions } from '../security/request.js';
 import { generateId } from '../util/id.js';
 
 interface MobileApiOptions {
@@ -13,6 +13,7 @@ interface MobileApiOptions {
   secret?: string;
   authRequired?: boolean;
   allowedOrigins?: string[];
+  getRequestSecurity?: () => RequestSecurityOptions;
 }
 
 interface RegisterDeviceBody {

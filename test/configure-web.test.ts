@@ -5,6 +5,7 @@ import { join } from 'path';
 import { parse as parseYaml } from 'yaml';
 import {
   annotationTags,
+  assertSafeWebBindHost,
   createConfigureWebApp,
   createEntity,
   deleteProvider,
@@ -60,6 +61,13 @@ approvals:
     type: stdio
 `
     );
+  });
+
+  it('requires an explicit insecure flag for non-loopback web UI binds', () => {
+    expect(() => assertSafeWebBindHost('127.0.0.1', false)).not.toThrow();
+    expect(() => assertSafeWebBindHost('localhost', false)).not.toThrow();
+    expect(() => assertSafeWebBindHost('0.0.0.0', false)).toThrow(/insecure-remote-bind/);
+    expect(() => assertSafeWebBindHost('0.0.0.0', true)).not.toThrow();
   });
 
   afterEach(() => {

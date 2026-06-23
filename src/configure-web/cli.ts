@@ -1,5 +1,6 @@
 import { randomBytes } from 'crypto';
 import { existsSync, readFileSync, writeFileSync, copyFileSync } from 'fs';
+import { isIP } from 'net';
 import { parseArgs } from 'util';
 import Fastify, { type FastifyInstance, type FastifyReply } from 'fastify';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
@@ -166,6 +167,8 @@ Options:
   -c, --config <path>   Airlock config file (default: ./airlock.yaml)
   -p, --port <port>     Web UI port (default: 4177)
       --host <host>     Bind host (default: 127.0.0.1)
+      --insecure-remote-bind
+                         Allow binding the unauthenticated UI beyond loopback
   -h, --help            Show this help
 `;
 
@@ -179,6 +182,8 @@ Options:
   -c, --config <path>   Airlock config file (default: ./airlock.yaml)
   -p, --port <port>     Web UI port (default: 4177)
       --host <host>     Bind host (default: 127.0.0.1)
+      --insecure-remote-bind
+                         Allow binding the unauthenticated UI beyond loopback
   -h, --help            Show this help
 `;
 
@@ -192,6 +197,7 @@ Options:
   -c, --config <path>             Airlock config file (default: ./airlock.yaml)
   -p, --port <port>               Web UI port (default: 4177)
       --host <host>               Bind host (default: 127.0.0.1)
+      --insecure-remote-bind      Allow binding the unauthenticated dashboard beyond loopback
       --gateway-url <url>         Gateway management API URL (default: http://127.0.0.1:4113)
       --gateway-secret <secret>   Gateway admin bearer token (default: AIRLOCK_GATEWAY_SECRET or AIRLOCK_API_SECRET)
   -h, --help                      Show this help
@@ -210,6 +216,7 @@ export async function runDashboard(argv: string[]): Promise<void> {
       host: { type: 'string', default: '127.0.0.1' },
       'gateway-url': { type: 'string', default: 'http://127.0.0.1:4113' },
       'gateway-secret': { type: 'string' },
+      'insecure-remote-bind': { type: 'boolean', default: false },
       help: { type: 'boolean', short: 'h', default: false },
     },
     allowPositionals: false,
@@ -232,6 +239,7 @@ export async function runDashboard(argv: string[]): Promise<void> {
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     throw new Error(`Invalid --port: ${values.port}`);
   }
+  assertSafeWebBindHost(host, values['insecure-remote-bind'] === true);
 
   const app = createConfigureWebApp(configPath, {
     remoteGateway: { url: gatewayUrl, secret: gatewaySecret },
@@ -252,6 +260,7 @@ export async function runConfigureWeb(
       config: { type: 'string', short: 'c', default: './airlock.yaml' },
       port: { type: 'string', short: 'p', default: '4177' },
       host: { type: 'string', default: '127.0.0.1' },
+      'insecure-remote-bind': { type: 'boolean', default: false },
       help: { type: 'boolean', short: 'h', default: false },
     },
     allowPositionals: false,
@@ -269,11 +278,28 @@ export async function runConfigureWeb(
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     throw new Error(`Invalid --port: ${values.port}`);
   }
+  assertSafeWebBindHost(host, values['insecure-remote-bind'] === true);
 
   const app = createConfigureWebApp(configPath);
   await app.listen({ host, port });
   console.log(`Airlock command center running at http://${host}:${port}`);
   console.log(`Editing ${configPath}`);
+}
+
+export function assertSafeWebBindHost(host: string, insecureRemoteBind: boolean): void {
+  if (insecureRemoteBind || isLoopbackBindHost(host)) return;
+  throw new Error(
+    '--host binds the unauthenticated Airlock web UI beyond loopback. Use --insecure-remote-bind only when the port is protected by a private network, tunnel, or authenticated reverse proxy.'
+  );
+}
+
+function isLoopbackBindHost(host: string): boolean {
+  const normalized = host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host;
+  if (normalized === 'localhost') return true;
+  const ipVersion = isIP(normalized);
+  if (ipVersion === 6) return normalized === '::1';
+  if (ipVersion !== 4) return false;
+  return Number(normalized.split('.')[0]) === 127;
 }
 
 export function createConfigureWebApp(configPath: string, options: ConfigureWebOptions = {}) {

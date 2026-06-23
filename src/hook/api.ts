@@ -5,7 +5,7 @@ import type { HitlBatcher } from '../hitl/batcher.js';
 import type { AuditLogger } from '../audit/logger.js';
 import { normalizeTool } from './normalizer.js';
 import { childLogger } from '../util/logger.js';
-import { checkRequestSecurity } from '../security/request.js';
+import { checkRequestSecurity, type RequestSecurityOptions } from '../security/request.js';
 
 const log = childLogger('hook-api');
 
@@ -17,6 +17,7 @@ export interface HookApiOpts {
   secret?: string;
   authRequired?: boolean;
   allowedOrigins?: string[];
+  getRequestSecurity?: () => RequestSecurityOptions;
 }
 
 interface HookRequestBody {

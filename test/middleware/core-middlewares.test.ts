@@ -71,6 +71,34 @@ describe('execPolicyMiddleware', () => {
     await expect(mw(ctx, okNext)).rejects.toThrow('exec/run requires a string command');
   });
 
+  it('rejects per-call exec timeouts above the configured default', async () => {
+    const mw = execPolicyMiddleware();
+    const ctx = makeCtx({
+      toolName: 'exec/run',
+      args: { command: 'echo ok', timeout_ms: 10_000 },
+      agentConfig: {
+        ...makeCtx().agentConfig,
+        exec: { allow: ['echo*'], ask: [], deny: [], env: {}, default_timeout_ms: 5000 },
+      },
+    });
+
+    await expect(mw(ctx, okNext)).rejects.toThrow('timeout_ms');
+  });
+
+  it('rejects invalid cwd values before execution', async () => {
+    const mw = execPolicyMiddleware();
+    const ctx = makeCtx({
+      toolName: 'exec/run',
+      args: { command: 'echo ok', cwd: 'bad\0path' },
+      agentConfig: {
+        ...makeCtx().agentConfig,
+        exec: { allow: ['echo*'], ask: [], deny: [], env: {}, default_timeout_ms: 5000 },
+      },
+    });
+
+    await expect(mw(ctx, okNext)).rejects.toThrow('cwd');
+  });
+
   it('denies matching deny pattern', async () => {
     const mw = execPolicyMiddleware();
     const ctx = makeCtx({
@@ -83,6 +111,23 @@ describe('execPolicyMiddleware', () => {
     });
     await expect(mw(ctx, okNext)).rejects.toThrow('Command denied by policy');
   });
+
+  it('applies exec policy to aliases that resolve to exec/run', async () => {
+    const mw = execPolicyMiddleware();
+    const ctx = makeCtx({
+      toolName: 'python/sandboxed',
+      args: { command: 'curl https://example.com' },
+      agentConfig: {
+        ...makeCtx().agentConfig,
+        tool_overrides: {
+          'python/sandboxed': { alias_of: 'exec/run' },
+        },
+        exec: { allow: ['python*'], ask: [], deny: [], env: {}, default_timeout_ms: 5000 },
+      },
+    });
+
+    await expect(mw(ctx, okNext)).rejects.toThrow('Command denied by policy');
+  });
 });
 
 describe('hitlGateMiddleware', () => {
@@ -91,6 +136,38 @@ describe('hitlGateMiddleware', () => {
     const ctx = makeCtx();
     const result = await mw(ctx, okNext);
     expect(result.text).toBe('ok');
+  });
+
+  it('redacts approval args before creating and batching HITL requests', async () => {
+    const mw = hitlGateMiddleware();
+    const ctx = makeCtx({
+      args: { token: 'secret-token', command: 'deploy' },
+      meta: { needsApproval: true },
+      deps: {
+        ...makeCtx().deps,
+        hitlEngine: {
+          create: vi.fn().mockReturnValue({ id: 'id', code: 'CODE', result: Promise.resolve('approved') }),
+          timeoutMs: 5000,
+        } as any,
+        hitlBatcher: { add: vi.fn() } as any,
+        auditLogger: {
+          log: vi.fn(),
+          redactArgs: vi.fn().mockReturnValue({ token: '[REDACTED]', command: 'deploy' }),
+        } as any,
+      },
+    });
+
+    await mw(ctx, okNext);
+
+    expect((ctx.deps.hitlEngine.create as any).mock.calls[0][0].args).toEqual({
+      token: '[REDACTED]',
+      command: 'deploy',
+    });
+    expect((ctx.deps.hitlBatcher.add as any).mock.calls[0][0].args).toEqual({
+      token: '[REDACTED]',
+      command: 'deploy',
+    });
+    expect(ctx.args).toEqual({ token: 'secret-token', command: 'deploy' });
   });
 });
 
@@ -125,4 +202,3 @@ describe('rateLimiterMiddleware', () => {
     await expect(mw(ctx1, okNext)).rejects.toThrow('Rate limit exceeded');
   });
 });
-

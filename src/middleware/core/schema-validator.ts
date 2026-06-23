@@ -14,14 +14,19 @@ const validatorCache = new Map<string, ValidateFunction>();
 export function schemaValidatorMiddleware(): Middleware {
   return async (ctx, next) => {
     const tools = ctx.deps.registry.getAllTools();
-    const tool = tools.find((t) => t.name === ctx.toolName);
+    const resolvedToolName =
+      ctx.deps.registry.resolveToolName?.(ctx.toolName, ctx.agentId) ??
+      ctx.agentConfig.tool_overrides?.[ctx.toolName]?.alias_of ??
+      ctx.toolName;
+    const tool = tools.find((t) => t.name === ctx.toolName) ?? tools.find((t) => t.name === resolvedToolName);
     if (!tool?.inputSchema) return next();
 
-    let validate = validatorCache.get(ctx.toolName);
+    const cacheKey = `${ctx.toolName}->${resolvedToolName}`;
+    let validate = validatorCache.get(cacheKey);
     if (!validate) {
       // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
       validate = ajv.compile(tool.inputSchema) as ValidateFunction;
-      validatorCache.set(ctx.toolName, validate);
+      validatorCache.set(cacheKey, validate);
     }
 
     if (!validate(ctx.args)) {

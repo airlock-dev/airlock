@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'fs/promises';
+import { mkdtemp, readFile, rm, stat } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -54,6 +54,17 @@ describe('FileOAuthProvider — relay callback URL', () => {
         client_id: 'client-123',
         redirect_uris: [provider.redirectUrl],
       });
+    });
+
+    it('stores OAuth cache files with owner-only permissions', async () => {
+      const serverId = 'private-store';
+      const provider = new FileOAuthProvider(serverId, PORT);
+      await provider.saveTokens({ access_token: 'secret-token', token_type: 'Bearer' });
+
+      const dirInfo = await stat(join(tempHome, '.airlock', 'oauth'));
+      const fileInfo = await stat(join(tempHome, '.airlock', 'oauth', `${serverId}.json`));
+      expect(dirInfo.mode & 0o777).toBe(0o700);
+      expect(fileInfo.mode & 0o777).toBe(0o600);
     });
 
     it('drops cached client registration when redirect URL changes', async () => {

@@ -6,6 +6,7 @@ const log = childLogger('mw:canary-token');
 
 const activeTokens = new Map<string, { agentId: string; tool: string; createdAt: number }>();
 const TOKEN_TTL_MS = 600_000; // 10 minutes
+export type CanaryTokenMode = 'detect' | 'escalate';
 
 function generateCanary(): string {
   return `CANARY-${randomBytes(8).toString('hex').toUpperCase()}`;
@@ -20,7 +21,8 @@ function pruneExpired(): void {
   }
 }
 
-export function canaryTokenInjectorMiddleware(): Middleware {
+export function canaryTokenInjectorMiddleware(opts: { mode?: CanaryTokenMode } = {}): Middleware {
+  const mode = opts.mode ?? 'escalate';
   return async (ctx, next) => {
     // Pre-execution: scan inbound args for leaked canary tokens
     const argsStr = JSON.stringify(ctx.args);
@@ -37,6 +39,9 @@ export function canaryTokenInjectorMiddleware(): Middleware {
           result: 'canary_leaked',
           error: `Canary token ${token} from ${meta.tool} found in args`,
         });
+        if (mode === 'escalate') {
+          ctx.meta.needsApproval = true;
+        }
       }
     }
 

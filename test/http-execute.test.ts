@@ -1,6 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { lookup } from 'dns/promises';
 import { executeHttp } from '../src/tools/http.js';
 import type { AgentConfig, SecurityConfig } from '../src/config/schema.js';
+
+vi.mock('dns/promises', () => ({ lookup: vi.fn() }));
+
+const lookupMock = vi.mocked(lookup);
 
 const DEFAULT_SECURITY: SecurityConfig = {
   blocked_hosts: ['localhost', '127.0.0.1', '::1', '*.local', '10.*', '192.168.*', '172.16.*'],
@@ -50,6 +55,14 @@ function mockFetch(status: number, body: string, headers: Record<string, string>
   });
 }
 
+beforeEach(() => {
+  lookupMock.mockResolvedValue([{ address: '203.0.113.10', family: 4 }] as any);
+});
+
+afterEach(() => {
+  lookupMock.mockReset();
+});
+
 describe('executeHttp() — security enforcement', () => {
   it('blocks localhost', async () => {
     await expect(
@@ -60,6 +73,12 @@ describe('executeHttp() — security enforcement', () => {
   it('blocks 127.0.0.1', async () => {
     await expect(
       executeHttp('get', { url: 'http://127.0.0.1/api' }, makeAgentConfig(), DEFAULT_SECURITY),
+    ).rejects.toThrow(/[Bb]locked/);
+  });
+
+  it('blocks bracketed IPv6 localhost', async () => {
+    await expect(
+      executeHttp('get', { url: 'http://[::1]/api' }, makeAgentConfig(), DEFAULT_SECURITY),
     ).rejects.toThrow(/[Bb]locked/);
   });
 
@@ -84,6 +103,14 @@ describe('executeHttp() — security enforcement', () => {
     await expect(
       executeHttp('get', { url: 'https://evil.com/steal' }, agent, DEFAULT_SECURITY),
     ).rejects.toThrow(/[Dd]omain/);
+  });
+
+  it('blocks allowed domains that resolve to blocked addresses', async () => {
+    lookupMock.mockResolvedValue([{ address: '127.0.0.1', family: 4 }] as any);
+    const agent = makeAgentConfig({ domain_allowlist: ['api.example.com'] });
+    await expect(
+      executeHttp('get', { url: 'https://api.example.com/data' }, agent, DEFAULT_SECURITY),
+    ).rejects.toThrow(/resolved to 127\.0\.0\.1/);
   });
 
   it('allows domain in agent allowlist', async () => {

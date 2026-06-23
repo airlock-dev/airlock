@@ -3,7 +3,7 @@ import type { BackendAdapter } from '../types.js';
 import type { ToolCall, ToolResult } from '../../types.js';
 import type { ApiConfig, SecurityConfig } from '../../config/schema.js';
 import { parseOpenApiSpec, type ParsedApi, type ParsedOperation } from './parser.js';
-import { isBlockedHost } from '../../security/blocked-hosts.js';
+import { assertHostNotBlocked } from '../../security/blocked-hosts.js';
 import { childLogger } from '../../util/logger.js';
 
 const log = childLogger('openapi-adapter');
@@ -77,15 +77,21 @@ export class OpenApiAdapter implements BackendAdapter {
     }
 
     // Security: check blocked hosts
-    let hostname: string;
+    let parsedUrl: URL;
     try {
-      hostname = new URL(url).hostname;
+      parsedUrl = new URL(url);
     } catch {
       return { success: false, error: `Invalid URL: ${url}` };
     }
 
-    if (isBlockedHost(hostname, this.security.blocked_hosts, this.security.allowed_local)) {
-      return { success: false, error: `Blocked host: ${hostname}` };
+    try {
+      await assertHostNotBlocked(
+        parsedUrl.hostname,
+        this.security.blocked_hosts,
+        this.security.allowed_local
+      );
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
     }
 
     // Build headers
@@ -123,19 +129,38 @@ export class OpenApiAdapter implements BackendAdapter {
         headers,
         body: ['post', 'put', 'patch'].includes(op.method) ? body : undefined,
         signal: controller.signal,
+        redirect: 'manual',
       });
 
       clearTimeout(timer);
 
-      const buffer = await response.arrayBuffer();
-      let responseBody: string;
+      let responseBody = '';
       let truncated = false;
+      const reader = response.body?.getReader();
 
-      if (buffer.byteLength > this.config.max_response_bytes) {
-        responseBody = Buffer.from(buffer.slice(0, this.config.max_response_bytes)).toString('utf-8');
-        truncated = true;
-      } else {
-        responseBody = Buffer.from(buffer).toString('utf-8');
+      if (reader) {
+        let bytesRead = 0;
+        const decoder = new TextDecoder();
+        while (true) {
+          const { done, value } = (await reader.read()) as { done: boolean; value: Uint8Array };
+          if (done) break;
+
+          bytesRead += value.byteLength;
+          if (bytesRead <= this.config.max_response_bytes) {
+            responseBody += decoder.decode(value, { stream: true });
+            continue;
+          }
+
+          const overshoot = bytesRead - this.config.max_response_bytes;
+          const usable = value.byteLength - overshoot;
+          if (usable > 0) {
+            responseBody += decoder.decode(value.slice(0, usable), { stream: true });
+          }
+          truncated = true;
+          void reader.cancel();
+          break;
+        }
+        responseBody += decoder.decode();
       }
 
       const responseHeaders: Record<string, string> = {};

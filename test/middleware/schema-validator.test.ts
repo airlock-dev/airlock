@@ -88,6 +88,29 @@ describe('schemaValidatorMiddleware', () => {
     expect(result.text).toBe('ok');
   });
 
+  it('validates aliases against the base tool schema', async () => {
+    const mw = schemaValidatorMiddleware();
+    const ctx = makeCtx({
+      toolName: 'python/sandboxed',
+      args: {},
+      agentConfig: {
+        tool_overrides: {
+          'python/sandboxed': { alias_of: 'exec/run' },
+        },
+      } as any,
+    });
+    (ctx.deps.registry.getAllTools as any).mockReturnValue([{
+      name: 'exec/run',
+      inputSchema: {
+        type: 'object',
+        properties: { command: { type: 'string' } },
+        required: ['command'],
+      },
+    }]);
+
+    await expect(mw(ctx, okNext)).rejects.toThrow('Invalid arguments');
+  });
+
   it('caches compiled validators across calls', async () => {
     const mw = schemaValidatorMiddleware();
     const schema = {

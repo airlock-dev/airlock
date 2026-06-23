@@ -86,6 +86,22 @@ describe('HitlEngine', () => {
     expect(pending[0].tool).toBe('github/create_pr');
   });
 
+  it('redacts approval args before storing and exposing pending requests', () => {
+    (auditLogger as any).redactArgs = vi.fn().mockReturnValue({ token: '[REDACTED]', repo: 'test' });
+    engine.create({
+      agentId: 'agent1',
+      tool: 'github/create_pr',
+      args: { token: 'secret-token', repo: 'test' },
+    });
+
+    expect(auditLogger.insertHitl).toHaveBeenCalledWith(
+      expect.objectContaining({
+        args: JSON.stringify({ token: '[REDACTED]', repo: 'test' }),
+      })
+    );
+    expect(engine.getPending()[0].args).toEqual({ token: '[REDACTED]', repo: 'test' });
+  });
+
   it('removes from pending after resolve', async () => {
     const { id, result } = engine.create({ agentId: 'agent1', tool: 'github/create_pr', args: {} });
     engine.approve(id);

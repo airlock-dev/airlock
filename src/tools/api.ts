@@ -4,7 +4,7 @@ import type { ToolCallContext } from '../middleware/types.js';
 import { buildMiddlewareChain } from '../middleware/chain-builder.js';
 import { generateId } from '../util/id.js';
 import { childLogger } from '../util/logger.js';
-import { checkBearerAuth, checkOrigin } from '../security/request.js';
+import { checkBearerAuth, checkOrigin, currentRequestSecurity, type RequestSecurityOptions } from '../security/request.js';
 
 const log = childLogger('tools-api');
 
@@ -14,6 +14,7 @@ export interface ToolsApiOpts {
   secret?: string;
   authRequired?: boolean;
   allowedOrigins?: string[];
+  getRequestSecurity?: () => RequestSecurityOptions;
 }
 
 function nonEmptyString(value: unknown): value is string {
@@ -38,15 +39,16 @@ export async function toolsApiPlugin(app: FastifyInstance, opts: ToolsApiOpts): 
     reply: FastifyReply,
     deps: AgentServerDeps
   ): boolean {
-    if (!checkOrigin(request, reply, opts.allowedOrigins)) return false;
+    const requestSecurity = currentRequestSecurity(opts);
+    if (!checkOrigin(request, reply, requestSecurity.allowedOrigins)) return false;
 
     const token = deps.agentConfig.token;
     if (token) {
       return checkBearerAuth(request, reply, { secret: token, authRequired: true });
     }
     return checkBearerAuth(request, reply, {
-      secret: opts.secret,
-      authRequired: opts.authRequired,
+      secret: requestSecurity.secret,
+      authRequired: requestSecurity.authRequired,
     });
   }
 

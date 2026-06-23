@@ -1,4 +1,4 @@
-import { readFile, writeFile, mkdir } from 'fs/promises';
+import { chmod, readFile, writeFile, mkdir } from 'fs/promises';
 import { join } from 'path';
 import { execFile } from 'child_process';
 import { createServer, type Server as HttpServer } from 'http';
@@ -28,6 +28,7 @@ export class FileOAuthProvider implements OAuthClientProvider {
   private callbackServer?: HttpServer;
   private authCodeResolve?: (code: string) => void;
   private browserOpenedAt = 0;
+  private expectedState?: string;
 
   constructor(
     private serverId: string,
@@ -123,8 +124,9 @@ export class FileOAuthProvider implements OAuthClientProvider {
 
     // When using an HTTPS relay, wrap the state parameter with the local port
     // so the relay can redirect back to localhost after the OAuth provider responds.
+    const originalState = url.searchParams.get('state') ?? '';
+    this.expectedState = originalState;
     if (this.relayCallbackUrl) {
-      const originalState = url.searchParams.get('state') ?? '';
       url.searchParams.set('state', `${this.callbackPort}.${originalState}`);
     }
 
@@ -165,6 +167,7 @@ export class FileOAuthProvider implements OAuthClientProvider {
 
         const code = url.searchParams.get('code');
         const error = url.searchParams.get('error');
+        const state = url.searchParams.get('state');
 
         if (error) {
           res.writeHead(200, { 'Content-Type': 'text/html' });
@@ -177,6 +180,15 @@ export class FileOAuthProvider implements OAuthClientProvider {
         }
 
         if (code) {
+          if (!this.isExpectedState(state)) {
+            res.writeHead(400, { 'Content-Type': 'text/html' });
+            res.end(
+              '<html><body><h2>Authorization failed</h2><p>OAuth state mismatch.</p></body></html>'
+            );
+            this.stopCallbackServer();
+            reject(new Error('OAuth state mismatch'));
+            return;
+          }
           res.writeHead(200, { 'Content-Type': 'text/html' });
           res.end('<html><body><h2>Authorized!</h2><p>You can close this tab.</p></body></html>');
           this.stopCallbackServer();
@@ -204,6 +216,12 @@ export class FileOAuthProvider implements OAuthClientProvider {
     this.callbackServer = undefined;
   }
 
+  private isExpectedState(state: string | null): boolean {
+    if (this.expectedState === undefined) return true;
+    if (state === this.expectedState) return true;
+    return this.relayCallbackUrl !== undefined && state === `${this.callbackPort}.${this.expectedState}`;
+  }
+
   private async load(): Promise<void> {
     try {
       const data = await readFile(this.storePath, 'utf-8');
@@ -215,7 +233,9 @@ export class FileOAuthProvider implements OAuthClientProvider {
 
   private async save(): Promise<void> {
     const dir = join(this.storePath, '..');
-    await mkdir(dir, { recursive: true });
-    await writeFile(this.storePath, JSON.stringify(this.data, null, 2));
+    await mkdir(dir, { recursive: true, mode: 0o700 });
+    await chmod(dir, 0o700).catch(() => {});
+    await writeFile(this.storePath, JSON.stringify(this.data, null, 2), { mode: 0o600 });
+    await chmod(this.storePath, 0o600).catch(() => {});
   }
 }

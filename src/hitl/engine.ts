@@ -25,6 +25,16 @@ interface PendingRequest {
   timer?: NodeJS.Timeout; // undefined when timeoutMs === 0 (no timeout)
 }
 
+function redactApprovalArgs(
+  auditLogger: AuditLogger,
+  args: Record<string, unknown>
+): Record<string, unknown> {
+  return (
+    (auditLogger as { redactArgs?: (args: Record<string, unknown>) => Record<string, unknown> })
+      .redactArgs?.(args) ?? args
+  );
+}
+
 export class HitlEngine implements ApprovalApi {
   private pending = new Map<string, PendingRequest>(); // id → request
   private byCode = new Map<string, string>(); // code → id
@@ -32,8 +42,16 @@ export class HitlEngine implements ApprovalApi {
   constructor(
     private auditLogger: AuditLogger,
     private provider: HitlProvider,
-    readonly timeoutMs: number
+    private _timeoutMs: number
   ) {}
+
+  get timeoutMs(): number {
+    return this._timeoutMs;
+  }
+
+  setTimeoutMs(timeoutMs: number): void {
+    this._timeoutMs = timeoutMs;
+  }
 
   create(params: {
     agentId: string;
@@ -43,6 +61,7 @@ export class HitlEngine implements ApprovalApi {
   }): HitlTicket {
     const id = generateId();
     const code = generateApprovalCode();
+    const approvalArgs = redactApprovalArgs(this.auditLogger, params.args);
 
     // Persist to DB synchronously before returning
     this.auditLogger.insertHitl({
@@ -50,13 +69,13 @@ export class HitlEngine implements ApprovalApi {
       code,
       agent_id: params.agentId,
       tool: params.tool,
-      args: JSON.stringify(params.args),
+      args: JSON.stringify(approvalArgs),
       status: 'pending',
       created_at: new Date().toISOString(),
     });
 
     const result = new Promise<HitlResult>((resolve) => {
-      const req: PendingRequest = { id, code, ...params, resolve };
+      const req: PendingRequest = { id, code, ...params, args: approvalArgs, resolve };
       this.pending.set(id, req);
       this.byCode.set(code, id);
 
