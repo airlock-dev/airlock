@@ -1,0 +1,4 @@
+app_identifier("bot.airlock.companion")
+
+team_id(ENV["AIRLOCK_IOS_TEAM_ID"]) if ENV["AIRLOCK_IOS_TEAM_ID"]
+itc_team_id(ENV["AIRLOCK_IOS_ITC_TEAM_ID"]) if ENV["AIRLOCK_IOS_ITC_TEAM_ID"]

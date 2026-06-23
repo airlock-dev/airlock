@@ -25,3 +25,15 @@ dev:
 # Run tests with coverage
 coverage:
     npx vitest run --coverage
+
+# Install iOS TestFlight release gems into ios-companion/vendor/bundle
+ios-testflight-setup:
+    cd ios-companion && BUNDLE_PATH=vendor/bundle bundle install
+
+# Write ios-companion/.env.local from the local 1Password item
+ios-testflight-env:
+    cd ios-companion && ./scripts/write-testflight-env-from-1password
+
+# Upload the iOS companion to TestFlight from this Mac
+ios-testflight:
+    cd ios-companion && BUNDLE_PATH=vendor/bundle bundle exec fastlane beta --env local
