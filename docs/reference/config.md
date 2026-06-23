@@ -303,6 +303,7 @@ server:
     - https://airlock.example.com
   management_api:
     enabled: true
+    api_secret: '${MANAGEMENT_API_SECRET}'
     host: 127.0.0.1
     port: 4113
     insecure_remote_bind: false
@@ -321,10 +322,9 @@ The `server` listener is the agent data-plane. It serves MCP transports
 and, when `expose_tools_api` is true, the REST agent tool API
 (`/agents/:agentId/tools` and `/agents/:agentId/tools/invoke`).
 
-- `api_secret` protects management and hook APIs, and acts as the fallback
-  credential for tools API and MCP routes when an agent has no token. If an
-  agent has `token`, `/agents/:agentId/tools*` and MCP routes require that
-  agent token instead.
+- `api_secret` is the data-plane fallback credential for tools API and MCP
+  routes when an agent has no token. If an agent has `token`,
+  `/agents/:agentId/tools*` and MCP routes require that agent token instead.
 - `auth_required` rejects unauthenticated requests even when no secret/token is
   configured.
 - `require_agent_tokens` requires every configured agent to have its own token.
@@ -339,8 +339,13 @@ and, when `expose_tools_api` is true, the REST agent tool API
   `/health`, `/hitl/*`, `/audit`, the dashboard approval bridge (`/events`,
   `/approve`, `/deny`, `/version*`), `/mobile/*`, `/admin/tools`, and `/hook`.
   It is disabled by default. When enabled, every agent must set `token` so the
-  management `api_secret` cannot be used as a fallback credential on agent
-  data-plane routes.
+  data-plane fallback cannot become an implicit agent credential.
+- `management_api.api_secret` protects the control-plane listener. If unset,
+  Airlock temporarily falls back to `server.api_secret` for backward
+  compatibility and emits a deprecation warning: `management_api is using
+  server.api_secret; set server.management_api.api_secret to separate the
+  control-plane secret from the data-plane fallback.` If both secrets resolve to
+  the same value, config validation warns so operators can rotate one.
 - `management_api.host` defaults to `127.0.0.1`. Binding it beyond loopback
   requires `management_api.insecure_remote_bind: true`; without that explicit
   opt-in, config validation refuses to start.
@@ -351,6 +356,16 @@ and, when `expose_tools_api` is true, the REST agent tool API
 `expose_management_api` and `expose_hook_api` are deprecated aliases for one
 release. They still map into `management_api`, but new configs should use the
 explicit block above.
+
+To split an existing single-secret deployment, generate a fresh
+`MANAGEMENT_API_SECRET`, set
+`server.management_api.api_secret: '${MANAGEMENT_API_SECRET}'`, recreate or
+restart Airlock, and update companion apps or dashboards to send
+`Authorization: Bearer $MANAGEMENT_API_SECRET`. Keep `server.api_secret` only
+as the data-plane fallback, or remove it when every agent has its own token and
+no fallback credential is needed. Per-device companion tokens are a future
+hardening step so one device can be revoked without rotating the shared
+management secret.
 
 For a public MCP-only listener, disable the non-MCP APIs and use per-agent tokens:
 

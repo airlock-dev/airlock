@@ -147,6 +147,7 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
   const serverHost = config.server.host;
   const isLoopback = isLoopbackHost(serverHost);
   const managementApiEnabled = config.server.management_api.enabled;
+  const managementApiSecret = config.server.management_api.api_secret;
   const agentsWithoutTokens = Object.entries(config.agents)
     .filter(([, agent]) => !agent.token)
     .map(([agentId]) => agentId);
@@ -196,21 +197,49 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
       });
     }
 
-    if (!config.server.api_secret && managementApiEnabled) {
+    if (!managementApiSecret && !config.server.api_secret && managementApiEnabled) {
       diagnostics.push({
         level: 'error',
         message:
-          'server.auth_required is true, but the control-plane management API is enabled without server.api_secret.',
-        suggestion: 'Set server.api_secret, or disable server.management_api.enabled.',
+          'server.auth_required is true, but the control-plane management API is enabled without a credential.',
+        suggestion:
+          'Set server.management_api.api_secret, set server.api_secret as a temporary fallback, or disable server.management_api.enabled.',
       });
     }
   }
 
-  if (managementApiEnabled && !config.server.api_secret) {
+  if (managementApiEnabled && !managementApiSecret && !config.server.api_secret) {
     diagnostics.push({
       level: 'error',
-      message: 'server.management_api.enabled requires server.api_secret.',
-      suggestion: 'Set server.api_secret so control-plane requests require bearer-token auth.',
+      message:
+        'server.management_api.enabled requires server.management_api.api_secret or server.api_secret.',
+      suggestion:
+        'Set server.management_api.api_secret so control-plane requests require bearer-token auth.',
+    });
+  }
+
+  if (managementApiEnabled && !managementApiSecret && config.server.api_secret) {
+    diagnostics.push({
+      level: 'warn',
+      message:
+        'management_api is using server.api_secret; set server.management_api.api_secret to separate the control-plane secret from the data-plane fallback.',
+      suggestion:
+        'Generate a fresh management secret, set server.management_api.api_secret, and update management clients to use it.',
+    });
+  }
+
+  if (
+    managementApiEnabled &&
+    managementApiSecret &&
+    config.server.api_secret &&
+    managementApiSecret === config.server.api_secret
+  ) {
+    diagnostics.push({
+      level: 'warn',
+      message:
+        'server.management_api.api_secret matches server.api_secret; rotate one secret to separate the control-plane credential from the data-plane fallback.',
+      suggestion:
+        'Use different resolved values for server.management_api.api_secret and server.api_secret.',
     });
   }
 

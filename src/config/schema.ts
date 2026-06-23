@@ -464,6 +464,7 @@ export type AuditConfig = z.infer<typeof AuditConfig>;
 
 export const ManagementApiConfig = z.object({
   enabled: z.boolean().default(false),
+  api_secret: EnvString.optional(),
   host: z.string().default('127.0.0.1'),
   port: z.number().int().min(1).max(65535).default(4113),
   insecure_remote_bind: z.boolean().default(false),

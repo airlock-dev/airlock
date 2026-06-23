@@ -114,19 +114,24 @@ export class Gateway {
     // separate listener below and must never be added to this app.
     this.app = Fastify({ logger: false });
 
-    const requestSecurity = {
+    const dataPlaneRequestSecurity = {
       secret: this.config.server.api_secret,
       authRequired: this.config.server.auth_required,
+      allowedOrigins: this.config.server.allowed_origins,
+    };
+    const managementRequestSecurity = {
+      secret: this.config.server.management_api.api_secret ?? this.config.server.api_secret,
+      authRequired: true,
       allowedOrigins: this.config.server.allowed_origins,
     };
 
     await this.app.register(sseServerPlugin, {
       getDeps: (agentId: string) => this.buildAgentDeps(agentId),
-      ...requestSecurity,
+      ...dataPlaneRequestSecurity,
     });
     await this.app.register(httpServerPlugin, {
       getDeps: (agentId: string) => this.buildAgentDeps(agentId),
-      ...requestSecurity,
+      ...dataPlaneRequestSecurity,
     });
     if (this.config.server.expose_tools_api) {
       await this.app.register(toolsApiPlugin, {
@@ -134,7 +139,7 @@ export class Gateway {
           this.buildAgentDeps(agentId, downstreamSessionKey),
         requiresSessionId: (agentId: string, tool: string) =>
           this.requiresToolsApiSessionId(agentId, tool),
-        ...requestSecurity,
+        ...dataPlaneRequestSecurity,
       });
     }
 
@@ -144,7 +149,7 @@ export class Gateway {
 
     if (this.config.server.management_api.enabled) {
       try {
-        await this.startManagementApi(requestSecurity);
+        await this.startManagementApi(managementRequestSecurity);
       } catch (err) {
         await this.app.close().catch((closeErr) => {
           log.warn(
@@ -243,8 +248,10 @@ export class Gateway {
     const management = this.config.server.management_api;
     if (!management.enabled) return;
 
-    if (!this.config.server.api_secret) {
-      throw new Error('server.management_api.enabled requires server.api_secret.');
+    if (!management.api_secret && !this.config.server.api_secret) {
+      throw new Error(
+        'server.management_api.enabled requires server.management_api.api_secret or server.api_secret.'
+      );
     }
 
     const tokenlessAgents = Object.entries(this.config.agents)

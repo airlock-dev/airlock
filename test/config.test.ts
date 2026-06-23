@@ -378,6 +378,20 @@ providers:
     expect(result.config?.agents['agent1'].token).toBe('${TEST_AGENT_SECRET}');
   });
 
+  it('substitutes env vars in the management API secret', () => {
+    process.env['TEST_MANAGEMENT_SECRET'] = 'management-supersecret';
+    const yaml = `
+server:
+  management_api:
+    api_secret: "\${TEST_MANAGEMENT_SECRET}"
+`;
+    const path = join(dir, 'gateway.yaml');
+    writeFileSync(path, yaml);
+    const config = loadConfig(path);
+    delete process.env['TEST_MANAGEMENT_SECRET'];
+    expect(config.server.management_api.api_secret).toBe('management-supersecret');
+  });
+
   it('errors when binding beyond loopback without required auth', () => {
     const yaml = `
 server:
@@ -426,7 +440,7 @@ agents:
     expect(config.agents['agent1'].token).toBe('agent-secret');
   });
 
-  it('errors when the management API is enabled without an api_secret', () => {
+  it('errors when the management API is enabled without any control-plane credential', () => {
     const yaml = `
 server:
   management_api:
@@ -437,7 +451,64 @@ agents:
 `;
     const path = join(dir, 'gateway.yaml');
     writeFileSync(path, yaml);
-    expect(() => loadConfig(path)).toThrow(/management_api\.enabled requires server\.api_secret/i);
+    expect(() => loadConfig(path)).toThrow(
+      /management_api\.enabled requires server\.management_api\.api_secret or server\.api_secret/i
+    );
+  });
+
+  it('warns when management API falls back to server.api_secret', () => {
+    const config = GatewayConfig.parse({
+      server: {
+        api_secret: 'shared-secret',
+        management_api: {
+          enabled: true,
+        },
+      },
+      agents: {
+        agent1: { token: 'agent-secret' },
+      },
+    });
+
+    const diagnostics = validateConfig(config);
+    expect(diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          level: 'warn',
+          message:
+            'management_api is using server.api_secret; set server.management_api.api_secret to separate the control-plane secret from the data-plane fallback.',
+        }),
+      ])
+    );
+  });
+
+  it('warns when management and data-plane secrets resolve to the same value', () => {
+    process.env['TEST_SHARED_AIRLOCK_SECRET'] = 'same-secret';
+    const yaml = `
+server:
+  api_secret: "\${TEST_SHARED_AIRLOCK_SECRET}"
+  management_api:
+    enabled: true
+    api_secret: "\${TEST_SHARED_AIRLOCK_SECRET}"
+agents:
+  agent1:
+    token: agent-secret
+`;
+    const path = join(dir, 'gateway.yaml');
+    writeFileSync(path, yaml);
+    const config = loadConfig(path);
+    delete process.env['TEST_SHARED_AIRLOCK_SECRET'];
+
+    const diagnostics = validateConfig(config);
+    expect(diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          level: 'warn',
+          message: expect.stringContaining(
+            'server.management_api.api_secret matches server.api_secret'
+          ),
+        }),
+      ])
+    );
   });
 
   it('errors when the management API is enabled with tokenless agents', () => {

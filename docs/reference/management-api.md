@@ -12,11 +12,10 @@ port `4113` unless configured otherwise:
 
 ```yaml
 server:
-  port: 4111
-  host: 127.0.0.1
   api_secret: ${AIRLOCK_API_SECRET}
   management_api:
     enabled: true
+    api_secret: ${MANAGEMENT_API_SECRET}
     host: 127.0.0.1
     port: 4113
     insecure_remote_bind: false
@@ -34,21 +33,46 @@ reverse proxy route that excludes the agent-reachable path.
 
 ## Authentication
 
-All management endpoints require `server.api_secret` when
-`management_api.enabled` is true:
+All management endpoints require a bearer token when `management_api.enabled`
+is true. Prefer a dedicated control-plane secret:
 
 ```yaml
 server:
   api_secret: ${AIRLOCK_API_SECRET}
+  management_api:
+    enabled: true
+    api_secret: ${MANAGEMENT_API_SECRET}
 ```
 
-When the management API is enabled, every agent must also set its own `token`.
-Airlock rejects tokenless agents in split mode so the management `api_secret`
-cannot double as an agent data-plane credential.
+`server.management_api.api_secret` protects the control-plane listener:
+`/health`, `/hitl/*`, `/audit`, the dashboard approval bridge (`/events`,
+`/approve`, `/deny`, `/version*`), `/mobile/*`, `/admin/tools`, and `/hook`.
+`server.api_secret` remains the data-plane fallback for tokenless agents on MCP
+and REST tools routes. When the management API is enabled, every agent must also
+set its own `token`; Airlock rejects tokenless agents in split mode so the
+data-plane fallback cannot become an implicit agent credential.
+
+For backward compatibility, if `server.management_api.api_secret` is unset,
+the management API falls back to `server.api_secret` and emits a deprecation
+warning during config validation. This keeps existing single-secret deployments
+working while nudging operators to split and rotate the control-plane secret.
+If both fields resolve to the same value, config validation warns because the
+two planes are still sharing one credential.
 
 ```bash
-curl -H "Authorization: Bearer $AIRLOCK_API_SECRET" http://localhost:4113/health
+curl -H "Authorization: Bearer $MANAGEMENT_API_SECRET" http://localhost:4113/health
 ```
+
+To migrate an existing deployment, generate a fresh `MANAGEMENT_API_SECRET`,
+set `server.management_api.api_secret: ${MANAGEMENT_API_SECRET}`, recreate or
+restart Airlock, and update companion apps or dashboards to send
+`Authorization: Bearer $MANAGEMENT_API_SECRET`. Leave `server.api_secret` in
+place only as the data-plane fallback, or remove it entirely when all agents
+have per-agent tokens and no tokenless fallback is needed.
+
+Per-device or per-client companion tokens are a follow-up hardening step. They
+would let operators revoke one companion without rotating the shared management
+secret, but that is separate from this shared control-plane secret split.
 
 ```yaml
 server:
@@ -166,12 +190,12 @@ macOS Companion app.
 
 Browser `EventSource` cannot set an `Authorization` header directly. In split
 mode, run `airlock dashboard` with `--gateway-secret`,
-`AIRLOCK_GATEWAY_SECRET`, or `AIRLOCK_API_SECRET`; the dashboard server proxies
-the SSE connection to the gateway with the bearer token.
+`AIRLOCK_GATEWAY_SECRET`, or `MANAGEMENT_API_SECRET`; the dashboard server
+proxies the SSE connection to the gateway with the bearer token.
 
 The macOS Companion app can connect directly to the management API by setting
 its Dashboard URL to `http://127.0.0.1:4113` and its gateway bearer token to
-the same `AIRLOCK_API_SECRET`.
+the same `MANAGEMENT_API_SECRET`.
 
 ### `POST /approve?code=ABC123`
 
@@ -180,7 +204,7 @@ dashboard clients and companion-style approval UIs.
 
 ```bash
 curl -X POST \
-  -H "Authorization: Bearer $AIRLOCK_API_SECRET" \
+  -H "Authorization: Bearer $MANAGEMENT_API_SECRET" \
   "http://localhost:4113/approve?code=ABC123"
 ```
 
@@ -190,16 +214,16 @@ Deny a pending request by short approval code.
 
 ```bash
 curl -X POST \
-  -H "Authorization: Bearer $AIRLOCK_API_SECRET" \
+  -H "Authorization: Bearer $MANAGEMENT_API_SECRET" \
   "http://localhost:4113/deny?code=ABC123"
 ```
 
 ## Mobile companion API
 
 The mobile endpoints are exposed with the management API. Registering or
-revoking devices requires the gateway admin bearer token. Queue, history, push
-token update, and decision calls may use either the admin token or the per-device
-token returned during registration.
+revoking devices requires the management bearer token. Queue, history, push
+token update, and decision calls may use either the management token or the
+per-device token returned during registration.
 
 ### `POST /mobile/devices/register`
 
@@ -207,7 +231,7 @@ Register an iOS device for APNs approval notifications.
 
 ```bash
 curl -X POST http://localhost:4113/mobile/devices/register \
-  -H "Authorization: Bearer $AIRLOCK_API_SECRET" \
+  -H "Authorization: Bearer $MANAGEMENT_API_SECRET" \
   -H "Content-Type: application/json" \
   -d '{"name":"Charles iPhone","platform":"ios","pushToken":"<apns-device-token>"}'
 ```
