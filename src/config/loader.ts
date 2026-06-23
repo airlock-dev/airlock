@@ -61,7 +61,7 @@ export function loadConfigDetailed(
     };
   }
 
-  const diagnostics = options.strict ? findUnknownKeys(parsed) : [];
+  const diagnostics = findUnknownKeys(parsed);
   const resolveEnv = options.resolveEnv ?? true;
   let result: ReturnType<typeof GatewayConfig.safeParse>;
   try {
@@ -87,6 +87,8 @@ export function loadConfigDetailed(
   const rawConfig = structuredClone(result.data);
 
   diagnostics.push(...validateConfig(result.data));
+  diagnostics.push(...validateRawArgDimensionUsage(result.data));
+  diagnostics.push(...validateYamlScalarFootguns(result.data));
 
   if (!diagnostics.some((diagnostic) => diagnostic.level === 'error')) {
     try {
@@ -101,6 +103,7 @@ export function loadConfigDetailed(
 
   if (!diagnostics.some((diagnostic) => diagnostic.level === 'error')) {
     diagnostics.push(...validateConfig(result.data));
+    diagnostics.push(...validateEffectiveArgRestrictions(rawConfig, result.data));
   }
 
   return {
@@ -320,6 +323,11 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
     // Collect all referenced namespaces from allow/ask/deny
     const allPatterns = [...agent.allow, ...agent.ask, ...agent.deny];
     const referencedNamespaces = new Set<string>();
+    const toolOverrideNamespaces = new Set(
+      Object.keys(agent.tool_overrides)
+        .map((toolName) => toolName.split('/')[0])
+        .filter((namespace): namespace is string => !!namespace)
+    );
 
     for (const pattern of allPatterns) {
       const ns = pattern.split('/')[0];
@@ -328,7 +336,7 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
 
     // Check for unknown providers
     for (const ns of referencedNamespaces) {
-      if (!providerNames.has(ns)) {
+      if (!providerNames.has(ns) && !toolOverrideNamespaces.has(ns)) {
         diagnostics.push({
           level: 'error',
           agent: agentId,
@@ -540,6 +548,269 @@ function validateArgPolicyRefs(
   return diagnostics;
 }
 
+function validateRawArgDimensionUsage(config: Config): ConfigDiagnostic[] {
+  const diagnostics: ConfigDiagnostic[] = [];
+  const usedDimensions = new Set<string>();
+
+  for (const [dimensionName, dimension] of Object.entries(config.arg_dimensions)) {
+    if (Object.keys(dimension.bindings).length === 0) {
+      diagnostics.push({
+        level: 'warn',
+        message: `arg_dimensions.${dimensionName}.bindings is empty.`,
+        suggestion:
+          'Add at least one tool-to-argument binding, or remove the dimension so arg_scope cannot resolve to a no-op.',
+      });
+    }
+  }
+
+  for (const agentName of Object.keys(config.agents)) {
+    for (const dimensionName of collectAgentArgScopeDimensions(config, agentName)) {
+      usedDimensions.add(dimensionName);
+    }
+  }
+
+  for (const dimensionName of Object.keys(config.arg_dimensions)) {
+    if (!usedDimensions.has(dimensionName)) {
+      diagnostics.push({
+        level: 'warn',
+        message: `arg_dimensions.${dimensionName} is not used by any scoped agent.`,
+        suggestion:
+          'Attach it through an agent arg_scope or through a profile that at least one agent extends.',
+      });
+    }
+  }
+
+  return diagnostics;
+}
+
+function validateEffectiveArgRestrictions(
+  rawConfig: Config,
+  resolvedConfig: Config
+): ConfigDiagnostic[] {
+  const diagnostics: ConfigDiagnostic[] = [];
+
+  for (const [agentName, resolvedAgent] of Object.entries(resolvedConfig.agents)) {
+    const sources = collectAgentArgRestrictionSources(rawConfig, agentName);
+    if (sources.length === 0) continue;
+
+    if (countArgPolicyConstraints(resolvedAgent.arg_policy) === 0) {
+      diagnostics.push({
+        level: 'error',
+        agent: agentName,
+        message: `Agent declares arg_scope/arg_policy via ${sources.join(', ')} but resolves to zero effective argument constraints.`,
+        suggestion:
+          'Check that arg_scope dimensions have bindings and referenced value_sets, or remove the no-op restriction.',
+      });
+    }
+  }
+
+  return diagnostics;
+}
+
+function validateYamlScalarFootguns(config: Config): ConfigDiagnostic[] {
+  const diagnostics: ConfigDiagnostic[] = [];
+  const stringMatchedValueSets = collectStringMatchedValueSets(config);
+
+  for (const [valueSetName, locations] of stringMatchedValueSets) {
+    const valueSet = config.value_sets[valueSetName];
+    if (!valueSet) continue;
+
+    valueSet.values.forEach((value, index) => {
+      if (!isUnquotedStringFootgun(value)) return;
+      diagnostics.push({
+        level: 'warn',
+        message: `value_sets.${valueSetName}[${index}] value ${String(value)} looks like an unquoted string while used by ${locations.join(', ')}.`,
+        suggestion: `Quote it (${quoteSuggestion(value)}) if it should match string tool arguments.`,
+      });
+    });
+  }
+
+  for (const source of collectArgPolicySources(config)) {
+    for (const [toolName, toolPolicy] of Object.entries(source.policy ?? {})) {
+      for (const [argName, constraints] of Object.entries(toolPolicy)) {
+        for (const constraint of constraints) {
+          if (!usesStringNormalizer(constraint.normalize)) continue;
+          const values = constraint.allow ?? constraint.each_allow;
+          if (!values) continue;
+
+          values.forEach((value, index) => {
+            if (!isUnquotedStringFootgun(value)) return;
+            diagnostics.push({
+              level: 'warn',
+              agent: source.agent,
+              message: `${source.location}.${toolName}.${argName}[${index}] value ${String(value)} looks like an unquoted string while used with normalize: ${constraint.normalize?.join(', ')}.`,
+              suggestion: `Quote it (${quoteSuggestion(value)}) so string normalization can apply before matching.`,
+            });
+          });
+        }
+      }
+    }
+  }
+
+  return diagnostics;
+}
+
+function collectAgentArgScopeDimensions(config: Config, agentName: string): string[] {
+  const agent = config.agents[agentName];
+  if (!agent) return [];
+
+  const dimensions = new Set<string>();
+  const visitedProfiles = new Set<string>();
+
+  function visitProfile(profileName: string): void {
+    if (visitedProfiles.has(profileName)) return;
+    visitedProfiles.add(profileName);
+    const profile = config.profiles[profileName];
+    if (!profile) return;
+    for (const parentName of profile.extends) visitProfile(parentName);
+    for (const dimensionName of Object.keys(profile.arg_scope ?? {})) dimensions.add(dimensionName);
+  }
+
+  for (const profileName of agent.extends) visitProfile(profileName);
+  for (const dimensionName of Object.keys(agent.arg_scope ?? {})) dimensions.add(dimensionName);
+
+  return Array.from(dimensions);
+}
+
+function collectAgentArgRestrictionSources(config: Config, agentName: string): string[] {
+  const agent = config.agents[agentName];
+  if (!agent) return [];
+
+  const sources: string[] = [];
+  const visitedProfiles = new Set<string>();
+
+  function visitProfile(profileName: string): void {
+    if (visitedProfiles.has(profileName)) return;
+    visitedProfiles.add(profileName);
+    const profile = config.profiles[profileName];
+    if (!profile) return;
+    for (const parentName of profile.extends) visitProfile(parentName);
+    if (profile.arg_scope) sources.push(`profiles.${profileName}.arg_scope`);
+    if (profile.arg_policy) sources.push(`profiles.${profileName}.arg_policy`);
+  }
+
+  for (const profileName of agent.extends) visitProfile(profileName);
+  if (agent.arg_scope) sources.push(`agents.${agentName}.arg_scope`);
+  if (agent.arg_policy) sources.push(`agents.${agentName}.arg_policy`);
+
+  return sources;
+}
+
+function countArgPolicyConstraints(argPolicy: Config['agents'][string]['arg_policy']): number {
+  let count = 0;
+  for (const toolPolicy of Object.values(argPolicy ?? {})) {
+    for (const constraints of Object.values(toolPolicy)) {
+      count += constraints.length;
+    }
+  }
+  return count;
+}
+
+function collectStringMatchedValueSets(config: Config): Map<string, string[]> {
+  const valueSets = new Map<string, string[]>();
+
+  function add(valueSetName: string | undefined, location: string): void {
+    if (!valueSetName) return;
+    const locations = valueSets.get(valueSetName) ?? [];
+    if (!locations.includes(location)) locations.push(location);
+    valueSets.set(valueSetName, locations);
+  }
+
+  for (const [agentName, agent] of Object.entries(config.agents)) {
+    collectArgScopeValueSets(config, agent.arg_scope, `agents.${agentName}.arg_scope`, add);
+  }
+
+  for (const [profileName, profile] of Object.entries(config.profiles)) {
+    collectArgScopeValueSets(config, profile.arg_scope, `profiles.${profileName}.arg_scope`, add);
+  }
+
+  for (const source of collectArgPolicySources(config)) {
+    for (const [toolName, toolPolicy] of Object.entries(source.policy ?? {})) {
+      for (const [argName, constraints] of Object.entries(toolPolicy)) {
+        for (const constraint of constraints) {
+          add(constraint.in, `${source.location}.${toolName}.${argName}.in`);
+          add(constraint.glob_in, `${source.location}.${toolName}.${argName}.glob_in`);
+          if (usesStringNormalizer(constraint.normalize)) {
+            add(constraint.each_in, `${source.location}.${toolName}.${argName}.each_in`);
+          }
+        }
+      }
+    }
+  }
+
+  return valueSets;
+}
+
+function collectArgScopeValueSets(
+  config: Config,
+  argScope: Record<string, string[]> | undefined,
+  location: string,
+  add: (valueSetName: string | undefined, location: string) => void
+): void {
+  for (const [dimensionName, valueSetNames] of Object.entries(argScope ?? {})) {
+    const dimension = config.arg_dimensions[dimensionName];
+    const stringMatched =
+      dimension?.match === 'in' ||
+      dimension?.match === 'glob_in' ||
+      usesStringNormalizer(dimension?.normalize);
+    if (!stringMatched) continue;
+    for (const valueSetName of valueSetNames) {
+      add(valueSetName, `${location}.${dimensionName}`);
+    }
+  }
+}
+
+function collectArgPolicySources(config: Config): {
+  location: string;
+  agent?: string;
+  policy: Config['agents'][string]['arg_policy'];
+}[] {
+  const sources: {
+    location: string;
+    agent?: string;
+    policy: Config['agents'][string]['arg_policy'];
+  }[] = [];
+
+  for (const [agentName, agent] of Object.entries(config.agents)) {
+    sources.push({
+      location: `agents.${agentName}.arg_policy`,
+      agent: agentName,
+      policy: agent.arg_policy,
+    });
+    for (const [toolName, override] of Object.entries(agent.tool_overrides)) {
+      if (!override.args) continue;
+      sources.push({
+        location: `agents.${agentName}.tool_overrides.${toolName}.args`,
+        agent: agentName,
+        policy: { [toolName]: override.args },
+      });
+    }
+  }
+
+  for (const [profileName, profile] of Object.entries(config.profiles)) {
+    sources.push({ location: `profiles.${profileName}.arg_policy`, policy: profile.arg_policy });
+  }
+
+  return sources;
+}
+
+function usesStringNormalizer(normalizers: string[] | undefined): boolean {
+  return !!normalizers?.some((normalizer) =>
+    ['phone', 'email', 'lower', 'trim'].includes(normalizer)
+  );
+}
+
+function isUnquotedStringFootgun(value: unknown): value is number | boolean {
+  return typeof value === 'number' || typeof value === 'boolean';
+}
+
+function quoteSuggestion(value: number | boolean): string {
+  if (typeof value === 'number' && Number.isInteger(value) && value > 1_000_000_000) {
+    return `"+${value}"`;
+  }
+  return `"${String(value)}"`;
+}
+
 function dedupeDiagnostics(diagnostics: ConfigDiagnostic[]): ConfigDiagnostic[] {
   const seen = new Set<string>();
   const result: ConfigDiagnostic[] = [];
@@ -616,12 +887,90 @@ const serverKeys = new Set([
 ]);
 const managementApiKeys = new Set([
   'enabled',
+  'api_secret',
   'host',
   'port',
   'insecure_remote_bind',
   'expose_hook_api',
 ]);
 const argDimensionKeys = new Set(['match', 'normalize', 'bindings']);
+const valueSetKeys = new Set(['values', 'expose_values']);
+const sandboxOverrideKeys = new Set(['filesystem', 'network']);
+const sandboxKeys = new Set(['enabled', 'presets', 'filesystem', 'network', 'overrides']);
+const filesystemKeys = new Set(['allow_write', 'deny_read', 'deny_write', 'allow_read']);
+const networkKeys = new Set(['allowed_domains', 'denied_domains']);
+const toolOverrideKeys = new Set(['description', 'alias_of', 'sandbox_presets', 'sandbox', 'args']);
+const argConstraintKeys = new Set([
+  'allow',
+  'equals',
+  'in',
+  'glob_in',
+  'each_in',
+  'glob_allow',
+  'each_allow',
+  'normalize',
+  'path',
+  'required',
+  'label',
+  'value_set',
+  'expose_values',
+]);
+const agentExecKeys = new Set(['allow', 'ask', 'deny', 'env', 'default_timeout_ms']);
+const agentHttpKeys = new Set(['domain_allowlist', 'max_response_bytes', 'timeout_ms']);
+const rememberAllowKeys = new Set(['tool', 'expires_at']);
+const approvalsKeys = new Set(['provider', 'timeout_ms', 'batch_window_ms']);
+const approvalProviderKeys = new Set([
+  'type',
+  'bot_token',
+  'chat_id',
+  'gateway_url',
+  'token',
+  'session_key',
+  'webhook_url',
+  'url',
+  'headers',
+  'sound',
+  'host',
+  'port',
+  'team_id',
+  'key_id',
+  'key_path',
+  'bundle_id',
+  'production',
+  'interruption_level',
+]);
+const securityKeys = new Set(['blocked_hosts', 'allowed_local']);
+const auditKeys = new Set(['db_path', 'retention_days', 'redact_fields']);
+const cliKeys = new Set(['discovered', 'shell', 'cwd', 'max_output_bytes', 'commands']);
+const cliCommandKeys = new Set(['exec', 'description', 'params', 'cwd', 'timeout']);
+const cliParamKeys = new Set(['type', 'flag', 'positional', 'required', 'default', 'description']);
+const apiKeys = new Set([
+  'spec',
+  'base_url',
+  'auth',
+  'include',
+  'exclude',
+  'timeout_ms',
+  'max_response_bytes',
+]);
+const apiAuthKeys = new Set(['type', 'token', 'name', 'value']);
+const middlewareKeys = new Set([
+  'name',
+  'enabled',
+  'tools',
+  'exclude',
+  'max_requests',
+  'window_ms',
+  'per',
+  'mode',
+  'backend',
+  'inference_url',
+  'threshold',
+  'max_lines',
+  'max_chars',
+  'model',
+  'threshold_chars',
+]);
 
 function checkObjectKeys(
   diagnostics: ConfigDiagnostic[],
@@ -632,10 +981,9 @@ function checkObjectKeys(
   if (!isRecord(value)) return;
   for (const key of Object.keys(value)) {
     if (!allowed.has(key)) {
-      const fullPath = [...path, key].join('.');
       diagnostics.push({
         level: 'error',
-        message: `Unknown config key "${fullPath}".`,
+        message: unknownKeyMessage(key, path),
         suggestion: unknownKeySuggestion(key, path),
       });
     }
@@ -643,10 +991,36 @@ function checkObjectKeys(
 
   if (path.length === 0) {
     checkRecordChildren(diagnostics, value.providers, ['providers'], providerKeys);
+    checkRecordChildren(diagnostics, value.value_sets, ['value_sets'], valueSetKeys);
     checkRecordChildren(diagnostics, value.agents, ['agents'], agentKeys);
     checkRecordChildren(diagnostics, value.profiles, ['profiles'], profileKeys);
     checkRecordChildren(diagnostics, value.arg_dimensions, ['arg_dimensions'], argDimensionKeys);
+    checkRecordChildren(
+      diagnostics,
+      value.sandbox_presets,
+      ['sandbox_presets'],
+      sandboxOverrideKeys
+    );
+    checkRecordChildren(diagnostics, value.clis, ['clis'], cliKeys);
+    checkRecordChildren(diagnostics, value.apis, ['apis'], apiKeys);
+    checkObjectKeys(diagnostics, value.approvals, ['approvals'], approvalsKeys);
+    checkObjectKeys(diagnostics, value.security, ['security'], securityKeys);
+    checkObjectKeys(diagnostics, value.audit, ['audit'], auditKeys);
     checkObjectKeys(diagnostics, value.server, ['server'], serverKeys);
+  } else if (path[0] === 'agents' && path.length === 2) {
+    checkAgentChildren(diagnostics, value, path);
+  } else if (path[0] === 'profiles' && path.length === 2) {
+    checkArgPolicyKeys(diagnostics, value.arg_policy, [...path, 'arg_policy']);
+  } else if (path[0] === 'sandbox_presets' && path.length === 2) {
+    checkSandboxOverrideChildren(diagnostics, value, path);
+  } else if (path[0] === 'clis' && path.length === 2) {
+    checkRecordChildren(diagnostics, value.commands, [...path, 'commands'], cliCommandKeys);
+  } else if (path[0] === 'clis' && path[2] === 'commands' && path.length === 4) {
+    checkRecordChildren(diagnostics, value.params, [...path, 'params'], cliParamKeys);
+  } else if (path[0] === 'apis' && path.length === 2) {
+    checkObjectKeys(diagnostics, value.auth, [...path, 'auth'], apiAuthKeys);
+  } else if (path.join('.') === 'approvals') {
+    checkApprovalProviderKeys(diagnostics, value.provider, ['approvals', 'provider']);
   } else if (path.join('.') === 'server') {
     checkObjectKeys(
       diagnostics,
@@ -654,7 +1028,109 @@ function checkObjectKeys(
       ['server', 'management_api'],
       managementApiKeys
     );
+  } else if (path.at(-1) === 'sandbox' || path.join('.') === 'agents') {
+    checkSandboxChildren(diagnostics, value, path);
   }
+}
+
+function checkAgentChildren(
+  diagnostics: ConfigDiagnostic[],
+  value: Record<string, unknown>,
+  path: string[]
+): void {
+  checkArrayChildren(
+    diagnostics,
+    value.remember_allow,
+    [...path, 'remember_allow'],
+    rememberAllowKeys
+  );
+  checkRecordChildren(
+    diagnostics,
+    value.tool_overrides,
+    [...path, 'tool_overrides'],
+    toolOverrideKeys
+  );
+  checkArgPolicyKeys(diagnostics, value.arg_policy, [...path, 'arg_policy']);
+  checkObjectKeys(diagnostics, value.exec, [...path, 'exec'], agentExecKeys);
+  checkObjectKeys(diagnostics, value.http, [...path, 'http'], agentHttpKeys);
+  checkObjectKeys(diagnostics, value.sandbox, [...path, 'sandbox'], sandboxKeys);
+  checkArrayChildren(diagnostics, value.middleware, [...path, 'middleware'], middlewareKeys);
+}
+
+function checkSandboxChildren(
+  diagnostics: ConfigDiagnostic[],
+  value: unknown,
+  path: string[]
+): void {
+  if (!isRecord(value)) return;
+  checkObjectKeys(diagnostics, value.filesystem, [...path, 'filesystem'], filesystemKeys);
+  checkObjectKeys(diagnostics, value.network, [...path, 'network'], networkKeys);
+  checkRecordChildren(diagnostics, value.overrides, [...path, 'overrides'], sandboxOverrideKeys);
+}
+
+function checkSandboxOverrideChildren(
+  diagnostics: ConfigDiagnostic[],
+  value: unknown,
+  path: string[]
+): void {
+  if (!isRecord(value)) return;
+  checkObjectKeys(diagnostics, value.filesystem, [...path, 'filesystem'], filesystemKeys);
+  checkObjectKeys(diagnostics, value.network, [...path, 'network'], networkKeys);
+}
+
+function checkToolOverrideChildren(
+  diagnostics: ConfigDiagnostic[],
+  value: Record<string, unknown>,
+  path: string[]
+): void {
+  checkSandboxOverrideChildren(diagnostics, value.sandbox, [...path, 'sandbox']);
+  checkArgPolicyKeys(diagnostics, value.args, [...path, 'args']);
+}
+
+function checkArgPolicyKeys(diagnostics: ConfigDiagnostic[], value: unknown, path: string[]): void {
+  if (!isRecord(value)) return;
+
+  for (const [toolName, toolPolicy] of Object.entries(value)) {
+    if (!isRecord(toolPolicy)) continue;
+    for (const [argName, constraintOrList] of Object.entries(toolPolicy)) {
+      const constraints = Array.isArray(constraintOrList) ? constraintOrList : [constraintOrList];
+      constraints.forEach((constraint, index) => {
+        const constraintPath = [
+          ...path,
+          toolName,
+          argName,
+          ...(Array.isArray(constraintOrList) ? [String(index)] : []),
+        ];
+        checkObjectKeys(diagnostics, constraint, constraintPath, argConstraintKeys);
+      });
+    }
+  }
+}
+
+function checkApprovalProviderKeys(
+  diagnostics: ConfigDiagnostic[],
+  value: unknown,
+  path: string[]
+): void {
+  if (Array.isArray(value)) {
+    value.forEach((provider, index) =>
+      checkObjectKeys(diagnostics, provider, [...path, String(index)], approvalProviderKeys)
+    );
+    return;
+  }
+  checkObjectKeys(diagnostics, value, path, approvalProviderKeys);
+}
+
+function checkArrayChildren(
+  diagnostics: ConfigDiagnostic[],
+  value: unknown,
+  path: string[],
+  allowed: Set<string>
+): void {
+  if (!Array.isArray(value)) return;
+  value.forEach((child, index) => {
+    checkObjectKeys(diagnostics, child, [...path, String(index)], allowed);
+  });
 }
 
 function checkRecordChildren(
@@ -667,8 +1143,25 @@ function checkRecordChildren(
   for (const [name, child] of Object.entries(value)) {
     if (isRecord(child)) {
       checkObjectKeys(diagnostics, child, [...path, name], allowed);
+      if (path[0] === 'agents' && path[2] === 'tool_overrides') {
+        checkToolOverrideChildren(diagnostics, child, [...path, name]);
+      } else if (path[0] === 'clis' && path[2] === 'commands') {
+        checkRecordChildren(diagnostics, child.params, [...path, name, 'params'], cliParamKeys);
+      } else if (path[0] === 'sandbox_presets' || path.at(-1) === 'overrides') {
+        checkSandboxOverrideChildren(diagnostics, child, [...path, name]);
+      }
     }
   }
+}
+
+function unknownKeyMessage(key: string, path: string[]): string {
+  if (path[0] === 'profiles' && path.length === 2) {
+    return `Unrecognized key "${key}" in profile "${path[1]}".`;
+  }
+  if (path[0] === 'agents' && path.length === 2) {
+    return `Unrecognized key "${key}" in agent "${path[1]}".`;
+  }
+  return `Unknown config key "${[...path, key].join('.')}".`;
 }
 
 function unknownKeySuggestion(key: string, path: string[]): string | undefined {

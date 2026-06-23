@@ -47,6 +47,16 @@ jobs:
       - run: npm run build
         if: needs.changes.outputs.node == 'true'
 
+      - name: Validate example configs
+        if: needs.changes.outputs.node == 'true'
+        run: |
+          node dist/index.js config check --config examples/docker-gateway.yaml --strict --no-resolve
+          node dist/index.js config check --config examples/gateway.yaml --strict --no-resolve
+          node dist/index.js config check --config examples/local-dev.yaml --strict --no-resolve
+          node dist/index.js config check --config examples/profiles.yaml --strict --no-resolve
+          node dist/index.js config check --config examples/sandbox-presets.yaml --strict --no-resolve
+          node dist/index.js config check --config test/test-gateway.yaml --strict --no-resolve
+
       - name: Run tests with coverage
         if: needs.changes.outputs.node == 'true'
         run: npx vitest run --reporter=verbose --coverage --coverage.reporter=json-summary --coverage.reporter=json

@@ -122,4 +122,103 @@ agents:
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it('exits non-zero when config check finds an unknown security key', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'airlock-introspect-cli-unknown-'));
+    try {
+      const path = join(dir, 'airlock.yaml');
+      writeFileSync(
+        path,
+        `
+providers:
+  github: builtin
+agents:
+  dev:
+    allow:
+      - "github/*"
+    scope:
+      github_repo: airlock_repos
+`
+      );
+
+      const result = checkConfig(['--config', path]);
+
+      expect(result.exitCode).toBe(1);
+      expect(result.text).toContain('Unrecognized key "scope" in agent "dev"');
+      expect(result.text).toContain('Did you mean "arg_scope"?');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('exits non-zero when a declared arg_scope has no effect', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'airlock-introspect-cli-noop-scope-'));
+    try {
+      const path = join(dir, 'airlock.yaml');
+      writeFileSync(
+        path,
+        `
+providers:
+  github: builtin
+value_sets:
+  airlock_repos:
+    - airlock-dev/airlock
+arg_dimensions:
+  github_repo:
+    bindings: {}
+agents:
+  dev:
+    allow:
+      - "github/push_files"
+    arg_scope:
+      github_repo: airlock_repos
+`
+      );
+
+      const result = checkConfig(['--config', path]);
+
+      expect(result.exitCode).toBe(1);
+      expect(result.text).toContain('resolves to zero effective argument constraints');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('can gate YAML scalar warnings with --fail-on warn', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'airlock-introspect-cli-footgun-'));
+    try {
+      const path = join(dir, 'airlock.yaml');
+      writeFileSync(
+        path,
+        `
+providers:
+  sms: builtin
+value_sets:
+  allowed_numbers:
+    - +16085153685
+arg_dimensions:
+  sms_recipient:
+    normalize: [phone]
+    bindings:
+      sms/send: to
+agents:
+  dev:
+    allow:
+      - "sms/send"
+    arg_scope:
+      sms_recipient: allowed_numbers
+`
+      );
+
+      const defaultResult = checkConfig(['--config', path]);
+      const gatedResult = checkConfig(['--config', path, '--fail-on', 'warn']);
+
+      expect(defaultResult.exitCode).toBe(0);
+      expect(defaultResult.text).toContain('value 16085153685 looks like an unquoted string');
+      expect(gatedResult.exitCode).toBe(1);
+      expect(gatedResult.text).toContain('"+16085153685"');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

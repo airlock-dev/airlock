@@ -67,19 +67,20 @@ Run static validation without starting listeners or connecting to providers:
 ```bash
 airlock config check --config airlock.yaml --strict
 airlock config check --config airlock.yaml --strict --no-resolve
+airlock config check --config airlock.yaml --strict --no-resolve --fail-on warn
 ```
 
 Options:
 
-| Flag             | Description                                                |
-| ---------------- | ---------------------------------------------------------- |
-| `--config`, `-c` | Path to airlock.yaml config file                           |
-| `--strict`       | Treat unknown keys as errors, including typos like `scope` |
-| `--no-resolve`   | Validate `${VAR}` references without requiring secrets     |
-| `--fail-on`      | Non-zero threshold: `error` (default) or `warn`            |
-| `--json`         | Print machine-readable diagnostics                         |
+| Flag             | Description                                            |
+| ---------------- | ------------------------------------------------------ |
+| `--config`, `-c` | Path to airlock.yaml config file                       |
+| `--strict`       | Explicit strict mode; unknown keys are always errors   |
+| `--no-resolve`   | Validate `${VAR}` references without requiring secrets |
+| `--fail-on`      | Non-zero threshold: `error` (default) or `warn`        |
+| `--json`         | Print machine-readable diagnostics                     |
 
-Use `--no-resolve` for CI and pre-commit checks that should validate shape, references, inheritance, and precedence without loading production secrets.
+Use `--strict --no-resolve` for CI and pre-deploy checks that should reject invalid shape, references, inheritance, and no-op argument scopes without loading production secrets. Add `--fail-on warn` when warnings such as YAML scalar footguns should block deployment too.
 
 ## Explain an agent
 

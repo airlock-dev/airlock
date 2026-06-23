@@ -691,7 +691,7 @@ agents:
     expect(() => loadConfig(path)).toThrow(/pa-work -> product -> pa-work/);
   });
 
-  it('reports unknown keys in strict config checks', () => {
+  it('reports unknown keys during ordinary config load with typo suggestions', () => {
     const yaml = `
 providers:
   github: builtin
@@ -705,17 +705,33 @@ agents:
     const path = join(dir, 'gateway.yaml');
     writeFileSync(path, yaml);
 
-    const result = loadConfigDetailed(path, { strict: true });
+    const result = loadConfigDetailed(path);
 
     expect(result.diagnostics).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           level: 'error',
-          message: 'Unknown config key "agents.dev.scope".',
+          message: 'Unrecognized key "scope" in agent "dev".',
           suggestion: 'Did you mean "arg_scope"?',
         }),
       ])
     );
+  });
+
+  it('rejects unknown profile keys at the schema layer', () => {
+    const result = GatewayConfig.safeParse({
+      profiles: {
+        personal: {
+          allow: ['github/*'],
+          scope: { github_repo: 'airlock_repos' },
+        },
+      },
+    });
+
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    expect(result.error.toString()).toContain('Unrecognized key');
+    expect(result.error.toString()).toContain('scope');
   });
 
   it('reports missing arg_scope value_set references without starting the gateway', () => {
@@ -750,6 +766,177 @@ agents:
         }),
       ])
     );
+  });
+
+  it('allows tool override alias namespaces in allow rules', () => {
+    const yaml = `
+providers:
+  exec: builtin
+agents:
+  dev:
+    allow:
+      - "python/sandboxed"
+    tool_overrides:
+      python/sandboxed:
+        alias_of: "exec/run"
+        description: "Run Python in a sandbox"
+`;
+    const path = join(dir, 'gateway.yaml');
+    writeFileSync(path, yaml);
+
+    const result = loadConfigDetailed(path);
+
+    expect(result.diagnostics).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          level: 'error',
+          message: expect.stringContaining('unknown provider "python"'),
+        }),
+      ])
+    );
+  });
+
+  it('reports missing arg_scope dimensions without throwing from desugar', () => {
+    const yaml = `
+providers:
+  github: builtin
+value_sets:
+  airlock_repos:
+    - airlock-dev/airlock
+profiles:
+  repo_bound:
+    arg_scope:
+      github_repo: airlock_repos
+agents:
+  dev:
+    extends:
+      - repo_bound
+    allow:
+      - "github/push_files"
+`;
+    const path = join(dir, 'gateway.yaml');
+    writeFileSync(path, yaml);
+
+    const result = loadConfigDetailed(path);
+
+    expect(result.diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          level: 'error',
+          message: expect.stringContaining('unknown arg_dimension "github_repo"'),
+        }),
+      ])
+    );
+  });
+
+  it('reports missing arg_policy value_set references without throwing from desugar', () => {
+    const yaml = `
+providers:
+  github: builtin
+agents:
+  dev:
+    allow:
+      - "github/create_pull_request"
+    arg_policy:
+      github/create_pull_request:
+        repo:
+          in: missing_repos
+`;
+    const path = join(dir, 'gateway.yaml');
+    writeFileSync(path, yaml);
+
+    const result = loadConfigDetailed(path);
+
+    expect(result.diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          level: 'error',
+          message: expect.stringContaining('missing_repos'),
+        }),
+      ])
+    );
+  });
+
+  it('errors when a declared arg_scope resolves to no effective constraints', () => {
+    const yaml = `
+providers:
+  github: builtin
+value_sets:
+  airlock_repos:
+    - airlock-dev/airlock
+arg_dimensions:
+  github_repo:
+    bindings: {}
+profiles:
+  repo_bound:
+    arg_scope:
+      github_repo: airlock_repos
+agents:
+  dev:
+    extends:
+      - repo_bound
+    allow:
+      - "github/push_files"
+`;
+    const path = join(dir, 'gateway.yaml');
+    writeFileSync(path, yaml);
+
+    const result = loadConfigDetailed(path);
+
+    expect(result.diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          level: 'warn',
+          message: 'arg_dimensions.github_repo.bindings is empty.',
+        }),
+        expect.objectContaining({
+          level: 'error',
+          agent: 'dev',
+          message: expect.stringContaining('resolves to zero effective argument constraints'),
+        }),
+      ])
+    );
+  });
+
+  it('warns when YAML parses a string-like value_set member as a number', () => {
+    const yaml = `
+providers:
+  sms: builtin
+value_sets:
+  allowed_numbers:
+    - +16085153685
+arg_dimensions:
+  sms_recipient:
+    normalize:
+      - phone
+    bindings:
+      sms/send: to
+profiles:
+  personal_sms:
+    arg_scope:
+      sms_recipient: allowed_numbers
+agents:
+  dev:
+    extends:
+      - personal_sms
+    allow:
+      - "sms/send"
+`;
+    const path = join(dir, 'gateway.yaml');
+    writeFileSync(path, yaml);
+
+    const result = loadConfigDetailed(path);
+
+    expect(result.diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          level: 'warn',
+          message: expect.stringContaining('value 16085153685 looks like an unquoted string'),
+          suggestion: expect.stringContaining('"+16085153685"'),
+        }),
+      ])
+    );
+    expect(result.diagnostics.some((diagnostic) => diagnostic.level === 'error')).toBe(false);
   });
 });
 
