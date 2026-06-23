@@ -1905,6 +1905,9 @@
                   "type": "boolean",
                   "default": false
                 },
+                "api_secret": {
+                  "type": "string"
+                },
                 "host": {
                   "type": "string",
                   "default": "127.0.0.1"

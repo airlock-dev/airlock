@@ -433,6 +433,7 @@ server:
   api_secret: ${AIRLOCK_API_SECRET}
   management_api:
     enabled: true
+    api_secret: ${MANAGEMENT_API_SECRET}
 ```
 
 ```
@@ -447,7 +448,11 @@ POST /deny?code=ABC123         — deny a request by approval code
 GET  /admin/tools              — dashboard tool catalog
 ```
 
-All management endpoints require `Authorization: Bearer <api_secret>`.
+All management endpoints require `Authorization: Bearer <management_api.api_secret>`.
+If `management_api.api_secret` is unset, Airlock temporarily falls back to
+`server.api_secret` and emits a deprecation warning so existing deployments keep
+working while operators split the control-plane secret from the data-plane
+fallback.
 The management listener must use a different port than the agent MCP
 data-plane listener (`server.port`, default `4111`). Binding the management API
 beyond loopback requires the explicit `management_api.insecure_remote_bind: true`

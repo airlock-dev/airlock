@@ -20,6 +20,7 @@ Create an `.env` file:
 
 ```bash
 AIRLOCK_API_SECRET=change-me
+MANAGEMENT_API_SECRET=change-me-management
 EXAMPLE_AGENT_AIRLOCK_TOKEN=change-me-too
 ```
 
@@ -96,6 +97,7 @@ server:
   expose_tools_api: true
   management_api:
     enabled: true
+    api_secret: ${MANAGEMENT_API_SECRET}
     host: 0.0.0.0
     port: 4113
     insecure_remote_bind: true
@@ -105,7 +107,8 @@ server:
 In split mode, `airlock gateway` strips the in-process dashboard approval
 provider and exposes an authenticated approval/event bridge on the separate
 gateway management API. The standalone dashboard talks to that bridge with
-`AIRLOCK_GATEWAY_SECRET` or `--gateway-secret`.
+`AIRLOCK_GATEWAY_SECRET` or `--gateway-secret`; use the management API secret
+for that value when `server.management_api.api_secret` is set.
 
 Keep the management API on loopback when the dashboard runs in the same network
 namespace. In split Compose mode, the dashboard reaches the gateway across the
