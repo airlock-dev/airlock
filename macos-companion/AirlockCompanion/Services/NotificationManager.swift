@@ -85,7 +85,8 @@ final class NotificationManager: NSObject, ObservableObject, UNUserNotificationC
         guard let center = notificationCenter else { return }
 
         let content = UNMutableNotificationContent()
-        content.title = "\(request.agentId): \(request.tool)"
+        content.title = request.displayTitle
+        content.subtitle = request.displaySubtitle
         let lines = [
             request.requestReason.map { "Request reason: \($0)" },
             request.requestNote.map { "Request note: \($0)" },

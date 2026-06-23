@@ -101,6 +101,32 @@ const server = createServer((req, res) => {
     return;
   }
 
+  // POST /inject-activity with JSON body -> broadcast a custom activity event
+  if (req.method === "POST" && url.pathname === "/inject-activity") {
+    let body = "";
+    req.on("data", (chunk) => (body += chunk));
+    req.on("end", () => {
+      try {
+        const event = JSON.parse(body);
+        event.id = event.id ?? randomUUID();
+        event.kind = event.kind ?? "notification";
+        event.agentId = event.agentId ?? "mock-agent";
+        event.title = event.title ?? (event.kind === "log" ? "Mock log" : "Mock notification");
+        event.body = event.body ?? "";
+        event.severity = event.severity ?? "info";
+        event.createdAt = event.createdAt ?? new Date().toISOString();
+        broadcast({ type: "activity", event });
+        console.log(`  📝 Activity: ${event.kind} ${event.title}`);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ id: event.id }));
+      } catch (e) {
+        res.writeHead(400);
+        res.end("bad json");
+      }
+    });
+    return;
+  }
+
   if (url.pathname === "/events") {
     res.writeHead(200, {
       "Content-Type": "text/event-stream",

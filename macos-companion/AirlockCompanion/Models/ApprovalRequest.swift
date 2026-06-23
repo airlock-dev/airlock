@@ -198,17 +198,43 @@ struct ResolvedRequest: Identifiable, Equatable, Sendable {
     let action: String
     let tool: String
     let agentId: String
+    let title: String
+    let detail: String
     let argsDisplay: String
     let resolvedAt: Date
 
-    init(code: String, action: String, tool: String = "", agentId: String = "", argsDisplay: String = "", resolvedAt: Date = Date()) {
+    init(
+        code: String,
+        action: String,
+        tool: String = "",
+        agentId: String = "",
+        title: String = "",
+        detail: String = "",
+        argsDisplay: String = "",
+        resolvedAt: Date = Date()
+    ) {
         self.id = code
         self.code = code
         self.action = action
         self.tool = tool
         self.agentId = agentId
+        self.title = title
+        self.detail = detail
         self.argsDisplay = argsDisplay
         self.resolvedAt = resolvedAt
+    }
+
+    var displayTitle: String {
+        if !title.isEmpty { return title }
+        if !agentId.isEmpty && !tool.isEmpty { return "\(agentId): \(tool)" }
+        if !tool.isEmpty { return tool }
+        return code
+    }
+
+    var displayDetail: String {
+        if !detail.isEmpty { return detail }
+        if !agentId.isEmpty { return agentId }
+        return action
     }
 }
 
@@ -230,4 +256,22 @@ struct ActivityEvent: Codable, Identifiable, Equatable, Sendable {
     var displayBody: String {
         body.isEmpty ? agentId : body
     }
+
+    var createdDate: Date {
+        Self.iso8601WithFractionalSeconds.date(from: createdAt)
+            ?? Self.iso8601.date(from: createdAt)
+            ?? .distantPast
+    }
+
+    private static let iso8601: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter
+    }()
+
+    private static let iso8601WithFractionalSeconds: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
 }

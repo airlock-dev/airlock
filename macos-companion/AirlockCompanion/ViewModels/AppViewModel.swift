@@ -259,12 +259,23 @@ final class AppViewModel: ObservableObject {
             action: action,
             tool: seen?.tool ?? "",
             agentId: seen?.agentId ?? "",
+            title: seen?.displayTitle ?? "",
+            detail: resolvedDetail(for: seen),
             argsDisplay: seen?.argsDisplayString ?? ""
         )
         resolvedRequests.insert(resolved, at: 0)
         if resolvedRequests.count > Constants.maxResolvedRequests {
             resolvedRequests = Array(resolvedRequests.prefix(Constants.maxResolvedRequests))
         }
+    }
+
+    private func resolvedDetail(for request: ApprovalRequest?) -> String {
+        guard let request else { return "" }
+        if let reason = request.requestReason { return reason }
+        if request.isUserQuestion, let context = request.questionContext { return context }
+        if let note = request.requestNote { return note }
+        if !request.isUserQuestion, !request.argsDisplayString.isEmpty { return request.argsDisplayString }
+        return request.displaySubtitle
     }
 
     private func markExpiredIfNeeded(code: String) -> Bool {
