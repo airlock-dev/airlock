@@ -2586,8 +2586,8 @@ const INDEX_HTML = `<!doctype html>
         '<div class="detail-label">Status</div><div>' + escapeHtml(pending.status) + '</div>' +
         '<div class="detail-label">Created</div><div>' + escapeHtml(formatTime(pending.createdAt)) + '</div>' +
         (pending.timeoutMs ? '<div class="detail-label">Timeout</div><div>' + Math.round(pending.timeoutMs / 1000) + 's</div>' : '') +
-        (approvalReason(pending) ? '<div class="detail-label">Reason</div><div>' + escapeHtml(approvalReason(pending)) + '</div>' : '') +
-        (approvalNote(pending) ? '<div class="detail-label">Note</div><div>' + escapeHtml(approvalNote(pending)) + '</div>' : '') +
+        (requestReason(pending) ? '<div class="detail-label">Request reason</div><div>' + escapeHtml(requestReason(pending)) + '</div>' : '') +
+        (requestNote(pending) ? '<div class="detail-label">Request note</div><div>' + escapeHtml(requestNote(pending)) + '</div>' : '') +
         (question ? '<div class="detail-label">Question</div><div>' + escapeHtml(questionText(pending)) + '</div>' : '') +
         (question && questionContext(pending) ? '<div class="detail-label">Context</div><div>' + escapeHtml(questionContext(pending)) + '</div>' : '') +
         '<div class="detail-label">Arguments</div><pre class="log-args">' + escapeHtml(prettyJson(pending.args)) + '</pre>';
@@ -2631,22 +2631,22 @@ const INDEX_HTML = `<!doctype html>
       return lines.join('\\n');
     }
 
-    function approvalReason(entry) {
+    function requestReason(entry) {
       const value = entry.context?.reason;
       return typeof value === 'string' && value.trim() ? value.trim() : '';
     }
 
-    function approvalNote(entry) {
+    function requestNote(entry) {
       const value = entry.context?.note;
       return typeof value === 'string' && value.trim() ? value.trim() : '';
     }
 
     function approvalPreview(entry) {
       const lines = [];
-      const reason = approvalReason(entry);
-      const note = approvalNote(entry);
-      if (reason) lines.push('reason: ' + reason);
-      if (note) lines.push('note: ' + note);
+      const reason = requestReason(entry);
+      const note = requestNote(entry);
+      if (reason) lines.push('request reason: ' + reason);
+      if (note) lines.push('request note: ' + note);
       lines.push(prettyJson(entry.args));
       return lines.join('\\n');
     }
@@ -3357,8 +3357,8 @@ const INDEX_HTML = `<!doctype html>
       if (!('Notification' in window) || Notification.permission !== 'granted') return;
       const pending = normalizePending(request, true);
       const lines = ['agent: ' + pending.agentId, pending.code];
-      const reason = approvalReason(pending);
-      if (reason) lines.push('reason: ' + reason);
+      const reason = requestReason(pending);
+      if (reason) lines.push('request reason: ' + reason);
       new Notification('Airlock: ' + request.tool, {
         body: lines.join('\\n'),
         tag: request.code,

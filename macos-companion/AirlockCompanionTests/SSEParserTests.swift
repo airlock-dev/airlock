@@ -36,8 +36,8 @@ final class SSEParserTests: XCTestCase {
         XCTAssertEqual(request.agentId, "agent1")
         XCTAssertEqual(request.tool, "readFile")
         XCTAssertEqual(request.timeoutMs, 30000)
-        XCTAssertEqual(request.approvalReason, "Need to inspect a config file.")
-        XCTAssertEqual(request.approvalNote, "Read-only request.")
+        XCTAssertEqual(request.requestReason, "Need to inspect a config file.")
+        XCTAssertEqual(request.requestNote, "Read-only request.")
         XCTAssertEqual(request.args["path"], .string("/etc/passwd"))
     }
 

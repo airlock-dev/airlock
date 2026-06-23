@@ -84,7 +84,7 @@ describe('IOSHitlProvider', () => {
       code: 'XY9Z01',
       agentId: 'dev',
       tool: 'echo/add',
-      body: expect.stringContaining('Reason: Need to push the reviewed auth fix.'),
+      body: expect.stringContaining('Request reason: Need to push the reviewed auth fix.'),
       context: {
         id: 'approval-1',
         code: 'XY9Z01',

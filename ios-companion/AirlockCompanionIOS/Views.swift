@@ -554,12 +554,12 @@ struct ApprovalDetailView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 8))
                 }
 
-                if let reason = approval.approvalReason {
-                    DetailTextBlock(title: "Reason", value: reason)
+                if let reason = approval.requestReason {
+                    DetailTextBlock(title: "Request reason", value: reason)
                 }
 
-                if let note = approval.approvalNote {
-                    DetailTextBlock(title: "Note", value: note)
+                if let note = approval.requestNote {
+                    DetailTextBlock(title: "Request note", value: note)
                 }
 
                 if let status = approval.status, mode == .history {

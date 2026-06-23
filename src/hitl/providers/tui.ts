@@ -159,10 +159,12 @@ export class TuiHitlProvider implements HitlProvider {
         );
         lines.push(`${selected ? '     ' : '     '}${DIM}${args}${RESET}`);
         if (item.req.context?.reason) {
-          lines.push(`     ${YELLOW}reason:${RESET} ${DIM}${item.req.context.reason}${RESET}`);
+          lines.push(
+            `     ${YELLOW}request reason:${RESET} ${DIM}${item.req.context.reason}${RESET}`
+          );
         }
         if (item.req.context?.note) {
-          lines.push(`     ${CYAN}note:${RESET} ${DIM}${item.req.context.note}${RESET}`);
+          lines.push(`     ${CYAN}request note:${RESET} ${DIM}${item.req.context.note}${RESET}`);
         }
         if (item.req.sandbox) {
           const sandbox = item.req.sandbox.summary.join(' | ');

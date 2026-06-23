@@ -150,12 +150,12 @@ struct ApprovalRequest: Codable, Identifiable, Equatable, Sendable {
             .joined(separator: "\n")
     }
 
-    var approvalReason: String? {
+    var requestReason: String? {
         let trimmed = context?.reason?.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed?.isEmpty == false ? trimmed : nil
     }
 
-    var approvalNote: String? {
+    var requestNote: String? {
         let trimmed = context?.note?.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed?.isEmpty == false ? trimmed : nil
     }

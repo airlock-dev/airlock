@@ -75,12 +75,12 @@ struct RequestDetailView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 8))
             }
 
-            if let reason = request.approvalReason {
-                contextBox(title: "Reason", value: reason)
+            if let reason = request.requestReason {
+                contextBox(title: "Request reason", value: reason)
             }
 
-            if let note = request.approvalNote {
-                contextBox(title: "Note", value: note)
+            if let note = request.requestNote {
+                contextBox(title: "Request note", value: note)
             }
 
             if request.args.isEmpty {

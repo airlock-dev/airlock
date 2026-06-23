@@ -87,8 +87,8 @@ final class NotificationManager: NSObject, ObservableObject, UNUserNotificationC
         let content = UNMutableNotificationContent()
         content.title = "\(request.agentId): \(request.tool)"
         let lines = [
-            request.approvalReason.map { "Reason: \($0)" },
-            request.approvalNote.map { "Note: \($0)" },
+            request.requestReason.map { "Request reason: \($0)" },
+            request.requestNote.map { "Request note: \($0)" },
             request.argsDisplayString.isEmpty ? nil : request.argsDisplayString
         ].compactMap { $0 }
         if !lines.isEmpty {

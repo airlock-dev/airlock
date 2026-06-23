@@ -181,8 +181,8 @@ export class IOSHitlProvider implements HitlProvider {
 function approvalBody(request: HitlNotification): string {
   const entries = Object.entries(request.args).sort(([a], [b]) => a.localeCompare(b));
   const contextLines = [
-    request.context?.reason ? `Reason: ${request.context.reason}` : undefined,
-    request.context?.note ? `Note: ${request.context.note}` : undefined,
+    request.context?.reason ? `Request reason: ${request.context.reason}` : undefined,
+    request.context?.note ? `Request note: ${request.context.note}` : undefined,
   ].filter((line): line is string => Boolean(line));
 
   if (entries.length === 0) return (contextLines.join('\n') || 'No arguments').slice(0, 900);

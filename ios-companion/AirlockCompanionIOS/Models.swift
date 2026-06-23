@@ -96,8 +96,8 @@ struct ApprovalRequest: Codable, Identifiable, Equatable, Sendable {
         if isUserQuestion {
             return questionContext ?? "User response requested"
         }
-        if let approvalReason {
-            return approvalReason
+        if let requestReason {
+            return requestReason
         }
         let keys = args.keys.sorted()
         if keys.isEmpty { return "No arguments" }
@@ -140,12 +140,12 @@ struct ApprovalRequest: Codable, Identifiable, Equatable, Sendable {
         return trimmed?.isEmpty == false ? trimmed : nil
     }
 
-    var approvalReason: String? {
+    var requestReason: String? {
         let trimmed = reason?.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed?.isEmpty == false ? trimmed : nil
     }
 
-    var approvalNote: String? {
+    var requestNote: String? {
         let trimmed = note?.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed?.isEmpty == false ? trimmed : nil
     }

@@ -260,8 +260,8 @@ private struct ApprovalNotificationContext {
 
     var visibleArguments: [ApprovalArgument] {
         let contextArgs = [
-            reason.map { ApprovalArgument(key: "reason", value: $0) },
-            note.map { ApprovalArgument(key: "note", value: $0) }
+            reason.map { ApprovalArgument(key: "request_reason", value: $0) },
+            note.map { ApprovalArgument(key: "request_note", value: $0) }
         ].compactMap { $0 }
         let argumentArgs = args.filter { $0.key != "code" && $0.key != "reason" && $0.key != "note" }
             .sorted { $0.key < $1.key }
