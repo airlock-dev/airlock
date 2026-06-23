@@ -43,6 +43,7 @@ export async function assertHostNotBlocked(
     }
   } catch (err) {
     if (err instanceof Error && err.message.startsWith('Blocked host:')) throw err;
+    throw new Error(`Could not verify host: ${normalizedHostname}`, { cause: err });
   }
 
   return normalizedHostname;

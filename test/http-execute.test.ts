@@ -113,6 +113,20 @@ describe('executeHttp() — security enforcement', () => {
     ).rejects.toThrow(/resolved to 127\.0\.0\.1/);
   });
 
+  it('fails closed when DNS verification fails', async () => {
+    lookupMock.mockRejectedValue(new Error('ENOTFOUND'));
+    const fetch = mockFetch(200, 'hello');
+    vi.stubGlobal('fetch', fetch);
+    const agent = makeAgentConfig({ domain_allowlist: ['api.example.com'] });
+
+    await expect(
+      executeHttp('get', { url: 'https://api.example.com/data' }, agent, DEFAULT_SECURITY),
+    ).rejects.toThrow(/Could not verify host: api\.example\.com/);
+    expect(fetch).not.toHaveBeenCalled();
+
+    vi.unstubAllGlobals();
+  });
+
   it('allows domain in agent allowlist', async () => {
     const fetch = mockFetch(200, 'hello');
     vi.stubGlobal('fetch', fetch);

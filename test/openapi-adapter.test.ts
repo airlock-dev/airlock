@@ -294,6 +294,27 @@ describe('OpenApiAdapter', () => {
     expect(result.error).toContain('resolved to 127.0.0.1');
   });
 
+  it('fails closed when API host DNS verification fails', async () => {
+    lookupMock.mockRejectedValue(new Error('ENOTFOUND'));
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    const adapter = new OpenApiAdapter(
+      'petstore',
+      makeConfig({ spec: specPath }),
+      DEFAULT_SECURITY
+    );
+    await adapter.listTools();
+
+    const result = await adapter.call({
+      tool: 'petstore/listPets',
+      args: {},
+      agentId: 'a1',
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('Could not verify host: petstore.example.com');
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   it('adds bearer auth header', async () => {
     const adapter = new OpenApiAdapter(
       'petstore',
