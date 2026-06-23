@@ -32,14 +32,14 @@ struct RequestCardView: View {
 
     private var cardContent: some View {
         VStack(alignment: .leading, spacing: 8) {
-            // Header row: tool name + countdown
+            // Header row: request title + countdown
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(request.tool)
+                    Text(request.displayTitle)
                         .font(.system(size: 14, weight: .bold))
                         .foregroundStyle(Color.accentColor)
 
-                    Text(request.agentId)
+                    Text(request.displaySubtitle)
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                 }
@@ -105,7 +105,8 @@ struct RequestCardView: View {
             // Action buttons
             ApproveRejectButtons(
                 onApprove: { acted = true; onApprove() },
-                onDeny:    { acted = true; onDeny() }
+                onDeny:    { acted = true; onDeny() },
+                approveLabel: request.approveLabel
             )
         }
         .padding(12)

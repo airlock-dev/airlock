@@ -7,16 +7,18 @@ struct ApproveRejectButtons: View {
     var verticalPadding: CGFloat = 6
     var cornerRadius: CGFloat = 6
     var focusable: Bool = false
+    var approveLabel: String = "Approve"
+    var denyLabel: String = "Deny"
 
     var body: some View {
         HStack(spacing: 8) {
             actionButton(
-                label: "Approve", icon: "checkmark.circle.fill",
+                label: approveLabel, icon: "checkmark.circle.fill",
                 shortcut: "A", color: .green,
                 action: onApprove
             )
             actionButton(
-                label: "Deny", icon: "xmark.circle.fill",
+                label: denyLabel, icon: "xmark.circle.fill",
                 shortcut: "D", color: .red,
                 action: onDeny
             )

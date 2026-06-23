@@ -6,6 +6,7 @@ import Combine
 final class AppViewModel: ObservableObject {
     @Published var pendingRequests: [ApprovalRequest] = []
     @Published var resolvedRequests: [ResolvedRequest] = []
+    @Published var activityEvents: [ActivityEvent] = []
     @Published var connectionState: ConnectionState = .disconnected(nil)
     @Published var selectedIndex: Int = 0
     @Published private(set) var appVersion: String
@@ -234,7 +235,16 @@ final class AppViewModel: ObservableObject {
             notificationManager.removeNotification(code: code)
 
         case .activity(let event):
+            upsertActivityEvent(event)
             notificationManager.showNotification(for: event, soundEnabled: soundEnabled)
+        }
+    }
+
+    private func upsertActivityEvent(_ event: ActivityEvent) {
+        activityEvents.removeAll { $0.id == event.id }
+        activityEvents.insert(event, at: 0)
+        if activityEvents.count > Constants.maxResolvedRequests {
+            activityEvents = Array(activityEvents.prefix(Constants.maxResolvedRequests))
         }
     }
 

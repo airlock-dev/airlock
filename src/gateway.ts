@@ -46,6 +46,7 @@ export class Gateway {
   private managementApp?: FastifyInstance;
   private downstreamSessionIds = new Map<string, string>();
   private activityStream = new ActivityStream();
+  private unsubscribeActivityNotifications?: () => void;
   private startTime = Date.now();
   private dataPlaneRequestSecurity: RequestSecurityOptions = {};
   private managementRequestSecurity: RequestSecurityOptions = {};
@@ -75,6 +76,11 @@ export class Gateway {
 
     this.approvalRoutes = new ApprovalDashboardRoutes(approvalForwarder, this.activityStream);
     this.hitlProvider = this.buildHitlProvider(approvalForwarder);
+    this.unsubscribeActivityNotifications = this.activityStream.subscribe((event) => {
+      void this.hitlProvider
+        .notifyActivity?.(event)
+        .catch((err) => log.error({ err }, 'Failed to send activity notification'));
+    });
 
     this.hitlEngine = new HitlEngine(
       this.auditLogger,
@@ -174,6 +180,7 @@ export class Gateway {
     await this.managementApp.register(mobileApiPlugin, {
       auditLogger: this.auditLogger,
       engine: this.hitlEngine,
+      activityStream: this.activityStream,
       configPath: this.configPath,
       getRequestSecurity,
     });
@@ -397,6 +404,8 @@ export class Gateway {
     await this.pool?.stop();
     await this.managementApp?.close();
     await this.app?.close();
+    this.unsubscribeActivityNotifications?.();
+    this.unsubscribeActivityNotifications = undefined;
     await this.registry?.stopAll();
     await this.hitlProvider?.stop();
     this.auditLogger?.stop();

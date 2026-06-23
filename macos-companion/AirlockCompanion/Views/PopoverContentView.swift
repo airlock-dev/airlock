@@ -8,6 +8,7 @@ struct PopoverContentView: View {
     let onOpenSettingsRequest: () -> Void
     @Environment(\.openSettings) private var openSettings
     @AppStorage(Constants.UserDefaultsKeys.displayDensity) private var densityString: String = DisplayDensity.compact.rawValue
+    @State private var showActivity = true
     @State private var showHistory = false
     @State private var detailRequest: ApprovalRequest?
     @State private var detailArgsScrollView: NSScrollView? = nil
@@ -86,6 +87,11 @@ struct PopoverContentView: View {
                     }
                 } else {
                     EmptyStateView(connectionState: viewModel.connectionState)
+                }
+
+                if !viewModel.activityEvents.isEmpty {
+                    Divider()
+                    ActivityEventsView(activityEvents: viewModel.activityEvents, isExpanded: $showActivity)
                 }
 
                 // History
@@ -171,6 +177,95 @@ struct PopoverContentView: View {
         let newIdx = idx + delta
         guard newIdx >= 0 && newIdx < requests.count else { return nil }
         return requests[newIdx]
+    }
+}
+
+// MARK: - Activity
+
+struct ActivityEventsView: View {
+    let activityEvents: [ActivityEvent]
+    @Binding var isExpanded: Bool
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Button(action: { withAnimation(.spring(duration: 0.25)) { isExpanded.toggle() } }) {
+                HStack {
+                    Image(systemName: "bell.badge")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+
+                    Text("Activity")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.secondary)
+
+                    Text("\(activityEvents.count)")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.tertiary)
+
+                    Spacer()
+
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .focusable(false)
+            .focusEffectDisabled()
+
+            if isExpanded {
+                ScrollView {
+                    VStack(spacing: 0) {
+                        ForEach(activityEvents) { event in
+                            ActivityEventRow(event: event)
+                            if event.id != activityEvents.last?.id {
+                                Divider().padding(.leading, 36)
+                            }
+                        }
+                    }
+                    .padding(.trailing, 6)
+                }
+                .scrollIndicators(.hidden)
+                .frame(maxHeight: 160)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+    }
+}
+
+struct ActivityEventRow: View {
+    let event: ActivityEvent
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: event.kind == "notification" ? "bell.fill" : "text.alignleft")
+                .foregroundStyle(event.kind == "notification" ? .orange : .secondary)
+                .font(.system(size: 12))
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(event.displayTitle)
+                    .font(.system(size: 11, weight: .medium))
+                    .lineLimit(1)
+                if !event.displayBody.isEmpty {
+                    Text(event.displayBody)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+            }
+
+            Spacer()
+
+            Text(event.kind)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(.tertiary)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 6)
     }
 }
 

@@ -63,6 +63,11 @@ export async function runStdioMode(
     auditLogger,
   });
   const activityStream = new ActivityStream();
+  const unsubscribeActivityNotifications = activityStream.subscribe((event) => {
+    void hitlProvider
+      .notifyActivity?.(event)
+      .catch((err) => log.error({ err }, 'Failed to send activity notification'));
+  });
 
   hitlEngine = new HitlEngine(auditLogger, hitlProvider, config.approvals.timeout_ms);
 
@@ -163,6 +168,7 @@ export async function runStdioMode(
       await pool.stop();
       await registry.stopAll();
       await hitlProvider.stop();
+      unsubscribeActivityNotifications();
       auditLogger.stop();
     } catch (err) {
       log.error({ err }, 'Error during stdio shutdown');

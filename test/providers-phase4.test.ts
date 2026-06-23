@@ -96,6 +96,62 @@ describe('IOSHitlProvider', () => {
     });
     expect(sendApproval.mock.calls[0][1].context?.expiresAt).toEqual(expect.any(String));
   });
+
+  it('sends APNs alerts for notification activity but ignores log activity', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'airlock-apns-test-'));
+    const keyPath = join(dir, 'AuthKey_TEST.p8');
+    writeFileSync(keyPath, 'test-key');
+
+    const sendActivity = vi
+      .spyOn(ApnsClient.prototype, 'sendActivity')
+      .mockResolvedValue({ ok: true, status: 200 });
+    const auditLogger = {
+      getActiveMobileDevices: vi
+        .fn()
+        .mockReturnValue([{ id: 'device-1', push_token: 'apns-token' }]),
+    } as unknown as import('../src/audit/logger.js').AuditLogger;
+
+    const provider = new IOSHitlProvider(
+      {
+        teamId: 'TEAMID',
+        keyId: 'KEYID',
+        keyPath,
+        bundleId: 'bot.airlock.companion',
+        production: false,
+      },
+      auditLogger
+    );
+
+    await provider.notifyActivity({
+      id: 'activity-1',
+      kind: 'notification',
+      agentId: 'dev',
+      title: 'Build finished',
+      body: 'The agent is done.',
+      severity: 'success',
+      createdAt: '2026-06-22T12:00:00.000Z',
+    });
+    await provider.notifyActivity({
+      id: 'activity-2',
+      kind: 'log',
+      agentId: 'dev',
+      title: 'Quiet trace',
+      body: 'No notification should be sent.',
+      severity: 'info',
+      createdAt: '2026-06-22T12:01:00.000Z',
+    });
+
+    expect(sendActivity).toHaveBeenCalledOnce();
+    expect(sendActivity).toHaveBeenCalledWith('apns-token', {
+      id: 'activity-1',
+      kind: 'notification',
+      agentId: 'dev',
+      title: 'Build finished',
+      body: 'The agent is done.',
+      severity: 'success',
+      createdAt: '2026-06-22T12:00:00.000Z',
+    });
+  });
 });
 
 // ─── SlackHitlProvider ────────────────────────────────────────────────────────

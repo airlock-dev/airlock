@@ -1,5 +1,6 @@
 import type { SandboxDisplayInfo } from '../../sandbox/index.js';
 import type { AirlockCallContext } from '../../airlock/context.js';
+import type { AirlockActivityEvent } from '../../activity/stream.js';
 
 export interface HitlNotification {
   id: string;
@@ -23,6 +24,7 @@ export interface HitlProvider {
     result: 'approved' | 'denied' | 'timeout' | 'cancelled';
     badgeCount: number;
   }): Promise<void>;
+  notifyActivity?(event: AirlockActivityEvent): Promise<void>;
   stop(): Promise<void>;
 }
 

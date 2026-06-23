@@ -40,6 +40,16 @@ export interface ApnsApprovalStatusPayload {
   badgeCount: number;
 }
 
+export interface ApnsActivityPayload {
+  id: string;
+  kind: 'notification' | 'log';
+  agentId: string;
+  title: string;
+  body: string;
+  severity: 'info' | 'success' | 'warning' | 'error';
+  createdAt: string;
+}
+
 export interface ApnsSendResult {
   ok: boolean;
   status: number;
@@ -98,6 +108,19 @@ export class ApnsClient {
     }
   }
 
+  async sendActivity(deviceToken: string, activity: ApnsActivityPayload): Promise<ApnsSendResult> {
+    const authority = this.config.production
+      ? 'https://api.push.apple.com'
+      : 'https://api.sandbox.push.apple.com';
+    const session = connect(authority);
+
+    try {
+      return await this.sendActivityWithSession(session, deviceToken, activity);
+    } finally {
+      session.close();
+    }
+  }
+
   private sendWithSession(
     session: ClientHttp2Session,
     deviceToken: string,
@@ -138,6 +161,76 @@ export class ApnsClient {
         'apns-expiration': String(
           approval.timeoutMs > 0 ? Math.floor((Date.now() + approval.timeoutMs) / 1000) : 0
         ),
+      });
+
+      let status = 0;
+      let responseBody = '';
+
+      request.setEncoding('utf8');
+      request.on('response', (headers) => {
+        const rawStatus = headers[constants.HTTP2_HEADER_STATUS];
+        status = typeof rawStatus === 'number' ? rawStatus : Number(rawStatus ?? 0);
+      });
+      request.on('data', (chunk: string) => {
+        responseBody += chunk;
+      });
+      request.on('error', reject);
+      request.on('end', () => {
+        if (status >= 200 && status < 300) {
+          resolve({ ok: true, status });
+          return;
+        }
+
+        let reason: string | undefined;
+        try {
+          const parsed = JSON.parse(responseBody) as { reason?: string };
+          reason = parsed.reason;
+        } catch {
+          reason = responseBody || undefined;
+        }
+        resolve({ ok: false, status, ...(reason ? { reason } : {}) });
+      });
+      request.end(payload);
+    });
+  }
+
+  private sendActivityWithSession(
+    session: ClientHttp2Session,
+    deviceToken: string,
+    activity: ApnsActivityPayload
+  ): Promise<ApnsSendResult> {
+    return new Promise((resolve, reject) => {
+      const payload = JSON.stringify({
+        aps: {
+          alert: {
+            title: activity.title || 'Airlock notification',
+            body: activity.body || '',
+          },
+          category: 'AIRLOCK_ACTIVITY',
+          sound: 'default',
+          'thread-id': 'airlock-activity',
+          'summary-arg': activity.agentId || 'Airlock',
+          ...(this.config.interruptionLevel
+            ? { 'interruption-level': this.config.interruptionLevel }
+            : {}),
+        },
+        event: 'activity',
+        activity_id: activity.id,
+        kind: activity.kind,
+        agent_id: activity.agentId,
+        severity: activity.severity,
+        created_at: activity.createdAt,
+      });
+
+      const request = session.request({
+        [constants.HTTP2_HEADER_METHOD]: 'POST',
+        [constants.HTTP2_HEADER_PATH]: `/3/device/${deviceToken}`,
+        authorization: `bearer ${this.jwt()}`,
+        'apns-topic': this.config.bundleId,
+        'apns-push-type': 'alert',
+        'apns-priority': '10',
+        'apns-collapse-id': activity.id,
+        'apns-expiration': '0',
       });
 
       let status = 0;

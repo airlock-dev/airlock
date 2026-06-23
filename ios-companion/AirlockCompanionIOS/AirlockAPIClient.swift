@@ -63,6 +63,16 @@ struct AirlockAPIClient: Sendable {
         return response.approvals
     }
 
+    func activityEvents() async throws -> [ActivityEvent] {
+        let response = try await request(
+            path: "/mobile/activity",
+            method: "GET",
+            body: Optional<EmptyBody>.none,
+            response: ActivityListResponse.self
+        )
+        return response.events
+    }
+
     func decide(
         id: String,
         decision: ApprovalDecision,

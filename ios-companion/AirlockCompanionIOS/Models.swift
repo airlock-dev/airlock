@@ -71,6 +71,11 @@ enum JSONValue: Codable, Equatable, Sendable {
             return "{\(body)}"
         }
     }
+
+    var plainString: String? {
+        if case .string(let value) = self { return value }
+        return nil
+    }
 }
 
 struct ApprovalRequest: Codable, Identifiable, Equatable, Sendable {
@@ -87,6 +92,9 @@ struct ApprovalRequest: Codable, Identifiable, Equatable, Sendable {
     let resolvedAt: Date?
 
     var argsPreview: String {
+        if isUserQuestion {
+            return questionContext ?? "User response requested"
+        }
         let keys = args.keys.sorted()
         if keys.isEmpty { return "No arguments" }
         let visible = keys.prefix(5).joined(separator: ", ")
@@ -110,10 +118,61 @@ struct ApprovalRequest: Codable, Identifiable, Equatable, Sendable {
         guard let effectiveExpiresAt else { return false }
         return effectiveExpiresAt <= date
     }
+
+    var isUserQuestion: Bool {
+        tool == "airlock/ask_user"
+    }
+
+    var questionText: String {
+        args["question"]?.plainString?.trimmingCharacters(in: .whitespacesAndNewlines)
+            ?? args["title"]?.plainString?.trimmingCharacters(in: .whitespacesAndNewlines)
+            ?? args["message"]?.plainString?.trimmingCharacters(in: .whitespacesAndNewlines)
+            ?? "Question from agent"
+    }
+
+    var questionContext: String? {
+        let value = args["context"]?.plainString ?? args["reason"]?.plainString
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed?.isEmpty == false ? trimmed : nil
+    }
+
+    var displayTitle: String {
+        isUserQuestion ? questionText : tool
+    }
+
+    var displaySubtitle: String {
+        isUserQuestion ? "\(agentId) · user question" : agentId
+    }
+
+    var approveLabel: String {
+        isUserQuestion ? "Confirm" : "Approve"
+    }
 }
 
 struct ApprovalListResponse: Decodable {
     let approvals: [ApprovalRequest]
+}
+
+struct ActivityEvent: Codable, Identifiable, Equatable, Sendable {
+    let id: String
+    let kind: String
+    let agentId: String
+    let title: String
+    let body: String
+    let severity: String
+    let createdAt: Date
+
+    var displayTitle: String {
+        title.isEmpty ? (kind == "notification" ? "Airlock notification" : "Airlock log") : title
+    }
+
+    var displayBody: String {
+        body.isEmpty ? agentId : body
+    }
+}
+
+struct ActivityListResponse: Decodable {
+    let events: [ActivityEvent]
 }
 
 struct DeviceRegistrationResponse: Decodable {

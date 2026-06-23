@@ -25,9 +25,9 @@ struct RequestDetailView: View {
                 .focusEffectDisabled()
 
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(request.tool)
+                    Text(request.displayTitle)
                         .font(.system(size: 18, weight: .semibold))
-                    Text(request.agentId)
+                    Text(request.displaySubtitle)
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                 }
@@ -55,6 +55,24 @@ struct RequestDetailView: View {
                     value: request.timeoutMs > 0 ? "\(request.timeoutMs / 1000)s" : "None"
                 )
                 detailPill(title: "Args", value: "\(request.args.count)")
+                if request.isUserQuestion {
+                    detailPill(title: "Kind", value: "Question")
+                }
+            }
+
+            if request.isUserQuestion, let context = request.questionContext {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Context")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(.secondary)
+                    Text(context)
+                        .font(.system(size: 12))
+                        .textSelection(.enabled)
+                }
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(.quaternary.opacity(0.45))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
             }
 
             if request.args.isEmpty {
@@ -92,7 +110,8 @@ struct RequestDetailView: View {
                 onDeny:    { onDeny();    onDismiss() },
                 fontSize: 14,
                 verticalPadding: 9,
-                cornerRadius: 8
+                cornerRadius: 8,
+                approveLabel: request.approveLabel
             )
         }
         .padding(20)

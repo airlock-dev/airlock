@@ -2,6 +2,7 @@ import { createHash, randomBytes } from 'crypto';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { AuditLogger } from '../audit/logger.js';
 import type { HitlEngine } from '../hitl/engine.js';
+import type { ActivityStream, AirlockActivityEvent } from '../activity/stream.js';
 import { rememberAllow, type RememberAllowMode } from '../config/mutator.js';
 import { checkRequestSecurity, type RequestSecurityOptions } from '../security/request.js';
 import { generateId } from '../util/id.js';
@@ -9,6 +10,7 @@ import { generateId } from '../util/id.js';
 interface MobileApiOptions {
   auditLogger: AuditLogger;
   engine: HitlEngine;
+  activityStream?: ActivityStream;
   configPath?: string;
   secret?: string;
   authRequired?: boolean;
@@ -45,6 +47,10 @@ interface MobileApproval {
   timeoutMs?: number;
   expiresAt?: string;
   resolvedAt?: string;
+}
+
+interface MobileActivityResponse {
+  events: AirlockActivityEvent[];
 }
 
 export function mobileApiPlugin(app: FastifyInstance, opts: MobileApiOptions): void {
@@ -158,6 +164,16 @@ export function mobileApiPlugin(app: FastifyInstance, opts: MobileApiOptions): v
       approvals: auditLogger.getHitlHistory(parsedLimit).map(toMobileApproval),
     };
   });
+
+  app.get(
+    '/mobile/activity',
+    async (request, reply): Promise<MobileActivityResponse | undefined> => {
+      if (!checkMobileOrAdminAuth(request, reply, opts)) return;
+      return {
+        events: opts.activityStream?.recent() ?? [],
+      };
+    }
+  );
 
   app.post('/mobile/approvals/:id/decision', async (request, reply) => {
     if (!checkMobileOrAdminAuth(request, reply, opts)) return;

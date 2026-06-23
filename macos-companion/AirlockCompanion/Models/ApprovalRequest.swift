@@ -85,6 +85,11 @@ enum JSONValue: Codable, Equatable, Sendable {
             return "{\(items)}"
         }
     }
+
+    var plainString: String? {
+        if case .string(let value) = self { return value }
+        return nil
+    }
 }
 
 // MARK: - ApprovalRequest
@@ -136,6 +141,35 @@ struct ApprovalRequest: Codable, Identifiable, Equatable, Sendable {
             .map { "  \($0.key): \($0.value.displayString)" }
             .joined(separator: "\n")
     }
+
+    var isUserQuestion: Bool {
+        tool == "airlock/ask_user"
+    }
+
+    var questionText: String {
+        args["question"]?.plainString?.trimmingCharacters(in: .whitespacesAndNewlines)
+            ?? args["title"]?.plainString?.trimmingCharacters(in: .whitespacesAndNewlines)
+            ?? args["message"]?.plainString?.trimmingCharacters(in: .whitespacesAndNewlines)
+            ?? "Question from agent"
+    }
+
+    var questionContext: String? {
+        let value = args["context"]?.plainString ?? args["reason"]?.plainString
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed?.isEmpty == false ? trimmed : nil
+    }
+
+    var displayTitle: String {
+        isUserQuestion ? questionText : tool
+    }
+
+    var displaySubtitle: String {
+        isUserQuestion ? "\(agentId) · user question" : agentId
+    }
+
+    var approveLabel: String {
+        isUserQuestion ? "Confirm" : "Approve"
+    }
 }
 
 // MARK: - ResolvedRequest
@@ -170,4 +204,12 @@ struct ActivityEvent: Codable, Identifiable, Equatable, Sendable {
     let body: String
     let severity: String
     let createdAt: String
+
+    var displayTitle: String {
+        title.isEmpty ? (kind == "notification" ? "Airlock notification" : "Airlock log") : title
+    }
+
+    var displayBody: String {
+        body.isEmpty ? agentId : body
+    }
 }
