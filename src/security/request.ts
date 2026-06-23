@@ -5,6 +5,11 @@ export interface RequestSecurityOptions {
   secret?: string;
   authRequired?: boolean;
   allowedOrigins?: string[];
+  getRequestSecurity?: () => RequestSecurityOptions;
+}
+
+export function currentRequestSecurity(opts: RequestSecurityOptions): RequestSecurityOptions {
+  return opts.getRequestSecurity?.() ?? opts;
 }
 
 function constantTimeEqual(a: string, b: string): boolean {
@@ -64,6 +69,7 @@ export function checkRequestSecurity(
   reply: FastifyReply,
   opts: RequestSecurityOptions
 ): boolean {
-  if (!checkOrigin(request, reply, opts.allowedOrigins)) return false;
-  return checkBearerAuth(request, reply, opts);
+  const current = currentRequestSecurity(opts);
+  if (!checkOrigin(request, reply, current.allowedOrigins)) return false;
+  return checkBearerAuth(request, reply, current);
 }

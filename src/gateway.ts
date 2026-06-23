@@ -24,7 +24,7 @@ import { createHitlProvider } from './hitl/provider-factory.js';
 import { getMcpConfigs } from './config/schema.js';
 import { buildAdapters } from './backend/factory.js';
 import { childLogger } from './util/logger.js';
-import { checkRequestSecurity } from './security/request.js';
+import { checkRequestSecurity, type RequestSecurityOptions } from './security/request.js';
 
 const log = childLogger('gateway');
 
@@ -45,6 +45,8 @@ export class Gateway {
   private managementApp?: FastifyInstance;
   private downstreamSessionIds = new Map<string, string>();
   private startTime = Date.now();
+  private dataPlaneRequestSecurity: RequestSecurityOptions = {};
+  private managementRequestSecurity: RequestSecurityOptions = {};
 
   constructor(
     private config: Config,
@@ -54,7 +56,8 @@ export class Gateway {
 
   async start(): Promise<void> {
     log.info('Starting Airlock gateway');
-    this.assertManagementApiConfig();
+    this.assertManagementApiConfig(this.config);
+    this.updateRequestSecurity(this.config);
 
     // Audit logger
     this.auditLogger = new AuditLogger(this.config.audit);
@@ -114,24 +117,16 @@ export class Gateway {
     // separate listener below and must never be added to this app.
     this.app = Fastify({ logger: false });
 
-    const dataPlaneRequestSecurity = {
-      secret: this.config.server.api_secret,
-      authRequired: this.config.server.auth_required,
-      allowedOrigins: this.config.server.allowed_origins,
-    };
-    const managementRequestSecurity = {
-      secret: this.config.server.management_api.api_secret ?? this.config.server.api_secret,
-      authRequired: true,
-      allowedOrigins: this.config.server.allowed_origins,
-    };
+    const getDataPlaneRequestSecurity = () => this.dataPlaneRequestSecurity;
+    const getManagementRequestSecurity = () => this.managementRequestSecurity;
 
     await this.app.register(sseServerPlugin, {
       getDeps: (agentId: string) => this.buildAgentDeps(agentId),
-      ...dataPlaneRequestSecurity,
+      getRequestSecurity: getDataPlaneRequestSecurity,
     });
     await this.app.register(httpServerPlugin, {
       getDeps: (agentId: string) => this.buildAgentDeps(agentId),
-      ...dataPlaneRequestSecurity,
+      getRequestSecurity: getDataPlaneRequestSecurity,
     });
     if (this.config.server.expose_tools_api) {
       await this.app.register(toolsApiPlugin, {
@@ -139,7 +134,7 @@ export class Gateway {
           this.buildAgentDeps(agentId, downstreamSessionKey),
         requiresSessionId: (agentId: string, tool: string) =>
           this.requiresToolsApiSessionId(agentId, tool),
-        ...dataPlaneRequestSecurity,
+        getRequestSecurity: getDataPlaneRequestSecurity,
       });
     }
 
@@ -149,7 +144,7 @@ export class Gateway {
 
     if (this.config.server.management_api.enabled) {
       try {
-        await this.startManagementApi(managementRequestSecurity);
+        await this.startManagementApi(getManagementRequestSecurity);
       } catch (err) {
         await this.app.close().catch((closeErr) => {
           log.warn(
@@ -162,31 +157,27 @@ export class Gateway {
     }
   }
 
-  private async startManagementApi(requestSecurity: {
-    secret?: string;
-    authRequired: boolean;
-    allowedOrigins: string[];
-  }): Promise<void> {
+  private async startManagementApi(getRequestSecurity: () => RequestSecurityOptions): Promise<void> {
     const management = this.config.server.management_api;
     this.managementApp = Fastify({ logger: false });
 
     await this.managementApp.register(hitlApiPlugin, {
       engine: this.hitlEngine,
-      ...requestSecurity,
+      getRequestSecurity,
     });
     await this.managementApp.register(auditApiPlugin, {
       auditLogger: this.auditLogger,
-      ...requestSecurity,
+      getRequestSecurity,
     });
     await this.managementApp.register(mobileApiPlugin, {
       auditLogger: this.auditLogger,
       engine: this.hitlEngine,
       configPath: this.configPath,
-      ...requestSecurity,
+      getRequestSecurity,
     });
     await this.managementApp.register((adminApp, _opts, done) => {
       adminApp.addHook('preHandler', (request, reply, hookDone) => {
-        if (!checkRequestSecurity(request, reply, requestSecurity)) {
+        if (!checkRequestSecurity(request, reply, getRequestSecurity())) {
           return;
         }
         hookDone();
@@ -204,12 +195,12 @@ export class Gateway {
         hitlEngine: this.hitlEngine,
         hitlBatcher: this.hitlBatcher,
         auditLogger: this.auditLogger,
-        ...requestSecurity,
+        getRequestSecurity,
       });
     }
 
     this.managementApp.get('/health', async (request, reply) => {
-      if (!checkRequestSecurity(request, reply, requestSecurity)) return;
+      if (!checkRequestSecurity(request, reply, getRequestSecurity())) return;
       const dataPlane = await this.dataPlaneHealth();
       const mcpHealth = this.pool.healthCheck();
       const pendingApprovals = this.hitlEngine.getPending().length;
@@ -244,17 +235,17 @@ export class Gateway {
     return { status: status ? 'ok' : 'down', host, port };
   }
 
-  private assertManagementApiConfig(): void {
-    const management = this.config.server.management_api;
+  private assertManagementApiConfig(config: Config): void {
+    const management = config.server.management_api;
     if (!management.enabled) return;
 
-    if (!management.api_secret && !this.config.server.api_secret) {
+    if (!management.api_secret && !config.server.api_secret) {
       throw new Error(
         'server.management_api.enabled requires server.management_api.api_secret or server.api_secret.'
       );
     }
 
-    const tokenlessAgents = Object.entries(this.config.agents)
+    const tokenlessAgents = Object.entries(config.agents)
       .filter(([, agent]) => !agent.token)
       .map(([agentId]) => agentId);
     if (tokenlessAgents.length > 0) {
@@ -269,8 +260,44 @@ export class Gateway {
       );
     }
 
-    if (management.port !== 0 && management.port === this.config.server.port) {
+    if (management.port !== 0 && management.port === config.server.port) {
       throw new Error('Control-plane and data-plane must not share a socket.');
+    }
+  }
+
+  private updateRequestSecurity(config: Config): void {
+    this.dataPlaneRequestSecurity.secret = config.server.api_secret;
+    this.dataPlaneRequestSecurity.authRequired = config.server.auth_required;
+    this.dataPlaneRequestSecurity.allowedOrigins = config.server.allowed_origins;
+    this.managementRequestSecurity.secret =
+      config.server.management_api.api_secret ?? config.server.api_secret;
+    this.managementRequestSecurity.authRequired = true;
+    this.managementRequestSecurity.allowedOrigins = config.server.allowed_origins;
+  }
+
+  private assertReloadCompatible(newConfig: Config): void {
+    const oldServer = this.config.server;
+    const newServer = newConfig.server;
+    const restartFields: Array<[string, unknown, unknown]> = [
+      ['server.host', oldServer.host, newServer.host],
+      ['server.port', oldServer.port, newServer.port],
+      ['server.expose_tools_api', oldServer.expose_tools_api, newServer.expose_tools_api],
+      ['server.management_api.enabled', oldServer.management_api.enabled, newServer.management_api.enabled],
+      ['server.management_api.host', oldServer.management_api.host, newServer.management_api.host],
+      ['server.management_api.port', oldServer.management_api.port, newServer.management_api.port],
+      [
+        'server.management_api.insecure_remote_bind',
+        oldServer.management_api.insecure_remote_bind,
+        newServer.management_api.insecure_remote_bind,
+      ],
+      ['server.management_api.expose_hook_api', oldServer.management_api.expose_hook_api, newServer.management_api.expose_hook_api],
+      ['approvals.provider', JSON.stringify(this.config.approvals.provider), JSON.stringify(newConfig.approvals.provider)],
+      ['approvals.batch_window_ms', this.config.approvals.batch_window_ms, newConfig.approvals.batch_window_ms],
+    ];
+
+    const changed = restartFields.find(([, oldValue, newValue]) => oldValue !== newValue);
+    if (changed) {
+      throw new Error(`${changed[0]} changed; restart Airlock to apply listener or approval-provider topology changes.`);
     }
   }
 
@@ -338,7 +365,11 @@ export class Gateway {
 
   async reload(newConfig: Config): Promise<void> {
     log.info('Reloading gateway config');
+    this.assertManagementApiConfig(newConfig);
+    this.assertReloadCompatible(newConfig);
     this.config = newConfig;
+    this.updateRequestSecurity(newConfig);
+    this.hitlEngine.setTimeoutMs(newConfig.approvals.timeout_ms);
     const mcpConfigs = getMcpConfigs(newConfig.providers);
     await this.pool.reload(mcpConfigs);
     this.allowlist.reload(newConfig.agents);

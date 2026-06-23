@@ -53,7 +53,9 @@ function resolveMiddleware(item: MiddlewareItemConfig): Middleware {
         mode: item.mode as 'detect' | 'mangle' | undefined, // schema includes 'escalate' which is not valid for output-injection-detector
       });
     case 'canary-token-injector':
-      return canaryTokenInjectorMiddleware();
+      return canaryTokenInjectorMiddleware({
+        mode: item.mode as 'detect' | 'escalate' | undefined,
+      });
     case 'output-size-limiter':
       return outputSizeLimiterMiddleware({
         max_lines: item.max_lines,
@@ -93,7 +95,7 @@ const DEFAULT_MIDDLEWARE: MiddlewareItemConfig[] = [
  * Builds the complete middleware chain for an agent.
  *
  * Core zone (fixed order, always present):
- *   allowlist → exec-policy → schema-validator → arg-policy → [detectors from config] → hitl-gate → execute
+ *   allowlist → exec-policy → schema-validator → arg-policy → [detectors from config] → sandbox → hitl-gate → execute
  *
  * Post zone (user-configurable, wraps around core):
  *   Applied in config order, each wraps the downstream response
@@ -134,15 +136,15 @@ export function buildMiddlewareChain(agentConfig: AgentConfig, _deps: Middleware
   const detectors = coreUserMiddleware.filter((m) => m.name !== 'schema-validator');
 
   // Core zone: fixed security-critical order
-  //   allowlist → exec-policy → schema-validator → arg-policy → [detectors] → hitl-gate → sandbox → execute
+  //   allowlist → exec-policy → schema-validator → arg-policy → [detectors] → sandbox → hitl-gate → execute
   const coreMiddlewares: Middleware[] = [
     allowlistMiddleware(),
     execPolicyMiddleware(),
     ...schemaValidators.map((m) => withToolFilter(resolveMiddleware(m), m)),
     argPolicyMiddleware(),
     ...detectors.map((m) => withToolFilter(resolveMiddleware(m), m)),
-    hitlGateMiddleware(),
     sandboxMiddleware(),
+    hitlGateMiddleware(),
     executeMiddleware(),
   ];
 

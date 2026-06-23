@@ -120,8 +120,11 @@ providers:
 The built-in HTTP tools enforce security by default:
 
 - **Blocked hosts** — localhost (`127.0.0.1`, `::1`, `localhost`) and RFC-1918 private ranges (`10.*`, `192.168.*`, `172.16.*`) are blocked. This prevents agents from reaching internal services, the Airlock management API, or cloud metadata endpoints.
+- **DNS verification** — domain names are resolved before outbound HTTP/OpenAPI requests. If any resolved address is blocked, or if Airlock cannot verify DNS, the request fails closed.
 - **Domain allowlists** — per-agent HTTP domain restrictions further limit which hosts the agent can reach.
 - **Override** — specific local addresses can be unblocked via the `allowed_local` security config if needed.
+
+This static DNS check does not fully prevent DNS rebinding: the current fetch layer can re-resolve the hostname when it opens the connection. Closing that advanced gap requires a pinned-resolution HTTP transport that connects to the verified IP while preserving the original hostname for Host, SNI, and certificate validation.
 
 ```yaml
 security:

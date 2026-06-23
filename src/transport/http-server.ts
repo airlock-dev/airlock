@@ -4,7 +4,7 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { createAgentServer, connectAgentServer } from './agent-server.js';
 import type { AgentServerDeps } from './agent-server.js';
 import { childLogger } from '../util/logger.js';
-import { checkBearerAuth, checkOrigin } from '../security/request.js';
+import { checkBearerAuth, checkOrigin, currentRequestSecurity, type RequestSecurityOptions } from '../security/request.js';
 
 const log = childLogger('http-server');
 
@@ -13,12 +13,12 @@ export async function httpServerPlugin(
   app: FastifyInstance,
   opts: {
     getDeps: (agentId: string) => AgentServerDeps | undefined;
-    secret?: string;
-    authRequired?: boolean;
-    allowedOrigins?: string[];
-  }
+	    secret?: string;
+	    authRequired?: boolean;
+	    allowedOrigins?: string[];
+	    getRequestSecurity?: () => RequestSecurityOptions;
+	  }
 ): Promise<void> {
-  const { secret } = opts;
   const sessions = new Map<
     string,
     { transport: StreamableHTTPServerTransport; ac: AbortController; profileId: string }
@@ -38,15 +38,16 @@ export async function httpServerPlugin(
     reply: FastifyReply,
     deps: AgentServerDeps
   ): boolean {
-    if (!checkOrigin(request, reply, opts.allowedOrigins)) return false;
+    const requestSecurity = currentRequestSecurity(opts);
+    if (!checkOrigin(request, reply, requestSecurity.allowedOrigins)) return false;
 
     const token = deps.agentConfig.token;
     if (token) {
       return checkBearerAuth(request, reply, { secret: token, authRequired: true });
     }
     return checkBearerAuth(request, reply, {
-      secret,
-      authRequired: opts.authRequired,
+      secret: requestSecurity.secret,
+      authRequired: requestSecurity.authRequired,
     });
   }
 

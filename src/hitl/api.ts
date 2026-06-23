@@ -1,11 +1,11 @@
 import type { FastifyInstance } from 'fastify';
 import type { HitlEngine } from './engine.js';
-import { checkRequestSecurity } from '../security/request.js';
+import { checkRequestSecurity, type RequestSecurityOptions } from '../security/request.js';
 
 // eslint-disable-next-line @typescript-eslint/require-await
 export async function hitlApiPlugin(
-  app: FastifyInstance,
-  opts: { engine: HitlEngine; secret?: string; authRequired?: boolean; allowedOrigins?: string[] }
+	  app: FastifyInstance,
+	  opts: { engine: HitlEngine; secret?: string; authRequired?: boolean; allowedOrigins?: string[]; getRequestSecurity?: () => RequestSecurityOptions }
 ): Promise<void> {
   const { engine } = opts;
 

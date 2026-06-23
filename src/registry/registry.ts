@@ -86,12 +86,8 @@ export class ToolRegistry {
     agentId: string,
     meta?: Record<string, unknown>
   ): Promise<unknown> {
-    // Resolve alias: if the tool name is an alias, map it to the real backend tool
-    let resolvedName = namespacedName;
-    const agent = this.agents[agentId];
-    const override = agent?.tool_overrides?.[namespacedName];
-    if (override?.alias_of) {
-      resolvedName = override.alias_of;
+    const resolvedName = this.resolveToolName(namespacedName, agentId);
+    if (resolvedName !== namespacedName) {
       log.info({ alias: namespacedName, resolved: resolvedName }, 'Resolved tool alias');
     }
 
@@ -112,6 +108,11 @@ export class ToolRegistry {
 
   getAllTools(): Tool[] {
     return this.cachedTools;
+  }
+
+  resolveToolName(namespacedName: string, agentId: string): string {
+    const agent = this.agents[agentId];
+    return agent?.tool_overrides?.[namespacedName]?.alias_of ?? namespacedName;
   }
 
   async stopAll(): Promise<void> {

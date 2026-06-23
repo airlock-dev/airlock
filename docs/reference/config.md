@@ -257,7 +257,9 @@ middleware:
 
 ## `security`
 
-Host blocking for built-in HTTP tools.
+Host blocking for built-in HTTP and OpenAPI tools. Airlock resolves domain names before outbound requests and fails closed if any resolved address is blocked or DNS cannot be verified.
+
+Known limitation: this is a static DNS check. Full DNS-rebinding protection needs a pinned-resolution HTTP transport that connects to the verified IP while preserving the original hostname for Host, SNI, and certificate validation.
 
 ```yaml
 security:

@@ -1,9 +1,14 @@
-import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterAll, afterEach, vi } from 'vitest';
+import { lookup } from 'dns/promises';
 import { writeFileSync, mkdtempSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { OpenApiAdapter } from '../src/backend/openapi/adapter.js';
 import type { ApiConfig, SecurityConfig } from '../src/config/schema.js';
+
+vi.mock('dns/promises', () => ({ lookup: vi.fn() }));
+
+const lookupMock = vi.mocked(lookup);
 
 const PETSTORE_SPEC = {
   openapi: '3.0.3',
@@ -83,8 +88,13 @@ describe('OpenApiAdapter', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
+  beforeEach(() => {
+    lookupMock.mockResolvedValue([{ address: '203.0.113.10', family: 4 }] as any);
+  });
+
   afterEach(() => {
     vi.restoreAllMocks();
+    lookupMock.mockReset();
   });
 
   it('lists tools with namespaced names', async () => {
@@ -191,6 +201,28 @@ describe('OpenApiAdapter', () => {
     expect(JSON.parse(opts.body as string)).toEqual({ name: 'Fido', tag: 'dog' });
   });
 
+  it('does not follow redirects automatically', async () => {
+    const adapter = new OpenApiAdapter(
+      'petstore',
+      makeConfig({ spec: specPath }),
+      DEFAULT_SECURITY
+    );
+    await adapter.listTools();
+
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response('', { status: 302, headers: { location: 'http://127.0.0.1/admin' } }));
+
+    await adapter.call({
+      tool: 'petstore/listPets',
+      args: {},
+      agentId: 'a1',
+    });
+
+    const opts = fetchSpy.mock.calls[0][1] as RequestInit;
+    expect(opts.redirect).toBe('manual');
+  });
+
   it('returns error for missing path param', async () => {
     const adapter = new OpenApiAdapter(
       'petstore',
@@ -241,6 +273,46 @@ describe('OpenApiAdapter', () => {
 
     expect(result.success).toBe(false);
     expect(result.error).toContain('Blocked host');
+  });
+
+  it('blocks configured API hosts that resolve to blocked addresses', async () => {
+    lookupMock.mockResolvedValue([{ address: '127.0.0.1', family: 4 }] as any);
+    const adapter = new OpenApiAdapter(
+      'petstore',
+      makeConfig({ spec: specPath }),
+      DEFAULT_SECURITY
+    );
+    await adapter.listTools();
+
+    const result = await adapter.call({
+      tool: 'petstore/listPets',
+      args: {},
+      agentId: 'a1',
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('resolved to 127.0.0.1');
+  });
+
+  it('fails closed when API host DNS verification fails', async () => {
+    lookupMock.mockRejectedValue(new Error('ENOTFOUND'));
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    const adapter = new OpenApiAdapter(
+      'petstore',
+      makeConfig({ spec: specPath }),
+      DEFAULT_SECURITY
+    );
+    await adapter.listTools();
+
+    const result = await adapter.call({
+      tool: 'petstore/listPets',
+      args: {},
+      agentId: 'a1',
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('Could not verify host: petstore.example.com');
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it('adds bearer auth header', async () => {

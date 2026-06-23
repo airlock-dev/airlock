@@ -7,11 +7,32 @@ const log = childLogger('mw:exec-policy');
 
 export function execPolicyMiddleware(): Middleware {
   return async (ctx, next) => {
-    if (ctx.toolName !== 'exec/run') return next();
+    const resolvedToolName =
+      ctx.deps.registry.resolveToolName?.(ctx.toolName, ctx.agentId) ??
+      ctx.agentConfig.tool_overrides?.[ctx.toolName]?.alias_of ??
+      ctx.toolName;
+    if (resolvedToolName !== 'exec/run') return next();
 
     const command = ctx.args['command'];
     if (typeof command !== 'string' || !command) {
       throw new McpError(ErrorCode.InvalidParams, 'exec/run requires a string command');
+    }
+    const cwd = ctx.args['cwd'];
+    if (cwd !== undefined && (typeof cwd !== 'string' || cwd.includes('\0'))) {
+      throw new McpError(ErrorCode.InvalidParams, 'exec/run cwd must be a valid string');
+    }
+    const timeoutMs = ctx.args['timeout_ms'];
+    if (
+      timeoutMs !== undefined &&
+      (typeof timeoutMs !== 'number' ||
+        !Number.isFinite(timeoutMs) ||
+        timeoutMs <= 0 ||
+        timeoutMs > ctx.agentConfig.exec.default_timeout_ms)
+    ) {
+      throw new McpError(
+        ErrorCode.InvalidParams,
+        'exec/run timeout_ms must be positive and no greater than exec.default_timeout_ms'
+      );
     }
 
     const cmdDecision = evaluateExecCommand(command, ctx.agentConfig);

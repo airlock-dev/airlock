@@ -27,6 +27,10 @@ export class AuditLogger {
     this.db.insertAudit({ ...entry, args, ts: new Date().toISOString() });
   }
 
+  redactArgs(args: Record<string, unknown>): Record<string, unknown> {
+    return redactFields(args, this.redactPatterns) as Record<string, unknown>;
+  }
+
   recent(n: number): AuditEntry[] {
     return this.db.queryAudit({ limit: n });
   }

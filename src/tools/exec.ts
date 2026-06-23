@@ -17,8 +17,8 @@ export type ExecDecision = 'allow' | 'ask' | 'deny';
 
 const MAX_OUTPUT_BYTES = 10 * 1024 * 1024; // 10MB cap on stdout/stderr
 
-/** Shell metacharacters that allow command chaining / injection */
-const SHELL_INJECTION_RE = /[;|&`$(){}]/;
+/** Shell metacharacters that allow command chaining, redirection, or injection. */
+const SHELL_INJECTION_RE = /[;|&`$(){}<>\n\r]/;
 
 export function buildExecTool(): Tool {
   return {
@@ -38,7 +38,8 @@ export function buildExecTool(): Tool {
 
 /**
  * Reject commands containing shell metacharacters that could bypass
- * the prefix-based allow/deny matching (e.g. chaining via ; && || | $()).
+ * the prefix-based allow/deny matching (e.g. chaining via ; && || | $(),
+ * newlines, or redirection).
  */
 export function containsShellInjection(command: string): boolean {
   return SHELL_INJECTION_RE.test(command);

@@ -7,8 +7,8 @@ export interface NormalizedTool {
   executable?: string;
 }
 
-/** Shell metacharacters that indicate a non-simple command */
-const COMPLEX_COMMAND_RE = /[;|&`$(){}><]/;
+/** Shell metacharacters and line breaks that indicate a non-simple command. */
+const COMPLEX_COMMAND_RE = /[;|&`$(){}><\n\r]/;
 
 /**
  * Tool name mappings per client.

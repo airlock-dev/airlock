@@ -16,6 +16,14 @@ describe('isBlockedHost()', () => {
     expect(isBlockedHost('127.0.0.1', defaultBlocked, [])).toBe(true);
   });
 
+  it('blocks bracketed IPv6 localhost from URL hostnames', () => {
+    expect(isBlockedHost('[::1]', defaultBlocked, [])).toBe(true);
+  });
+
+  it('blocks IPv4-mapped IPv6 loopback', () => {
+    expect(isBlockedHost('[::ffff:7f00:1]', [...defaultBlocked, '::ffff:127.0.0.1'], [])).toBe(true);
+  });
+
   it('blocks *.local domains', () => {
     expect(isBlockedHost('mybox.local', defaultBlocked, [])).toBe(true);
     expect(isBlockedHost('local', defaultBlocked, [])).toBe(false);

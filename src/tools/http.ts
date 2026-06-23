@@ -1,4 +1,4 @@
-import { isBlockedHost } from '../security/blocked-hosts.js';
+import { assertHostNotBlocked } from '../security/blocked-hosts.js';
 import { isDomainAllowed } from '../security/domain-allowlist.js';
 import type { AgentConfig, SecurityConfig } from '../config/schema.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
@@ -48,17 +48,18 @@ export async function executeHttp(
   const timeoutMs = (args['timeout_ms'] as number | undefined) ?? agentConfig.http.timeout_ms;
   const maxBytes = agentConfig.http.max_response_bytes ?? MAX_RESPONSE_BYTES;
 
-  let hostname: string;
+  let parsedUrl: URL;
   try {
-    hostname = new URL(url).hostname;
+    parsedUrl = new URL(url);
   } catch {
     throw new Error(`Invalid URL: ${url}`);
   }
 
-  // Security checks
-  if (isBlockedHost(hostname, securityConfig.blocked_hosts, securityConfig.allowed_local)) {
-    throw new Error(`Blocked host: ${hostname}`);
-  }
+  const hostname = await assertHostNotBlocked(
+    parsedUrl.hostname,
+    securityConfig.blocked_hosts,
+    securityConfig.allowed_local
+  );
 
   if (!isDomainAllowed(hostname, agentConfig.http.domain_allowlist)) {
     throw new Error(`Domain not in agent allowlist: ${hostname}`);

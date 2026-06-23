@@ -60,7 +60,7 @@ describe('buildMiddlewareChain', () => {
     const result = await chain(ctx, async () => { throw new Error('should not reach final next'); });
     // Default includes untrusted-envelope
     expect(result.text).toContain('<untrusted-output');
-    expect(result.text).toContain('</untrusted-output>');
+    expect(result.text).toContain('</untrusted-output-');
   });
 
   it('disables a default with enabled: false', async () => {
@@ -82,7 +82,7 @@ describe('buildMiddlewareChain', () => {
     const ctx = makeCtx(deps, config);
     const result = await chain(ctx, async () => { throw new Error('unreachable'); });
     expect(result.text).toContain('<untrusted-output');
-    expect(result.text).toContain('</untrusted-output>');
+    expect(result.text).toContain('</untrusted-output-');
   });
 
   it('includes strip-query-params middleware', async () => {
@@ -218,6 +218,37 @@ describe('buildMiddlewareChain', () => {
     const result = await chain(ctx, async () => { throw new Error('unreachable'); });
     expect(ctx.meta.needsApproval).toBe(true);
     expect(hitlCreated).toHaveLength(1);
+  });
+
+  it('attaches sandbox info before hitl-gate creates the approval request', async () => {
+    const deps = makeDeps();
+    (deps.allowlist.evaluate as any).mockReturnValue('ask');
+    const config: AgentConfig = {
+      ...makeAgentConfig([]),
+      sandbox: {
+        enabled: true,
+        filesystem: { allow_write: ['/workspace'], deny_read: ['/secret'], deny_write: [] },
+        network: { allowed_domains: ['api.example.com'], denied_domains: [] },
+        overrides: {},
+      },
+    };
+    const chain = buildMiddlewareChain(config, deps);
+
+    (deps.hitlEngine as any).create = vi.fn().mockReturnValue({
+      id: 'id',
+      code: 'CODE',
+      result: Promise.resolve('approved'),
+    });
+
+    const ctx = makeCtx(deps, config);
+    await chain(ctx, async () => { throw new Error('unreachable'); });
+
+    expect((deps.hitlEngine.create as any).mock.calls[0][0].sandbox).toMatchObject({
+      summary: expect.arrayContaining(['network:api.example.com', 'write:/workspace']),
+    });
+    expect((deps.hitlBatcher.add as any).mock.calls[0][0].sandbox).toMatchObject({
+      summary: expect.arrayContaining(['network:api.example.com', 'write:/workspace']),
+    });
   });
 
   it('includes sensitivity-classifier in core zone (escalates on args)', async () => {

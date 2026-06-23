@@ -105,7 +105,7 @@ Enabled by default. No configuration needed.
 
 Injects invisible markers into tool outputs. On subsequent tool calls, Airlock checks if any canary token from a previous response appears in the new request's arguments.
 
-If the agent reads a file and then feeds that content into a shell command, the canary token will be detected — flagging a potential data exfiltration path.
+If the agent reads a file and then feeds that content into a shell command, the canary token will be detected and escalated to HITL by default, flagging a potential data exfiltration path before the call executes. Set `mode: detect` to log only.
 
 Tokens expire after 10 minutes and are tracked per agent and tool.
 
@@ -129,7 +129,7 @@ middleware:
 
 ### Untrusted Output Envelope
 
-Wraps all tool responses in `<untrusted-output tool="..." call-id="...">` tags. This helps the agent's context clearly delineate which data is trusted (instructions, config) vs. untrusted (tool outputs from external sources).
+Wraps all tool responses in per-response tags such as `<untrusted-output-a1b2c3d4e5f6 tool="..." call-id="...">`. The randomized suffix is echoed in the close tag so untrusted output cannot reliably terminate the envelope with a fixed `</untrusted-output>` string.
 
 ```yaml
 middleware:
