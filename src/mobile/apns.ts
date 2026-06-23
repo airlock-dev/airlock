@@ -133,7 +133,7 @@ export class ApnsClient {
       const payload = JSON.stringify({
         aps: {
           alert: {
-            title: `${approval.agentId}: ${approval.tool}`,
+            title: approvalAlertTitle(approval),
             body: approval.body,
           },
           category: 'AIRLOCK_APPROVAL',
@@ -409,4 +409,15 @@ function base64UrlJson(value: unknown): string {
 function normalizeBadgeCount(value: number | undefined): number | undefined {
   if (value === undefined || !Number.isFinite(value)) return undefined;
   return Math.max(0, Math.floor(value));
+}
+
+function approvalAlertTitle(approval: ApnsApprovalPayload): string {
+  if (approval.tool === 'airlock/ask_user') {
+    const question = approval.context?.args.find((arg) =>
+      ['question', 'title', 'message'].includes(arg.key)
+    )?.value;
+    const trimmed = question?.trim();
+    if (trimmed) return trimmed.length > 120 ? `${trimmed.slice(0, 117)}...` : trimmed;
+  }
+  return `${approval.agentId}: ${approval.tool}`;
 }

@@ -63,7 +63,7 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
     func configure() {
         let center = UNUserNotificationCenter.current()
         center.delegate = self
-        center.setNotificationCategories([approvalCategory])
+        center.setNotificationCategories([approvalCategory, activityCategory])
     }
 
     func requestAuthorization() {
@@ -152,6 +152,15 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         )
     }
 
+    private var activityCategory: UNNotificationCategory {
+        UNNotificationCategory(
+            identifier: "AIRLOCK_ACTIVITY",
+            actions: [],
+            intentIdentifiers: [],
+            options: []
+        )
+    }
+
     nonisolated func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse,
@@ -187,6 +196,11 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
 
     private func handle(response: UNNotificationResponse) async {
         let userInfo = response.notification.request.content.userInfo
+        if isActivityNotification(userInfo: userInfo) {
+            postRefresh()
+            return
+        }
+
         let approvalId = (userInfo["approval_id"] as? String) ?? (userInfo["code"] as? String)
         guard let approvalId else {
             UserDefaults.standard.set("Notification did not include an approval id.", forKey: "lastNotificationActionError")
@@ -229,6 +243,11 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
     }
 
     func handleRemoteNotification(userInfo: [AnyHashable: Any]) async -> Bool {
+        if isActivityNotification(userInfo: userInfo) {
+            postRefresh()
+            return true
+        }
+
         guard userInfo["event"] as? String == "approval_resolved" else {
             postRefresh()
             return false
@@ -300,6 +319,10 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
 
     private func postRefresh() {
         NotificationCenter.default.post(name: .airlockShouldRefresh, object: nil)
+    }
+
+    private func isActivityNotification(userInfo: [AnyHashable: Any]) -> Bool {
+        userInfo["event"] as? String == "activity" || userInfo["activity_id"] is String
     }
 }
 

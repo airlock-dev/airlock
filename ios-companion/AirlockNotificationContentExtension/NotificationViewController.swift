@@ -135,8 +135,8 @@ final class NotificationViewController: UIViewController, UNNotificationContentE
     }
 
     private func render(_ context: ApprovalNotificationContext) {
-        titleLabel.text = context.tool
-        metaLabel.text = context.agentId
+        titleLabel.text = context.displayTitle
+        metaLabel.text = context.displayMeta
         timeoutLabel.text = context.timeoutText
         timeoutLabel.textColor = context.timeoutColor
 
@@ -220,6 +220,17 @@ private struct ApprovalNotificationContext {
     var args: [ApprovalArgument]
     var expiresAt: Date?
 
+    var displayTitle: String {
+        if isUserQuestion, let questionText {
+            return questionText
+        }
+        return tool
+    }
+
+    var displayMeta: String {
+        isUserQuestion ? "\(agentId) · user question" : agentId
+    }
+
     static let loading = ApprovalNotificationContext(
         agentId: "Airlock",
         tool: "Approval",
@@ -266,6 +277,17 @@ private struct ApprovalNotificationContext {
         let argumentArgs = args.filter { $0.key != "code" && $0.key != "reason" && $0.key != "note" }
             .sorted { $0.key < $1.key }
         return contextArgs + argumentArgs
+    }
+
+    private var isUserQuestion: Bool {
+        tool == "airlock/ask_user"
+    }
+
+    private var questionText: String? {
+        args.first { ["question", "title", "message"].contains($0.key) }?
+            .value
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .nilIfEmpty
     }
 
     var timeoutText: String {

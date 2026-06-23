@@ -122,33 +122,36 @@ private struct QueueApprovalDetailView: View {
 struct HistoryView: View {
     @ObservedObject var viewModel: AppViewModel
 
+    private var recentItems: [RecentItem] {
+        let activity = viewModel.activityEvents.map(RecentItem.activity)
+        let approvals = viewModel.history.map(RecentItem.approval)
+        return (activity + approvals).sorted { $0.date > $1.date }
+    }
+
     var body: some View {
         List {
-            if !viewModel.activityEvents.isEmpty {
-                Section("Activity") {
-                    ForEach(viewModel.activityEvents) { event in
-                        ActivityRow(event: event)
-                    }
-                }
-            }
-
-            if !viewModel.history.isEmpty {
-                Section("Approvals") {
-                    ForEach(viewModel.history) { approval in
-                        NavigationLink {
-                            ApprovalDetailView(
-                                approval: approval,
-                                mode: .history,
-                                decisionBehavior: viewModel.decisionBehavior,
-                                hapticsEnabled: viewModel.hapticsEnabled,
-                                onApprove: {},
-                                onDeny: {},
-                                onAllowOneHour: {},
-                                onAlwaysAllow: {}
-                            )
-                            .id(approval.id)
-                        } label: {
-                            ApprovalRow(approval: approval, isPending: false)
+            if !recentItems.isEmpty {
+                Section("Recent") {
+                    ForEach(recentItems) { item in
+                        switch item {
+                        case .activity(let event):
+                            ActivityRow(event: event)
+                        case .approval(let approval):
+                            NavigationLink {
+                                ApprovalDetailView(
+                                    approval: approval,
+                                    mode: .history,
+                                    decisionBehavior: viewModel.decisionBehavior,
+                                    hapticsEnabled: viewModel.hapticsEnabled,
+                                    onApprove: {},
+                                    onDeny: {},
+                                    onAllowOneHour: {},
+                                    onAlwaysAllow: {}
+                                )
+                                .id(approval.id)
+                            } label: {
+                                ApprovalRow(approval: approval, isPending: false)
+                            }
                         }
                     }
                 }
@@ -162,8 +165,31 @@ struct HistoryView: View {
         .refreshable {
             await viewModel.refreshNow()
         }
-        .navigationTitle("History")
+        .navigationTitle("Recent")
         .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+private enum RecentItem: Identifiable {
+    case activity(ActivityEvent)
+    case approval(ApprovalRequest)
+
+    var id: String {
+        switch self {
+        case .activity(let event):
+            return "activity-\(event.id)"
+        case .approval(let approval):
+            return "approval-\(approval.id)"
+        }
+    }
+
+    var date: Date {
+        switch self {
+        case .activity(let event):
+            return event.createdAt
+        case .approval(let approval):
+            return approval.resolvedAt ?? approval.createdAt
+        }
     }
 }
 
@@ -493,15 +519,15 @@ struct ActivityRow: View {
     }
 
     private var iconName: String {
-        event.kind == "notification" ? "bell.badge" : "text.alignleft"
+        event.kind == "notification" ? "info.circle.fill" : "text.alignleft"
     }
 
     private var iconBackground: Color {
-        event.kind == "notification" ? .orange.opacity(0.18) : .gray.opacity(0.12)
+        event.kind == "notification" ? .blue.opacity(0.16) : .gray.opacity(0.12)
     }
 
     private var iconForeground: Color {
-        event.kind == "notification" ? .orange : .secondary
+        event.kind == "notification" ? .blue : .secondary
     }
 }
 
