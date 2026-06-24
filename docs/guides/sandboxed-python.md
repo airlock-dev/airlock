@@ -14,28 +14,12 @@ The goal is to let the agent do cheap local scripting without making you approve
 
 All three variants use `alias_of: exec/run` — they're the same underlying tool with different security envelopes. The agent sees them as separate tools with different descriptions and chooses the right one for the task.
 
-## Built-in `python/eval`
+## Current implementation
 
-Airlock also ships a built-in `python/eval` tool that uses macOS `sandbox-exec` for kernel-level isolation:
-
-```yaml
-providers:
-  python: builtin
-```
-
-The `sandbox-exec` profile denies:
-
-- All filesystem writes
-- All network access
-- File writes to any location
-
-And allows:
-
-- Process execution (to run Python)
-- File reads (for Python stdlib and project files)
-- System calls needed for process operation
-
-This is OS-enforced — the Python code cannot bypass it regardless of what it tries.
+Airlock does not expose a separate Python provider. These variants are aliases
+of `exec/run`, and sandboxing is applied by enabling the agent sandbox and
+setting sandbox presets or per-tool overrides. That keeps all command policy,
+approval, audit, and sandbox behavior on the same execution path.
 
 ## Full config example
 

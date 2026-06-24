@@ -17,7 +17,7 @@ It sits between agents like Claude Code, Cursor, and OpenClaw and the tools they
 - MCP servers over stdio, SSE, and streamable HTTP
 - Built-in shell execution through `exec/run`
 - Built-in HTTP tools like `http/get`, `http/post`
-- Built-in sandboxed Python via `python/eval`
+- Sandboxed script variants built from `exec/run` aliases and sandbox presets
 - CLI tools exposed as named MCP tools (auto-discovered from `--help`, Fig specs, or shell completions)
 - REST APIs exposed as MCP tools (auto-discovered from OpenAPI specs)
 - External clients through the `/hook` endpoint
@@ -34,7 +34,7 @@ It sits between agents like Claude Code, Cursor, and OpenClaw and the tools they
 - **Management API** for querying logs and managing approvals programmatically
 - **Hot reload** — edit config without restarting
 - **Batched notifications** to reduce approval fatigue
-- **OS-level sandboxing** via macOS `sandbox-exec`
+- **OS-level sandboxing** through the sandbox runtime
 - **Native macOS companion app** for menu bar approvals
 
 ## Start here

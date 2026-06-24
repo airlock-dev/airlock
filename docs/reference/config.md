@@ -6,16 +6,18 @@ Airlock config is YAML. Everything lives in a single file (typically `airlock.ya
 
 ```yaml
 providers: # MCP servers and built-ins
+value_sets: # Reusable argument value lists
+arg_dimensions: # Reusable tool-argument bindings for arg_scope
 profiles: # Reusable permission sets
 sandbox_presets: # Reusable sandbox envelopes
 clis: # CLI tools exposed as MCP tools
 apis: # REST APIs exposed as MCP tools
 agents: # Per-agent policy and config
 approvals: # Global approval provider config
-middleware: # Middleware pipeline config
 security: # Host blocking, domain allowlists
 audit: # Audit log settings
 server: # Gateway server settings
+lint: # Static hygiene rule configuration
 ```
 
 ## `providers`
@@ -52,7 +54,6 @@ providers:
   exec: builtin
   http: builtin
   airlock: builtin
-  python: builtin
 ```
 
 ## `profiles`
@@ -75,7 +76,65 @@ profiles:
       - github/create_pr
 ```
 
-Profiles may extend other profiles. Profile inheritance is resolved once at config load, before agents consume profiles. Unknown profile references and profile cycles are fatal config errors.
+Profiles may extend other profiles. Profile inheritance is resolved once at
+config load, before agents consume profiles. Unknown profile references and
+profile cycles are fatal config errors. Profiles can also carry `arg_policy` and
+`arg_scope` entries that agents inherit alongside allow/ask/deny rules.
+
+## `value_sets` and `arg_dimensions`
+
+Reusable argument restrictions are split into value sets and dimensions.
+
+`value_sets` declare named non-empty lists. Use either a plain array or an
+object when you want to hide the concrete values in policy-denial messages:
+
+```yaml
+value_sets:
+  airlock_repos:
+    - airlock-dev/airlock
+
+  safe_fix_branches:
+    values:
+      - 'fix/*'
+      - 'feat/*'
+    expose_values: true
+```
+
+`arg_dimensions` map a reusable name onto concrete tool argument paths. `match`
+controls how the value set is converted into runtime argument policy:
+`in` creates exact allow-list checks, `glob_in` creates glob-pattern checks, and
+`each_in` requires every value in an array argument to be allowed. `normalize`
+can be `phone`, `email`, `lower`, or `trim`.
+
+```yaml
+arg_dimensions:
+  github_repo:
+    match: in
+    bindings:
+      github/push_files: repo
+      github/create_pull_request: repo
+
+  github_branch:
+    match: glob_in
+    bindings:
+      github/push_files: branch
+      github/create_pull_request: head
+```
+
+Profiles and agents attach these dimensions through `arg_scope`:
+
+```yaml
+profiles:
+  airlock_autofix:
+    arg_scope:
+      github_repo: airlock_repos
+      github_branch: safe_fix_branches
+```
+
+At config load, Airlock expands `arg_scope` into concrete `arg_policy`
+constraints. Unknown dimensions, unknown value sets, empty dimensions, and
+declared argument controls that resolve to no effective runtime constraints are
+reported by `airlock config check`.
 
 ## `sandbox_presets`
 
@@ -169,6 +228,22 @@ agents:
           label: Work
         action:
           allow: [create, update, delete]
+      github/push_files:
+        branch:
+          glob_in: safe_fix_branches
+          label: Safe branch
+
+    arg_scope: # Reusable argument constraints via arg_dimensions
+      github_repo: airlock_repos
+
+    middleware: # Optional per-agent configurable middleware
+      - name: rate-limiter
+        max_requests: 100
+        window_ms: 60000
+        per: agent
+      - name: output-size-limiter
+        max_lines: 200
+        max_chars: 30000
 
     sandbox: # Agent-level sandbox
       enabled: true
@@ -221,40 +296,28 @@ approvals:
       interruption_level: time-sensitive
 ```
 
-## `middleware`
+Agent `middleware` is an optional array. If omitted, Airlock enables the default
+configurable middleware: `schema-validator`, `untrusted-envelope`, and
+`output-injection-detector`. Set `middleware: []` for the bare fixed pipeline,
+or include `{ name: <middleware>, enabled: false }` to disable one default. See
+[Middleware Pipeline](/concepts/middleware).
 
-Middleware pipeline config. See [Middleware Pipeline](/concepts/middleware).
+## `lint`
+
+Static hygiene rule configuration for `airlock lint`.
 
 ```yaml
-middleware:
-  injection_detector:
-    backend: regex
-    mode: escalate
-
-  sensitivity_classifier:
-    mode: detect
-    threshold: 0.7
-
-  canary_tokens: true
-
-  output_injection:
-    mode: mangle
-
-  untrusted_envelope: true
-
-  rate_limiter:
-    max_requests: 100
-    window_ms: 60000
-    per: agent
-
-  output_size_limiter:
-    max_lines: 200
-    max_chars: 30000
-
-  output_summarizer:
-    model: claude-haiku-4-5-20251001
-    threshold_chars: 10000
+lint:
+  disable:
+    - dead-deny
+  severity:
+    unused-profile: warn
+    missing-env-ref: error
 ```
+
+Use `disable` to permanently accept a rule for a config, and `severity` to
+re-grade a rule as `info`, `warn`, or `error`. CLI flags such as
+`--disable` and `--rule` override this block for one invocation.
 
 ## `security`
 
@@ -340,15 +403,15 @@ and, when `expose_tools_api` is true, the REST agent tool API
   authentication model as MCP routes.
 - `management_api.enabled` starts a separate control-plane listener for
   `/health`, `/hitl/*`, `/audit`, the dashboard approval bridge (`/events`,
-  `/approve`, `/deny`, `/version*`), `/mobile/*`, `/admin/tools`, and `/hook`.
+  `/approve`, `/deny`, `/version*`), `/activity`, `/mobile/*`, `/admin/tools`,
+  and `/hook`.
   It is disabled by default. When enabled, every agent must set `token` so the
   data-plane fallback cannot become an implicit agent credential.
 - `management_api.api_secret` protects the control-plane listener. If unset,
   Airlock temporarily falls back to `server.api_secret` for backward
-  compatibility and emits a deprecation warning: `management_api is using
-  server.api_secret; set server.management_api.api_secret to separate the
-  control-plane secret from the data-plane fallback.` If both secrets resolve to
-  the same value, config validation warns so operators can rotate one.
+  compatibility and emits a deprecation warning telling operators to set
+  `server.management_api.api_secret` separately. If both secrets resolve to the
+  same value, config validation warns so operators can rotate one.
 - `management_api.host` defaults to `127.0.0.1`. Binding it beyond loopback
   requires `management_api.insecure_remote_bind: true`; without that explicit
   opt-in, config validation refuses to start.

@@ -80,7 +80,8 @@ Features:
 - **Toggle commands** — enable/disable individual commands or entire groups
 - **Inspect params** — view command parameters and their types
 - **Search** — press `/` to filter commands
-- **Export options** — write YAML to file, merge into existing config, or copy to clipboard
+- **Export options** — edit `./airlock.yaml` directly, copy to clipboard, print,
+  or write a generated `<tool>-commands.yaml`
 
 The TUI is ideal for large CLIs with hundreds of subcommands (like `kubectl` or `docker`) where you only want to expose a subset.
 

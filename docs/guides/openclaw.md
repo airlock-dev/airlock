@@ -51,7 +51,10 @@ server:
 airlock setup openclaw
 ```
 
-That's it. The command copies the bundled plugin into `~/.openclaw/extensions/airlock-bridge/`, installs its dependencies, and prints next steps.
+That's it. The command creates
+`~/.openclaw/extensions/airlock-bridge` as a symlink to the bundled plugin and
+prints next steps. Because it is a symlink, Airlock upgrades update the plugin
+without rerunning setup.
 
 ### 3. Restart the OpenClaw gateway
 

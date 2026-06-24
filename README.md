@@ -184,7 +184,7 @@ apis:
 Interactively assign allow/ask/deny to tools discovered from your live MCP servers:
 
 ```bash
-npm run configure-agent -- --config ./airlock.yaml --agent claude-code
+airlock configure-agent --config ./airlock.yaml --agent claude-code
 ```
 
 Navigate with `j/k`, set permissions with `a`/`s`/`d` (per tool or bulk per provider), then `Enter` to edit config directly, copy to clipboard, or print YAML.
@@ -263,7 +263,6 @@ agents:
     extends: [readonly]
     exec:
       allow: ['git status', 'git diff*', 'npm test']
-      deny: ['*']
 
 approvals:
   provider:

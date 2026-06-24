@@ -96,6 +96,14 @@ agents:
       - python/sandboxed
     ask:
       - python/full
+    sandbox:
+      enabled: true
+      filesystem:
+        allow_write: ['/tmp', '/private/tmp']
+        deny_read: ['~/.ssh', '~/.aws', '.env']
+        deny_write: ['.']
+      network:
+        allowed_domains: []
     tool_overrides:
       python/sandboxed:
         alias_of: exec/run

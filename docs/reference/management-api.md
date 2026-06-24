@@ -46,7 +46,8 @@ server:
 
 `server.management_api.api_secret` protects the control-plane listener:
 `/health`, `/hitl/*`, `/audit`, the dashboard approval bridge (`/events`,
-`/approve`, `/deny`, `/version*`), `/mobile/*`, `/admin/tools`, and `/hook`.
+`/approve`, `/deny`, `/version*`), `/activity`, `/mobile/*`, `/admin/tools`,
+and `/hook`.
 `server.api_secret` remains the data-plane fallback for tokenless agents on MCP
 and REST tools routes. When the management API is enabled, every agent must also
 set its own `token`; Airlock rejects tokenless agents in split mode so the
@@ -82,7 +83,8 @@ server:
 
 When `management_api.enabled` is false, `/health`, `/hitl/*`, `/audit`, the
 dashboard approval bridge (`/events`, `/approve`, `/deny`, `/version*`),
-`/mobile/*`, `/admin/tools`, and `/hook` are not registered on any listener.
+`/activity`, `/mobile/*`, `/admin/tools`, and `/hook` are not registered on any
+listener.
 
 Agent-facing REST tool execution is not part of the management API. When
 `server.expose_tools_api` is true, `/agents/:agentId/tools` and
@@ -137,7 +139,8 @@ Lists all pending approval requests.
 Approve a pending request by ID.
 
 ```bash
-curl -X POST http://localhost:4113/hitl/approve/abc123
+curl -X POST http://localhost:4113/hitl/approve/abc123 \
+  -H "Authorization: Bearer $MANAGEMENT_API_SECRET"
 ```
 
 ### `POST /hitl/deny/:id`
@@ -146,6 +149,7 @@ Deny a pending request by ID. Optionally include a reason:
 
 ```bash
 curl -X POST http://localhost:4113/hitl/deny/abc123 \
+  -H "Authorization: Bearer $MANAGEMENT_API_SECRET" \
   -H "Content-Type: application/json" \
   -d '{"reason": "Not authorized for production pushes"}'
 ```
@@ -162,7 +166,8 @@ Query the audit log. All parameters are optional:
 | `limit`   | Maximum number of entries to return               |
 
 ```bash
-curl "http://localhost:4113/audit?agent=claude-code&tool=exec/run&limit=50"
+curl -H "Authorization: Bearer $MANAGEMENT_API_SECRET" \
+  "http://localhost:4113/audit?agent=claude-code&tool=exec/run&limit=50"
 ```
 
 Returns an array of audit entries:
@@ -189,9 +194,10 @@ This endpoint is used by the in-process dashboard, standalone dashboard, and
 macOS Companion app.
 
 Browser `EventSource` cannot set an `Authorization` header directly. In split
-mode, run `airlock dashboard` with `--gateway-secret`,
-`AIRLOCK_GATEWAY_SECRET`, or `MANAGEMENT_API_SECRET`; the dashboard server
-proxies the SSE connection to the gateway with the bearer token.
+mode, run `airlock dashboard` with `--gateway-secret` or
+`AIRLOCK_GATEWAY_SECRET`; the dashboard server proxies the SSE connection to the
+gateway with the bearer token. If your gateway config uses
+`MANAGEMENT_API_SECRET`, pass that value to the dashboard explicitly.
 
 The macOS Companion app can connect directly to the management API by setting
 its Dashboard URL to `http://127.0.0.1:4113` and its gateway bearer token to
@@ -255,6 +261,11 @@ List active registered mobile devices. Requires the admin bearer token.
 
 Revoke a registered mobile device. Requires the admin bearer token.
 
+### `DELETE /mobile/device`
+
+Revoke the calling mobile device. Requires that device's bearer token, or the
+admin bearer token.
+
 ### `PUT /mobile/device`
 
 Update the calling device's APNs token after iOS rotates it.
@@ -266,6 +277,10 @@ List currently pending approvals in the mobile app shape.
 ### `GET /mobile/approvals/history?limit=50`
 
 List recently resolved approvals from the persisted HITL queue.
+
+### `GET /mobile/activity`
+
+List recent activity events in the mobile app shape.
 
 ### `POST /mobile/approvals/:id/decision`
 
@@ -289,6 +304,10 @@ not the filtered tool list an agent receives.
   "errors": []
 }
 ```
+
+### `GET /activity`
+
+Returns recent activity events for dashboard-style clients.
 
 ### `GET /version`
 

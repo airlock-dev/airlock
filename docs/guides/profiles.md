@@ -1,6 +1,8 @@
 # Composable Profiles
 
-Profiles let you define reusable permission sets that agents inherit. Instead of duplicating allow/ask/deny lists across agents, define them once and compose with `extends`.
+Profiles let you define reusable permission and argument-control sets that
+agents inherit. Instead of duplicating allow/ask/deny lists or shared argument
+scopes across agents, define them once and compose with `extends`.
 
 ## Defining profiles
 
@@ -149,6 +151,50 @@ profiles:
       - deploy/staging
 ```
 
+### Scoped write access
+
+Profiles can also carry argument controls. Define shared `value_sets` and
+`arg_dimensions`, then attach them through a profile-level `arg_scope`:
+
+```yaml
+value_sets:
+  airlock_repos:
+    - airlock-dev/airlock
+  safe_fix_branches:
+    - 'fix/*'
+    - 'feat/*'
+
+arg_dimensions:
+  github_repo:
+    match: in
+    bindings:
+      github/push_files: repo
+      github/create_pull_request: repo
+  github_branch:
+    match: glob_in
+    bindings:
+      github/push_files: branch
+      github/create_pull_request: head
+
+profiles:
+  airlock-autofix:
+    allow:
+      - github/push_files
+      - github/create_pull_request
+    arg_scope:
+      github_repo: airlock_repos
+      github_branch: safe_fix_branches
+
+agents:
+  autofix:
+    extends: [airlock-autofix]
+```
+
+When the profile is resolved, Airlock expands the scope into concrete
+`arg_policy` checks for the bound tool arguments.
+
 ## Profiles and sandbox presets
 
-Profiles only affect allow/ask/deny rules. Sandbox presets are configured separately at the agent level or per tool variant. See [Sandbox Presets and Variants](/concepts/sandboxing) for details.
+Profiles affect permission rules and argument controls (`arg_policy` / `arg_scope`).
+Sandbox presets are configured separately at the agent level or per tool variant.
+See [Sandbox Presets and Variants](/concepts/sandboxing) for details.

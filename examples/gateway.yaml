@@ -116,8 +116,6 @@ agents:
         - 'git status'
         - 'git diff*'
         - 'npm test'
-      deny:
-        - '*' # deny everything not explicitly allowed
 
 # Approval configuration
 approvals:

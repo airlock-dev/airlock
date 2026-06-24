@@ -3,18 +3,24 @@ https://docs.airlock.bot
 
 Airlock is a permissions-aware MCP gateway for AI agents. It fronts MCP servers, CLI tools, built-in exec/http tools, and OpenAPI-backed APIs with per-agent allow/ask/deny policy, approvals, audit logging, and sandboxed tool variants.
 
-Key pages:
+Pages:
+- /
 - /quickstart
+- /concepts/approvals-and-audit
+- /concepts/middleware
 - /concepts/permissions
 - /concepts/providers-and-tools
-- /concepts/approvals-and-audit
 - /concepts/sandboxing
+- /guides/api-discovery
 - /guides/claude-code
 - /guides/cli-discovery
-- /guides/hook-endpoint
 - /guides/dashboard
 - /guides/docker-deploy
+- /guides/hook-endpoint
+- /guides/openclaw
+- /guides/profiles
 - /guides/sandboxed-python
-- /reference/config
 - /reference/cli
+- /reference/config
 - /reference/hitl-providers
+- /reference/management-api
