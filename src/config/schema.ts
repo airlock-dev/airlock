@@ -557,6 +557,29 @@ export const ServerConfig = z
   });
 export type ServerConfig = z.infer<typeof ServerConfig>;
 
+export const LINT_RULE_IDS = [
+  'dead-deny',
+  'unused-profile',
+  'unused-value-set',
+  'unused-dimension',
+  'empty-agent',
+  'missing-env-ref',
+  'unresolvable-ref',
+] as const;
+export type LintRuleId = (typeof LINT_RULE_IDS)[number];
+
+export const LintRuleIdConfig = z.enum(LINT_RULE_IDS);
+export const LintRuleSeverityConfig = z.enum(['info', 'warn', 'error']);
+export type LintRuleSeverity = z.infer<typeof LintRuleSeverityConfig>;
+
+export const LintConfig = z
+  .object({
+    disable: z.array(LintRuleIdConfig).default([]),
+    severity: z.record(LintRuleIdConfig, LintRuleSeverityConfig).default({}),
+  })
+  .strict();
+export type LintConfig = z.infer<typeof LintConfig>;
+
 // --- CLI backend config ---
 
 export const CliParamConfig = z
@@ -763,6 +786,7 @@ export const GatewayConfig = z
     security: SecurityConfig.default({}),
     audit: AuditConfig.default({}),
     server: ServerConfig.default({}),
+    lint: LintConfig.default({}),
   })
   .strict()
   .transform((config) => ({

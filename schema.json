@@ -1939,6 +1939,52 @@
           },
           "additionalProperties": false,
           "default": {}
+        },
+        "lint": {
+          "type": "object",
+          "properties": {
+            "disable": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "dead-deny",
+                  "unused-profile",
+                  "unused-value-set",
+                  "unused-dimension",
+                  "empty-agent",
+                  "missing-env-ref",
+                  "unresolvable-ref"
+                ]
+              },
+              "default": []
+            },
+            "severity": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string",
+                "enum": [
+                  "info",
+                  "warn",
+                  "error"
+                ]
+              },
+              "propertyNames": {
+                "enum": [
+                  "dead-deny",
+                  "unused-profile",
+                  "unused-value-set",
+                  "unused-dimension",
+                  "empty-agent",
+                  "missing-env-ref",
+                  "unresolvable-ref"
+                ]
+              },
+              "default": {}
+            }
+          },
+          "additionalProperties": false,
+          "default": {}
         }
       },
       "additionalProperties": false

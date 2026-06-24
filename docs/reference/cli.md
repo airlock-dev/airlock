@@ -124,9 +124,56 @@ Run static hygiene checks over a valid resolved config:
 
 ```bash
 airlock lint --config airlock.yaml
+airlock lint --config airlock.yaml --verbose
+airlock lint --config airlock.yaml --fail-on info
 ```
 
-Warnings include unreferenced profiles, value sets, and argument dimensions; deny rules that do not overlap any grant; agents with an empty effective surface; and missing environment-variable references.
+`lint` is an opinionated hygiene command. `config check` remains the correctness and CI gate for schema, security, and fail-closed validation.
+
+Rules have stable ids and default severities:
+
+| Rule               | Default | Meaning                                                      |
+| ------------------ | ------- | ------------------------------------------------------------ |
+| `dead-deny`        | `info`  | A deny pattern does not overlap any allow or ask pattern     |
+| `unused-profile`   | `info`  | A profile is registered but not inherited by any agent       |
+| `unused-value-set` | `info`  | A value set is not referenced by arg scope or arg policy     |
+| `unused-dimension` | `info`  | An argument dimension is not referenced by any arg scope     |
+| `empty-agent`      | `warn`  | An agent resolves to zero allow/ask tools                    |
+| `missing-env-ref`  | `warn`  | A `${VAR}` reference is unset; the value is not read by lint |
+| `unresolvable-ref` | `warn`  | An `extends`, `arg_scope`, or value set reference is missing |
+
+By default, warnings are printed in full and each info rule is collapsed to one summary line:
+
+```text
+dead-deny: 96 (info) - [selene] github/create_or_update_file, [selene] github/push_files, [selene] github/delete_file ... +93 more
+unused-profile: 7 (info) - github-write, bluebubbles-findmy, bluebubbles-groups ... +4 more
+info collapsed; --verbose to list all; --quiet to hide; --fail-on info to gate.
+```
+
+Options:
+
+| Flag             | Description                                                                           |
+| ---------------- | ------------------------------------------------------------------------------------- |
+| `--config`, `-c` | Path to airlock.yaml config file                                                      |
+| `--verbose`      | Expand info findings instead of collapsing them                                       |
+| `--quiet`        | Hide info summaries and print only warn/error findings                                |
+| `--fail-on`      | Non-zero threshold: `warn` (default), `info`, or `error`                              |
+| `--only`         | Run only comma-separated rule ids for this invocation                                 |
+| `--disable`      | Disable comma-separated rule ids for this invocation                                  |
+| `--rule`         | Override one rule for this invocation, e.g. `dead-deny=off` or `empty-agent=error`    |
+| `--json`         | Print grouped findings as an array of `{ rule, severity, count, findings[] }` entries |
+
+Use the top-level `lint:` block to permanently accept or re-grade rules:
+
+```yaml
+lint:
+  disable:
+    - dead-deny
+  severity:
+    unused-profile: warn
+```
+
+CLI flags override the config block. `--rule dead-deny=warn` re-enables and re-grades a rule disabled in config for that invocation.
 
 ## Discover CLI tools
 

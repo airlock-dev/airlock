@@ -7,16 +7,59 @@ import {
   type AgentPermissionExplanation,
   type PermissionWithProvenance,
 } from '../config/profiles.js';
+import { LINT_RULE_IDS, type LintRuleId, type LintRuleSeverity } from '../config/schema.js';
 import { discoverTools } from '../configure-web/cli.js';
 
-type FailLevel = 'warn' | 'error';
+type CheckFailLevel = 'warn' | 'error';
 type PermissionLevel = 'allow' | 'ask' | 'deny' | 'any';
+type LintRuleMode = LintRuleSeverity | 'off';
 
 interface LoadedForCli {
   config: Config;
   rawConfig: Config;
   diagnostics: ConfigDiagnostic[];
 }
+
+export interface LintFinding {
+  rule: LintRuleId;
+  severity: LintRuleSeverity;
+  agent?: string;
+  message: string;
+  suggestion?: string;
+  example: string;
+}
+
+interface LintRuleGroup {
+  rule: LintRuleId;
+  severity: LintRuleSeverity;
+  count: number;
+  findings: LintFinding[];
+}
+
+interface LintControls {
+  activeRules: Set<LintRuleId>;
+  severity: Record<LintRuleId, LintRuleSeverity>;
+}
+
+const DEFAULT_LINT_SEVERITY: Record<LintRuleId, LintRuleSeverity> = {
+  'dead-deny': 'info',
+  'unused-profile': 'info',
+  'unused-value-set': 'info',
+  'unused-dimension': 'info',
+  'empty-agent': 'warn',
+  'missing-env-ref': 'warn',
+  'unresolvable-ref': 'warn',
+};
+
+const LINT_RULE_LABELS: Record<LintRuleId, string> = {
+  'dead-deny': 'Deny pattern does not overlap any allow/ask pattern.',
+  'unused-profile': 'Profile is not referenced by any agent.',
+  'unused-value-set': 'Value set is not referenced by arg_scope or arg_policy.',
+  'unused-dimension': 'Argument dimension is not referenced by arg_scope.',
+  'empty-agent': 'Agent resolves to zero allow/ask tools.',
+  'missing-env-ref': 'Environment variable reference is unset.',
+  'unresolvable-ref': 'Extends, arg_scope, or value_set reference cannot be resolved.',
+};
 
 export async function runIntrospection(argv: string[]): Promise<void> {
   const command = argv[0];
@@ -82,7 +125,7 @@ export function checkConfig(argv: string[]): CliResult {
     return ok(configCheckHelp(), values.json);
   }
 
-  const failOn = parseFailLevel(values['fail-on']);
+  const failOn = parseCheckFailLevel(values['fail-on']);
   const loaded = loadConfigDetailed(values.config ?? './airlock.yaml', {
     strict: values.strict,
     resolveEnv: !values['no-resolve'],
@@ -241,12 +284,17 @@ async function toolsCommand(argv: string[]): Promise<CliResult> {
   };
 }
 
-function lintCommand(argv: string[]): CliResult {
+export function lintCommand(argv: string[]): CliResult {
   const { values } = parseArgs({
     args: argv,
     options: {
       config: { type: 'string', short: 'c', default: './airlock.yaml' },
-      strict: { type: 'boolean', default: false },
+      verbose: { type: 'boolean', default: false },
+      quiet: { type: 'boolean', default: false },
+      'fail-on': { type: 'string', default: 'warn' },
+      only: { type: 'string', multiple: true },
+      disable: { type: 'string', multiple: true },
+      rule: { type: 'string', multiple: true },
       json: { type: 'boolean', default: false },
       help: { type: 'boolean', short: 'h', default: false },
     },
@@ -255,21 +303,55 @@ function lintCommand(argv: string[]): CliResult {
 
   if (values.help) return ok(lintHelp(), values.json);
 
-  const loaded = loadForCli(values.config ?? './airlock.yaml', { strict: values.strict });
-  if ('result' in loaded) return loaded.result(values.json);
+  const failOn = parseLintFailLevel(values['fail-on']);
+  const loaded = loadConfigDetailed(values.config ?? './airlock.yaml', { resolveEnv: false });
+  if (!loaded.config || !loaded.rawConfig) {
+    return {
+      json: values.json,
+      exitCode: 1,
+      data: { ok: false, diagnostics: groupDiagnostics(loaded.diagnostics) },
+      text: formatCheck({ ok: false, diagnostics: groupDiagnostics(loaded.diagnostics) }),
+    };
+  }
 
-  const diagnostics = lintConfig(loaded.rawConfig, loaded.config);
-  const payload = { ok: diagnostics.length === 0, diagnostics: groupDiagnostics(diagnostics) };
+  const unresolvableDiagnostics = loaded.diagnostics.filter(isUnresolvableRefDiagnostic);
+  const fatalDiagnostics = loaded.diagnostics.filter(
+    (diagnostic) => diagnostic.level === 'error' && !isUnresolvableRefDiagnostic(diagnostic)
+  );
+  if (fatalDiagnostics.length > 0) {
+    return {
+      json: values.json,
+      exitCode: 1,
+      data: { ok: false, diagnostics: groupDiagnostics(fatalDiagnostics) },
+      text: formatCheck({ ok: false, diagnostics: groupDiagnostics(fatalDiagnostics) }),
+    };
+  }
+
+  const controls = buildLintControls(loaded.rawConfig.lint, {
+    only: values.only,
+    disable: values.disable,
+    rule: values.rule,
+  });
+  const resolvedConfig = unresolvableDiagnostics.length === 0 ? loaded.config : undefined;
+  const findings = applyLintControls(
+    [
+      ...unresolvableDiagnostics.map(lintFindingFromDiagnostic),
+      ...lintConfig(loaded.rawConfig, resolvedConfig),
+    ],
+    controls
+  );
+  const rules = groupLintFindings(findings);
+  const payload = { ok: !shouldFailLint(rules, failOn), failOn, rules };
   return {
     json: values.json,
-    exitCode: values.strict && diagnostics.length > 0 ? 1 : 0,
-    data: payload,
-    text: formatCheck(payload),
+    exitCode: payload.ok ? 0 : 1,
+    data: values.json ? rules : payload,
+    text: formatLint(payload, { verbose: values.verbose, quiet: values.quiet }),
   };
 }
 
-export function lintConfig(rawConfig: Config, resolvedConfig: Config): ConfigDiagnostic[] {
-  const diagnostics: ConfigDiagnostic[] = [];
+export function lintConfig(rawConfig: Config, resolvedConfig?: Config): LintFinding[] {
+  const findings: LintFinding[] = [];
   const reachableProfiles = new Set<string>();
   const referencedValueSets = new Set<string>();
   const referencedDimensions = new Set<string>();
@@ -298,34 +380,45 @@ export function lintConfig(rawConfig: Config, resolvedConfig: Config): ConfigDia
 
   for (const profileName of Object.keys(rawConfig.profiles)) {
     if (!reachableProfiles.has(profileName)) {
-      diagnostics.push({
-        level: 'warn',
+      findings.push({
+        rule: 'unused-profile',
+        severity: DEFAULT_LINT_SEVERITY['unused-profile'],
         message: `profiles.${profileName} is not referenced by any agent.`,
+        example: profileName,
       });
     }
   }
 
   for (const valueSetName of Object.keys(rawConfig.value_sets)) {
     if (!referencedValueSets.has(valueSetName)) {
-      diagnostics.push({ level: 'warn', message: `value_sets.${valueSetName} is not referenced.` });
+      findings.push({
+        rule: 'unused-value-set',
+        severity: DEFAULT_LINT_SEVERITY['unused-value-set'],
+        message: `value_sets.${valueSetName} is not referenced.`,
+        example: valueSetName,
+      });
     }
   }
 
   for (const dimensionName of Object.keys(rawConfig.arg_dimensions)) {
     if (!referencedDimensions.has(dimensionName)) {
-      diagnostics.push({
-        level: 'warn',
+      findings.push({
+        rule: 'unused-dimension',
+        severity: DEFAULT_LINT_SEVERITY['unused-dimension'],
         message: `arg_dimensions.${dimensionName} is not referenced by any arg_scope.`,
+        example: dimensionName,
       });
     }
   }
 
-  for (const [agentName, agent] of Object.entries(resolvedConfig.agents)) {
+  for (const [agentName, agent] of Object.entries(resolvedConfig?.agents ?? {})) {
     if (agent.allow.length === 0 && agent.ask.length === 0) {
-      diagnostics.push({
-        level: 'warn',
+      findings.push({
+        rule: 'empty-agent',
+        severity: DEFAULT_LINT_SEVERITY['empty-agent'],
         agent: agentName,
         message: 'Agent has an empty effective allow/ask surface.',
+        example: `[${agentName}]`,
       });
     }
 
@@ -334,23 +427,27 @@ export function lintConfig(rawConfig: Config, resolvedConfig: Config): ConfigDia
         staticPatternsOverlap(pattern, denyPattern)
       );
       if (!overlapsGrant) {
-        diagnostics.push({
-          level: 'warn',
+        findings.push({
+          rule: 'dead-deny',
+          severity: DEFAULT_LINT_SEVERITY['dead-deny'],
           agent: agentName,
           message: `deny pattern "${denyPattern}" does not overlap any allow or ask pattern.`,
+          example: `[${agentName}] ${denyPattern}`,
         });
       }
     }
   }
 
   for (const envRef of missingEnvRefs(rawConfig)) {
-    diagnostics.push({
-      level: 'warn',
+    findings.push({
+      rule: 'missing-env-ref',
+      severity: DEFAULT_LINT_SEVERITY['missing-env-ref'],
       message: `Environment variable ${envRef} is referenced but not set.`,
+      example: `\${${envRef}}`,
     });
   }
 
-  return diagnostics;
+  return findings;
 }
 
 function collectArgRefs(
@@ -372,6 +469,143 @@ function collectArgRefs(
       }
     }
   }
+}
+
+function buildLintControls(
+  config: Config['lint'],
+  values: {
+    only?: string | string[];
+    disable?: string | string[];
+    rule?: string | string[];
+  }
+): LintControls {
+  const activeRules = new Set<LintRuleId>(LINT_RULE_IDS);
+  const severity: Record<LintRuleId, LintRuleSeverity> = { ...DEFAULT_LINT_SEVERITY };
+
+  for (const rule of config.disable) activeRules.delete(rule);
+
+  for (const [rule, level] of Object.entries(config.severity) as [LintRuleId, LintRuleSeverity][]) {
+    severity[rule] = level;
+  }
+
+  const only = parseRuleIdList(values.only, '--only');
+  if (only.length > 0) {
+    activeRules.clear();
+    for (const rule of only) activeRules.add(rule);
+  }
+
+  for (const rule of parseRuleIdList(values.disable, '--disable')) {
+    activeRules.delete(rule);
+  }
+
+  for (const { rule, mode } of parseRuleOverrides(values.rule)) {
+    if (mode === 'off') {
+      activeRules.delete(rule);
+    } else {
+      activeRules.add(rule);
+      severity[rule] = mode;
+    }
+  }
+
+  return { activeRules, severity };
+}
+
+function applyLintControls(findings: LintFinding[], controls: LintControls): LintFinding[] {
+  return findings.flatMap((finding) => {
+    if (!controls.activeRules.has(finding.rule)) return [];
+    return [{ ...finding, severity: controls.severity[finding.rule] }];
+  });
+}
+
+function parseRuleIdList(value: string | string[] | undefined, flag: string): LintRuleId[] {
+  return stringOptionValues(value)
+    .flatMap((entry) => entry.split(','))
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0)
+    .map((entry) => parseLintRuleId(entry, flag));
+}
+
+function parseRuleOverrides(
+  value: string | string[] | undefined
+): { rule: LintRuleId; mode: LintRuleMode }[] {
+  return stringOptionValues(value)
+    .flatMap((entry) => entry.split(','))
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0)
+    .map((entry) => {
+      const [rawRule, rawMode, ...extra] = entry.split('=');
+      if (!rawRule || !rawMode || extra.length > 0) {
+        throw new Error('--rule must be formatted as <id>=off|info|warn|error.');
+      }
+      return {
+        rule: parseLintRuleId(rawRule, '--rule'),
+        mode: parseLintRuleMode(rawMode),
+      };
+    });
+}
+
+function stringOptionValues(value: string | string[] | undefined): string[] {
+  if (value === undefined) return [];
+  return Array.isArray(value) ? value : [value];
+}
+
+function parseLintRuleId(value: string, flag: string): LintRuleId {
+  if ((LINT_RULE_IDS as readonly string[]).includes(value)) return value as LintRuleId;
+  throw new Error(
+    `${flag} references unknown lint rule "${value}". Valid rules: ${LINT_RULE_IDS.join(', ')}.`
+  );
+}
+
+function parseLintRuleMode(value: string): LintRuleMode {
+  if (value === 'off' || value === 'info' || value === 'warn' || value === 'error') return value;
+  throw new Error('--rule severity must be off, info, warn, or error.');
+}
+
+function parseLintFailLevel(value: unknown): LintRuleSeverity {
+  if (value === 'info' || value === 'warn' || value === 'error') return value;
+  throw new Error('--fail-on must be info, warn, or error.');
+}
+
+function lintFindingFromDiagnostic(diagnostic: ConfigDiagnostic): LintFinding {
+  return {
+    rule: 'unresolvable-ref',
+    severity: DEFAULT_LINT_SEVERITY['unresolvable-ref'],
+    agent: diagnostic.agent,
+    message: diagnostic.message,
+    suggestion: diagnostic.suggestion,
+    example: diagnostic.agent ? `[${diagnostic.agent}] ${diagnostic.message}` : diagnostic.message,
+  };
+}
+
+function isUnresolvableRefDiagnostic(diagnostic: ConfigDiagnostic): boolean {
+  return (
+    diagnostic.level === 'error' &&
+    (diagnostic.code === 'unknown-profile-ref' ||
+      diagnostic.code === 'unknown-arg-dimension-ref' ||
+      diagnostic.code === 'unknown-value-set-ref')
+  );
+}
+
+function groupLintFindings(findings: LintFinding[]): LintRuleGroup[] {
+  const byRule = new Map<LintRuleId, LintFinding[]>();
+  for (const finding of findings) {
+    const entries = byRule.get(finding.rule) ?? [];
+    entries.push(finding);
+    byRule.set(finding.rule, entries);
+  }
+
+  return Array.from(byRule.entries())
+    .map(([rule, entries]) => ({
+      rule,
+      severity: entries[0]?.severity ?? DEFAULT_LINT_SEVERITY[rule],
+      count: entries.length,
+      findings: entries,
+    }))
+    .sort((a, b) => {
+      const severityDelta = severityRank(b.severity) - severityRank(a.severity);
+      if (severityDelta !== 0) return severityDelta;
+      return LINT_RULE_IDS.indexOf(a.rule) - LINT_RULE_IDS.indexOf(b.rule);
+    });
 }
 
 interface CliResult {
@@ -400,7 +634,7 @@ function loadForCli(
   return { config: loaded.config, rawConfig: loaded.rawConfig, diagnostics: loaded.diagnostics };
 }
 
-function parseFailLevel(value: unknown): FailLevel {
+function parseCheckFailLevel(value: unknown): CheckFailLevel {
   if (value === 'warn' || value === 'error') return value;
   throw new Error('--fail-on must be "warn" or "error".');
 }
@@ -410,12 +644,21 @@ function parsePermissionLevel(value: unknown): PermissionLevel {
   throw new Error('--level must be allow, ask, deny, or any.');
 }
 
-function shouldFail(diagnostics: ConfigDiagnostic[], failOn: FailLevel): boolean {
+function shouldFail(diagnostics: ConfigDiagnostic[], failOn: CheckFailLevel): boolean {
   return diagnostics.some((diagnostic) =>
     failOn === 'warn'
       ? diagnostic.level === 'warn' || diagnostic.level === 'error'
       : diagnostic.level === 'error'
   );
+}
+
+function shouldFailLint(groups: LintRuleGroup[], failOn: LintRuleSeverity): boolean {
+  const threshold = severityRank(failOn);
+  return groups.some((group) => severityRank(group.severity) >= threshold);
+}
+
+function severityRank(severity: LintRuleSeverity): number {
+  return severity === 'error' ? 2 : severity === 'warn' ? 1 : 0;
 }
 
 function groupDiagnostics(diagnostics: ConfigDiagnostic[]): Record<string, ConfigDiagnostic[]> {
@@ -483,6 +726,49 @@ function formatCheck(payload: {
     }
   }
   return lines.join('\n');
+}
+
+function formatLint(
+  payload: { ok: boolean; failOn: LintRuleSeverity; rules: LintRuleGroup[] },
+  options: { verbose: boolean; quiet: boolean }
+): string {
+  const hiddenInfoCount = options.quiet
+    ? payload.rules
+        .filter((group) => group.severity === 'info')
+        .reduce((total, group) => total + group.count, 0)
+    : 0;
+  const suffix = hiddenInfoCount > 0 ? ` (${hiddenInfoCount} info hidden)` : '';
+  const lines = [payload.ok ? `Lint OK${suffix}` : `Lint has problems${suffix}`];
+  let collapsedInfoCount = 0;
+
+  for (const group of payload.rules) {
+    if (options.quiet && group.severity === 'info') continue;
+
+    if (group.severity === 'info' && !options.verbose) {
+      collapsedInfoCount += group.count;
+      lines.push(formatLintInfoSummary(group));
+      continue;
+    }
+
+    lines.push(`${group.rule}: ${group.count} (${group.severity})`);
+    for (const finding of group.findings) {
+      const agent = finding.agent ? `[${finding.agent}] ` : '';
+      lines.push(`  - ${agent}${finding.message}`);
+      if (finding.suggestion) lines.push(`    ${finding.suggestion}`);
+    }
+  }
+
+  if (collapsedInfoCount > 0) {
+    lines.push(`info collapsed; --verbose to list all; --quiet to hide; --fail-on info to gate.`);
+  }
+
+  return lines.join('\n');
+}
+
+function formatLintInfoSummary(group: LintRuleGroup): string {
+  const examples = group.findings.slice(0, 3).map((finding) => finding.example);
+  const more = group.count > examples.length ? ` ... +${group.count - examples.length} more` : '';
+  return `${group.rule}: ${group.count} (${group.severity}) - ${examples.join(', ')}${more}`;
 }
 
 function formatExplain(payload: {
@@ -621,7 +907,7 @@ Usage:
   airlock explain <agent> [--config PATH] [--expand] [--json]
   airlock who-can <tool-or-glob> [--config PATH] [--level allow|ask|deny|any] [--json]
   airlock tools [--provider NAME] [--grep REGEX] [--config PATH] [--json]
-  airlock lint [--config PATH] [--strict] [--json]`);
+  airlock lint [--config PATH] [--verbose] [--quiet] [--fail-on info|warn|error] [--only IDS] [--disable IDS] [--rule ID=LEVEL] [--json]`);
 }
 
 function configCheckHelp(): string {
@@ -641,5 +927,23 @@ function toolsHelp(): string {
 }
 
 function lintHelp(): string {
-  return 'Run static hygiene warnings over a valid resolved config.';
+  const rules = LINT_RULE_IDS.map(
+    (rule) => `  ${rule} (${DEFAULT_LINT_SEVERITY[rule]}) - ${LINT_RULE_LABELS[rule]}`
+  ).join('\n');
+  return `Run static hygiene rules over a config without connecting to providers.
+
+Rules:
+${rules}
+
+Default output prints warn/error findings in full and collapses each info rule to one summary line.
+
+Options:
+  --verbose                    Expand info findings too
+  --quiet                      Hide info summaries and print warn/error findings only
+  --fail-on info|warn|error    Non-zero threshold (default: warn)
+  --only ids                   Run only comma-separated rule ids
+  --disable ids                Disable comma-separated rule ids for this invocation
+  --rule id=off|info|warn|error
+                               Override a rule severity for this invocation
+  --json                       Print grouped machine-readable findings`;
 }
