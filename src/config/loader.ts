@@ -14,6 +14,7 @@ export type Config = z.infer<typeof GatewayConfig>;
 
 export interface ConfigDiagnostic {
   level: 'error' | 'warn' | 'info';
+  code?: 'unknown-profile-ref' | 'unknown-arg-dimension-ref' | 'unknown-value-set-ref';
   agent?: string;
   message: string;
   suggestion?: string;
@@ -275,6 +276,7 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
       if (!profileNames.has(ref)) {
         diagnostics.push({
           level: 'error',
+          code: 'unknown-profile-ref',
           agent: agentId,
           message: `extends references unknown profile "${ref}".`,
           suggestion: `Add "${ref}" to your profiles block, or check for typos.`,
@@ -441,6 +443,7 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
       if (!profileNames.has(ref)) {
         diagnostics.push({
           level: 'error',
+          code: 'unknown-profile-ref',
           message: `Profile "${profileId}" extends unknown profile "${ref}".`,
           suggestion: `Add "${ref}" to your profiles block, or check for typos.`,
         });
@@ -497,6 +500,7 @@ function validateArgScopeRefs(
     if (!dimension) {
       diagnostics.push({
         level: 'error',
+        code: 'unknown-arg-dimension-ref',
         agent,
         message: `${location} references unknown arg_dimension "${dimensionName}".`,
         suggestion: `Add "${dimensionName}" to arg_dimensions, or check for typos.`,
@@ -508,6 +512,7 @@ function validateArgScopeRefs(
       if (!config.value_sets[valueSetName]) {
         diagnostics.push({
           level: 'error',
+          code: 'unknown-value-set-ref',
           agent,
           message: `${location}.${dimensionName} references unknown value_set "${valueSetName}".`,
           suggestion: `Add "${valueSetName}" to value_sets, or check for typos.`,
@@ -548,6 +553,7 @@ function validateArgPolicyRefs(
         if (valueSetName && !config.value_sets[valueSetName]) {
           diagnostics.push({
             level: 'error',
+            code: 'unknown-value-set-ref',
             agent,
             message: `${location}.${toolName}.${argName} references unknown value_set "${valueSetName}".`,
             suggestion: `Add "${valueSetName}" to value_sets, or check for typos.`,
@@ -854,6 +860,7 @@ const rootKeys = new Set([
   'security',
   'audit',
   'server',
+  'lint',
 ]);
 const providerKeys = new Set([
   'type',
@@ -983,6 +990,7 @@ const middlewareKeys = new Set([
   'model',
   'threshold_chars',
 ]);
+const lintKeys = new Set(['disable', 'severity']);
 
 function checkObjectKeys(
   diagnostics: ConfigDiagnostic[],
@@ -1019,6 +1027,7 @@ function checkObjectKeys(
     checkObjectKeys(diagnostics, value.security, ['security'], securityKeys);
     checkObjectKeys(diagnostics, value.audit, ['audit'], auditKeys);
     checkObjectKeys(diagnostics, value.server, ['server'], serverKeys);
+    checkObjectKeys(diagnostics, value.lint, ['lint'], lintKeys);
   } else if (path[0] === 'agents' && path.length === 2) {
     checkAgentChildren(diagnostics, value, path);
   } else if (path[0] === 'profiles' && path.length === 2) {
