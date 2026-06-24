@@ -9,6 +9,30 @@ APP_DIR="$PROJECT_DIR/.build/${APP_NAME}.app"
 CONTENTS="$APP_DIR/Contents"
 MACOS="$CONTENTS/MacOS"
 BINARY="$PROJECT_DIR/.build/arm64-apple-macosx/debug/$APP_NAME"
+VERSION_SOURCE="git"
+
+if [ -n "${VERSION:-}" ]; then
+    VERSION_TAG="$VERSION"
+    VERSION_SOURCE="explicit"
+else
+    VERSION_TAG="$(git -C "$PROJECT_DIR" describe --tags --match 'companion-v*' --abbrev=0 2>/dev/null || true)"
+fi
+
+APP_VERSION="${VERSION_TAG#companion-v}"
+if [ -z "$APP_VERSION" ] || [ "$APP_VERSION" = "$VERSION_TAG" ]; then
+    APP_VERSION="0.0.0"
+fi
+
+DISPLAY_VERSION="$APP_VERSION"
+if [ "$VERSION_SOURCE" != "explicit" ] &&
+    ! git -C "$PROJECT_DIR" describe --tags --match "companion-v$APP_VERSION" --exact-match >/dev/null 2>&1; then
+    SHORT_SHA="$(git -C "$PROJECT_DIR" rev-parse --short HEAD 2>/dev/null || true)"
+    if [ -n "$SHORT_SHA" ] && [ "$APP_VERSION" != "0.0.0" ]; then
+        DISPLAY_VERSION="${APP_VERSION}-dev+${SHORT_SHA}"
+    else
+        DISPLAY_VERSION="${APP_VERSION} (dev)"
+    fi
+fi
 
 # Build first
 echo "Building $APP_NAME..."
@@ -34,7 +58,7 @@ if [ -f "$PROJECT_DIR/AirlockCompanion/AppIcon.icns" ]; then
 fi
 
 # Create Info.plist
-cat > "$CONTENTS/Info.plist" << 'PLIST'
+cat > "$CONTENTS/Info.plist" << PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -46,9 +70,11 @@ cat > "$CONTENTS/Info.plist" << 'PLIST'
     <key>CFBundleIdentifier</key>
     <string>bot.airlock.companion</string>
     <key>CFBundleVersion</key>
-    <string>1.0</string>
+    <string>${APP_VERSION}</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.0</string>
+    <string>${APP_VERSION}</string>
+    <key>AirlockCompanionDisplayVersion</key>
+    <string>${DISPLAY_VERSION}</string>
     <key>CFBundleExecutable</key>
     <string>AirlockCompanion</string>
     <key>CFBundlePackageType</key>
@@ -85,6 +111,7 @@ echo "Signing..."
 codesign --force --deep --sign - --entitlements "$CONTENTS/Entitlements.plist" "$APP_DIR"
 
 echo "Built: $APP_DIR"
+echo "Version: $DISPLAY_VERSION"
 echo ""
 echo "Run with:"
 echo "  open $APP_DIR"
