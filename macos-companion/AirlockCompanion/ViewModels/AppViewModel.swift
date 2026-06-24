@@ -2,6 +2,14 @@ import Foundation
 import SwiftUI
 import Combine
 
+enum UpdateCheckStatus: Equatable {
+    case checking
+    case current
+    case updateAvailable
+    case localBuild
+    case failed
+}
+
 @MainActor
 final class AppViewModel: ObservableObject {
     @Published var pendingRequests: [ApprovalRequest] = []
@@ -11,6 +19,7 @@ final class AppViewModel: ObservableObject {
     @Published var selectedIndex: Int = 0
     @Published private(set) var appVersion: String
     @Published private(set) var availableUpdateVersion: String?
+    @Published private(set) var updateCheckStatus: UpdateCheckStatus = .checking
 
     @AppStorage(Constants.UserDefaultsKeys.dashboardURL)
     var dashboardURL: String = Constants.defaultDashboardURL
@@ -67,7 +76,8 @@ final class AppViewModel: ObservableObject {
         self.notificationManager = NotificationManager()
         self.updateChecker = UpdateChecker()
         let bundleVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0"
-        self.appVersion = bundleVersion == "0.0.0" ? "0.0.0 (dev)" : bundleVersion
+        let displayVersion = Bundle.main.object(forInfoDictionaryKey: "AirlockCompanionDisplayVersion") as? String
+        self.appVersion = Self.displayVersion(bundleVersion: bundleVersion, displayVersion: displayVersion)
 
         sseClient.$connectionState
             .removeDuplicates()
@@ -365,8 +375,29 @@ final class AppViewModel: ObservableObject {
         do {
             let result = try await updateChecker.checkForUpdate(currentVersion: appVersion)
             availableUpdateVersion = result?.latestVersion
+            updateCheckStatus = result == nil
+                ? (Self.isLocalBuildVersion(appVersion) ? .localBuild : .current)
+                : .updateAvailable
         } catch {
+            updateCheckStatus = .failed
         }
+    }
+
+    nonisolated static func displayVersion(bundleVersion: String, displayVersion: String? = nil) -> String {
+        let trimmedDisplayVersion = displayVersion?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !trimmedDisplayVersion.isEmpty {
+            return trimmedDisplayVersion
+        }
+
+        let trimmedBundleVersion = bundleVersion.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmedBundleVersion == "0.0.0" || trimmedBundleVersion.isEmpty
+            ? "0.0.0 (dev)"
+            : trimmedBundleVersion
+    }
+
+    nonisolated static func isLocalBuildVersion(_ version: String) -> Bool {
+        let normalized = version.lowercased()
+        return normalized.contains("dev") || normalized.contains("local")
     }
 
     private static func loadStoredGatewayToken(using tokenStore: KeychainTokenStore) -> String {

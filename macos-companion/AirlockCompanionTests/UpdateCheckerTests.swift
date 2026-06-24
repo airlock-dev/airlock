@@ -24,4 +24,22 @@ final class UpdateCheckerTests: XCTestCase {
         XCTAssertFalse(VersionComparator.isNewer("1.0.0", than: "1.0.0"))
         XCTAssertFalse(VersionComparator.isNewer("1.0.0", than: "1.0.1"))
     }
+
+    func testDisplayVersionPrefersGeneratedMetadata() {
+        XCTAssertEqual(
+            AppViewModel.displayVersion(
+                bundleVersion: "0.2.9",
+                displayVersion: "0.2.9-dev+abcdef"
+            ),
+            "0.2.9-dev+abcdef"
+        )
+        XCTAssertEqual(AppViewModel.displayVersion(bundleVersion: "0.2.9"), "0.2.9")
+        XCTAssertEqual(AppViewModel.displayVersion(bundleVersion: "0.0.0"), "0.0.0 (dev)")
+    }
+
+    func testLocalBuildVersionDetection() {
+        XCTAssertTrue(AppViewModel.isLocalBuildVersion("0.2.9-dev+abcdef"))
+        XCTAssertTrue(AppViewModel.isLocalBuildVersion("0.0.0 (dev)"))
+        XCTAssertFalse(AppViewModel.isLocalBuildVersion("0.2.9"))
+    }
 }

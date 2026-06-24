@@ -50,9 +50,10 @@ struct SettingsView: View {
                     .fixedSize(horizontal: false, vertical: true)
 
                 HStack(spacing: 8) {
+                    let updateStatus = updateStatusBadge
                     statusBadge(
-                        title: viewModel.availableUpdateVersion == nil ? "Up to date" : "Update available",
-                        tint: viewModel.availableUpdateVersion == nil ? Color.green : Color.orange
+                        title: updateStatus.title,
+                        tint: updateStatus.tint
                     )
 
                     statusBadge(
@@ -336,6 +337,21 @@ struct SettingsView: View {
         statusPill(displayedConnectionStatus)
     }
 
+    private var updateStatusBadge: (title: String, tint: Color) {
+        switch viewModel.updateCheckStatus {
+        case .checking:
+            return ("Checking updates", .gray)
+        case .current:
+            return ("Up to date", .green)
+        case .updateAvailable:
+            return ("Update available", .orange)
+        case .localBuild:
+            return ("Local build", Color.accentColor.opacity(0.9))
+        case .failed:
+            return ("Update check failed", .red)
+        }
+    }
+
     private var displayedConnectionStatus: (title: String, detail: String?, tint: Color) {
         if hasConnectionError {
             return connectionStatus
@@ -612,15 +628,22 @@ struct SettingsView: View {
         _ = saveConnectionSettingsIfNeeded(showMissingURLError: false)
     }
 
-    private func saveConnectionSettingsIfNeeded(showMissingURLError: Bool) -> Bool {
+    private func draftConnectionSettings(showMissingURLError: Bool) -> (baseURL: String, bearerToken: String)? {
         let trimmedURL = urlText.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedToken = tokenText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedURL.isEmpty else {
             if showMissingURLError {
                 testConnectionState = .failed("Airlock URL is required")
             }
-            return false
+            return nil
         }
+        return (trimmedURL, trimmedToken)
+    }
+
+    private func saveConnectionSettingsIfNeeded(showMissingURLError: Bool) -> Bool {
+        guard let draft = draftConnectionSettings(showMissingURLError: showMissingURLError) else { return false }
+        let trimmedURL = draft.baseURL
+        let trimmedToken = draft.bearerToken
         guard trimmedURL != viewModel.dashboardURL || trimmedToken != viewModel.gatewayToken else {
             urlText = trimmedURL
             tokenText = trimmedToken
@@ -640,16 +663,16 @@ struct SettingsView: View {
     }
 
     private func testConnectionSettings() {
-        guard saveConnectionSettingsIfNeeded(showMissingURLError: true) else { return }
-        let savedURL = viewModel.dashboardURL
-        let savedToken = viewModel.gatewayToken
+        guard let draft = draftConnectionSettings(showMissingURLError: true) else { return }
 
         testConnectionState = .testing
         Task {
             do {
-                try await viewModel.testConnection(baseURL: savedURL, bearerToken: savedToken)
+                try await viewModel.testConnection(baseURL: draft.baseURL, bearerToken: draft.bearerToken)
                 await MainActor.run {
-                    testConnectionState = .succeeded(authenticated: !savedToken.isEmpty)
+                    urlText = draft.baseURL
+                    tokenText = draft.bearerToken
+                    testConnectionState = .succeeded(authenticated: !draft.bearerToken.isEmpty)
                 }
             } catch {
                 await MainActor.run {
