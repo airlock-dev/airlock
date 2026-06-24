@@ -16,6 +16,22 @@ struct RequestCardView: View {
         CodeHighlighter.argsPreviewString(for: request.args)
     }
 
+    private var contextItems: [(title: String, value: String)] {
+        var items: [(title: String, value: String)] = []
+
+        if request.isUserQuestion, let context = request.questionContext {
+            items.append((title: "Context", value: context))
+        }
+        if let reason = request.requestReason {
+            items.append((title: "Request reason", value: reason))
+        }
+        if let note = request.requestNote {
+            items.append((title: "Request note", value: note))
+        }
+
+        return items
+    }
+
     private var isEffectivelyExpanded: Bool {
         isExpanded || (autoExpandWhenSelected && isSelected)
     }
@@ -60,6 +76,30 @@ struct RequestCardView: View {
                         .background(Color(nsColor: .controlBackgroundColor))
                         .clipShape(Capsule())
                 }
+            }
+
+            if isEffectivelyExpanded && !contextItems.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(contextItems, id: \.title) { item in
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(item.title)
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundStyle(.secondary)
+
+                            Text(item.value)
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+                                .lineLimit(4)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
+                .padding(8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(.quaternary.opacity(0.5))
+                .clipShape(RoundedRectangle(cornerRadius: 6))
             }
 
             // Args section - keep cards cheap; rich highlighting lives in detail.
