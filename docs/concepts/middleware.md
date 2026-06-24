@@ -1,169 +1,244 @@
 # Middleware Pipeline
 
-Airlock runs a composable middleware stack on every tool call. Each middleware can inspect, block, transform, or annotate the request before and after the downstream tool executes.
+Airlock runs a fixed security pipeline around every tool call, plus optional
+per-agent middleware that can inspect, block, transform, or annotate requests
+and responses.
 
-## Architecture
+## Configuration Shape
 
-Middleware executes as a chain. Each layer receives the tool call context and a `next()` function. Calling `next()` passes control to the next middleware, eventually reaching the actual tool execution. Post-execution middleware can inspect and transform the response on the way back.
+Configurable middleware lives on an agent, not at the top level:
 
+```yaml
+agents:
+  claude-code:
+    allow:
+      - github/*
+    middleware:
+      - name: injection-detector
+        backend: regex
+        mode: escalate
+      - name: rate-limiter
+        max_requests: 100
+        window_ms: 60000
+        per: agent
+      - name: output-size-limiter
+        max_lines: 200
+        max_chars: 30000
 ```
-Agent request
-  → injection detector
-    → sensitivity classifier
-      → rate limiter
-        → schema validator
-          → allowlist check
-            → HITL gate (if ask)
-              → sandbox enforcement
-                → tool execution
-              ← canary token injector
-            ← output injection detector
-          ← untrusted envelope
-        ← output size limiter
-      ← output summarizer
-    ← strip query params
-  ← response to agent
+
+If `middleware` is omitted, Airlock enables these configurable defaults:
+
+- `schema-validator`
+- `untrusted-envelope`
+- `output-injection-detector` in `detect` mode
+
+Set `middleware: []` to run only the fixed core pipeline. To turn off one
+default while keeping the others, add it with `enabled: false`:
+
+```yaml
+agents:
+  claude-code:
+    middleware:
+      - name: untrusted-envelope
+        enabled: false
 ```
 
-## Pre-Execution Middleware
+Every configurable middleware can be limited by tool glob:
+
+```yaml
+agents:
+  claude-code:
+    middleware:
+      - name: untrusted-envelope
+        tools: ['github/*']
+        exclude: ['github/internal']
+```
+
+## Execution Order
+
+The fixed core always runs in this order:
+
+```text
+allowlist
+  -> exec-policy
+  -> schema-validator
+  -> arg-policy
+  -> injection-detector / sensitivity-classifier
+  -> sandbox
+  -> hitl-gate
+  -> execute
+```
+
+`schema-validator`, `injection-detector`, and `sensitivity-classifier` run in
+the core zone even though they are configurable. Other configurable middleware
+wraps the core pipeline, so it can inspect the request before execution and the
+response on the way back.
+
+## Core-Zone Middleware
+
+### Schema Validator
+
+Validates tool arguments against the tool's JSON Schema using Ajv. Malformed
+calls are rejected before execution.
+
+```yaml
+agents:
+  claude-code:
+    middleware:
+      - name: schema-validator
+```
 
 ### Injection Detector
 
-Scans inbound tool arguments for prompt injection patterns.
+Scans tool arguments, and also scans responses after execution, for prompt
+injection patterns.
 
-Two backends:
+Backends:
 
-- **regex** (default) — fast pattern matching against known injection phrases like "ignore all previous instructions", "you are now a", `<system>` tags, `[INST]` markers, etc.
-- **deberta** — sends text to a DeBERTa inference server for ML-based classification at a configurable confidence threshold.
+- `regex` (default) - local pattern matching
+- `deberta` - sends text to a DeBERTa inference server
 
-Three modes:
+Modes:
 
-- `detect` — log a warning, allow the call to proceed
-- `mangle` — redact the matched content
-- `escalate` — escalate to HITL approval regardless of the tool's allow/ask/deny status
+- `detect` - log and audit detections
+- `mangle` - redact matched response text
+- `escalate` - require approval when arguments look injected
 
 ```yaml
-middleware:
-  injection_detector:
-    backend: regex # or "deberta"
-    mode: escalate
-    # DeBERTa-specific:
-    inference_url: http://localhost:8000/predict
-    threshold: 0.8
+agents:
+  claude-code:
+    middleware:
+      - name: injection-detector
+        backend: regex
+        mode: escalate
+        threshold: 0.8
 ```
 
 ### Sensitivity Classifier
 
-Detects PII and sensitive data in tool arguments before execution.
+Detects PII and sensitive data in arguments and responses. Argument detections
+can escalate to approval.
 
-Detected patterns include:
+Backends:
 
-- Social Security Numbers
-- Credit card numbers
-- Email addresses and phone numbers
-- API keys and tokens (generic and AWS-specific)
-- Private keys (RSA, etc.)
-- JWTs
-
-Two backends:
-
-- **heuristic** (default) — regex patterns with weighted scoring
-- **llm** — uses a language model for classification
+- `heuristic` (default) - regex and weighted scoring
+- `llm` - calls a model through the AI SDK
 
 ```yaml
-middleware:
-  sensitivity_classifier:
-    mode: detect # or "escalate"
-    threshold: 0.7
-    backend: heuristic # or "llm"
-    model: claude-haiku-4-5-20251001 # for llm backend
+agents:
+  claude-code:
+    middleware:
+      - name: sensitivity-classifier
+        backend: heuristic
+        mode: escalate
+        threshold: 0.7
 ```
+
+## Wrapping Middleware
 
 ### Rate Limiter
 
-Sliding-window rate limiter. Prevents runaway agents from hammering downstream tools.
-
-Configurable per-agent or per-tool:
+Sliding-window rate limiter. Limits can be per agent or per tool.
 
 ```yaml
-middleware:
-  rate_limiter:
-    max_requests: 100
-    window_ms: 60000
-    per: agent # or "tool"
+agents:
+  claude-code:
+    middleware:
+      - name: rate-limiter
+        max_requests: 100
+        window_ms: 60000
+        per: agent
 ```
 
-### Schema Validator
+### Untrusted Envelope
 
-Validates tool arguments against the tool's JSON Schema using Ajv. Malformed calls are rejected before they reach the downstream tool.
-
-Enabled by default. No configuration needed.
-
-## Post-Execution Middleware
-
-### Canary Token Injector
-
-Injects invisible markers into tool outputs. On subsequent tool calls, Airlock checks if any canary token from a previous response appears in the new request's arguments.
-
-If the agent reads a file and then feeds that content into a shell command, the canary token will be detected and escalated to HITL by default, flagging a potential data exfiltration path before the call executes. Set `mode: detect` to log only.
-
-Tokens expire after 10 minutes and are tracked per agent and tool.
+Wraps tool responses in randomized untrusted-output tags so untrusted content
+cannot reliably terminate the envelope.
 
 ```yaml
-middleware:
-  canary_tokens: true
+agents:
+  claude-code:
+    middleware:
+      - name: untrusted-envelope
 ```
 
 ### Output Injection Detector
 
-Scans tool _responses_ for prompt injection attempts before they reach the agent. This catches scenarios where a malicious file, web page, or API response tries to hijack the agent.
+Scans tool responses for prompt injection attempts before they reach the agent.
 
-- `detect` — log a warning
-- `mangle` — replace matched patterns with `[REDACTED: suspected injection]`
+Modes:
 
-```yaml
-middleware:
-  output_injection:
-    mode: mangle
-```
-
-### Untrusted Output Envelope
-
-Wraps all tool responses in per-response tags such as `<untrusted-output-a1b2c3d4e5f6 tool="..." call-id="...">`. The randomized suffix is echoed in the close tag so untrusted output cannot reliably terminate the envelope with a fixed `</untrusted-output>` string.
+- `detect` - log and audit detections
+- `mangle` - replace matched text with `[REDACTED: suspected injection]`
 
 ```yaml
-middleware:
-  untrusted_envelope: true
-```
-
-### Output Size Limiter
-
-Truncates large outputs to prevent context window exhaustion. The full output is written to a temp file, and the truncated response includes a path to the full content.
-
-```yaml
-middleware:
-  output_size_limiter:
-    max_lines: 200
-    max_chars: 30000
-```
-
-### Output Summarizer
-
-For responses over a character threshold, calls a fast LLM to summarize before passing to the agent. Falls back gracefully if the AI SDK or model is unavailable.
-
-```yaml
-middleware:
-  output_summarizer:
-    model: claude-haiku-4-5-20251001
-    threshold_chars: 10000
+agents:
+  claude-code:
+    middleware:
+      - name: output-injection-detector
+        mode: mangle
 ```
 
 ### Strip Query Params
 
-Automatically strips query parameters from read-only HTTP tool calls (`http/get`, `http/head`) to prevent data exfiltration via URL query strings.
+Strips query parameters from `http/get` and `http/head` URLs. This middleware is
+not enabled by default; add it when you want read-only HTTP calls to avoid query
+string exfiltration.
 
-Enabled by default for HTTP tools.
+```yaml
+agents:
+  claude-code:
+    middleware:
+      - name: strip-query-params
+```
+
+### Canary Token Injector
+
+Injects short-lived canary markers into tool outputs. If a later tool call
+contains one of those markers in its arguments, Airlock audits the leak and, by
+default, marks the call as needing approval.
+
+```yaml
+agents:
+  claude-code:
+    middleware:
+      - name: canary-token-injector
+        mode: escalate
+```
+
+Use `mode: detect` to audit canary leaks without escalating.
+
+### Output Size Limiter
+
+Truncates large outputs to avoid context-window exhaustion. The response marks
+that it was truncated and includes the path to the full output.
+
+```yaml
+agents:
+  claude-code:
+    middleware:
+      - name: output-size-limiter
+        max_lines: 200
+        max_chars: 30000
+```
+
+### Output Summarizer
+
+For responses over a character threshold, calls a model through the AI SDK to
+summarize before passing content to the agent. If summarization fails, Airlock
+falls back to the original response.
+
+```yaml
+agents:
+  claude-code:
+    middleware:
+      - name: output-summarizer
+        model: claude-haiku-4-5-20251001
+        threshold_chars: 10000
+```
 
 ## Audit Visibility
 
-Middleware actions are logged alongside normal audit entries. The injection detector, sensitivity classifier, and canary token injector all write to the audit log when they detect something, so you have a full record of what was flagged and why.
+Middleware detections are logged alongside normal audit entries. Injection
+detection, sensitivity classification, output injection detection, and canary
+leak detection all write audit records when they flag something.

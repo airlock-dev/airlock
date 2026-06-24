@@ -28,13 +28,14 @@ airlock dashboard \
 
 Options:
 
-| Flag               | Description                                                                                  |
-| ------------------ | -------------------------------------------------------------------------------------------- |
-| `--config`, `-c`   | Path to airlock.yaml config file                                                             |
-| `--port`, `-p`     | Dashboard port (default: 4177)                                                               |
-| `--host`           | Bind host (default: `127.0.0.1`)                                                             |
-| `--gateway-url`    | Gateway management API URL (default: `http://127.0.0.1:4113`)                                |
-| `--gateway-secret` | Gateway admin bearer token (defaults to `AIRLOCK_GATEWAY_SECRET`, then `AIRLOCK_API_SECRET`) |
+| Flag                     | Description                                                                                  |
+| ------------------------ | -------------------------------------------------------------------------------------------- |
+| `--config`, `-c`         | Path to airlock.yaml config file                                                             |
+| `--port`, `-p`           | Dashboard port (default: 4177)                                                               |
+| `--host`                 | Bind host (default: `127.0.0.1`)                                                             |
+| `--insecure-remote-bind` | Allow binding the unauthenticated dashboard beyond loopback                                  |
+| `--gateway-url`          | Gateway management API URL (default: `http://127.0.0.1:4113`)                                |
+| `--gateway-secret`       | Gateway admin bearer token (defaults to `AIRLOCK_GATEWAY_SECRET`, then `AIRLOCK_API_SECRET`) |
 
 ## Open the command center
 
@@ -46,11 +47,12 @@ airlock run --config airlock.yaml
 
 Options:
 
-| Flag             | Description                         |
-| ---------------- | ----------------------------------- |
-| `--config`, `-c` | Path to airlock.yaml config file    |
-| `--port`, `-p`   | Command center port (default: 4177) |
-| `--host`         | Bind host (default: `127.0.0.1`)    |
+| Flag                     | Description                                                      |
+| ------------------------ | ---------------------------------------------------------------- |
+| `--config`, `-c`         | Path to airlock.yaml config file                                 |
+| `--port`, `-p`           | Command center port (default: 4177)                              |
+| `--host`                 | Bind host (default: `127.0.0.1`)                                 |
+| `--insecure-remote-bind` | Allow binding the unauthenticated command center beyond loopback |
 
 ## Run stdio mode for a specific agent
 
@@ -231,21 +233,21 @@ Features:
 - Toggle commands and groups on/off
 - Inspect command parameters
 - Search with `/`
-- Export to YAML, merge into existing config, or copy to clipboard
+- Export to YAML, edit `./airlock.yaml` directly, copy to clipboard, or write a
+  generated `<tool>-commands.yaml`
 
 ## Configure agent permissions interactively
 
 Interactive TUI for assigning allow/ask/deny to tools from your live MCP servers:
 
 ```bash
-npm run configure-agent -- --config ./airlock.yaml --agent claude-code
+airlock configure-agent --config ./airlock.yaml --agent claude-code
 ```
 
 Features:
 
-- Create agents and profiles from the sidebar
-- New agents get a generated bearer token for MCP clients
 - Connects to your configured MCP servers and lists all available tools
+- Pre-populates decisions from an existing agent when one is present
 - Navigate with `j/k`, set permissions with `a`/`s`/`d`
 - Bulk-set entire providers
 - Export: edit config directly, copy to clipboard, or print YAML
@@ -258,13 +260,14 @@ Install the Airlock bridge plugin for OpenClaw:
 airlock setup openclaw
 ```
 
-Copies the bundled plugin into `~/.openclaw/extensions/airlock-bridge/`, installs dependencies, and prints next steps. See [OpenClaw Setup](/guides/openclaw).
+Creates `~/.openclaw/extensions/airlock-bridge` as a symlink to the bundled
+plugin and prints next steps. See [OpenClaw Setup](/guides/openclaw).
 
 ## Common flags
 
-| Flag             | Description                      |
-| ---------------- | -------------------------------- |
-| `--config`, `-c` | Path to airlock.yaml config file |
-| `--agent`        | Agent name for stdio mode        |
-| `--version`      | Print version                    |
-| `--help`         | Print help                       |
+| Flag             | Description                       |
+| ---------------- | --------------------------------- |
+| `--config`, `-c` | Path to airlock.yaml config file  |
+| `--agent`        | Agent name for stdio mode         |
+| `--pretty`       | Human-friendly colored log output |
+| `--help`         | Print help                        |

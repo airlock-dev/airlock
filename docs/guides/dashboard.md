@@ -43,7 +43,8 @@ airlock dashboard \
 
 The standalone dashboard talks to the gateway management API for status, audit
 logs, tool discovery, and approval decisions. Set the dashboard secret with
-`--gateway-secret`, `AIRLOCK_GATEWAY_SECRET`, or `MANAGEMENT_API_SECRET`:
+`--gateway-secret` or `AIRLOCK_GATEWAY_SECRET`. If your gateway config uses a
+separate `MANAGEMENT_API_SECRET`, pass that value through explicitly:
 
 ```bash
 AIRLOCK_GATEWAY_SECRET="$MANAGEMENT_API_SECRET" \
@@ -56,9 +57,10 @@ Use this mode when the gateway should mount `/config` read-only and the
 dashboard should mount the same directory read-write for config edits. The
 dashboard writes a backup to `/config/airlock.bak` before saving changes.
 
-The standalone dashboard binds to `127.0.0.1:4177` by default. Use `--host` and
-`--port` to change the listener, and protect it with an authenticated reverse
-proxy or private network before exposing it.
+The standalone dashboard binds to `127.0.0.1:4177` by default. Use `--port` to
+change the port. Binding the dashboard beyond loopback requires
+`--insecure-remote-bind`; only use it when the listener is protected by an
+authenticated reverse proxy, private network, or tunnel.
 
 ## Features
 
@@ -107,7 +109,7 @@ The dashboard checks npm for newer versions of `airlock-bot` and shows an upgrad
 
 ## Combining with the macOS Companion
 
-The [macOS Companion app](https://github.com/airlock-dev/airlock/releases/latest) can connect to the same dashboard SSE endpoint, or directly to the split management API at `http://127.0.0.1:4113` when you set its gateway bearer token to `MANAGEMENT_API_SECRET`. You can use both simultaneously — the dashboard in a browser tab and the companion in your menu bar.
+The [macOS Companion app](https://github.com/airlock-dev/airlock/releases/latest) can connect to the same dashboard SSE endpoint, or directly to the split management API at `http://127.0.0.1:4113` when you set its gateway bearer token to the management API secret. You can use both simultaneously — the dashboard in a browser tab and the companion in your menu bar.
 
 ## Graceful degradation
 

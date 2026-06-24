@@ -19,23 +19,26 @@ For example:
 
 ## OS-level sandboxing
 
-The built-in `python/eval` tool uses macOS `sandbox-exec` to run Python in a kernel-enforced sandbox:
-
-- All filesystem writes are denied at the OS level
-- All network access is denied at the OS level
-- Process execution is allowed (to run Python itself)
-- File reads are allowed (for Python stdlib and your project files)
-
-This is real OS-level isolation, not just config-level restrictions. The kernel enforces the sandbox profile regardless of what the Python code tries to do.
+When `sandbox.enabled: true`, Airlock wraps `exec/run` calls with the sandbox
+runtime before executing the command. The resolved sandbox controls filesystem
+read/write rules and network domains for both the underlying `exec/run` tool and
+any `tool_overrides` aliases that point to it.
 
 ```yaml
 providers:
-  python: builtin
+  exec: builtin
 
 agents:
   claude-code:
     allow:
-      - python/eval # Safe — OS-level sandbox denies writes and network
+      - python/sandboxed
+    sandbox:
+      enabled: true
+      presets: [local_transform]
+    tool_overrides:
+      python/sandboxed:
+        alias_of: exec/run
+        description: 'Run Python for local transformations only'
 ```
 
 ## Reusable presets

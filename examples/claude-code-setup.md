@@ -59,8 +59,6 @@ agents:
         - 'git status'
         - 'git diff*'
         - 'npm test'
-      deny:
-        - '*'
 ```
 
 ## Testing

@@ -11,9 +11,10 @@
  *   secret / AIRLOCK_SECRET  Bearer token / agent token        (default: empty = no auth)
  *
  * Install:
- *   mkdir -p ~/.openclaw/extensions/airlock-bridge
- *   cp -r extensions/openclaw/* ~/.openclaw/extensions/airlock-bridge/
- *   cd ~/.openclaw/extensions/airlock-bridge && npm install --omit=dev
+ *   airlock setup openclaw
+ *
+ * The setup command creates a symlink:
+ *   ~/.openclaw/extensions/airlock-bridge -> extensions/openclaw
  */
 
 import { Type } from '@sinclair/typebox';
