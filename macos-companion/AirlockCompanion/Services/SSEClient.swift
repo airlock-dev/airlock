@@ -33,6 +33,22 @@ private struct SSEConnectionError: LocalizedError {
     }
 }
 
+private func waitForSSEOpen(_ delegate: SSESessionDelegate, timeout: TimeInterval) async -> SSEOpenResult {
+    await withTaskGroup(of: SSEOpenResult.self) { group in
+        group.addTask {
+            await delegate.waitUntilOpen()
+        }
+        group.addTask {
+            try? await Task.sleep(for: .seconds(timeout))
+            return .failed("Stream did not open within \(Int(timeout)) seconds")
+        }
+
+        let result = await group.next() ?? .failed("Stream closed before response")
+        group.cancelAll()
+        return result
+    }
+}
+
 @MainActor
 final class SSEClient: ObservableObject {
     @Published var connectionState: ConnectionState = .disconnected(nil)
@@ -92,7 +108,7 @@ final class SSEClient: ObservableObject {
                         session.invalidateAndCancel()
                     }
 
-                    switch await delegate.waitUntilOpen() {
+                    switch await waitForSSEOpen(delegate, timeout: Constants.Reconnect.openTimeout) {
                     case .accepted:
                         await MainActor.run { weakSelf?.connectionState = .connected }
                         reconnectDelay = Constants.Reconnect.initialDelay

@@ -432,14 +432,21 @@ final class AppViewModel: ObservableObject {
         let keychainToken = (try? tokenStore.load()) ?? ""
         let legacyToken = loadDefaultString(forKey: Constants.UserDefaultsKeys.gatewayToken)
 
+        if !keychainToken.isEmpty {
+            removeLegacySecretDefaults()
+            return keychainToken
+        }
+
         if !legacyToken.isEmpty {
-            if keychainToken.isEmpty {
-                try? tokenStore.save(legacyToken)
+            do {
+                try tokenStore.save(legacyToken)
+                removeLegacySecretDefaults()
+            } catch {
+                return legacyToken
             }
         }
-        removeLegacySecretDefaults()
 
-        return keychainToken.isEmpty ? legacyToken : keychainToken
+        return legacyToken
     }
 
     private static func loadStoredDashboardURL() -> String {

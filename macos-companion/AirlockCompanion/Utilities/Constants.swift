@@ -42,6 +42,7 @@ enum Constants {
 
     enum Reconnect {
         static let initialDelay: TimeInterval = 1.0
+        static let openTimeout: TimeInterval = 5.0
         static let maxDelay: TimeInterval = 30.0
         static let multiplier: Double = 2.0
     }
