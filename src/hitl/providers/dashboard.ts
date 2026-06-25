@@ -3,6 +3,7 @@ import type { AirlockActivityEvent } from '../../activity/stream.js';
 import { createConfigureWebApp } from '../../configure-web/cli.js';
 import { childLogger } from '../../util/logger.js';
 import { ApprovalDashboardRoutes } from '../approval-dashboard.js';
+import type { ApprovalStreamHub } from '../approval-stream.js';
 import type { ApprovalApi, HitlNotification, HitlProvider } from './types.js';
 
 const log = childLogger('hitl-dashboard');
@@ -19,7 +20,8 @@ export class DashboardHitlProvider implements HitlProvider {
 
   constructor(
     private config: DashboardHitlConfig,
-    private approvalApi: ApprovalApi
+    private approvalApi: ApprovalApi,
+    private approvalStream: ApprovalStreamHub
   ) {}
 
   async init(): Promise<void> {
@@ -28,7 +30,7 @@ export class DashboardHitlProvider implements HitlProvider {
       return;
     }
 
-    this.approvalRoutes = new ApprovalDashboardRoutes(this.approvalApi);
+    this.approvalRoutes = new ApprovalDashboardRoutes(this.approvalApi, this.approvalStream);
     this.app = createConfigureWebApp(this.config.config_path, { approvals: this.approvalRoutes });
 
     try {
@@ -47,7 +49,6 @@ export class DashboardHitlProvider implements HitlProvider {
   }
 
   async stop(): Promise<void> {
-    await this.approvalRoutes?.stop();
     this.approvalRoutes = undefined;
 
     if (this.app) {
@@ -56,20 +57,20 @@ export class DashboardHitlProvider implements HitlProvider {
     }
   }
 
-  notify(requests: HitlNotification[]): Promise<void> {
-    return this.approvalRoutes?.notify(requests) ?? Promise.resolve();
+  notify(_requests: HitlNotification[]): Promise<void> {
+    return Promise.resolve();
   }
 
-  updateApprovalStatus(status: {
+  updateApprovalStatus(_status: {
     id: string;
     code: string;
     result: 'approved' | 'denied' | 'timeout' | 'cancelled';
     badgeCount: number;
   }): Promise<void> {
-    return this.approvalRoutes?.updateApprovalStatus(status) ?? Promise.resolve();
+    return Promise.resolve();
   }
 
-  notifyActivity(event: AirlockActivityEvent): Promise<void> {
-    return this.approvalRoutes?.notifyActivity(event) ?? Promise.resolve();
+  notifyActivity(_event: AirlockActivityEvent): Promise<void> {
+    return Promise.resolve();
   }
 }

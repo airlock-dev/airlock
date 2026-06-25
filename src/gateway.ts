@@ -14,6 +14,7 @@ import { mobileApiPlugin } from './mobile/api.js';
 import { hookApiPlugin } from './hook/api.js';
 import { toolsApiPlugin } from './tools/api.js';
 import { ApprovalDashboardRoutes } from './hitl/approval-dashboard.js';
+import { ApprovalStreamHub } from './hitl/approval-stream.js';
 import { CompositeHitlProvider } from './hitl/providers/composite.js';
 import { sseServerPlugin } from './transport/sse-server.js';
 import { httpServerPlugin } from './transport/http-server.js';
@@ -41,6 +42,7 @@ export class Gateway {
   private hitlBatcher!: HitlBatcher;
   private hitlProvider!: HitlProvider;
   private approvalRoutes!: ApprovalDashboardRoutes;
+  private approvalStream!: ApprovalStreamHub;
   private auditLogger!: AuditLogger;
   private app!: FastifyInstance;
   private managementApp?: FastifyInstance;
@@ -68,6 +70,7 @@ export class Gateway {
 
     // Approvals — provider needs approvalApi but engine doesn't exist yet, use forwarder
     this.hitlBatcher = new HitlBatcher(this.config.approvals.batch_window_ms);
+    this.approvalStream = new ApprovalStreamHub({ activityStream: this.activityStream });
 
     const approvalForwarder: ApprovalApi = {
       approve: (id) => this.hitlEngine.approve(id),
@@ -76,7 +79,7 @@ export class Gateway {
       denyByCode: (code, reason) => this.hitlEngine.denyByCode(code, reason),
     };
 
-    this.approvalRoutes = new ApprovalDashboardRoutes(approvalForwarder, this.activityStream);
+    this.approvalRoutes = new ApprovalDashboardRoutes(approvalForwarder, this.approvalStream);
     this.hitlProvider = this.buildHitlProvider(approvalForwarder);
     this.unsubscribeActivityNotifications = this.activityStream.subscribe((event) => {
       void this.hitlProvider
@@ -187,7 +190,7 @@ export class Gateway {
       activityStream: this.activityStream,
       configPath: this.configPath,
       getRequestSecurity,
-      approvalStream: this.approvalRoutes.approvalStream(),
+      approvalStream: this.approvalStream,
     });
     await this.managementApp.register((adminApp, _opts, done) => {
       adminApp.addHook('preHandler', (request, reply, hookDone) => {
@@ -347,10 +350,11 @@ export class Gateway {
         createHitlProvider(configuredProvider, approvalForwarder, {
           configPath: this.configPath,
           auditLogger: this.auditLogger,
+          approvalStream: this.approvalStream,
         })
       );
     }
-    providers.push(this.approvalRoutes);
+    providers.push(this.approvalStream);
 
     return providers.length === 1 ? providers[0] : new CompositeHitlProvider(providers);
   }

@@ -1,4 +1,5 @@
 import { randomUUID } from 'crypto';
+import Fastify, { type FastifyInstance } from 'fastify';
 import { ClientPool } from './pool/pool.js';
 import { requiredMcpsForAgent } from './pool/required-mcps.js';
 import { ToolRegistry } from './registry/registry.js';
@@ -6,7 +7,12 @@ import { AllowlistEngine } from './allowlist/engine.js';
 import { HitlEngine } from './hitl/engine.js';
 import { HitlBatcher } from './hitl/batcher.js';
 import { AuditLogger } from './audit/logger.js';
+import { hitlApiPlugin } from './hitl/api.js';
+import { auditApiPlugin } from './audit/api.js';
+import { mobileApiPlugin } from './mobile/api.js';
+import { ApprovalStreamHub } from './hitl/approval-stream.js';
 import { createHitlProvider } from './hitl/provider-factory.js';
+import { CompositeHitlProvider } from './hitl/providers/composite.js';
 import { runStdioServer } from './transport/stdio-server.js';
 import { ConfigWatcher } from './config/watcher.js';
 import type { Config } from './config/loader.js';
@@ -14,6 +20,7 @@ import type { ApprovalApi } from './hitl/providers/types.js';
 import { getMcpConfigs } from './config/schema.js';
 import { buildAdapters } from './backend/factory.js';
 import { ActivityStream } from './activity/stream.js';
+import { checkRequestSecurity, type RequestSecurityOptions } from './security/request.js';
 import { childLogger } from './util/logger.js';
 
 const log = childLogger('stdio-mode');
@@ -60,11 +67,14 @@ export async function runStdioMode(
   };
 
   const hitlBatcher = new HitlBatcher(config.approvals.batch_window_ms);
-  const hitlProvider = createHitlProvider(config.approvals.provider, approvalForwarder, {
+  const activityStream = new ActivityStream();
+  const approvalStream = new ApprovalStreamHub({ activityStream });
+  const configuredHitlProvider = createHitlProvider(config.approvals.provider, approvalForwarder, {
     configPath,
     auditLogger,
+    approvalStream,
   });
-  const activityStream = new ActivityStream();
+  const hitlProvider = new CompositeHitlProvider([configuredHitlProvider, approvalStream]);
   const unsubscribeActivityNotifications = activityStream.subscribe((event) => {
     void hitlProvider
       .notifyActivity?.(event)
@@ -115,6 +125,21 @@ export async function runStdioMode(
 
   await registry.refresh();
 
+  const managementRequestSecurity: RequestSecurityOptions = {};
+  updateManagementRequestSecurity(config, managementRequestSecurity);
+  let managementApp: FastifyInstance | undefined;
+  if (config.server.management_api?.enabled) {
+    managementApp = await startManagementApi({
+      config,
+      auditLogger,
+      hitlEngine,
+      activityStream,
+      configPath,
+      approvalStream,
+      getRequestSecurity: () => managementRequestSecurity,
+    });
+  }
+
   // Hot reload — allowlists, agent config, security (not MCP connections or approval provider)
   const watcher = new ConfigWatcher(configPath);
   watcher.on('reload', (newConfig) => {
@@ -122,6 +147,7 @@ export async function runStdioMode(
       if (newConfig.agents[agentId]) {
         currentAgentConfig = newConfig.agents[agentId];
       }
+      updateManagementRequestSecurity(newConfig, managementRequestSecurity);
       const newMcpConfigs = getMcpConfigs(newConfig.providers);
       pool
         .reload(newMcpConfigs)
@@ -148,6 +174,18 @@ export async function runStdioMode(
 
   // Graceful shutdown
   let shuttingDown = false;
+  let cleanedUp = false;
+  const cleanup = async () => {
+    if (cleanedUp) return;
+    cleanedUp = true;
+    watcher.stop();
+    await managementApp?.close().catch(() => {});
+    await pool.stop();
+    await registry.stopAll();
+    await hitlProvider.stop();
+    unsubscribeActivityNotifications();
+    auditLogger.stop();
+  };
   const shutdown = async () => {
     if (shuttingDown) return;
     shuttingDown = true;
@@ -166,33 +204,93 @@ export async function runStdioMode(
     }, 5000);
     forceExit.unref();
     try {
-      watcher.stop();
-      await pool.stop();
-      await registry.stopAll();
-      await hitlProvider.stop();
-      unsubscribeActivityNotifications();
-      auditLogger.stop();
+      await cleanup();
     } catch (err) {
       log.error({ err }, 'Error during stdio shutdown');
     }
     process.exit(0);
   };
 
-  process.on('SIGTERM', () => void shutdown());
-  process.on('SIGINT', () => void shutdown());
+  const handleSigterm = () => void shutdown();
+  const handleSigint = () => void shutdown();
+  process.on('SIGTERM', handleSigterm);
+  process.on('SIGINT', handleSigint);
 
-  // No HTTP server — stdio only
-  await runStdioServer({
-    agentId,
-    downstreamSessionId,
-    agentConfig,
-    getAgentConfig: () => currentAgentConfig,
-    registry,
-    allowlist,
-    hitlEngine,
-    hitlBatcher,
-    hitlProvider,
+  try {
+    await runStdioServer({
+      agentId,
+      downstreamSessionId,
+      agentConfig,
+      getAgentConfig: () => currentAgentConfig,
+      registry,
+      allowlist,
+      hitlEngine,
+      hitlBatcher,
+      hitlProvider,
+      auditLogger,
+      securityConfig: config.security,
+    });
+  } finally {
+    process.off('SIGTERM', handleSigterm);
+    process.off('SIGINT', handleSigint);
+    if (!shuttingDown) {
+      await cleanup();
+    }
+  }
+}
+
+function updateManagementRequestSecurity(config: Config, target: RequestSecurityOptions): void {
+  target.secret = config.server.management_api?.api_secret ?? config.server.api_secret;
+  target.authRequired = true;
+  target.allowedOrigins = config.server.allowed_origins;
+}
+
+async function startManagementApi(opts: {
+  config: Config;
+  auditLogger: AuditLogger;
+  hitlEngine: HitlEngine;
+  activityStream: ActivityStream;
+  configPath: string;
+  approvalStream: ApprovalStreamHub;
+  getRequestSecurity: () => RequestSecurityOptions;
+}): Promise<FastifyInstance> {
+  const app = Fastify({ logger: false });
+  const {
     auditLogger,
-    securityConfig: config.security,
+    hitlEngine,
+    activityStream,
+    configPath,
+    approvalStream,
+    getRequestSecurity,
+  } = opts;
+
+  await app.register(hitlApiPlugin, {
+    engine: hitlEngine,
+    getRequestSecurity,
   });
+  await app.register(auditApiPlugin, {
+    auditLogger,
+    getRequestSecurity,
+  });
+  await app.register(mobileApiPlugin, {
+    auditLogger,
+    engine: hitlEngine,
+    activityStream,
+    configPath,
+    getRequestSecurity,
+    approvalStream,
+  });
+
+  app.get('/health', async (request, reply) => {
+    if (!checkRequestSecurity(request, reply, getRequestSecurity())) return;
+    return {
+      status: 'ok',
+      pendingApprovals: hitlEngine.getPending().length,
+    };
+  });
+
+  const { port, host } = opts.config.server.management_api;
+  await app.listen({ port, host });
+  log.info({ port, host }, 'Airlock stdio management API listening');
+  return app;
 }

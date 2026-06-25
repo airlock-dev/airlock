@@ -1,8 +1,13 @@
 import { EventEmitter } from 'events';
 import { describe, expect, it, vi } from 'vitest';
+import Fastify from 'fastify';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import type { ServerResponse } from 'http';
+import type { AuditLogger } from '../src/audit/logger.js';
+import { ApprovalDashboardRoutes } from '../src/hitl/approval-dashboard.js';
 import { ApprovalStreamHub } from '../src/hitl/approval-stream.js';
+import { HitlEngine } from '../src/hitl/engine.js';
+import { CompositeHitlProvider } from '../src/hitl/providers/composite.js';
 
 class FakeResponse extends EventEmitter {
   statusCode = 0;
@@ -46,6 +51,14 @@ function dataMessages(response: FakeResponse): Array<Record<string, unknown>> {
     .split('\n\n')
     .filter((chunk) => chunk.startsWith('data: '))
     .map((chunk) => JSON.parse(chunk.slice('data: '.length)) as Record<string, unknown>);
+}
+
+function makeAuditLogger() {
+  return {
+    insertHitl: vi.fn(),
+    updateHitlStatus: vi.fn(),
+    getPendingHitl: vi.fn().mockReturnValue([]),
+  } as unknown as AuditLogger;
 }
 
 describe('ApprovalStreamHub', () => {
@@ -132,5 +145,57 @@ describe('ApprovalStreamHub', () => {
     first.requestRaw.emit('close');
     second.requestRaw.emit('close');
     await hub.stop();
+  });
+
+  it('broadcasts one resolved event per dashboard and mobile client when approved once', async () => {
+    const hub = new ApprovalStreamHub();
+    const provider = new CompositeHitlProvider([hub]);
+    const engine = new HitlEngine(makeAuditLogger(), provider, 300000);
+    const routes = new ApprovalDashboardRoutes(engine, hub);
+    const app = Fastify({ logger: false });
+    routes.registerRoutes(app);
+    await app.ready();
+
+    try {
+      const ticket = engine.create({
+        agentId: 'dev',
+        tool: 'exec/run',
+        args: { command: 'pwd' },
+      });
+      const pending = engine.getPending()[0];
+      if (!pending) throw new Error('Expected pending approval');
+      await provider.notify([
+        {
+          ...pending,
+          timeoutMs: engine.timeoutMs,
+          badgeCount: engine.getPending().length,
+        },
+      ]);
+
+      const dashboard = attachClient(hub);
+      const mobile = attachClient(hub);
+
+      const response = await app.inject({ method: 'POST', url: `/approve?code=${ticket.code}` });
+      expect(response.statusCode).toBe(200);
+      await expect(ticket.result).resolves.toBe('approved');
+
+      for (const client of [dashboard.responseRaw, mobile.responseRaw]) {
+        const resolved = dataMessages(client).filter((message) => message.type === 'resolved');
+        expect(resolved).toEqual([
+          expect.objectContaining({
+            type: 'resolved',
+            id: ticket.id,
+            code: ticket.code,
+            result: 'approved',
+          }),
+        ]);
+      }
+
+      dashboard.requestRaw.emit('close');
+      mobile.requestRaw.emit('close');
+    } finally {
+      await app.close();
+      await hub.stop();
+    }
   });
 });

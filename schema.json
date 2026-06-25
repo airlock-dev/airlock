@@ -1763,8 +1763,7 @@
                         "additionalProperties": false
                       }
                     ]
-                  },
-                  "minItems": 1
+                  }
                 }
               ],
               "default": {

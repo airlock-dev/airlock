@@ -15,12 +15,16 @@ export interface ApprovalStreamClient {
   addClient(request: FastifyRequest, reply: FastifyReply): void;
 }
 
-export class ApprovalStreamHub implements ApprovalStreamClient {
+export class ApprovalStreamHub implements ApprovalStreamClient, HitlProvider {
   private clients = new Map<ServerResponse, NodeJS.Timeout>();
   private pending = new Map<string, HitlNotification>();
   private pendingCodeIndex = new Map<string, string>();
 
   constructor(private options: { activityStream?: ActivityReplaySource } = {}) {}
+
+  init(): Promise<void> {
+    return Promise.resolve();
+  }
 
   notify(requests: HitlNotification[]): Promise<void> {
     for (const request of requests) {

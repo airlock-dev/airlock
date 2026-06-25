@@ -453,7 +453,7 @@ export type HitlProviderConfig = ApprovalProviderConfig;
 export const ApprovalsConfig = z
   .object({
     provider: z
-      .union([ApprovalProviderConfig, z.array(ApprovalProviderConfig).min(1)])
+      .union([ApprovalProviderConfig, z.array(ApprovalProviderConfig)])
       .default({ type: 'stdio' }),
     timeout_ms: z.number().int().min(0).default(300000), // 5 minutes; 0 = no timeout
     batch_window_ms: z.number().int().min(0).default(0),
