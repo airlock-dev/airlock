@@ -99,7 +99,7 @@ struct ApprovalContext: Codable, Equatable, Sendable {
     let note: String?
 }
 
-struct ApprovalRequest: Codable, Identifiable, Equatable, Sendable {
+struct ApprovalRequest: Decodable, Identifiable, Equatable, Sendable {
     let id: String
     let code: String
     let agentId: String
@@ -108,9 +108,10 @@ struct ApprovalRequest: Codable, Identifiable, Equatable, Sendable {
     let context: ApprovalContext?
     let timeoutMs: Int
     let receivedAt: Date
+    let expiresAt: Date?
 
     var deadline: Date {
-        receivedAt.addingTimeInterval(TimeInterval(timeoutMs) / 1000.0)
+        expiresAt ?? receivedAt.addingTimeInterval(TimeInterval(timeoutMs) / 1000.0)
     }
 
     func isExpired(at date: Date = Date()) -> Bool {
@@ -118,10 +119,10 @@ struct ApprovalRequest: Codable, Identifiable, Equatable, Sendable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, code, agentId, tool, args, context, timeoutMs
+        case id, code, agentId, tool, args, context, timeoutMs, createdAt, expiresAt
     }
 
-    init(id: String, code: String, agentId: String, tool: String, args: [String: JSONValue], context: ApprovalContext? = nil, timeoutMs: Int, receivedAt: Date = Date()) {
+    init(id: String, code: String, agentId: String, tool: String, args: [String: JSONValue], context: ApprovalContext? = nil, timeoutMs: Int, receivedAt: Date = Date(), expiresAt: Date? = nil) {
         self.id = id
         self.code = code
         self.agentId = agentId
@@ -130,6 +131,7 @@ struct ApprovalRequest: Codable, Identifiable, Equatable, Sendable {
         self.context = context
         self.timeoutMs = timeoutMs
         self.receivedAt = receivedAt
+        self.expiresAt = expiresAt
     }
 
     init(from decoder: Decoder) throws {
@@ -141,7 +143,21 @@ struct ApprovalRequest: Codable, Identifiable, Equatable, Sendable {
         args = try container.decode([String: JSONValue].self, forKey: .args)
         context = try container.decodeIfPresent(ApprovalContext.self, forKey: .context)
         timeoutMs = try container.decode(Int.self, forKey: .timeoutMs)
-        receivedAt = Date()
+        let createdAtValue = try container.decodeIfPresent(String.self, forKey: .createdAt)
+        let expiresAtValue = try container.decodeIfPresent(String.self, forKey: .expiresAt)
+        receivedAt = Self.parseDate(createdAtValue) ?? Date()
+        expiresAt = Self.parseDate(expiresAtValue)
+    }
+
+    private static func parseDate(_ value: String?) -> Date? {
+        guard let value else { return nil }
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = fractional.date(from: value) { return date }
+
+        let standard = ISO8601DateFormatter()
+        standard.formatOptions = [.withInternetDateTime]
+        return standard.date(from: value)
     }
 
     var argsDisplayString: String {
@@ -204,6 +220,7 @@ struct ResolvedRequest: Identifiable, Equatable, Sendable {
     let resolvedAt: Date
 
     init(
+        id: String,
         code: String,
         action: String,
         tool: String = "",
@@ -213,7 +230,7 @@ struct ResolvedRequest: Identifiable, Equatable, Sendable {
         argsDisplay: String = "",
         resolvedAt: Date = Date()
     ) {
-        self.id = code
+        self.id = id
         self.code = code
         self.action = action
         self.tool = tool

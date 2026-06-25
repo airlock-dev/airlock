@@ -68,7 +68,7 @@ export class ApprovalDashboardRoutes implements HitlProvider {
     const code = typeof query.code === 'string' ? query.code : '';
     if (!code) return { ok: true };
 
-    const pendingRequest = this.stream.getPending(code);
+    const pendingRequest = this.stream.getPendingByCode(code);
     const remember = typeof query.remember === 'string' ? query.remember : undefined;
     if (remember) {
       const result = this.rememberDecision(configPath, pendingRequest, remember, query.duration_ms);
@@ -78,8 +78,8 @@ export class ApprovalDashboardRoutes implements HitlProvider {
       }
     }
 
-    this.approvalApi.approve(code);
-    if (this.stream.getPending(code)) {
+    this.approvalApi.approveByCode(code);
+    if (this.stream.getPendingByCode(code)) {
       void this.stream.updateApprovalStatus({
         id: pendingRequest?.id ?? code,
         code,
@@ -95,9 +95,9 @@ export class ApprovalDashboardRoutes implements HitlProvider {
     const query = request.query as Record<string, unknown>;
     const code = typeof query.code === 'string' ? query.code : '';
     if (code) {
-      const pendingRequest = this.stream.getPending(code);
-      this.approvalApi.deny(code, 'Denied via dashboard');
-      if (this.stream.getPending(code)) {
+      const pendingRequest = this.stream.getPendingByCode(code);
+      this.approvalApi.denyByCode(code, 'Denied via dashboard');
+      if (this.stream.getPendingByCode(code)) {
         void this.stream.updateApprovalStatus({
           id: pendingRequest?.id ?? code,
           code,

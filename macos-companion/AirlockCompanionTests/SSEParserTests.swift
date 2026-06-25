@@ -43,32 +43,34 @@ final class SSEParserTests: XCTestCase {
 
     func testParseResolvedMessage() throws {
         let json = """
-        { "type": "resolved", "code": "HUMAN-1234", "action": "approved" }
+        { "type": "resolved", "id": "550e8400-e29b-41d4-a716-446655440000", "code": "HUMAN-1234", "action": "approved" }
         """
         let data = json.data(using: .utf8)!
         let message = SSEMessage.parse(from: data)
 
-        guard case .resolved(let code, let action) = message else {
+        guard case .resolved(let id, let code, let action) = message else {
             XCTFail("Expected resolved, got \(String(describing: message))")
             return
         }
 
+        XCTAssertEqual(id, "550e8400-e29b-41d4-a716-446655440000")
         XCTAssertEqual(code, "HUMAN-1234")
         XCTAssertEqual(action, "approved")
     }
 
     func testParseDeniedMessage() throws {
         let json = """
-        { "type": "resolved", "code": "HUMAN-5678", "action": "denied" }
+        { "type": "resolved", "id": "650e8400-e29b-41d4-a716-446655440000", "code": "HUMAN-5678", "action": "denied" }
         """
         let data = json.data(using: .utf8)!
         let message = SSEMessage.parse(from: data)
 
-        guard case .resolved(let code, let action) = message else {
+        guard case .resolved(let id, let code, let action) = message else {
             XCTFail("Expected resolved, got \(String(describing: message))")
             return
         }
 
+        XCTAssertEqual(id, "650e8400-e29b-41d4-a716-446655440000")
         XCTAssertEqual(code, "HUMAN-5678")
         XCTAssertEqual(action, "denied")
     }
@@ -184,6 +186,31 @@ final class SSEParserTests: XCTestCase {
             1030,
             accuracy: 0.001
         )
+    }
+
+    func testApprovalRequestUsesServerExpirationWhenPresent() throws {
+        let json = """
+        {
+            "id": "550e8400-e29b-41d4-a716-446655440000",
+            "code": "CODE-1",
+            "agentId": "agent",
+            "tool": "tool",
+            "args": {},
+            "timeoutMs": 30000,
+            "createdAt": "2026-06-25T00:00:00.000Z",
+            "expiresAt": "2026-06-25T00:00:30.000Z"
+        }
+        """
+        let request = try JSONDecoder().decode(ApprovalRequest.self, from: json.data(using: .utf8)!)
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+
+        XCTAssertEqual(
+            request.deadline.timeIntervalSince1970,
+            formatter.date(from: "2026-06-25T00:00:30.000Z")!.timeIntervalSince1970,
+            accuracy: 0.001
+        )
+        XCTAssertTrue(request.isExpired(at: formatter.date(from: "2026-06-25T00:00:31.000Z")!))
     }
 
     func testApprovalRequestArgsDisplay() {

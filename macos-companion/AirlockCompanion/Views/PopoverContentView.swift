@@ -68,8 +68,8 @@ struct PopoverContentView: View {
             if let request = detailRequest {
                 RequestDetailView(
                     request: request,
-                    onApprove: { viewModel.approve(code: request.code) },
-                    onDeny:    { viewModel.deny(code: request.code) },
+                    onApprove: { viewModel.approve(id: request.id) },
+                    onDeny:    { viewModel.deny(id: request.id) },
                     onDismiss: { detailRequest = nil },
                     onNext:    adjacentRequest(from: request, by: +1).map { next in
                         { navigate(to: next) }
@@ -112,8 +112,8 @@ struct PopoverContentView: View {
 
             if let request = detailRequest {
                 if !shift {
-                    if key == "a"                                          { viewModel.approve(code: request.code); detailRequest = nil }
-                    else if key == "d"                                     { viewModel.deny(code: request.code);    detailRequest = nil }
+                    if key == "a"                                          { viewModel.approve(id: request.id); detailRequest = nil }
+                    else if key == "d"                                     { viewModel.deny(id: request.id);    detailRequest = nil }
                     else if press.key == .escape || key == "h" || press.key == .leftArrow  { detailRequest = nil }
                     else if key == "j" || press.key == .downArrow          { scrollDetail(80) }
                     else if key == "k" || press.key == .upArrow            { scrollDetail(-80) }

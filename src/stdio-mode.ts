@@ -53,8 +53,10 @@ export async function runStdioMode(
   // eslint-disable-next-line prefer-const
   let hitlEngine!: HitlEngine;
   const approvalForwarder: ApprovalApi = {
-    approve: (code) => hitlEngine.approve(code),
-    deny: (code, reason) => hitlEngine.deny(code, reason),
+    approve: (id) => hitlEngine.approve(id),
+    deny: (id, reason) => hitlEngine.deny(id, reason),
+    approveByCode: (code) => hitlEngine.approveByCode(code),
+    denyByCode: (code, reason) => hitlEngine.denyByCode(code, reason),
   };
 
   const hitlBatcher = new HitlBatcher(config.approvals.batch_window_ms);

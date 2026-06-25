@@ -97,6 +97,14 @@ describe('mobileApiPlugin', () => {
     expect(pendingBody.approvals[0].reason).toBe('Need to verify the working tree before pushing.');
     expect(pendingBody.approvals[0].note).toBe('Read-only command.');
 
+    const codeDecision = await app.inject({
+      method: 'POST',
+      url: `/mobile/approvals/${ticket.code}/decision`,
+      headers: { authorization: `Bearer ${registered.token}` },
+      payload: { decision: 'approved' },
+    });
+    expect(codeDecision.statusCode).toBe(404);
+
     const decision = await app.inject({
       method: 'POST',
       url: `/mobile/approvals/${ticket.id}/decision`,

@@ -20,12 +20,10 @@ describe('generateApprovalCode()', () => {
 });
 
 describe('generateId()', () => {
-  it('returns a hex string', () => {
-    expect(generateId()).toMatch(/^[0-9a-f]+$/);
-  });
-
-  it('returns 32 hex chars (16 bytes)', () => {
-    expect(generateId()).toHaveLength(32);
+  it('returns a UUID string', () => {
+    expect(generateId()).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+    );
   });
 
   it('generates unique ids', () => {

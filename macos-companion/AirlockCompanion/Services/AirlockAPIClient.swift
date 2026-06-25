@@ -12,15 +12,15 @@ final class AirlockAPIClient: Sendable {
         self.connection = DashboardConnection(baseURL: baseURL, bearerToken: bearerToken)
     }
 
-    func approve(code: String, remember: ApprovalRememberMode? = nil, durationMs: Int? = nil) async throws {
-        try await post(path: Constants.approvePath, code: code, remember: remember, durationMs: durationMs)
+    func approve(id: String, remember: ApprovalRememberMode? = nil, durationMs: Int? = nil) async throws {
+        try await postDecision(id: id, decision: "approved", remember: remember, durationMs: durationMs)
     }
 
-    func deny(code: String) async throws {
-        try await post(path: Constants.denyPath, code: code)
+    func deny(id: String) async throws {
+        try await postDecision(id: id, decision: "denied")
     }
 
-    func pendingApprovalCodes() async throws -> Set<String> {
+    func pendingApprovals() async throws -> [ApprovalRequest] {
         let request = try makePendingRequest()
         let (data, response) = try await URLSession.shared.data(for: request)
 
@@ -30,19 +30,11 @@ final class AirlockAPIClient: Sendable {
             throw URLError(.badServerResponse)
         }
 
-        let pending = try JSONDecoder().decode([PendingApprovalSummary].self, from: data)
-        return Set(pending.map(\.code))
+        return try JSONDecoder().decode(ApprovalListResponse.self, from: data).approvals
     }
 
-    private func post(path: String, code: String, remember: ApprovalRememberMode? = nil, durationMs: Int? = nil) async throws {
-        var queryItems = [URLQueryItem(name: "code", value: code)]
-        if let remember {
-            queryItems.append(URLQueryItem(name: "remember", value: remember.rawValue))
-        }
-        if let durationMs {
-            queryItems.append(URLQueryItem(name: "duration_ms", value: String(durationMs)))
-        }
-        let request = try makePostRequest(path: path, queryItems: queryItems)
+    private func postDecision(id: String, decision: String, remember: ApprovalRememberMode? = nil, durationMs: Int? = nil) async throws {
+        let request = try makeDecisionRequest(id: id, decision: decision, remember: remember, durationMs: durationMs)
         let (_, response) = try await URLSession.shared.data(for: request)
 
         guard let httpResponse = response as? HTTPURLResponse,
@@ -52,8 +44,19 @@ final class AirlockAPIClient: Sendable {
         }
     }
 
-    func makePostRequest(path: String, queryItems: [URLQueryItem]) throws -> URLRequest {
-        try connection.request(path: path, method: "POST", queryItems: queryItems)
+    func makeDecisionRequest(id: String, decision: String, remember: ApprovalRememberMode? = nil, durationMs: Int? = nil) throws -> URLRequest {
+        let escapedId = id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? id
+        var request = try connection.request(
+            path: Constants.approvalDecisionPath(id: escapedId),
+            method: "POST"
+        )
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(DecisionRequest(
+            decision: decision,
+            remember: remember?.rawValue,
+            durationMs: durationMs
+        ))
+        return request
     }
 
     func makePendingRequest() throws -> URLRequest {
@@ -61,6 +64,18 @@ final class AirlockAPIClient: Sendable {
     }
 }
 
-private struct PendingApprovalSummary: Decodable {
-    let code: String
+private struct ApprovalListResponse: Decodable {
+    let approvals: [ApprovalRequest]
+}
+
+private struct DecisionRequest: Encodable {
+    let decision: String
+    let remember: String?
+    let durationMs: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case decision
+        case remember
+        case durationMs = "duration_ms"
+    }
 }

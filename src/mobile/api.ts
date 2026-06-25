@@ -200,7 +200,7 @@ export function mobileApiPlugin(app: FastifyInstance, opts: MobileApiOptions): v
       return { error: 'decision must be approved or denied' };
     }
 
-    const row = auditLogger.getHitlById(id) ?? auditLogger.getHitlByCode(id);
+    const row = auditLogger.getHitlById(id);
     if (!row || row.status !== 'pending') {
       reply.code(404);
       return { error: 'No pending approval found' };

@@ -15,8 +15,8 @@ struct RequestListView: View {
                             isSelected: index == selectedIndex,
                             autoExpandWhenSelected: viewModel.autoExpandSelectedRequest,
                             onShowDetails: { onShowDetails(request) },
-                            onApprove: { viewModel.approve(code: request.code) },
-                            onDeny: { viewModel.deny(code: request.code) }
+                            onApprove: { viewModel.approve(id: request.id) },
+                            onDeny: { viewModel.deny(id: request.id) }
                         )
                         .id(request.id)
                     }

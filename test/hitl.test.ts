@@ -39,24 +39,34 @@ describe('HitlEngine', () => {
     engine = new HitlEngine(auditLogger, provider, 5000);
   });
 
-  it('resolves approved when approve() called by code', async () => {
+  it('resolves approved when approveByCode() called with manual code', async () => {
     const { code, result } = engine.create({
+      agentId: 'agent1',
+      tool: 'github/create_pr',
+      args: {},
+    });
+    engine.approveByCode(code);
+    expect(await result).toBe('approved');
+  });
+
+  it('resolves denied when denyByCode() called with manual code', async () => {
+    const { code, result } = engine.create({
+      agentId: 'agent1',
+      tool: 'github/create_pr',
+      args: {},
+    });
+    engine.denyByCode(code, 'not today');
+    expect(await result).toBe('denied');
+  });
+
+  it('does not resolve canonical approve() calls by short code', () => {
+    const { code } = engine.create({
       agentId: 'agent1',
       tool: 'github/create_pr',
       args: {},
     });
     engine.approve(code);
-    expect(await result).toBe('approved');
-  });
-
-  it('resolves denied when deny() called', async () => {
-    const { code, result } = engine.create({
-      agentId: 'agent1',
-      tool: 'github/create_pr',
-      args: {},
-    });
-    engine.deny(code, 'not today');
-    expect(await result).toBe('denied');
+    expect(engine.getPending()).toHaveLength(1);
   });
 
   it('resolves timeout after timeout period', async () => {
@@ -87,7 +97,9 @@ describe('HitlEngine', () => {
   });
 
   it('redacts approval args before storing and exposing pending requests', () => {
-    (auditLogger as any).redactArgs = vi.fn().mockReturnValue({ token: '[REDACTED]', repo: 'test' });
+    (auditLogger as any).redactArgs = vi
+      .fn()
+      .mockReturnValue({ token: '[REDACTED]', repo: 'test' });
     engine.create({
       agentId: 'agent1',
       tool: 'github/create_pr',

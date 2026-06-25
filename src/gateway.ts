@@ -70,8 +70,10 @@ export class Gateway {
     this.hitlBatcher = new HitlBatcher(this.config.approvals.batch_window_ms);
 
     const approvalForwarder: ApprovalApi = {
-      approve: (code) => this.hitlEngine.approve(code),
-      deny: (code, reason) => this.hitlEngine.deny(code, reason),
+      approve: (id) => this.hitlEngine.approve(id),
+      deny: (id, reason) => this.hitlEngine.deny(id, reason),
+      approveByCode: (code) => this.hitlEngine.approveByCode(code),
+      denyByCode: (code, reason) => this.hitlEngine.denyByCode(code, reason),
     };
 
     this.approvalRoutes = new ApprovalDashboardRoutes(approvalForwarder, this.activityStream);

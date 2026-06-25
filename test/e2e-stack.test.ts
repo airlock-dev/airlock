@@ -297,7 +297,7 @@ describe('e2e: call_tool — HITL gate with real downstream', () => {
     expect(pending).toHaveLength(1);
     expect(pending[0].tool).toBe('tools/echo');
 
-    stack.hitlEngine.approve(pending[0].code);
+    stack.hitlEngine.approveByCode(pending[0].code);
 
     const result = await callPromise;
     expect((result.content[0] as { type: string; text: string }).text).toBe('needs approval');
@@ -319,7 +319,7 @@ describe('e2e: call_tool — HITL gate with real downstream', () => {
     });
 
     await new Promise((r) => setTimeout(r, 20));
-    stack.hitlEngine.deny(stack.hitlEngine.getPending()[0].code, 'not now');
+    stack.hitlEngine.denyByCode(stack.hitlEngine.getPending()[0].code, 'not now');
 
     const result = await callPromise;
     expect(result.isError).toBe(true);
@@ -438,7 +438,7 @@ describe('e2e: exec/run — per-command policy', () => {
     expect(pending).toHaveLength(1);
     expect(pending[0].tool).toBe('exec/run');
 
-    stack.hitlEngine.approve(pending[0].code);
+    stack.hitlEngine.approveByCode(pending[0].code);
     const result = await callPromise;
     const parsed = JSON.parse((result.content[0] as { text: string }).text);
     expect(parsed.stdout.trim()).toBe('secret-data');
@@ -468,7 +468,7 @@ describe('e2e: exec/run — per-command policy', () => {
     });
 
     await new Promise((r) => setTimeout(r, 20));
-    stack.hitlEngine.deny(stack.hitlEngine.getPending()[0].code, 'nope');
+    stack.hitlEngine.denyByCode(stack.hitlEngine.getPending()[0].code, 'nope');
 
     const result = await callPromise;
     expect(result.isError).toBe(true);
@@ -602,7 +602,7 @@ describe('e2e: http/* — security and policy', () => {
       expect(pending).toHaveLength(1);
       expect(pending[0].tool).toBe('http/post');
 
-      stack.hitlEngine.approve(pending[0].code);
+      stack.hitlEngine.approveByCode(pending[0].code);
       const result = await callPromise;
       const parsed = JSON.parse((result.content[0] as { text: string }).text);
       expect(parsed.status).toBe(200);
@@ -627,7 +627,7 @@ describe('e2e: http/* — security and policy', () => {
     });
 
     await new Promise((r) => setTimeout(r, 20));
-    stack.hitlEngine.deny(stack.hitlEngine.getPending()[0].code, 'not allowed');
+    stack.hitlEngine.denyByCode(stack.hitlEngine.getPending()[0].code, 'not allowed');
 
     const result = await callPromise;
     expect(result.isError).toBe(true);
@@ -679,7 +679,7 @@ describe('e2e: external MCP — HITL wildcard patterns', () => {
     const pending = stack.hitlEngine.getPending();
     expect(pending).toHaveLength(1);
 
-    stack.hitlEngine.approve(pending[0].code);
+    stack.hitlEngine.approveByCode(pending[0].code);
     const result = await callPromise;
     expect((result.content[0] as { type: string; text: string }).text).toBe('3');
     await stack.teardown();
@@ -706,7 +706,7 @@ describe('e2e: external MCP — HITL wildcard patterns', () => {
     await new Promise((r) => setTimeout(r, 20));
     expect(stack.hitlEngine.getPending()).toHaveLength(1);
 
-    stack.hitlEngine.approve(stack.hitlEngine.getPending()[0].code);
+    stack.hitlEngine.approveByCode(stack.hitlEngine.getPending()[0].code);
     const addResult = await addPromise;
     expect((addResult.content[0] as { type: string; text: string }).text).toBe('30');
     await stack.teardown();
@@ -813,7 +813,7 @@ describe('e2e: mixed policy — allow + ask + deny across tool types', () => {
     });
     await new Promise((r) => setTimeout(r, 20));
     expect(stack.hitlEngine.getPending()).toHaveLength(1);
-    stack.hitlEngine.approve(stack.hitlEngine.getPending()[0].code);
+    stack.hitlEngine.approveByCode(stack.hitlEngine.getPending()[0].code);
     const deployResult = await deployPromise;
     const deployParsed = JSON.parse((deployResult.content[0] as { text: string }).text);
     expect(deployParsed.stdout.trim()).toBe('deploy-prod');

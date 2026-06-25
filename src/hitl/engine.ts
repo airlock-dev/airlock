@@ -32,8 +32,9 @@ function redactApprovalArgs(
   args: Record<string, unknown>
 ): Record<string, unknown> {
   return (
-    (auditLogger as { redactArgs?: (args: Record<string, unknown>) => Record<string, unknown> })
-      .redactArgs?.(args) ?? args
+    (
+      auditLogger as { redactArgs?: (args: Record<string, unknown>) => Record<string, unknown> }
+    ).redactArgs?.(args) ?? args
   );
 }
 
@@ -100,20 +101,22 @@ export class HitlEngine implements ApprovalApi {
     return { id, code, result };
   }
 
-  /** Approve by code (used by providers) or by id (used by API) */
-  approve(codeOrId: string): void {
-    const req = this.resolveRequest(codeOrId);
+  approve(id: string): void {
+    const req = this.pending.get(id);
     if (!req) {
-      log.warn({ codeOrId }, 'No pending HITL request found');
+      log.warn({ id }, 'No pending HITL request found');
       return;
     }
-    if (req.timer) clearTimeout(req.timer);
-    this.pending.delete(req.id);
-    this.byCode.delete(req.code);
-    this.auditLogger.updateHitlStatus(req.id, 'approved');
-    log.info({ id: req.id, code: req.code }, 'HITL approved');
-    this.updateApprovalStatus(req, 'approved');
-    req.resolve('approved');
+    this.approveRequest(req);
+  }
+
+  approveByCode(code: string): void {
+    const req = this.resolveRequestByCode(code);
+    if (!req) {
+      log.warn({ code }, 'No pending HITL request found for approval code');
+      return;
+    }
+    this.approveRequest(req);
   }
 
   /** Cancel a pending request (e.g. transport disconnected). */
@@ -129,20 +132,22 @@ export class HitlEngine implements ApprovalApi {
     req.resolve('cancelled');
   }
 
-  /** Deny by code or id */
-  deny(codeOrId: string, reason?: string): void {
-    const req = this.resolveRequest(codeOrId);
+  deny(id: string, reason?: string): void {
+    const req = this.pending.get(id);
     if (!req) {
-      log.warn({ codeOrId }, 'No pending HITL request found');
+      log.warn({ id }, 'No pending HITL request found');
       return;
     }
-    if (req.timer) clearTimeout(req.timer);
-    this.pending.delete(req.id);
-    this.byCode.delete(req.code);
-    this.auditLogger.updateHitlStatus(req.id, 'denied', reason);
-    log.info({ id: req.id, code: req.code, reason }, 'HITL denied');
-    this.updateApprovalStatus(req, 'denied');
-    req.resolve('denied');
+    this.denyRequest(req, reason);
+  }
+
+  denyByCode(code: string, reason?: string): void {
+    const req = this.resolveRequestByCode(code);
+    if (!req) {
+      log.warn({ code }, 'No pending HITL request found for approval code');
+      return;
+    }
+    this.denyRequest(req, reason);
   }
 
   getPending(): Array<{
@@ -164,13 +169,34 @@ export class HitlEngine implements ApprovalApi {
     }));
   }
 
-  private resolveRequest(codeOrId: string): PendingRequest | undefined {
-    // Try as id first
-    if (this.pending.has(codeOrId)) return this.pending.get(codeOrId);
-    // Try as code
-    const id = this.byCode.get(codeOrId);
+  hasPending(id: string): boolean {
+    return this.pending.has(id);
+  }
+
+  private resolveRequestByCode(code: string): PendingRequest | undefined {
+    const id = this.byCode.get(code);
     if (id) return this.pending.get(id);
     return undefined;
+  }
+
+  private approveRequest(req: PendingRequest): void {
+    if (req.timer) clearTimeout(req.timer);
+    this.pending.delete(req.id);
+    this.byCode.delete(req.code);
+    this.auditLogger.updateHitlStatus(req.id, 'approved');
+    log.info({ id: req.id, code: req.code }, 'HITL approved');
+    this.updateApprovalStatus(req, 'approved');
+    req.resolve('approved');
+  }
+
+  private denyRequest(req: PendingRequest, reason?: string): void {
+    if (req.timer) clearTimeout(req.timer);
+    this.pending.delete(req.id);
+    this.byCode.delete(req.code);
+    this.auditLogger.updateHitlStatus(req.id, 'denied', reason);
+    log.info({ id: req.id, code: req.code, reason }, 'HITL denied');
+    this.updateApprovalStatus(req, 'denied');
+    req.resolve('denied');
   }
 
   /** Recover pending requests from DB on startup */

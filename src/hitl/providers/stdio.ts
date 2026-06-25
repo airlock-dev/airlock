@@ -23,10 +23,10 @@ export class StdioHitlProvider implements HitlProvider {
 
       if (parsed.type === 'approve') {
         log.info({ code: parsed.code }, 'Approve received via stdio');
-        this.approvalApi.approve(parsed.code);
+        this.approvalApi.approveByCode(parsed.code);
       } else {
         log.info({ code: parsed.code }, 'Deny received via stdio');
-        this.approvalApi.deny(parsed.code, parsed.reason);
+        this.approvalApi.denyByCode(parsed.code, parsed.reason);
       }
     });
     log.info('Stdio HITL provider ready. Type: approve <CODE> or deny <CODE>');

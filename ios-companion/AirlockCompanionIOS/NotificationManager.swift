@@ -201,7 +201,7 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
             return
         }
 
-        let approvalId = (userInfo["approval_id"] as? String) ?? (userInfo["code"] as? String)
+        let approvalId = userInfo["approval_id"] as? String
         guard let approvalId else {
             UserDefaults.standard.set("Notification did not include an approval id.", forKey: "lastNotificationActionError")
             postRefresh()
@@ -253,7 +253,7 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
             return false
         }
 
-        if let approvalId = (userInfo["approval_id"] as? String) ?? (userInfo["code"] as? String) {
+        if let approvalId = userInfo["approval_id"] as? String {
             removeDeliveredApprovalNotification(matching: approvalId)
         }
         postRefresh()
@@ -264,7 +264,7 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         UNUserNotificationCenter.current().getDeliveredNotifications { notifications in
             let matchingIdentifiers = notifications.compactMap { notification -> String? in
                 let userInfo = notification.request.content.userInfo
-                let approvalId = (userInfo["approval_id"] as? String) ?? (userInfo["code"] as? String)
+                let approvalId = userInfo["approval_id"] as? String
                 return approvalId == idOrCode ? notification.request.identifier : nil
             }
 
@@ -281,7 +281,7 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
                     return nil
                 }
                 let userInfo = notification.request.content.userInfo
-                guard let approvalId = (userInfo["approval_id"] as? String) ?? (userInfo["code"] as? String)
+                guard let approvalId = userInfo["approval_id"] as? String
                 else {
                     return nil
                 }

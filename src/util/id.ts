@@ -1,4 +1,4 @@
-import { randomBytes, randomInt } from 'crypto';
+import { randomInt, randomUUID } from 'crypto';
 
 const APPROVAL_CODE_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
 const APPROVAL_CODE_LENGTH = 8; // 36^8 ≈ 2.8 trillion
@@ -12,7 +12,7 @@ export function generateApprovalCode(): string {
   return code;
 }
 
-/** Generate a unique request ID (UUID-like) */
+/** Generate a unique request ID. */
 export function generateId(): string {
-  return randomBytes(16).toString('hex');
+  return randomUUID();
 }

@@ -18,19 +18,22 @@ export interface ApprovalStreamClient {
 export class ApprovalStreamHub implements ApprovalStreamClient {
   private clients = new Map<ServerResponse, NodeJS.Timeout>();
   private pending = new Map<string, HitlNotification>();
+  private pendingCodeIndex = new Map<string, string>();
 
   constructor(private options: { activityStream?: ActivityReplaySource } = {}) {}
 
   notify(requests: HitlNotification[]): Promise<void> {
     for (const request of requests) {
-      this.pending.set(request.code, request);
+      this.pending.set(request.id, request);
+      this.pendingCodeIndex.set(request.code, request.id);
       this.broadcast({ type: 'new', request });
     }
     return Promise.resolve();
   }
 
   updateApprovalStatus(status: ApprovalStatus): Promise<void> {
-    this.pending.delete(status.code);
+    this.pending.delete(status.id);
+    this.pendingCodeIndex.delete(status.code);
     this.broadcast({
       type: 'resolved',
       id: status.id,
@@ -75,8 +78,13 @@ export class ApprovalStreamHub implements ApprovalStreamClient {
     reply.raw.on('error', cleanup);
   }
 
-  getPending(code: string): HitlNotification | undefined {
-    return this.pending.get(code);
+  getPendingById(id: string): HitlNotification | undefined {
+    return this.pending.get(id);
+  }
+
+  getPendingByCode(code: string): HitlNotification | undefined {
+    const id = this.pendingCodeIndex.get(code);
+    return id ? this.pending.get(id) : undefined;
   }
 
   pendingCount(): number {
@@ -94,6 +102,7 @@ export class ApprovalStreamHub implements ApprovalStreamClient {
     }
     this.clients.clear();
     this.pending.clear();
+    this.pendingCodeIndex.clear();
     return Promise.resolve();
   }
 

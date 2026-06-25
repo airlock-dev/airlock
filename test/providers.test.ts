@@ -24,32 +24,50 @@ describe('parseApprovalCommand()', () => {
   });
 
   it('is case-insensitive', () => {
-    expect(parseApprovalCommand('APPROVE abc123')).toMatchObject({ type: 'approve', code: 'ABC123' });
+    expect(parseApprovalCommand('APPROVE abc123')).toMatchObject({
+      type: 'approve',
+      code: 'ABC123',
+    });
     expect(parseApprovalCommand('Deny ABC123')).toMatchObject({ type: 'deny', code: 'ABC123' });
   });
 
   it('returns null for non-matching input', () => {
     expect(parseApprovalCommand('hello world')).toBeNull();
-    expect(parseApprovalCommand('approve')).toBeNull();         // no code
-    expect(parseApprovalCommand('approve SHORT')).toBeNull();   // too short (5 chars)
+    expect(parseApprovalCommand('approve')).toBeNull(); // no code
+    expect(parseApprovalCommand('approve SHORT')).toBeNull(); // too short (5 chars)
     expect(parseApprovalCommand('approve TOOLONGCODE1')).toBeNull(); // too long (11 chars)
     expect(parseApprovalCommand('')).toBeNull();
   });
 
   it('parses openclaw-style prefixed commands', () => {
-    expect(parseApprovalCommand('hitl approve ABC123')).toEqual({ type: 'approve', code: 'ABC123' });
-    expect(parseApprovalCommand('hitl deny ABC123 reason here')).toEqual({ type: 'deny', code: 'ABC123', reason: 'reason here' });
+    expect(parseApprovalCommand('hitl approve ABC123')).toEqual({
+      type: 'approve',
+      code: 'ABC123',
+    });
+    expect(parseApprovalCommand('hitl deny ABC123 reason here')).toEqual({
+      type: 'deny',
+      code: 'ABC123',
+      reason: 'reason here',
+    });
   });
 });
 
 // ─── StdioHitlProvider ────────────────────────────────────────────────────────
 
 function makeApprovalApi() {
-  return { approve: vi.fn(), deny: vi.fn() };
+  return { approve: vi.fn(), deny: vi.fn(), approveByCode: vi.fn(), denyByCode: vi.fn() };
 }
 
 function makeNotification(overrides: Partial<HitlNotification> = {}): HitlNotification {
-  return { id: '1', code: 'ABC123', agentId: 'agent1', tool: 'github/create_pr', args: {}, timeoutMs: 300000, ...overrides };
+  return {
+    id: '1',
+    code: 'ABC123',
+    agentId: 'agent1',
+    tool: 'github/create_pr',
+    args: {},
+    timeoutMs: 300000,
+    ...overrides,
+  };
 }
 
 describe('StdioHitlProvider', () => {
@@ -59,8 +77,8 @@ describe('StdioHitlProvider', () => {
     const provider = new StdioHitlProvider(api, stream);
     await provider.init();
     stream.push('approve ABC123\n');
-    await new Promise(r => setTimeout(r, 10));
-    expect(api.approve).toHaveBeenCalledWith('ABC123');
+    await new Promise((r) => setTimeout(r, 10));
+    expect(api.approveByCode).toHaveBeenCalledWith('ABC123');
   });
 
   it('calls deny when "deny <CODE>" line received', async () => {
@@ -69,8 +87,8 @@ describe('StdioHitlProvider', () => {
     const provider = new StdioHitlProvider(api, stream);
     await provider.init();
     stream.push('deny ABC123\n');
-    await new Promise(r => setTimeout(r, 10));
-    expect(api.deny).toHaveBeenCalledWith('ABC123', undefined);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(api.denyByCode).toHaveBeenCalledWith('ABC123', undefined);
   });
 
   it('calls deny with reason', async () => {
@@ -79,8 +97,8 @@ describe('StdioHitlProvider', () => {
     const provider = new StdioHitlProvider(api, stream);
     await provider.init();
     stream.push('deny ABC123 not today\n');
-    await new Promise(r => setTimeout(r, 10));
-    expect(api.deny).toHaveBeenCalledWith('ABC123', 'not today');
+    await new Promise((r) => setTimeout(r, 10));
+    expect(api.denyByCode).toHaveBeenCalledWith('ABC123', 'not today');
   });
 
   it('ignores non-approval input', async () => {
@@ -90,9 +108,9 @@ describe('StdioHitlProvider', () => {
     await provider.init();
     stream.push('hello world\n');
     stream.push('random text\n');
-    await new Promise(r => setTimeout(r, 10));
-    expect(api.approve).not.toHaveBeenCalled();
-    expect(api.deny).not.toHaveBeenCalled();
+    await new Promise((r) => setTimeout(r, 10));
+    expect(api.approveByCode).not.toHaveBeenCalled();
+    expect(api.denyByCode).not.toHaveBeenCalled();
   });
 
   it('is case-insensitive for commands', async () => {
@@ -101,8 +119,8 @@ describe('StdioHitlProvider', () => {
     const provider = new StdioHitlProvider(api, stream);
     await provider.init();
     stream.push('APPROVE ABC123\n');
-    await new Promise(r => setTimeout(r, 10));
-    expect(api.approve).toHaveBeenCalledWith('ABC123');
+    await new Promise((r) => setTimeout(r, 10));
+    expect(api.approveByCode).toHaveBeenCalledWith('ABC123');
   });
 
   it('writes formatted notification to stderr on notify()', async () => {
@@ -127,7 +145,9 @@ function makeTelegramProvider(api: ApprovalApi = makeApprovalApi()) {
   return new TelegramHitlProvider({ bot_token: 'test-token', chat_id: '12345' }, api);
 }
 
-function makeFetchWithUpdates(updates: Array<{ update_id: number; message?: { text: string; chat?: { id: number } } }>) {
+function makeFetchWithUpdates(
+  updates: Array<{ update_id: number; message?: { text: string; chat?: { id: number } } }>
+) {
   return vi.fn().mockImplementation((url: string) => {
     if (url.includes('getUpdates')) {
       return Promise.resolve({
@@ -142,8 +162,13 @@ function makeFetchWithUpdates(updates: Array<{ update_id: number; message?: { te
 }
 
 describe('TelegramHitlProvider', () => {
-  beforeEach(() => { vi.useFakeTimers(); });
-  afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
 
   it('sends notification via sendMessage API', async () => {
     const fetch = makeFetchWithUpdates([]);
@@ -151,8 +176,8 @@ describe('TelegramHitlProvider', () => {
     const provider = makeTelegramProvider();
     await provider.init();
     await provider.notify([makeNotification({ code: 'TG1234' })]);
-    const sendCall = (fetch as ReturnType<typeof vi.fn>).mock.calls.find(
-      ([url]: [string]) => url.includes('sendMessage'),
+    const sendCall = (fetch as ReturnType<typeof vi.fn>).mock.calls.find(([url]: [string]) =>
+      url.includes('sendMessage')
     );
     expect(sendCall).toBeDefined();
     const body = JSON.parse(sendCall[1].body);
@@ -164,40 +189,46 @@ describe('TelegramHitlProvider', () => {
   it('calls approve when polling returns approve message', async () => {
     vi.useRealTimers();
     const api = makeApprovalApi();
-    const fetch = makeFetchWithUpdates([{ update_id: 1, message: { text: 'approve AB1234', chat: { id: 99 } } }]);
+    const fetch = makeFetchWithUpdates([
+      { update_id: 1, message: { text: 'approve AB1234', chat: { id: 99 } } },
+    ]);
     vi.stubGlobal('fetch', fetch);
     const provider = new TelegramHitlProvider({ bot_token: 'tok', chat_id: '99' }, api);
     await provider.init();
     // Let poll run
-    await new Promise(r => setTimeout(r, 1100));
+    await new Promise((r) => setTimeout(r, 1100));
     await provider.stop();
-    expect(api.approve).toHaveBeenCalledWith('AB1234');
+    expect(api.approveByCode).toHaveBeenCalledWith('AB1234');
     vi.useFakeTimers();
   });
 
   it('calls deny when polling returns deny message', async () => {
     vi.useRealTimers();
     const api = makeApprovalApi();
-    const fetch = makeFetchWithUpdates([{ update_id: 2, message: { text: 'deny AB1234 nope', chat: { id: 99 } } }]);
+    const fetch = makeFetchWithUpdates([
+      { update_id: 2, message: { text: 'deny AB1234 nope', chat: { id: 99 } } },
+    ]);
     vi.stubGlobal('fetch', fetch);
     const provider = new TelegramHitlProvider({ bot_token: 'tok', chat_id: '99' }, api);
     await provider.init();
-    await new Promise(r => setTimeout(r, 1100));
+    await new Promise((r) => setTimeout(r, 1100));
     await provider.stop();
-    expect(api.deny).toHaveBeenCalledWith('AB1234', 'nope');
+    expect(api.denyByCode).toHaveBeenCalledWith('AB1234', 'nope');
     vi.useFakeTimers();
   });
 
   it('ignores messages from unauthorized chats', async () => {
     vi.useRealTimers();
     const api = makeApprovalApi();
-    const fetch = makeFetchWithUpdates([{ update_id: 1, message: { text: 'approve AB1234', chat: { id: 777 } } }]);
+    const fetch = makeFetchWithUpdates([
+      { update_id: 1, message: { text: 'approve AB1234', chat: { id: 777 } } },
+    ]);
     vi.stubGlobal('fetch', fetch);
     const provider = new TelegramHitlProvider({ bot_token: 'tok', chat_id: '99' }, api);
     await provider.init();
-    await new Promise(r => setTimeout(r, 1100));
+    await new Promise((r) => setTimeout(r, 1100));
     await provider.stop();
-    expect(api.approve).not.toHaveBeenCalled();
+    expect(api.approveByCode).not.toHaveBeenCalled();
     vi.useFakeTimers();
   });
 
@@ -209,20 +240,25 @@ describe('TelegramHitlProvider', () => {
       if (url.includes('getUpdates')) {
         callCount++;
         // First call returns update, second returns empty (since offset advanced)
-        const result = callCount === 1
-          ? [{ update_id: 5, message: { text: 'approve AB1234', chat: { id: 99 } } }]
-          : [];
-        return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ ok: true, result }) });
+        const result =
+          callCount === 1
+            ? [{ update_id: 5, message: { text: 'approve AB1234', chat: { id: 99 } } }]
+            : [];
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({ ok: true, result }),
+        });
       }
       return Promise.resolve({ ok: true, status: 200 });
     });
     vi.stubGlobal('fetch', fetch);
     const provider = new TelegramHitlProvider({ bot_token: 'tok', chat_id: '99' }, api);
     await provider.init();
-    await new Promise(r => setTimeout(r, 2200)); // two poll cycles
+    await new Promise((r) => setTimeout(r, 2200)); // two poll cycles
     await provider.stop();
     // approve should only be called once
-    expect(api.approve).toHaveBeenCalledTimes(1);
+    expect(api.approveByCode).toHaveBeenCalledTimes(1);
     vi.useFakeTimers();
   });
 
@@ -234,7 +270,7 @@ describe('TelegramHitlProvider', () => {
     await provider.init();
     await provider.stop();
     const callsBefore = (fetch as ReturnType<typeof vi.fn>).mock.calls.length;
-    await new Promise(r => setTimeout(r, 1500));
+    await new Promise((r) => setTimeout(r, 1500));
     expect((fetch as ReturnType<typeof vi.fn>).mock.calls.length).toBe(callsBefore);
     vi.useFakeTimers();
   });

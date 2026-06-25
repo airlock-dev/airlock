@@ -86,13 +86,13 @@ final class AppViewModel: ObservableObject {
             }
             .store(in: &cancellables)
 
-        notificationManager.onAction = { [weak self] code, action, remember, durationMs in
+        notificationManager.onAction = { [weak self] id, action, remember, durationMs in
             guard let self else { return }
             Task { @MainActor in
                 if action == "approved" {
-                    self.approve(code: code, remember: remember, durationMs: durationMs)
+                    self.approve(id: id, remember: remember, durationMs: durationMs)
                 } else {
-                    self.deny(code: code)
+                    self.deny(id: id)
                 }
             }
         }
@@ -123,15 +123,16 @@ final class AppViewModel: ObservableObject {
         connectSSE()
     }
 
-    func approve(code: String, remember: ApprovalRememberMode? = nil, durationMs: Int? = nil) {
-        guard !markExpiredIfNeeded(code: code) else { return }
-        moveToResolved(code: code, action: "approved")
-        notificationManager.removeNotification(code: code)
+    func approve(id: String, remember: ApprovalRememberMode? = nil, durationMs: Int? = nil) {
+        guard !markExpiredIfNeeded(id: id) else { return }
+        let code = seenRequests[id]?.code ?? id
+        moveToResolved(id: id, action: "approved")
+        notificationManager.removeNotification(id: id)
 
         let client = apiClient
         Task { [weak self] in
             do {
-                try await client.approve(code: code, remember: remember, durationMs: durationMs)
+                try await client.approve(id: id, remember: remember, durationMs: durationMs)
                 await MainActor.run {
                     self?.lastNotificationActionError = ""
                 }
@@ -143,15 +144,16 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    func deny(code: String) {
-        guard !markExpiredIfNeeded(code: code) else { return }
-        moveToResolved(code: code, action: "denied")
-        notificationManager.removeNotification(code: code)
+    func deny(id: String) {
+        guard !markExpiredIfNeeded(id: id) else { return }
+        let code = seenRequests[id]?.code ?? id
+        moveToResolved(id: id, action: "denied")
+        notificationManager.removeNotification(id: id)
 
         let client = apiClient
         Task { [weak self] in
             do {
-                try await client.deny(code: code)
+                try await client.deny(id: id)
                 await MainActor.run {
                     self?.lastNotificationActionError = ""
                 }
@@ -193,7 +195,7 @@ final class AppViewModel: ObservableObject {
     func approveSelectedRequest() {
         guard !pendingRequests.isEmpty else { return }
         let index = min(selectedIndex, pendingRequests.count - 1)
-        approve(code: pendingRequests[index].code)
+        approve(id: pendingRequests[index].id)
         if selectedIndex >= pendingRequests.count - 1 {
             selectedIndex = max(0, pendingRequests.count - 2)
         }
@@ -202,7 +204,7 @@ final class AppViewModel: ObservableObject {
     func denySelectedRequest() {
         guard !pendingRequests.isEmpty else { return }
         let index = min(selectedIndex, pendingRequests.count - 1)
-        deny(code: pendingRequests[index].code)
+        deny(id: pendingRequests[index].id)
         if selectedIndex >= pendingRequests.count - 1 {
             selectedIndex = max(0, pendingRequests.count - 2)
         }
@@ -229,20 +231,15 @@ final class AppViewModel: ObservableObject {
         case .newRequest(let request):
             pruneExpiredRequests()
             guard request.timeoutMs == 0 || request.deadline > Date() else { return }
-            seenRequests[request.code] = request
-            // Avoid duplicates.
-            if !pendingRequests.contains(where: { $0.code == request.code }) {
-                pendingRequests.insert(request, at: 0)
-            }
-            notificationManager.showNotification(for: request, soundEnabled: soundEnabled)
+            upsertPendingRequest(request, notifyIfNew: true)
 
-        case .resolved(let code, let action):
+        case .resolved(let id, _, let action):
             if action == "timeout" || action == "cancelled" {
-                removePendingRequests(withCodes: [code])
+                removePendingRequests(withIds: [id])
                 return
             }
-            moveToResolved(code: code, action: action)
-            notificationManager.removeNotification(code: code)
+            moveToResolved(id: id, action: action)
+            notificationManager.removeNotification(id: id)
 
         case .activity(let event):
             upsertActivityEvent(event)
@@ -258,14 +255,30 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    private func moveToResolved(code: String, action: String) {
-        pendingRequests.removeAll { $0.code == code }
+    private func upsertPendingRequest(_ request: ApprovalRequest, notifyIfNew: Bool) {
+        let wasPending = pendingRequests.contains(where: { $0.id == request.id })
+        seenRequests[request.id] = request
+
+        if let index = pendingRequests.firstIndex(where: { $0.id == request.id }) {
+            pendingRequests[index] = request
+        } else {
+            pendingRequests.insert(request, at: 0)
+        }
+
+        if notifyIfNew && !wasPending {
+            notificationManager.showNotification(for: request, soundEnabled: soundEnabled)
+        }
+    }
+
+    private func moveToResolved(id: String, action: String) {
+        pendingRequests.removeAll { $0.id == id }
         selectedIndex = min(selectedIndex, max(0, pendingRequests.count - 1))
         // Skip if already resolved (optimistic UI already added it).
-        guard !resolvedRequests.contains(where: { $0.code == code }) else { return }
-        let seen = seenRequests[code]
+        guard !resolvedRequests.contains(where: { $0.id == id }) else { return }
+        let seen = seenRequests[id]
         let resolved = ResolvedRequest(
-            code: code,
+            id: id,
+            code: seen?.code ?? id,
             action: action,
             tool: seen?.tool ?? "",
             agentId: seen?.agentId ?? "",
@@ -288,30 +301,30 @@ final class AppViewModel: ObservableObject {
         return request.displaySubtitle
     }
 
-    private func markExpiredIfNeeded(code: String) -> Bool {
-        guard let request = pendingRequests.first(where: { $0.code == code }),
+    private func markExpiredIfNeeded(id: String) -> Bool {
+        guard let request = pendingRequests.first(where: { $0.id == id }),
               request.isExpired()
         else {
             return false
         }
 
-        moveToResolved(code: code, action: "timeout")
-        notificationManager.removeNotification(code: code)
+        moveToResolved(id: id, action: "timeout")
+        notificationManager.removeNotification(id: id)
         return true
     }
 
-    private func removePendingRequests(withCodes codes: Set<String>) {
-        guard !codes.isEmpty else { return }
-        removePendingRequests { codes.contains($0.code) }
+    private func removePendingRequests(withIds ids: Set<String>) {
+        guard !ids.isEmpty else { return }
+        removePendingRequests { ids.contains($0.id) }
     }
 
     private func removePendingRequests(where shouldRemove: (ApprovalRequest) -> Bool) {
-        let removedCodes = Set(pendingRequests.filter(shouldRemove).map(\.code))
-        guard !removedCodes.isEmpty else { return }
+        let removedIds = Set(pendingRequests.filter(shouldRemove).map(\.id))
+        guard !removedIds.isEmpty else { return }
 
-        pendingRequests.removeAll { removedCodes.contains($0.code) }
-        for code in removedCodes {
-            notificationManager.removeNotification(code: code)
+        pendingRequests.removeAll { removedIds.contains($0.id) }
+        for id in removedIds {
+            notificationManager.removeNotification(id: id)
         }
         if selectedIndex >= pendingRequests.count {
             selectedIndex = max(0, pendingRequests.count - 1)
@@ -327,12 +340,26 @@ final class AppViewModel: ObservableObject {
     }
 
     private func reconcilePendingRequests() async {
-        guard !pendingRequests.isEmpty else { return }
-
         let client = apiClient
         do {
-            let pendingCodes = try await client.pendingApprovalCodes()
-            removePendingRequests { !pendingCodes.contains($0.code) }
+            let fetched = try await client.pendingApprovals()
+            let snapshot = fetched.filter { !$0.isExpired() }
+            let snapshotIds = Set(snapshot.map(\.id))
+            let removedIds = Set(pendingRequests.map(\.id)).subtracting(snapshotIds)
+
+            for id in removedIds {
+                notificationManager.removeNotification(id: id)
+            }
+
+            let existingIds = Set(pendingRequests.map(\.id))
+            pendingRequests = snapshot
+            for request in snapshot {
+                seenRequests[request.id] = request
+                if !existingIds.contains(request.id) {
+                    notificationManager.showNotification(for: request, soundEnabled: soundEnabled)
+                }
+            }
+            selectedIndex = min(selectedIndex, max(0, pendingRequests.count - 1))
         } catch {
         }
     }

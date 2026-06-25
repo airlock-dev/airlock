@@ -165,7 +165,7 @@ final class AppViewModel: ObservableObject {
 
     private func updateAppBadge() async {
         let badgeCount = activePendingCount
-        let activeIds = Set(activePending.flatMap { [$0.id, $0.code] })
+        let activeIds = Set(activePending.map(\.id))
         NotificationManager.shared.removeDeliveredApprovalNotifications(excluding: activeIds)
         if #available(iOS 17.0, *) {
             try? await UNUserNotificationCenter.current().setBadgeCount(badgeCount)

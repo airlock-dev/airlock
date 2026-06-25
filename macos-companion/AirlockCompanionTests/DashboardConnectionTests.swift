@@ -26,33 +26,30 @@ final class DashboardConnectionTests: XCTestCase {
         XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
     }
 
-    func testApprovalRequestPreservesQueryAndBearerToken() throws {
+    func testDecisionRequestUsesMobileApiAndBearerToken() throws {
         let client = AirlockAPIClient(baseURL: "http://127.0.0.1:4113", bearerToken: "admin-token")
 
-        let request = try client.makePostRequest(
-            path: Constants.approvePath,
-            queryItems: [
-                URLQueryItem(name: "code", value: "ABC123"),
-                URLQueryItem(name: "remember", value: "temporary"),
-                URLQueryItem(name: "duration_ms", value: "3600000"),
-            ]
+        let request = try client.makeDecisionRequest(
+            id: "550e8400-e29b-41d4-a716-446655440000",
+            decision: "approved",
+            remember: .temporary,
+            durationMs: 3600000
         )
 
         let components = URLComponents(url: try XCTUnwrap(request.url), resolvingAgainstBaseURL: false)
         XCTAssertEqual(request.httpMethod, "POST")
         XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer admin-token")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Content-Type"), "application/json")
         XCTAssertEqual(components?.scheme, "http")
         XCTAssertEqual(components?.host, "127.0.0.1")
         XCTAssertEqual(components?.port, 4113)
-        XCTAssertEqual(components?.path, Constants.approvePath)
-        XCTAssertEqual(
-            components?.queryItems,
-            [
-                URLQueryItem(name: "code", value: "ABC123"),
-                URLQueryItem(name: "remember", value: "temporary"),
-                URLQueryItem(name: "duration_ms", value: "3600000"),
-            ]
-        )
+        XCTAssertEqual(components?.path, "/mobile/approvals/550e8400-e29b-41d4-a716-446655440000/decision")
+        XCTAssertNil(components?.queryItems)
+        let body = try XCTUnwrap(request.httpBody)
+        let json = try JSONSerialization.jsonObject(with: body) as? [String: Any]
+        XCTAssertEqual(json?["decision"] as? String, "approved")
+        XCTAssertEqual(json?["remember"] as? String, "temporary")
+        XCTAssertEqual(json?["duration_ms"] as? Int, 3600000)
     }
 
     func testPendingRequestUsesManagementAPIAndBearerToken() throws {
@@ -61,7 +58,7 @@ final class DashboardConnectionTests: XCTestCase {
         let request = try client.makePendingRequest()
 
         XCTAssertEqual(request.httpMethod, "GET")
-        XCTAssertEqual(request.url?.absoluteString, "http://127.0.0.1:4113/hitl/pending")
+        XCTAssertEqual(request.url?.absoluteString, "http://127.0.0.1:4113/mobile/approvals")
         XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer admin-token")
     }
 }

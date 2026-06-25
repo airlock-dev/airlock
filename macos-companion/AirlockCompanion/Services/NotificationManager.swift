@@ -96,14 +96,17 @@ final class NotificationManager: NSObject, ObservableObject, UNUserNotificationC
             content.body = lines.joined(separator: "\n")
         }
         content.categoryIdentifier = Constants.NotificationCategory.approvalRequest
-        content.userInfo = ["code": request.code]
+        content.userInfo = [
+            "approval_id": request.id,
+            "code": request.code
+        ]
 
         if soundEnabled {
             content.sound = .default
         }
 
         let notificationRequest = UNNotificationRequest(
-            identifier: request.code,
+            identifier: request.id,
             content: content,
             trigger: nil
         )
@@ -147,10 +150,10 @@ final class NotificationManager: NSObject, ObservableObject, UNUserNotificationC
         }
     }
 
-    func removeNotification(code: String) {
+    func removeNotification(id: String) {
         guard let center = notificationCenter else { return }
-        center.removeDeliveredNotifications(withIdentifiers: [code])
-        center.removePendingNotificationRequests(withIdentifiers: [code])
+        center.removeDeliveredNotifications(withIdentifiers: [id])
+        center.removePendingNotificationRequests(withIdentifiers: [id])
     }
 
     // MARK: - UNUserNotificationCenterDelegate
@@ -161,9 +164,9 @@ final class NotificationManager: NSObject, ObservableObject, UNUserNotificationC
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
         let userInfo = response.notification.request.content.userInfo
-        guard let code = userInfo["code"] as? String else {
+        guard let approvalId = userInfo["approval_id"] as? String else {
             Task { @MainActor in
-                self.onError?("Notification action did not include an approval code.")
+                self.onError?("Notification action did not include an approval id.")
             }
             completionHandler()
             return
@@ -199,7 +202,7 @@ final class NotificationManager: NSObject, ObservableObject, UNUserNotificationC
 
         if let action {
             Task { @MainActor in
-                self.onAction?(code, action, remember, durationMs)
+                self.onAction?(approvalId, action, remember, durationMs)
             }
         } else {
             Task { @MainActor in

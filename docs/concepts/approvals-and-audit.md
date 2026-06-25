@@ -104,11 +104,11 @@ Query and manage approvals programmatically:
 
 - `GET /health` — gateway status, pending count, uptime
 - `GET /hitl/pending` — list pending approvals
-- `POST /hitl/approve/:id` — approve by ID
-- `POST /hitl/deny/:id` — deny by ID with optional reason
+- `POST /hitl/approve/:id` — approve by canonical approval ID
+- `POST /hitl/deny/:id` — deny by canonical approval ID with optional reason
 - `GET /audit?agent=&tool=&since=&limit=` — query the audit log
 - `GET /events` — dashboard approval event stream
-- `POST /approve?code=ABC123` — approve by approval code
-- `POST /deny?code=ABC123` — deny by approval code
+- `POST /approve?code=ABC123` — approve by manual-entry approval code
+- `POST /deny?code=ABC123` — deny by manual-entry approval code
 
 See [Management API](/reference/management-api) for full details.

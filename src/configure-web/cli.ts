@@ -756,7 +756,7 @@ async function rememberRemoteDecision(
   }
 
   const pending = await remoteGatewayJson<RemotePendingApproval[]>(remoteGateway, '/hitl/pending');
-  const request = pending.find((entry) => entry.code === code || entry.id === code);
+  const request = pending.find((entry) => entry.code === code);
   if (!request) return { status: 404, error: 'No pending request found for code' };
 
   const durationMs =
@@ -2241,8 +2241,8 @@ const INDEX_HTML = `<!doctype html>
       status: null,
       audit: { dbPath: '', entries: [], pending: [] },
       activityEvents: [],
-      livePending: {},
-      currentApprovalCode: '',
+      livePendingById: {},
+      currentApprovalId: '',
       activityAgentId: '',
       auditFilters: { agent: '', tool: '', since: '', limit: '50' },
       tools: [],
@@ -2333,6 +2333,7 @@ const INDEX_HTML = `<!doctype html>
         ]);
         state.audit = audit;
         state.activityEvents = Array.isArray(activity.events) ? activity.events : [];
+        reconcileLivePendingWithSnapshot();
         render();
       } catch (error) {
         alert(error.message);
@@ -2419,16 +2420,29 @@ const INDEX_HTML = `<!doctype html>
     }
 
     function pendingApprovals(agentId = '') {
-      const byCode = new Map();
-      for (const request of Object.values(state.livePending || {})) {
-        const pending = normalizePending(request, true);
-        if (pending.code && (!agentId || pending.agentId === agentId)) byCode.set(pending.code, pending);
-      }
+      const byId = new Map();
       for (const request of state.audit.pending || []) {
         const pending = normalizePending(request, false);
-        if (pending.code && (!agentId || pending.agentId === agentId) && !byCode.has(pending.code)) byCode.set(pending.code, pending);
+        if (pending.id && (!agentId || pending.agentId === agentId)) byId.set(pending.id, pending);
       }
-      return Array.from(byCode.values());
+      for (const request of Object.values(state.livePendingById || {})) {
+        const pending = normalizePending(request, true);
+        if (pending.id && (!agentId || pending.agentId === agentId) && !byId.has(pending.id)) {
+          byId.set(pending.id, pending);
+        }
+      }
+      return Array.from(byId.values());
+    }
+
+    function reconcileLivePendingWithSnapshot() {
+      const snapshotIds = new Set(
+        (state.audit.pending || [])
+          .map((request) => normalizePending(request, false).id)
+          .filter(Boolean)
+      );
+      for (const id of Object.keys(state.livePendingById || {})) {
+        if (!snapshotIds.has(id)) delete state.livePendingById[id];
+      }
     }
 
     function normalizePending(request, live) {
@@ -2497,7 +2511,7 @@ const INDEX_HTML = `<!doctype html>
       document.querySelectorAll('[data-pending-row]').forEach((row) => {
         row.addEventListener('click', (event) => {
           if (event.target.closest('[data-approval-action]')) return;
-          openApprovalModal(row.dataset.code);
+          openApprovalModal(row.dataset.id);
         });
       });
       document.querySelectorAll('[data-approval-action]').forEach((button) => {
@@ -2529,7 +2543,7 @@ const INDEX_HTML = `<!doctype html>
 
     function pendingRow(entry) {
       const question = isUserQuestion(entry);
-      return '<div class="log-row pending' + (question ? ' question' : '') + '" data-pending-row data-code="' + escapeHtml(entry.code) + '">' +
+      return '<div class="log-row pending' + (question ? ' question' : '') + '" data-pending-row data-id="' + escapeHtml(entry.id) + '" data-code="' + escapeHtml(entry.code) + '">' +
         '<div class="log-cell"><strong>' + escapeHtml(question ? 'pending question' : 'pending approval') + '</strong><br>' + escapeHtml(formatTime(entry.createdAt)) + '</div>' +
         '<div class="log-cell">' + escapeHtml(entry.agentId) + '</div>' +
         '<div class="log-cell">' + escapeHtml(question ? questionText(entry) : entry.tool) + '<br><span class="subtle">' + escapeHtml(question ? entry.tool : 'code ' + entry.code) + '</span></div>' +
@@ -2550,6 +2564,7 @@ const INDEX_HTML = `<!doctype html>
 
     async function actApproval(action, code, remember, durationMs) {
       if (!code) return;
+      const pending = findPendingApproval(code);
       const params = new URLSearchParams({ code });
       if (remember) params.set('remember', remember);
       if (durationMs) params.set('duration_ms', durationMs);
@@ -2564,7 +2579,7 @@ const INDEX_HTML = `<!doctype html>
         }
         throw new Error(message);
       }
-      delete state.livePending[code];
+      if (pending?.id) delete state.livePendingById[pending.id];
       closeApprovalModal();
       await Promise.all([refreshLogs(), refreshStatus()]);
       render();
@@ -2572,13 +2587,13 @@ const INDEX_HTML = `<!doctype html>
 
     function findPendingApproval(code) {
       const agentId = state.activeKind === 'activity' ? state.auditFilters.agent || '' : '';
-      return pendingApprovals(agentId).find((entry) => entry.code === code);
+      return pendingApprovals(agentId).find((entry) => entry.id === code || entry.code === code);
     }
 
-    function openApprovalModal(code) {
-      const pending = findPendingApproval(code);
+    function openApprovalModal(id) {
+      const pending = findPendingApproval(id);
       if (!pending) return;
-      state.currentApprovalCode = code;
+      state.currentApprovalId = pending.id;
       const question = isUserQuestion(pending);
       el('approvalModalTitle').textContent = question ? questionText(pending) : pending.tool;
       el('approvalModalMeta').textContent = 'agent ' + pending.agentId + ' · code ' + pending.code;
@@ -2607,7 +2622,7 @@ const INDEX_HTML = `<!doctype html>
 
     function closeApprovalModal() {
       el('approvalModal').classList.remove('open');
-      state.currentApprovalCode = '';
+      state.currentApprovalId = '';
     }
 
     function isUserQuestion(entry) {
@@ -3330,13 +3345,22 @@ const INDEX_HTML = `<!doctype html>
       events.onmessage = (event) => {
         const message = JSON.parse(event.data);
         if (message.type === 'new') {
-          state.livePending[message.request.code] = message.request;
-          notifyApproval(message.request);
-          refreshLogs().catch(() => {});
-          render();
+          const request = message.request || {};
+          if (request.id) {
+            state.livePendingById[request.id] = request;
+            notifyApproval(request);
+            refreshLogs().catch(() => {});
+            render();
+          }
         }
         if (message.type === 'resolved') {
-          delete state.livePending[message.code];
+          if (message.id) {
+            delete state.livePendingById[message.id];
+          } else if (message.code) {
+            for (const [id, request] of Object.entries(state.livePendingById || {})) {
+              if (request && request.code === message.code) delete state.livePendingById[id];
+            }
+          }
           refreshLogs().catch(() => {});
           refreshStatus().catch(() => {});
           render();
@@ -3361,7 +3385,7 @@ const INDEX_HTML = `<!doctype html>
       if (reason) lines.push('request reason: ' + reason);
       new Notification('Airlock: ' + request.tool, {
         body: lines.join('\\n'),
-        tag: request.code,
+        tag: request.id || request.code,
         silent: !el('approvalSound').checked
       });
     }
@@ -3407,10 +3431,10 @@ const INDEX_HTML = `<!doctype html>
       return false;
     }
 
-    function firstPendingCode() {
+    function firstPendingApprovalId() {
       const agentId = state.activeKind === 'activity' ? state.auditFilters.agent || '' : '';
       const first = pendingApprovals(agentId)[0];
-      return first ? first.code : '';
+      return first ? first.id : '';
     }
 
     el('refreshTools').addEventListener('click', refreshTools);
@@ -3465,9 +3489,10 @@ const INDEX_HTML = `<!doctype html>
       if (target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) return;
       const key = event.key.toLowerCase();
       if (key !== 'a' && key !== 'd') return;
-      const code = state.currentApprovalCode || firstPendingCode();
-      if (!code) return;
-      actApproval(key === 'a' ? 'approve' : 'deny', code).catch((error) => alert(error.message));
+      const id = state.currentApprovalId || firstPendingApprovalId();
+      const pending = findPendingApproval(id);
+      if (!pending?.code) return;
+      actApproval(key === 'a' ? 'approve' : 'deny', pending.code).catch((error) => alert(error.message));
     });
 
     initApprovalSettings();

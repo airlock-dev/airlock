@@ -424,8 +424,10 @@ approvals:
     const approved: string[] = [];
     const denied: string[] = [];
     const approvals = new ApprovalDashboardRoutes({
-      approve: (code) => approved.push(code),
-      deny: (code) => denied.push(code),
+      approve: () => {},
+      deny: () => {},
+      approveByCode: (code) => approved.push(code),
+      denyByCode: (code) => denied.push(code),
     });
     approvals.notify([
       {

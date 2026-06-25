@@ -438,12 +438,12 @@ server:
 ```
 GET  /health                   — MCP health, pending HITL count, uptime
 GET  /hitl/pending             — list pending approval requests
-POST /hitl/approve/:id         — approve a request
-POST /hitl/deny/:id            — deny a request (body: {"reason": "..."})
+POST /hitl/approve/:id         — approve a request by canonical approval ID
+POST /hitl/deny/:id            — deny by canonical approval ID (body: {"reason": "..."})
 GET  /audit?agent=&tool=&since=&limit=  — query audit log
 GET  /events                   — dashboard approval event stream
-POST /approve?code=ABC123      — approve a request by approval code
-POST /deny?code=ABC123         — deny a request by approval code
+POST /approve?code=ABC123      — approve via manual-entry approval code
+POST /deny?code=ABC123         — deny via manual-entry approval code
 GET  /admin/tools              — dashboard tool catalog
 ```
 

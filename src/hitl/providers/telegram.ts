@@ -89,10 +89,10 @@ export class TelegramHitlProvider implements HitlProvider {
 
     if (parsed.type === 'approve') {
       log.info({ code: parsed.code }, 'Approve via Telegram');
-      this.approvalApi.approve(parsed.code);
+      this.approvalApi.approveByCode(parsed.code);
     } else {
       log.info({ code: parsed.code }, 'Deny via Telegram');
-      this.approvalApi.deny(parsed.code, parsed.reason);
+      this.approvalApi.denyByCode(parsed.code, parsed.reason);
     }
   }
 

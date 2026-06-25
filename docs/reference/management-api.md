@@ -136,19 +136,21 @@ Lists all pending approval requests.
 
 ### `POST /hitl/approve/:id`
 
-Approve a pending request by ID.
+Approve a pending request by canonical approval ID. Short approval codes are not
+accepted on this programmatic endpoint.
 
 ```bash
-curl -X POST http://localhost:4113/hitl/approve/abc123 \
+curl -X POST http://localhost:4113/hitl/approve/550e8400-e29b-41d4-a716-446655440000 \
   -H "Authorization: Bearer $MANAGEMENT_API_SECRET"
 ```
 
 ### `POST /hitl/deny/:id`
 
-Deny a pending request by ID. Optionally include a reason:
+Deny a pending request by canonical approval ID. Short approval codes are not
+accepted on this programmatic endpoint. Optionally include a reason:
 
 ```bash
-curl -X POST http://localhost:4113/hitl/deny/abc123 \
+curl -X POST http://localhost:4113/hitl/deny/550e8400-e29b-41d4-a716-446655440000 \
   -H "Authorization: Bearer $MANAGEMENT_API_SECRET" \
   -H "Content-Type: application/json" \
   -d '{"reason": "Not authorized for production pushes"}'
@@ -204,14 +206,14 @@ mode, run `airlock dashboard` with `--gateway-secret` or
 gateway with the bearer token. If your gateway config uses
 `MANAGEMENT_API_SECRET`, pass that value to the dashboard explicitly.
 
-The macOS Companion app can connect directly to the management API by setting
-its Dashboard URL to `http://127.0.0.1:4113` and its gateway bearer token to
-the same `MANAGEMENT_API_SECRET`.
+Dashboard and companion clients should treat the persisted approval ID as the
+canonical identity. The short approval code is display/manual-entry sugar.
 
 ### `POST /approve?code=ABC123`
 
-Approve a pending request by short approval code. This is the endpoint used by
-dashboard clients and companion-style approval UIs.
+Approve a pending request by short approval code. This manual-entry endpoint is
+used by dashboard-style browser flows. App clients should post decisions by
+canonical approval ID instead.
 
 ```bash
 curl -X POST \
@@ -221,7 +223,8 @@ curl -X POST \
 
 ### `POST /deny?code=ABC123`
 
-Deny a pending request by short approval code.
+Deny a pending request by short approval code. App clients should post decisions
+by canonical approval ID instead.
 
 ```bash
 curl -X POST \
@@ -303,10 +306,11 @@ List recent activity events in the mobile app shape.
 
 ### `POST /mobile/approvals/:id/decision`
 
-Approve or deny a pending approval by id or code.
+Approve or deny a pending approval by canonical approval ID. Short approval
+codes are not accepted here.
 
 ```bash
-curl -X POST http://localhost:4113/mobile/approvals/abc123/decision \
+curl -X POST http://localhost:4113/mobile/approvals/550e8400-e29b-41d4-a716-446655440000/decision \
   -H "Authorization: Bearer $AIRLOCK_MOBILE_DEVICE_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"decision":"approved","remember":"temporary","duration_ms":3600000}'
