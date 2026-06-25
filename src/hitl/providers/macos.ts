@@ -80,7 +80,7 @@ export class MacosHitlProvider implements HitlProvider {
             { code: req.code, err: err.message },
             'macOS dialog dismissed, treating as deny'
           );
-          this.approvalApi.deny(req.code, 'Dialog dismissed');
+          this.approvalApi.denyByCode(req.code, 'Dialog dismissed');
           resolve();
           return;
         }
@@ -94,10 +94,10 @@ export class MacosHitlProvider implements HitlProvider {
 
         if (output.includes('Approve')) {
           log.info({ code: req.code }, 'Approved via macOS dialog');
-          this.approvalApi.approve(req.code);
+          this.approvalApi.approveByCode(req.code);
         } else {
           log.info({ code: req.code }, 'Denied via macOS dialog');
-          this.approvalApi.deny(req.code, 'Denied via dialog');
+          this.approvalApi.denyByCode(req.code, 'Denied via dialog');
         }
         resolve();
       });

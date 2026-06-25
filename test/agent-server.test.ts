@@ -298,7 +298,7 @@ describe('call_tool — HITL gate', () => {
     expect(pending).toHaveLength(1);
 
     // Approve it
-    hitlEngine.approve(pending[0].code);
+    hitlEngine.approveByCode(pending[0].code);
 
     const result = await callPromise;
     expect(JSON.parse((result.content[0] as { text: string }).text)).toEqual({ merged: true });
@@ -324,7 +324,7 @@ describe('call_tool — HITL gate', () => {
 
     const callPromise = client.callTool({ name: 'github/create_pr', arguments: withReason() });
     await new Promise((r) => setTimeout(r, 10));
-    hitlEngine.deny(hitlEngine.getPending()[0].code, 'not now');
+    hitlEngine.denyByCode(hitlEngine.getPending()[0].code, 'not now');
 
     const result = await callPromise;
     expect(result.isError).toBe(true);
@@ -394,7 +394,7 @@ describe('call_tool — HITL gate', () => {
     expect(batched[0].id).not.toBe('pending');
 
     // Clean up — approve so the call doesn't hang
-    hitlEngine.approve(batched[0].code);
+    hitlEngine.approveByCode(batched[0].code);
     await callPromise.catch(() => {});
   });
 
@@ -490,7 +490,7 @@ describe('call_tool — HITL gate', () => {
 
     const callPromise = client.callTool({ name: 'github/create_pr', arguments: withReason() });
     await new Promise((r) => setTimeout(r, 10));
-    hitlEngine.approve(hitlEngine.getPending()[0].code);
+    hitlEngine.approveByCode(hitlEngine.getPending()[0].code);
 
     const result = await callPromise;
     expect(JSON.parse((result.content[0] as { text: string }).text)).toEqual({ ok: true });
@@ -529,7 +529,7 @@ describe('call_tool — HITL gate', () => {
     await new Promise((r) => setTimeout(r, 10));
 
     expect(hitlEngine.getPending()).toHaveLength(1);
-    hitlEngine.approve(hitlEngine.getPending()[0].code);
+    hitlEngine.approveByCode(hitlEngine.getPending()[0].code);
     const result = await callPromise;
     const parsed = JSON.parse((result.content[0] as { text: string }).text);
     expect(parsed).toHaveProperty('exit_code');

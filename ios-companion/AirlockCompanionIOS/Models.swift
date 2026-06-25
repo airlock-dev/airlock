@@ -112,6 +112,10 @@ struct ApprovalRequest: Codable, Identifiable, Equatable, Sendable {
             .joined(separator: "\n")
     }
 
+    var displayIdentifier: String {
+        "ID \(String(id.suffix(8)))"
+    }
+
     var effectiveExpiresAt: Date? {
         if let expiresAt { return expiresAt }
         guard let timeoutMs, timeoutMs > 0 else { return nil }

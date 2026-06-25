@@ -4,8 +4,14 @@ import { checkRequestSecurity, type RequestSecurityOptions } from '../security/r
 
 // eslint-disable-next-line @typescript-eslint/require-await
 export async function hitlApiPlugin(
-	  app: FastifyInstance,
-	  opts: { engine: HitlEngine; secret?: string; authRequired?: boolean; allowedOrigins?: string[]; getRequestSecurity?: () => RequestSecurityOptions }
+  app: FastifyInstance,
+  opts: {
+    engine: HitlEngine;
+    secret?: string;
+    authRequired?: boolean;
+    allowedOrigins?: string[];
+    getRequestSecurity?: () => RequestSecurityOptions;
+  }
 ): Promise<void> {
   const { engine } = opts;
 
@@ -17,12 +23,20 @@ export async function hitlApiPlugin(
 
   app.post('/hitl/approve/:id', async (request, reply) => {
     const { id } = request.params as { id: string };
+    if (!engine.hasPending(id)) {
+      reply.code(404);
+      return { error: 'No pending approval found for id' };
+    }
     engine.approve(id);
     return reply.send({ ok: true });
   });
 
   app.post('/hitl/deny/:id', async (request, reply) => {
     const { id } = request.params as { id: string };
+    if (!engine.hasPending(id)) {
+      reply.code(404);
+      return { error: 'No pending approval found for id' };
+    }
     const body = request.body as { reason?: string } | undefined;
     engine.deny(id, body?.reason);
     return reply.send({ ok: true });

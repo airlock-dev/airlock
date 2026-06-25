@@ -2,11 +2,13 @@ import Foundation
 
 enum Constants {
     static let defaultDashboardURL = "http://127.0.0.1:4113"
-    static let sseEventsPath = "/events"
+    static let sseEventsPath = "/mobile/approvals/stream"
     static let healthPath = "/health"
-    static let pendingPath = "/hitl/pending"
-    static let approvePath = "/approve"
-    static let denyPath = "/deny"
+    static let pendingPath = "/mobile/approvals"
+
+    static func approvalDecisionPath(id: String) -> String {
+        "/mobile/approvals/\(id)/decision"
+    }
 
     enum UserDefaultsKeys {
         static let dashboardURL = "dashboardURL"

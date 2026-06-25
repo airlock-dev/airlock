@@ -57,7 +57,7 @@ approvals:
   timeout_ms: 300000
 ```
 
-For a richer experience, see the [macOS Companion app](https://github.com/airlock-dev/airlock/releases/latest) — a native Swift menu bar app that connects to the dashboard SSE endpoint with notifications, approval history, live countdown timers, and auto-reconnect.
+For a richer experience, see the [macOS Companion app](https://github.com/airlock-dev/airlock/releases/latest) — a native Swift menu bar app that connects to the mobile management API stream with notifications, approval history, live countdown timers, snapshot reconciliation, and auto-reconnect.
 
 ## iOS companion
 

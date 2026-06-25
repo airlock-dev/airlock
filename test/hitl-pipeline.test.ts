@@ -50,23 +50,31 @@ describe('HitlEngine.create() returns id and code synchronously', () => {
     expect(ticket.id).toBe(dbCall.id);
   });
 
-  it('result promise resolves approved when approve(code) called', async () => {
+  it('result promise resolves approved when approveByCode(code) called', async () => {
     const auditLogger = makeMockAuditLogger();
     const provider = makeMockProvider();
     const engine = new HitlEngine(auditLogger, provider, 5000);
 
-    const { code, result } = engine.create({ agentId: 'agent1', tool: 'github/create_pr', args: {} });
-    engine.approve(code);
+    const { code, result } = engine.create({
+      agentId: 'agent1',
+      tool: 'github/create_pr',
+      args: {},
+    });
+    engine.approveByCode(code);
     expect(await result).toBe('approved');
   });
 
-  it('result promise resolves denied when deny(code) called', async () => {
+  it('result promise resolves denied when denyByCode(code) called', async () => {
     const auditLogger = makeMockAuditLogger();
     const provider = makeMockProvider();
     const engine = new HitlEngine(auditLogger, provider, 5000);
 
-    const { code, result } = engine.create({ agentId: 'agent1', tool: 'github/create_pr', args: {} });
-    engine.deny(code, 'not now');
+    const { code, result } = engine.create({
+      agentId: 'agent1',
+      tool: 'github/create_pr',
+      args: {},
+    });
+    engine.denyByCode(code, 'not now');
     expect(await result).toBe('denied');
   });
 
@@ -97,7 +105,11 @@ describe('Batcher receives real id and code from engine', () => {
     });
 
     // Simulate the correct pipeline: engine.create() → batcher.add() with real id/code
-    const ticket = engine.create({ agentId: 'agent1', tool: 'github/create_pr', args: { repo: 'test' } });
+    const ticket = engine.create({
+      agentId: 'agent1',
+      tool: 'github/create_pr',
+      args: { repo: 'test' },
+    });
     batcher.add({
       id: ticket.id,
       code: ticket.code,
@@ -130,20 +142,27 @@ describe('Batcher receives real id and code from engine', () => {
     });
 
     const ticket = engine.create({ agentId: 'agent1', tool: 'github/create_pr', args: {} });
-    batcher.add({ id: ticket.id, code: ticket.code, agentId: 'agent1', tool: 'github/create_pr', args: {}, timeoutMs: 30000 });
+    batcher.add({
+      id: ticket.id,
+      code: ticket.code,
+      agentId: 'agent1',
+      tool: 'github/create_pr',
+      args: {},
+      timeoutMs: 30000,
+    });
 
     vi.advanceTimersByTime(600);
     expect(notifiedCode).toBe(ticket.code);
 
     // Operator approves using the code they received
-    engine.approve(notifiedCode!);
+    engine.approveByCode(notifiedCode!);
     expect(await ticket.result).toBe('approved');
 
     vi.useRealTimers();
   });
 });
 
-describe('Backwards compatibility: approve/deny/getPending still work', () => {
+describe('Canonical and manual approval resolution', () => {
   let engine: HitlEngine;
 
   beforeEach(() => {
@@ -164,7 +183,7 @@ describe('Backwards compatibility: approve/deny/getPending still work', () => {
 
   it('pending count drops to 0 after resolve', async () => {
     const { code, result } = engine.create({ agentId: 'a', tool: 't', args: {} });
-    engine.approve(code);
+    engine.approveByCode(code);
     await result;
     expect(engine.getPending()).toHaveLength(0);
   });

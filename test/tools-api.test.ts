@@ -534,7 +534,7 @@ describe('toolsApiPlugin', () => {
 
       const pending = hitlEngine.getPending()[0];
       expect(pending.agentId).toBe('askagent');
-      hitlEngine.approve(pending.code);
+      hitlEngine.approveByCode(pending.code);
 
       const res = await responsePromise;
       expect(res.statusCode).toBe(200);
@@ -554,7 +554,7 @@ describe('toolsApiPlugin', () => {
         expect(hitlEngine.getPending().length).toBe(1);
       });
 
-      hitlEngine.deny(hitlEngine.getPending()[0].code, 'not now');
+      hitlEngine.denyByCode(hitlEngine.getPending()[0].code, 'not now');
 
       const res = await responsePromise;
       const body = res.json() as { success: boolean; error: string };

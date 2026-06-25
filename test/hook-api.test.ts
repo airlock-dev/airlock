@@ -69,7 +69,7 @@ describe('hookApiPlugin', () => {
     });
     allowlist = new AllowlistEngine({
       'claude-code': DEFAULT_AGENT,
-      'restricted': RESTRICTED_AGENT,
+      restricted: RESTRICTED_AGENT,
     });
 
     app = Fastify({ logger: false });
@@ -227,7 +227,7 @@ describe('hookApiPlugin', () => {
 
       const pending = hitlEngine.getPending()[0];
       expect(pending.agentId).toBe('restricted');
-      hitlEngine.approve(pending.code);
+      hitlEngine.approveByCode(pending.code);
 
       const res = await responsePromise;
       expect(res.json().decision).toBe('allow');
@@ -446,7 +446,7 @@ describe('hookApiPlugin', () => {
       const pending = hitlEngine.getPending()[0];
       expect(pending.tool).toBe('bash/gh');
       expect(pending.agentId).toBe('claude-code');
-      hitlEngine.approve(pending.code);
+      hitlEngine.approveByCode(pending.code);
 
       const res = await responsePromise;
       expect(res.json()).toEqual({ decision: 'allow', tool: 'bash/gh' });
@@ -464,7 +464,7 @@ describe('hookApiPlugin', () => {
       });
 
       const pending = hitlEngine.getPending()[0];
-      hitlEngine.deny(pending.code, 'not now');
+      hitlEngine.denyByCode(pending.code, 'not now');
 
       const res = await responsePromise;
       expect(res.json()).toEqual({
@@ -518,7 +518,7 @@ describe('hookApiPlugin', () => {
 
       const pending = hitlEngine.getPending()[0];
       expect(pending.tool).toBe('file/edit');
-      hitlEngine.approve(pending.code);
+      hitlEngine.approveByCode(pending.code);
 
       const res = await responsePromise;
       expect(res.json().decision).toBe('allow');
@@ -537,7 +537,7 @@ describe('hookApiPlugin', () => {
 
       const pending = hitlEngine.getPending()[0];
       expect(pending.tool).toBe('file/write');
-      hitlEngine.approve(pending.code);
+      hitlEngine.approveByCode(pending.code);
 
       const res = await responsePromise;
       expect(res.json().decision).toBe('allow');
@@ -556,7 +556,7 @@ describe('hookApiPlugin', () => {
 
       const pending = hitlEngine.getPending()[0];
       expect(pending.tool).toBe('bash/curl');
-      hitlEngine.approve(pending.code);
+      hitlEngine.approveByCode(pending.code);
 
       const res = await responsePromise;
       expect(res.json().decision).toBe('allow');
@@ -576,7 +576,7 @@ describe('hookApiPlugin', () => {
 
       const pending = hitlEngine.getPending()[0];
       expect(pending.args).toEqual(input);
-      hitlEngine.approve(pending.code);
+      hitlEngine.approveByCode(pending.code);
       await responsePromise;
     });
 
@@ -592,7 +592,7 @@ describe('hookApiPlugin', () => {
       });
 
       const pending = hitlEngine.getPending()[0];
-      hitlEngine.approve(pending.code);
+      hitlEngine.approveByCode(pending.code);
       await responsePromise;
 
       const notification = provider.notify.mock.calls[0][0][0];
@@ -622,8 +622,8 @@ describe('hookApiPlugin', () => {
       const curlTicket = pending.find((p) => p.tool === 'bash/curl')!;
 
       // Approve one, deny the other
-      hitlEngine.approve(ghTicket.code);
-      hitlEngine.deny(curlTicket.code);
+      hitlEngine.approveByCode(ghTicket.code);
+      hitlEngine.denyByCode(curlTicket.code);
 
       const res1 = await res1Promise;
       const res2 = await res2Promise;
@@ -717,7 +717,7 @@ describe('hookApiPlugin', () => {
         })
       );
 
-      hitlEngine.approve(hitlEngine.getPending()[0].code);
+      hitlEngine.approveByCode(hitlEngine.getPending()[0].code);
       await responsePromise;
     });
 

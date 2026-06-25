@@ -110,7 +110,7 @@ export class TuiHitlProvider implements HitlProvider {
       const item = pending[this.selected];
       if (item) {
         item.status = 'approved';
-        this.approvalApi.approve(item.req.code);
+        this.approvalApi.approveByCode(item.req.code);
         log.info({ code: item.req.code }, 'Approved via TUI');
         this.selected = Math.min(this.selected, Math.max(pending.length - 2, 0));
         this.render();
@@ -123,7 +123,7 @@ export class TuiHitlProvider implements HitlProvider {
       const item = pending[this.selected];
       if (item) {
         item.status = 'denied';
-        this.approvalApi.deny(item.req.code, 'Denied via TUI');
+        this.approvalApi.denyByCode(item.req.code, 'Denied via TUI');
         log.info({ code: item.req.code }, 'Denied via TUI');
         this.selected = Math.min(this.selected, Math.max(pending.length - 2, 0));
         this.render();

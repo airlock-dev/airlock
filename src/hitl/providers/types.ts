@@ -31,4 +31,6 @@ export interface HitlProvider {
 export interface ApprovalApi {
   approve(id: string): void;
   deny(id: string, reason?: string): void;
+  approveByCode(code: string): void;
+  denyByCode(code: string, reason?: string): void;
 }

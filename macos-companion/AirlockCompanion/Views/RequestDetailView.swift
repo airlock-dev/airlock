@@ -43,7 +43,7 @@ struct RequestDetailView: View {
                     Text("H  back")
                         .font(.system(size: 10, weight: .medium))
                         .foregroundStyle(.tertiary)
-                    Text(request.code)
+                    Text(request.displayIdentifier)
                         .font(.system(size: 11, design: .monospaced))
                         .foregroundStyle(.secondary)
                 }

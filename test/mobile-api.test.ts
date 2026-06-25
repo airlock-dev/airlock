@@ -97,6 +97,14 @@ describe('mobileApiPlugin', () => {
     expect(pendingBody.approvals[0].reason).toBe('Need to verify the working tree before pushing.');
     expect(pendingBody.approvals[0].note).toBe('Read-only command.');
 
+    const codeDecision = await app.inject({
+      method: 'POST',
+      url: `/mobile/approvals/${ticket.code}/decision`,
+      headers: { authorization: `Bearer ${registered.token}` },
+      payload: { decision: 'approved' },
+    });
+    expect(codeDecision.statusCode).toBe(404);
+
     const decision = await app.inject({
       method: 'POST',
       url: `/mobile/approvals/${ticket.id}/decision`,
@@ -105,6 +113,29 @@ describe('mobileApiPlugin', () => {
     });
     expect(decision.statusCode).toBe(200);
     await expect(ticket.result).resolves.toBe('approved');
+  });
+
+  it('fails closed when the DB row is pending but the engine has no active request', async () => {
+    const id = '550e8400-e29b-41d4-a716-446655440000';
+    auditLogger.insertHitl({
+      id,
+      code: 'ABCD1234',
+      agent_id: 'codex',
+      tool: 'exec/run',
+      args: '{}',
+      status: 'pending',
+      created_at: new Date().toISOString(),
+    });
+
+    const decision = await app.inject({
+      method: 'POST',
+      url: `/mobile/approvals/${id}/decision`,
+      headers: { authorization: 'Bearer admin-secret' },
+      payload: { decision: 'approved' },
+    });
+
+    expect(decision.statusCode).toBe(409);
+    expect(auditLogger.getHitlById(id)?.status).toBe('pending');
   });
 
   it('rejects unauthenticated mobile requests', async () => {

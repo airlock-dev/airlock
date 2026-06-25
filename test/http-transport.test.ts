@@ -670,7 +670,7 @@ describe('http-transport: HITL approval gate', () => {
 
     const [pending] = srv.hitlEngine.getPending();
     expect(pending.tool).toBe('tools/echo');
-    srv.hitlEngine.approve(pending.code);
+    srv.hitlEngine.approveByCode(pending.code);
 
     const result = await callPromise;
     expect((result.content as { type: string; text: string }[])[0].text).toBe('approved');
@@ -690,7 +690,7 @@ describe('http-transport: HITL approval gate', () => {
       await vi.waitFor(() => expect(srv.hitlEngine.getPending().length).toBe(1), { timeout: 5000 });
 
       const [pending] = srv.hitlEngine.getPending();
-      srv.hitlEngine.deny(pending.code, 'not allowed right now');
+      srv.hitlEngine.denyByCode(pending.code, 'not allowed right now');
 
       // HITL denial returns isError: true so Claude sees a tool-level failure, not a protocol error.
       const result = await callPromise;
@@ -710,7 +710,7 @@ describe('http-transport: HITL approval gate', () => {
     await vi.waitFor(() => expect(srv.hitlEngine.getPending().length).toBe(2), { timeout: 5000 });
 
     const pending = srv.hitlEngine.getPending();
-    for (const p of pending) srv.hitlEngine.approve(p.code);
+    for (const p of pending) srv.hitlEngine.approveByCode(p.code);
 
     const [r1, r2] = await Promise.all([p1, p2]);
     expect((r1.content as { type: string; text: string }[])[0].text).toBe('one');
@@ -739,8 +739,8 @@ describe('http-transport: HITL approval gate', () => {
       const pending = srv.hitlEngine.getPending();
       const byArg = (m: string) =>
         pending.find((p) => (p.args as Record<string, string>).message === m)!;
-      srv.hitlEngine.approve(byArg('session-a').code);
-      srv.hitlEngine.deny(byArg('session-b').code, 'no');
+      srv.hitlEngine.approveByCode(byArg('session-a').code);
+      srv.hitlEngine.denyByCode(byArg('session-b').code, 'no');
 
       const [ra, rb] = await Promise.all([pa, pb]);
       expect((ra.content as { type: string; text: string }[])[0].text).toBe('session-a');
