@@ -205,6 +205,10 @@ export function mobileApiPlugin(app: FastifyInstance, opts: MobileApiOptions): v
       reply.code(404);
       return { error: 'No pending approval found' };
     }
+    if (!engine.hasPending(id)) {
+      reply.code(409);
+      return { error: 'Pending approval is not active in the approval engine' };
+    }
 
     if (decision === 'approved') {
       const rememberResult = applyRemember(opts.configPath, row, body);

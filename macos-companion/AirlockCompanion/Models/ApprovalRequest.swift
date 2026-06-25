@@ -114,6 +114,10 @@ struct ApprovalRequest: Decodable, Identifiable, Equatable, Sendable {
         expiresAt ?? receivedAt.addingTimeInterval(TimeInterval(timeoutMs) / 1000.0)
     }
 
+    var displayIdentifier: String {
+        "ID \(String(id.suffix(8)))"
+    }
+
     func isExpired(at date: Date = Date()) -> Bool {
         timeoutMs > 0 && deadline <= date
     }
@@ -245,7 +249,7 @@ struct ResolvedRequest: Identifiable, Equatable, Sendable {
         if !title.isEmpty { return title }
         if !agentId.isEmpty && !tool.isEmpty { return "\(agentId): \(tool)" }
         if !tool.isEmpty { return tool }
-        return code
+        return "ID \(String(id.suffix(8)))"
     }
 
     var displayDetail: String {

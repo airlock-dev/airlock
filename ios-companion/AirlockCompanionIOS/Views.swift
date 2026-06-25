@@ -441,7 +441,7 @@ struct ApprovalRow: View {
             Spacer()
 
             VStack(alignment: .trailing, spacing: 4) {
-                Text(approval.code)
+                Text(approval.displayIdentifier)
                     .font(.caption.monospaced())
                     .foregroundStyle(.secondary)
                 RelativeTimeText(date: relativeDate)
@@ -559,7 +559,7 @@ struct ApprovalDetailView: View {
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                     HStack {
-                        Label(approval.code, systemImage: "number")
+                        Label(approval.displayIdentifier, systemImage: "number")
                         Label(approval.createdAt.formatted(date: .omitted, time: .shortened), systemImage: "clock")
                     }
                     .font(.caption.monospaced())

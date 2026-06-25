@@ -39,6 +39,7 @@ final class SSEParserTests: XCTestCase {
         XCTAssertEqual(request.requestReason, "Need to inspect a config file.")
         XCTAssertEqual(request.requestNote, "Read-only request.")
         XCTAssertEqual(request.args["path"], .string("/etc/passwd"))
+        XCTAssertEqual(request.displayIdentifier, "ID 55440000")
     }
 
     func testParseResolvedMessage() throws {

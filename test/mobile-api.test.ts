@@ -115,6 +115,29 @@ describe('mobileApiPlugin', () => {
     await expect(ticket.result).resolves.toBe('approved');
   });
 
+  it('fails closed when the DB row is pending but the engine has no active request', async () => {
+    const id = '550e8400-e29b-41d4-a716-446655440000';
+    auditLogger.insertHitl({
+      id,
+      code: 'ABCD1234',
+      agent_id: 'codex',
+      tool: 'exec/run',
+      args: '{}',
+      status: 'pending',
+      created_at: new Date().toISOString(),
+    });
+
+    const decision = await app.inject({
+      method: 'POST',
+      url: `/mobile/approvals/${id}/decision`,
+      headers: { authorization: 'Bearer admin-secret' },
+      payload: { decision: 'approved' },
+    });
+
+    expect(decision.statusCode).toBe(409);
+    expect(auditLogger.getHitlById(id)?.status).toBe('pending');
+  });
+
   it('rejects unauthenticated mobile requests', async () => {
     const response = await app.inject({
       method: 'GET',
