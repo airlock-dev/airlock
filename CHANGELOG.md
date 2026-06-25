@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.2.38](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.37...airlock-bot-v0.2.38) (2026-06-25)
+
+
+### Features
+
+* add Airlock notification tools ([#125](https://github.com/airlock-dev/airlock/issues/125)) ([6f9f61f](https://github.com/airlock-dev/airlock/commit/6f9f61f7628154d1e82b16b911380c9e636f06e6))
+* add config introspection CLI ([#124](https://github.com/airlock-dev/airlock/issues/124)) ([d6103fc](https://github.com/airlock-dev/airlock/commit/d6103fce9a1496fbc62e7cb02e73fbefcf647739))
+* add local TestFlight release lane ([#135](https://github.com/airlock-dev/airlock/issues/135)) ([1e02d16](https://github.com/airlock-dev/airlock/commit/1e02d1628dc873238b692afb4e98243ac4230777))
+* add reusable argument scoping ([#115](https://github.com/airlock-dev/airlock/issues/115)) ([ca48a96](https://github.com/airlock-dev/airlock/commit/ca48a96be314e314975c165a6c6d26d980cb3ae0))
+* add staged secret scanner ([#123](https://github.com/airlock-dev/airlock/issues/123)) ([0abb684](https://github.com/airlock-dev/airlock/commit/0abb684568ce4133348be34b26596f184befe73e))
+* **config:** split management API secret ([#129](https://github.com/airlock-dev/airlock/issues/129)) ([27c9c64](https://github.com/airlock-dev/airlock/commit/27c9c64f77348a0687c9930b089cc8a1d774ddb4))
+* **ios:** add companion approval app ([#122](https://github.com/airlock-dev/airlock/issues/122)) ([57a2265](https://github.com/airlock-dev/airlock/commit/57a2265eb4c8329dce0cd2a4cce32c5baeb996be))
+* **lint:** add rule severities and summary output ([#136](https://github.com/airlock-dev/airlock/issues/136)) ([f41e021](https://github.com/airlock-dev/airlock/commit/f41e021fed6f8e5680c29baed93dc89fa4882b26))
+* propagate MCP session identity ([#118](https://github.com/airlock-dev/airlock/issues/118)) ([75d2892](https://github.com/airlock-dev/airlock/commit/75d2892f24ccd94ecdd9a6f2c97cbcdcd9ab7b05))
+* split management API listener ([#120](https://github.com/airlock-dev/airlock/issues/120)) ([dfb23c7](https://github.com/airlock-dev/airlock/commit/dfb23c70a6cc41b043f9bc40703c4e4ff0db4f29))
+
+
+### Bug Fixes
+
+* **config:** fail closed on misconfigured argument policies ([#134](https://github.com/airlock-dev/airlock/issues/134)) ([608efd8](https://github.com/airlock-dev/airlock/commit/608efd82b583ed50f16a08c397cbe7144f1a3324))
+* enforce agent tokens on tools api ([#119](https://github.com/airlock-dev/airlock/issues/119)) ([fcd5e92](https://github.com/airlock-dev/airlock/commit/fcd5e926ca8e8f8c540e07b21e9f865179339af4))
+* harden gateway security boundaries ([#133](https://github.com/airlock-dev/airlock/issues/133)) ([a2af2a5](https://github.com/airlock-dev/airlock/commit/a2af2a546bd794ac553c64d4ab75ee1b655eea0e))
+* **hitl:** decouple approval stream hub ([#145](https://github.com/airlock-dev/airlock/issues/145)) ([c5e398b](https://github.com/airlock-dev/airlock/commit/c5e398b55743f44df373d9a32466a83cadcf9336))
+* **macos:** correct companion settings version state ([#137](https://github.com/airlock-dev/airlock/issues/137)) ([c3e10ef](https://github.com/airlock-dev/airlock/commit/c3e10efb80525aaf040bce1b3a8e91467b3c0d11))
+* **macos:** show reason in expanded approvals ([#139](https://github.com/airlock-dev/airlock/issues/139)) ([8414693](https://github.com/airlock-dev/airlock/commit/8414693b59651dd44cfa299f8ab4b7b9a5a646cd))
+* **macos:** stabilize companion connection state ([#144](https://github.com/airlock-dev/airlock/issues/144)) ([6099856](https://github.com/airlock-dev/airlock/commit/6099856840d02e7cbbf576eb2a1b01201e450e2e))
+* **macos:** support authenticated dashboard sync ([#121](https://github.com/airlock-dev/airlock/issues/121)) ([1c743b0](https://github.com/airlock-dev/airlock/commit/1c743b0f9d160450912c02a61dc060ce0615aae0))
+* require canonical approval ids ([#143](https://github.com/airlock-dev/airlock/issues/143)) ([2fe9678](https://github.com/airlock-dev/airlock/commit/2fe9678b2dde6e3c12ed96013cf60a97e462e104))
+* stream mobile approval updates ([#142](https://github.com/airlock-dev/airlock/issues/142)) ([8580a3d](https://github.com/airlock-dev/airlock/commit/8580a3d5b584aabc8573c5439cc8fc1acfc9c8f9))
+
 ## [0.2.37](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.36...airlock-bot-v0.2.37) (2026-06-19)
 
 
