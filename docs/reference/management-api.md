@@ -193,6 +193,11 @@ Streams approval events for dashboard-style clients with Server-Sent Events.
 This endpoint is used by the in-process dashboard, standalone dashboard, and
 macOS Companion app.
 
+The stream replays currently pending approvals when a client connects, then
+sends live `new`, `resolved`, and `activity` messages. Resolution events are
+emitted no matter which surface resolves the approval, including dashboard,
+mobile, companion, timeout, or cancellation paths.
+
 Browser `EventSource` cannot set an `Authorization` header directly. In split
 mode, run `airlock dashboard` with `--gateway-secret` or
 `AIRLOCK_GATEWAY_SECRET`; the dashboard server proxies the SSE connection to the
@@ -273,6 +278,20 @@ Update the calling device's APNs token after iOS rotates it.
 ### `GET /mobile/approvals`
 
 List currently pending approvals in the mobile app shape.
+
+### `GET /mobile/approvals/stream`
+
+Streams the same approval lifecycle as `/events`, under the mobile namespace
+and with mobile authentication. The endpoint accepts either the management
+bearer token or a registered device token. It replays pending approvals on
+connect, sends live `new`, `resolved`, and `activity` messages, and keeps the
+connection alive with SSE comments.
+
+```bash
+curl -N http://localhost:4113/mobile/approvals/stream \
+  -H "Authorization: Bearer $AIRLOCK_MOBILE_DEVICE_TOKEN" \
+  -H "Accept: text/event-stream"
+```
 
 ### `GET /mobile/approvals/history?limit=50`
 

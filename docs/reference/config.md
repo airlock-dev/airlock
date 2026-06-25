@@ -403,8 +403,8 @@ and, when `expose_tools_api` is true, the REST agent tool API
   authentication model as MCP routes.
 - `management_api.enabled` starts a separate control-plane listener for
   `/health`, `/hitl/*`, `/audit`, the dashboard approval bridge (`/events`,
-  `/approve`, `/deny`, `/version*`), `/activity`, `/mobile/*`, `/admin/tools`,
-  and `/hook`.
+  `/approve`, `/deny`, `/version*`), `/activity`, `/mobile/*` including
+  `/mobile/approvals/stream`, `/admin/tools`, and `/hook`.
   It is disabled by default. When enabled, every agent must set `token` so the
   data-plane fallback cannot become an implicit agent credential.
 - `management_api.api_secret` protects the control-plane listener. If unset,

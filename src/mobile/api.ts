@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from 'crypto';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { AuditLogger } from '../audit/logger.js';
+import type { ApprovalStreamClient } from '../hitl/approval-stream.js';
 import type { HitlEngine } from '../hitl/engine.js';
 import type { ActivityStream, AirlockActivityEvent } from '../activity/stream.js';
 import { rememberAllow, type RememberAllowMode } from '../config/mutator.js';
@@ -16,6 +17,7 @@ interface MobileApiOptions {
   authRequired?: boolean;
   allowedOrigins?: string[];
   getRequestSecurity?: () => RequestSecurityOptions;
+  approvalStream?: ApprovalStreamClient;
 }
 
 interface RegisterDeviceBody {
@@ -177,6 +179,15 @@ export function mobileApiPlugin(app: FastifyInstance, opts: MobileApiOptions): v
       };
     }
   );
+
+  app.get('/mobile/approvals/stream', (request, reply) => {
+    if (!checkMobileOrAdminAuth(request, reply, opts)) return;
+    if (!opts.approvalStream) {
+      reply.code(503);
+      return { error: 'Approval stream is not available' };
+    }
+    opts.approvalStream.addClient(request, reply);
+  });
 
   app.post('/mobile/approvals/:id/decision', async (request, reply) => {
     if (!checkMobileOrAdminAuth(request, reply, opts)) return;
