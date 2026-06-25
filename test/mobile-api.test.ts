@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import Fastify, { type FastifyInstance } from 'fastify';
+import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -23,6 +23,7 @@ describe('mobileApiPlugin', () => {
   let auditLogger: AuditLogger;
   let engine: HitlEngine;
   let activityStream: ActivityStream;
+  let approvalStream: { addClient: ReturnType<typeof vi.fn> };
 
   beforeEach(async () => {
     dir = mkdtempSync(join(tmpdir(), 'airlock-mobile-test-'));
@@ -34,6 +35,11 @@ describe('mobileApiPlugin', () => {
     auditLogger = new AuditLogger(config);
     engine = new HitlEngine(auditLogger, makeProvider(), 300000);
     activityStream = new ActivityStream();
+    approvalStream = {
+      addClient: vi.fn((_request: FastifyRequest, reply: FastifyReply) => {
+        reply.send({ stream: true });
+      }),
+    };
     app = Fastify({ logger: false });
     await app.register(mobileApiPlugin, {
       auditLogger,
@@ -41,6 +47,7 @@ describe('mobileApiPlugin', () => {
       activityStream,
       secret: 'admin-secret',
       authRequired: true,
+      approvalStream,
     });
   });
 
@@ -162,5 +169,45 @@ describe('mobileApiPlugin', () => {
         },
       ],
     });
+  });
+
+  it('authenticates the mobile approval stream with admin or device tokens', async () => {
+    const unauthorized = await app.inject({
+      method: 'GET',
+      url: '/mobile/approvals/stream',
+    });
+    expect(unauthorized.statusCode).toBe(401);
+    expect(approvalStream.addClient).not.toHaveBeenCalled();
+
+    const adminStream = await app.inject({
+      method: 'GET',
+      url: '/mobile/approvals/stream',
+      headers: { authorization: 'Bearer admin-secret' },
+    });
+    expect(adminStream.statusCode).toBe(200);
+    expect(adminStream.json()).toEqual({ stream: true });
+    expect(approvalStream.addClient).toHaveBeenCalledOnce();
+    approvalStream.addClient.mockClear();
+
+    const register = await app.inject({
+      method: 'POST',
+      url: '/mobile/devices/register',
+      headers: { authorization: 'Bearer admin-secret' },
+      payload: {
+        name: 'Charles iPhone',
+        platform: 'ios',
+        pushToken: 'apns-token',
+      },
+    });
+    const registered = register.json<{ token: string }>();
+
+    const deviceStream = await app.inject({
+      method: 'GET',
+      url: '/mobile/approvals/stream',
+      headers: { authorization: `Bearer ${registered.token}` },
+    });
+    expect(deviceStream.statusCode).toBe(200);
+    expect(deviceStream.json()).toEqual({ stream: true });
+    expect(approvalStream.addClient).toHaveBeenCalledOnce();
   });
 });

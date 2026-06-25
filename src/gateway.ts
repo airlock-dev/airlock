@@ -165,7 +165,9 @@ export class Gateway {
     }
   }
 
-  private async startManagementApi(getRequestSecurity: () => RequestSecurityOptions): Promise<void> {
+  private async startManagementApi(
+    getRequestSecurity: () => RequestSecurityOptions
+  ): Promise<void> {
     const management = this.config.server.management_api;
     this.managementApp = Fastify({ logger: false });
 
@@ -183,6 +185,7 @@ export class Gateway {
       activityStream: this.activityStream,
       configPath: this.configPath,
       getRequestSecurity,
+      approvalStream: this.approvalRoutes.approvalStream(),
     });
     await this.managementApp.register((adminApp, _opts, done) => {
       adminApp.addHook('preHandler', (request, reply, hookDone) => {
@@ -294,7 +297,11 @@ export class Gateway {
       ['server.host', oldServer.host, newServer.host],
       ['server.port', oldServer.port, newServer.port],
       ['server.expose_tools_api', oldServer.expose_tools_api, newServer.expose_tools_api],
-      ['server.management_api.enabled', oldServer.management_api.enabled, newServer.management_api.enabled],
+      [
+        'server.management_api.enabled',
+        oldServer.management_api.enabled,
+        newServer.management_api.enabled,
+      ],
       ['server.management_api.host', oldServer.management_api.host, newServer.management_api.host],
       ['server.management_api.port', oldServer.management_api.port, newServer.management_api.port],
       [
@@ -302,14 +309,28 @@ export class Gateway {
         oldServer.management_api.insecure_remote_bind,
         newServer.management_api.insecure_remote_bind,
       ],
-      ['server.management_api.expose_hook_api', oldServer.management_api.expose_hook_api, newServer.management_api.expose_hook_api],
-      ['approvals.provider', JSON.stringify(this.config.approvals.provider), JSON.stringify(newConfig.approvals.provider)],
-      ['approvals.batch_window_ms', this.config.approvals.batch_window_ms, newConfig.approvals.batch_window_ms],
+      [
+        'server.management_api.expose_hook_api',
+        oldServer.management_api.expose_hook_api,
+        newServer.management_api.expose_hook_api,
+      ],
+      [
+        'approvals.provider',
+        JSON.stringify(this.config.approvals.provider),
+        JSON.stringify(newConfig.approvals.provider),
+      ],
+      [
+        'approvals.batch_window_ms',
+        this.config.approvals.batch_window_ms,
+        newConfig.approvals.batch_window_ms,
+      ],
     ];
 
     const changed = restartFields.find(([, oldValue, newValue]) => oldValue !== newValue);
     if (changed) {
-      throw new Error(`${changed[0]} changed; restart Airlock to apply listener or approval-provider topology changes.`);
+      throw new Error(
+        `${changed[0]} changed; restart Airlock to apply listener or approval-provider topology changes.`
+      );
     }
   }
 

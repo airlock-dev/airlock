@@ -109,7 +109,7 @@ The dashboard checks npm for newer versions of `airlock-bot` and shows an upgrad
 
 ## Combining with the macOS Companion
 
-The [macOS Companion app](https://github.com/airlock-dev/airlock/releases/latest) can connect to the same dashboard SSE endpoint, or directly to the split management API at `http://127.0.0.1:4113` when you set its gateway bearer token to the management API secret. You can use both simultaneously — the dashboard in a browser tab and the companion in your menu bar.
+The [macOS Companion app](https://github.com/airlock-dev/airlock/releases/latest) can connect to the same dashboard SSE endpoint, or directly to the split management API at `http://127.0.0.1:4113` when you set its gateway bearer token to the management API secret. Companion-style clients that use device tokens can also stream from `/mobile/approvals/stream`. You can use these surfaces simultaneously; resolution events dismiss pending approvals everywhere.
 
 ## Graceful degradation
 

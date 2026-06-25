@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import type { AirlockActivityEvent } from '../../activity/stream.js';
 import { createConfigureWebApp } from '../../configure-web/cli.js';
 import { childLogger } from '../../util/logger.js';
 import { ApprovalDashboardRoutes } from '../approval-dashboard.js';
@@ -46,7 +47,7 @@ export class DashboardHitlProvider implements HitlProvider {
   }
 
   async stop(): Promise<void> {
-    this.approvalRoutes?.stop();
+    await this.approvalRoutes?.stop();
     this.approvalRoutes = undefined;
 
     if (this.app) {
@@ -56,7 +57,19 @@ export class DashboardHitlProvider implements HitlProvider {
   }
 
   notify(requests: HitlNotification[]): Promise<void> {
-    this.approvalRoutes?.notify(requests);
-    return Promise.resolve();
+    return this.approvalRoutes?.notify(requests) ?? Promise.resolve();
+  }
+
+  updateApprovalStatus(status: {
+    id: string;
+    code: string;
+    result: 'approved' | 'denied' | 'timeout' | 'cancelled';
+    badgeCount: number;
+  }): Promise<void> {
+    return this.approvalRoutes?.updateApprovalStatus(status) ?? Promise.resolve();
+  }
+
+  notifyActivity(event: AirlockActivityEvent): Promise<void> {
+    return this.approvalRoutes?.notifyActivity(event) ?? Promise.resolve();
   }
 }
