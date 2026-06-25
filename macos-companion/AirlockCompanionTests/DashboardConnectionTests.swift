@@ -2,6 +2,11 @@ import XCTest
 @testable import AirlockCompanion
 
 final class DashboardConnectionTests: XCTestCase {
+    override func tearDown() {
+        StubURLProtocol.requestHandler = nil
+        super.tearDown()
+    }
+
     func testDefaultDashboardURLTargetsManagementAPI() {
         XCTAssertEqual(Constants.defaultDashboardURL, "http://127.0.0.1:4113")
     }
@@ -61,4 +66,107 @@ final class DashboardConnectionTests: XCTestCase {
         XCTAssertEqual(request.url?.absoluteString, "http://127.0.0.1:4113/mobile/approvals")
         XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer admin-token")
     }
+
+    func testManagementValidationUsesAuthenticatedMobileAPI() async throws {
+        let session = makeStubSession { request in
+            XCTAssertEqual(request.url?.path, Constants.pendingPath)
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer admin-token")
+            return HTTPURLResponse(
+                url: try XCTUnwrap(request.url),
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+        }
+
+        try await DashboardConnection(
+            baseURL: "http://127.0.0.1:4113",
+            bearerToken: "admin-token"
+        ).validateManagementAPI(session: session)
+    }
+
+    func testManagementValidationRejectsBadTokenStatus() async throws {
+        let session = makeStubSession { request in
+            HTTPURLResponse(
+                url: try XCTUnwrap(request.url),
+                statusCode: 401,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+        }
+
+        do {
+            try await DashboardConnection(
+                baseURL: "http://127.0.0.1:4113",
+                bearerToken: "bad-token"
+            ).validateManagementAPI(session: session)
+            XCTFail("Expected validation to fail")
+        } catch let error as DashboardConnectionStatusError {
+            XCTAssertEqual(error.statusCode, 401)
+        }
+    }
+
+    func testKeychainStoreUsesStableReleaseServiceWithLegacyFallbacks() {
+        XCTAssertEqual(KeychainTokenStore.service, "bot.airlock.companion")
+        XCTAssertEqual(KeychainTokenStore.account, "managementApiSecret")
+        XCTAssertTrue(KeychainTokenStore.legacyItems.contains(.init(
+            service: "dev.airlock.companion",
+            account: "gatewayBearerToken"
+        )))
+    }
+
+    func testSourceBundleIdentifierMatchesReleaseBundleIdentifier() throws {
+        let packageRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let infoURL = packageRoot
+            .appendingPathComponent("AirlockCompanion")
+            .appendingPathComponent("Info.plist")
+        let data = try Data(contentsOf: infoURL)
+        let plist = try XCTUnwrap(PropertyListSerialization.propertyList(
+            from: data,
+            format: nil
+        ) as? [String: Any])
+
+        XCTAssertEqual(plist["CFBundleIdentifier"] as? String, "bot.airlock.companion")
+    }
+
+    private func makeStubSession(
+        handler: @escaping (URLRequest) throws -> HTTPURLResponse
+    ) -> URLSession {
+        StubURLProtocol.requestHandler = handler
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [StubURLProtocol.self]
+        return URLSession(configuration: configuration)
+    }
+}
+
+private final class StubURLProtocol: URLProtocol {
+    static var requestHandler: ((URLRequest) throws -> HTTPURLResponse)?
+
+    override class func canInit(with request: URLRequest) -> Bool {
+        true
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
+        request
+    }
+
+    override func startLoading() {
+        guard let requestHandler = Self.requestHandler else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+            return
+        }
+
+        do {
+            let response = try requestHandler(request)
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: Data())
+            client?.urlProtocolDidFinishLoading(self)
+        } catch {
+            client?.urlProtocol(self, didFailWithError: error)
+        }
+    }
+
+    override func stopLoading() {}
 }

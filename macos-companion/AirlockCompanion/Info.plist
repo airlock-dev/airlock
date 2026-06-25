@@ -5,7 +5,7 @@
     <key>CFBundleName</key>
     <string>Airlock Companion</string>
     <key>CFBundleIdentifier</key>
-    <string>com.airlock.companion</string>
+    <string>bot.airlock.companion</string>
     <key>CFBundleVersion</key>
     <string>0.0.0</string>
     <key>CFBundleShortVersionString</key>

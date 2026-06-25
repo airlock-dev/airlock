@@ -17,6 +17,22 @@ enum ConnectionState: Equatable, Sendable {
     }
 }
 
+private enum SSEOpenResult: Sendable {
+    case accepted
+    case rejected(Int)
+    case failed(String)
+}
+
+private struct SSEConnectionError: LocalizedError {
+    let message: String
+
+    var errorDescription: String? { message }
+
+    static func status(_ statusCode: Int) -> SSEConnectionError {
+        SSEConnectionError(message: DashboardConnectionStatusError(statusCode: statusCode).localizedDescription)
+    }
+}
+
 @MainActor
 final class SSEClient: ObservableObject {
     @Published var connectionState: ConnectionState = .disconnected(nil)
@@ -37,7 +53,7 @@ final class SSEClient: ObservableObject {
     }
 
     func connect() -> AsyncStream<SSEMessage> {
-        disconnect()
+        cancelStream(updateState: false)
 
         let (stream, continuation) = AsyncStream<SSEMessage>.makeStream()
         let currentConnection = connection
@@ -50,15 +66,6 @@ final class SSEClient: ObservableObject {
                 await MainActor.run { weakSelf?.connectionState = .connecting }
 
                 do {
-                    // First, verify the server is reachable with a quick health check.
-                    // The SSE endpoint doesn't flush headers until first data,
-                    // so we can't rely on the SSE response to confirm connectivity.
-                    try await currentConnection.validateHealth()
-
-                    // Server is up — mark as connected and start SSE stream
-                    await MainActor.run { weakSelf?.connectionState = .connected }
-                    reconnectDelay = Constants.Reconnect.initialDelay
-
                     // Use delegate-based streaming since URLSession.bytes(for:)
                     // waits for initial data before returning, which hangs on
                     // SSE streams with no pending events.
@@ -80,6 +87,20 @@ final class SSEClient: ObservableObject {
 
                     let task = session.dataTask(with: request)
                     task.resume()
+                    defer {
+                        task.cancel()
+                        session.invalidateAndCancel()
+                    }
+
+                    switch await delegate.waitUntilOpen() {
+                    case .accepted:
+                        await MainActor.run { weakSelf?.connectionState = .connected }
+                        reconnectDelay = Constants.Reconnect.initialDelay
+                    case .rejected(let statusCode):
+                        throw SSEConnectionError.status(statusCode)
+                    case .failed(let message):
+                        throw SSEConnectionError(message: message)
+                    }
 
                     // Process incoming SSE lines
                     for await line in delegate.lines {
@@ -94,11 +115,8 @@ final class SSEClient: ObservableObject {
                         }
                     }
 
-                    task.cancel()
-                    session.invalidateAndCancel()
-
                     if !Task.isCancelled {
-                        await MainActor.run { weakSelf?.connectionState = .disconnected(nil) }
+                        throw SSEConnectionError(message: "Stream closed by server")
                     }
                 } catch {
                     if Task.isCancelled { break }
@@ -121,9 +139,15 @@ final class SSEClient: ObservableObject {
     }
 
     func disconnect() {
+        cancelStream(updateState: true)
+    }
+
+    private func cancelStream(updateState: Bool) {
         streamTask?.cancel()
         streamTask = nil
-        connectionState = .disconnected(nil)
+        if updateState {
+            connectionState = .disconnected(nil)
+        }
     }
 }
 
@@ -133,16 +157,50 @@ final class SSEClient: ObservableObject {
 /// without waiting for the full response to complete.
 private final class SSESessionDelegate: NSObject, URLSessionDataDelegate, @unchecked Sendable {
     private let lineContinuation: AsyncStream<String>.Continuation
+    private let openContinuation: AsyncStream<SSEOpenResult>.Continuation
     let lines: AsyncStream<String>
+    private let openResults: AsyncStream<SSEOpenResult>
 
     private var buffer = Data()
     private let lock = NSLock()
+    private var didCompleteOpen = false
 
     override init() {
         let (lStream, lCont) = AsyncStream<String>.makeStream()
+        let (oStream, oCont) = AsyncStream<SSEOpenResult>.makeStream()
         self.lines = lStream
         self.lineContinuation = lCont
+        self.openResults = oStream
+        self.openContinuation = oCont
         super.init()
+    }
+
+    func waitUntilOpen() async -> SSEOpenResult {
+        var iterator = openResults.makeAsyncIterator()
+        return await iterator.next() ?? .failed("Stream closed before response")
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        dataTask: URLSessionDataTask,
+        didReceive response: URLResponse,
+        completionHandler: @escaping @Sendable (URLSession.ResponseDisposition) -> Void
+    ) {
+        guard let httpResponse = response as? HTTPURLResponse else {
+            completeOpen(.failed("Invalid stream response"))
+            lineContinuation.finish()
+            completionHandler(.cancel)
+            return
+        }
+
+        if (200...299).contains(httpResponse.statusCode) {
+            completeOpen(.accepted)
+            completionHandler(.allow)
+        } else {
+            completeOpen(.rejected(httpResponse.statusCode))
+            lineContinuation.finish()
+            completionHandler(.cancel)
+        }
     }
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
@@ -161,6 +219,24 @@ private final class SSESessionDelegate: NSObject, URLSessionDataDelegate, @unche
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: (any Error)?) {
+        if let error {
+            completeOpen(.failed(error.localizedDescription))
+        } else {
+            completeOpen(.failed("Stream closed before response"))
+        }
         lineContinuation.finish()
+    }
+
+    private func completeOpen(_ result: SSEOpenResult) {
+        lock.lock()
+        guard !didCompleteOpen else {
+            lock.unlock()
+            return
+        }
+        didCompleteOpen = true
+        lock.unlock()
+
+        openContinuation.yield(result)
+        openContinuation.finish()
     }
 }

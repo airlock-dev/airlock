@@ -353,10 +353,17 @@ struct SettingsView: View {
     }
 
     private var displayedConnectionStatus: (title: String, detail: String?, tint: Color) {
-        if hasConnectionError {
-            return connectionStatus
+        if let testConnectionState {
+            switch testConnectionState {
+            case .testing, .failed:
+                return testConnectionState.status
+            case .succeeded:
+                if hasUnsavedConnectionDraft {
+                    return testConnectionState.status
+                }
+            }
         }
-        return testConnectionState?.status ?? connectionStatus
+        return connectionStatus
     }
 
     private func statusPill(_ status: (title: String, detail: String?, tint: Color)) -> some View {
@@ -409,11 +416,9 @@ struct SettingsView: View {
         }
     }
 
-    private var hasConnectionError: Bool {
-        if case .disconnected(let error) = viewModel.connectionState {
-            return error != nil
-        }
-        return false
+    private var hasUnsavedConnectionDraft: Bool {
+        urlText.trimmingCharacters(in: .whitespacesAndNewlines) != viewModel.dashboardURL ||
+            tokenText.trimmingCharacters(in: .whitespacesAndNewlines) != viewModel.gatewayToken
     }
 
     private enum TestConnectionState: Equatable {

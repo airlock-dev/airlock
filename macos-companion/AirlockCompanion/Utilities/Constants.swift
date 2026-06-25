@@ -22,6 +22,12 @@ enum Constants {
         static let lastNotificationDeliveryError = "lastNotificationDeliveryError"
     }
 
+    enum LegacyDefaults {
+        static let suiteNames = [
+            "com.airlock.companion"
+        ]
+    }
+
     enum NotificationCategory {
         static let approvalRequest = "APPROVAL_REQUEST"
         static let approveAction = "APPROVE_ACTION"
