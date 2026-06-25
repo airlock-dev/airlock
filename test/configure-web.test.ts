@@ -21,6 +21,7 @@ import {
 } from '../src/configure-web/cli.js';
 import { AuditDb } from '../src/audit/db.js';
 import { ApprovalDashboardRoutes } from '../src/hitl/approval-dashboard.js';
+import { ApprovalStreamHub } from '../src/hitl/approval-stream.js';
 
 describe('configure-web config helpers', () => {
   let dir: string;
@@ -423,13 +424,17 @@ approvals:
 
     const approved: string[] = [];
     const denied: string[] = [];
-    const approvals = new ApprovalDashboardRoutes({
-      approve: () => {},
-      deny: () => {},
-      approveByCode: (code) => approved.push(code),
-      denyByCode: (code) => denied.push(code),
-    });
-    approvals.notify([
+    const stream = new ApprovalStreamHub();
+    const approvals = new ApprovalDashboardRoutes(
+      {
+        approve: () => {},
+        deny: () => {},
+        approveByCode: (code) => approved.push(code),
+        denyByCode: (code) => denied.push(code),
+      },
+      stream
+    );
+    await stream.notify([
       {
         id: 'req-1',
         code: 'ABC123',

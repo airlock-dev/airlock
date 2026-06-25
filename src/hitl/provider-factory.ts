@@ -12,13 +12,20 @@ import { DashboardHitlProvider } from './providers/dashboard.js';
 import { IOSHitlProvider } from './providers/ios.js';
 import { childLogger } from '../util/logger.js';
 import type { AuditLogger } from '../audit/logger.js';
+import { ApprovalStreamHub } from './approval-stream.js';
 
 const log = childLogger('hitl-factory');
+
+interface HitlProviderFactoryOptions {
+  configPath?: string;
+  auditLogger?: AuditLogger;
+  approvalStream?: ApprovalStreamHub;
+}
 
 export function createHitlProvider(
   cfg: HitlProviderConfig | HitlProviderConfig[],
   approvalApi: ApprovalApi,
-  options: { configPath?: string; auditLogger?: AuditLogger } = {}
+  options: HitlProviderFactoryOptions = {}
 ): HitlProvider {
   if (Array.isArray(cfg)) {
     const providers = cfg.map((c) => createSingleProvider(c, approvalApi, options));
@@ -30,7 +37,7 @@ export function createHitlProvider(
 function createSingleProvider(
   cfg: HitlProviderConfig,
   approvalApi: ApprovalApi,
-  options: { configPath?: string; auditLogger?: AuditLogger }
+  options: HitlProviderFactoryOptions
 ): HitlProvider {
   switch (cfg.type) {
     case 'telegram':
@@ -51,11 +58,17 @@ function createSingleProvider(
       return new TuiHitlProvider(approvalApi);
     case 'macos':
       return new MacosHitlProvider(approvalApi, { sound: cfg.sound });
-    case 'dashboard':
-      return new DashboardHitlProvider(
+    case 'dashboard': {
+      const approvalStream = options.approvalStream ?? new ApprovalStreamHub();
+      const dashboard = new DashboardHitlProvider(
         { host: cfg.host, port: cfg.port, config_path: options.configPath },
-        approvalApi
+        approvalApi,
+        approvalStream
       );
+      if (options.approvalStream) return dashboard;
+      log.warn('Dashboard HITL provider created without a shared approval stream');
+      return new CompositeHitlProvider([dashboard, approvalStream]);
+    }
     case 'ios':
       if (!options.auditLogger) {
         log.warn('iOS HITL provider requires audit logger, falling back to stdio');

@@ -102,6 +102,15 @@ describe('GatewayConfig schema', () => {
     expect(result.data.approvals.provider.type).toBe('stdio');
   });
 
+  it('accepts an empty approval provider set', () => {
+    const result = GatewayConfig.safeParse({
+      approvals: { provider: [] },
+    });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.approvals.provider).toEqual([]);
+  });
+
   it('defaults dashboard approval host to loopback', () => {
     const result = GatewayConfig.safeParse({
       approvals: { provider: { type: 'dashboard', port: 4112 } },

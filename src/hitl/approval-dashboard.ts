@@ -2,28 +2,19 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { rememberAllow, type RememberAllowMode } from '../config/mutator.js';
 import { childLogger } from '../util/logger.js';
 import { VERSION } from '../version.js';
-import type { ApprovalApi, HitlNotification, HitlProvider } from './providers/types.js';
-import type { ActivityStream } from '../activity/stream.js';
-import { ApprovalStreamHub } from './approval-stream.js';
+import type { ApprovalStreamHub } from './approval-stream.js';
+import type { ApprovalApi, HitlNotification } from './providers/types.js';
 
 const log = childLogger('hitl-dashboard');
 
 let latestVersionCache: { version: string; fetchedAt: number } | null = null;
 const CACHE_TTL_MS = 60 * 60 * 1000;
 
-export class ApprovalDashboardRoutes implements HitlProvider {
-  private readonly stream: ApprovalStreamHub;
-
+export class ApprovalDashboardRoutes {
   constructor(
     private approvalApi: ApprovalApi,
-    activityStream?: ActivityStream
-  ) {
-    this.stream = new ApprovalStreamHub({ activityStream });
-  }
-
-  init(): Promise<void> {
-    return Promise.resolve();
-  }
+    private stream: ApprovalStreamHub
+  ) {}
 
   registerRoutes(app: FastifyInstance, configPath?: string): void {
     app.get('/events', (request, reply) => this.handleEvents(request, reply));
@@ -31,28 +22,6 @@ export class ApprovalDashboardRoutes implements HitlProvider {
     app.post('/deny', (request, reply) => this.handleDeny(request, reply));
     app.get('/version', () => ({ version: VERSION }));
     app.get('/version/latest', async (_request, reply) => this.handleLatestVersion(reply));
-  }
-
-  notify(requests: HitlNotification[]): Promise<void> {
-    return this.stream.notify(requests);
-  }
-
-  updateApprovalStatus(
-    status: Parameters<NonNullable<HitlProvider['updateApprovalStatus']>>[0]
-  ): Promise<void> {
-    return this.stream.updateApprovalStatus(status);
-  }
-
-  notifyActivity(event: Parameters<NonNullable<HitlProvider['notifyActivity']>>[0]): Promise<void> {
-    return this.stream.notifyActivity(event);
-  }
-
-  stop(): Promise<void> {
-    return this.stream.stop();
-  }
-
-  approvalStream(): ApprovalStreamHub {
-    return this.stream;
   }
 
   private handleEvents(request: FastifyRequest, reply: FastifyReply): void {
@@ -79,14 +48,6 @@ export class ApprovalDashboardRoutes implements HitlProvider {
     }
 
     this.approvalApi.approveByCode(code);
-    if (this.stream.getPendingByCode(code)) {
-      void this.stream.updateApprovalStatus({
-        id: pendingRequest?.id ?? code,
-        code,
-        result: 'approved',
-        badgeCount: this.stream.pendingCount(),
-      });
-    }
     log.info({ code }, 'Approved via dashboard');
     return { ok: true };
   }
@@ -95,16 +56,7 @@ export class ApprovalDashboardRoutes implements HitlProvider {
     const query = request.query as Record<string, unknown>;
     const code = typeof query.code === 'string' ? query.code : '';
     if (code) {
-      const pendingRequest = this.stream.getPendingByCode(code);
       this.approvalApi.denyByCode(code, 'Denied via dashboard');
-      if (this.stream.getPendingByCode(code)) {
-        void this.stream.updateApprovalStatus({
-          id: pendingRequest?.id ?? code,
-          code,
-          result: 'denied',
-          badgeCount: this.stream.pendingCount(),
-        });
-      }
       log.info({ code }, 'Denied via dashboard');
     }
     return { ok: true };
