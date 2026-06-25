@@ -22,6 +22,12 @@ enum Constants {
         static let lastNotificationDeliveryError = "lastNotificationDeliveryError"
     }
 
+    enum LegacyDefaults {
+        static let suiteNames = [
+            "com.airlock.companion"
+        ]
+    }
+
     enum NotificationCategory {
         static let approvalRequest = "APPROVAL_REQUEST"
         static let approveAction = "APPROVE_ACTION"
@@ -36,6 +42,7 @@ enum Constants {
 
     enum Reconnect {
         static let initialDelay: TimeInterval = 1.0
+        static let openTimeout: TimeInterval = 5.0
         static let maxDelay: TimeInterval = 30.0
         static let multiplier: Double = 2.0
     }

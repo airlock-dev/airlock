@@ -78,6 +78,16 @@ struct DashboardConnection: Sendable {
         }
     }
 
+    func validateManagementAPI(session: URLSession = .shared) async throws {
+        let status = try await statusCode(
+            for: request(path: Constants.pendingPath, timeoutInterval: 5),
+            session: session
+        )
+        guard status == 200 else {
+            throw DashboardConnectionStatusError(statusCode: status)
+        }
+    }
+
     private var normalizedBaseURL: String {
         var value = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         while value.hasSuffix("/") {

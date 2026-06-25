@@ -67,8 +67,7 @@ final class AppViewModel: ObservableObject {
     var pendingCount: Int { pendingRequests.count }
 
     init() {
-        let storedURL = UserDefaults.standard.string(forKey: Constants.UserDefaultsKeys.dashboardURL)
-            ?? Constants.defaultDashboardURL
+        let storedURL = Self.loadStoredDashboardURL()
         let storedToken = Self.loadStoredGatewayToken(using: tokenStore)
         let sseClient = SSEClient(baseURL: storedURL, bearerToken: storedToken)
         self.sseClient = sseClient
@@ -78,6 +77,8 @@ final class AppViewModel: ObservableObject {
         let bundleVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0"
         let displayVersion = Bundle.main.object(forInfoDictionaryKey: "AirlockCompanionDisplayVersion") as? String
         self.appVersion = Self.displayVersion(bundleVersion: bundleVersion, displayVersion: displayVersion)
+        self.dashboardURL = storedURL
+        self.gatewayToken = storedToken
 
         sseClient.$connectionState
             .removeDuplicates()
@@ -180,7 +181,7 @@ final class AppViewModel: ObservableObject {
     }
 
     func testConnection(baseURL: String, bearerToken: String) async throws {
-        try await DashboardConnection(baseURL: baseURL, bearerToken: bearerToken).validateHealth()
+        try await DashboardConnection(baseURL: baseURL, bearerToken: bearerToken).validateManagementAPI()
     }
 
     func saveConnectionSettings(baseURL: String, bearerToken: String) throws {
@@ -429,17 +430,62 @@ final class AppViewModel: ObservableObject {
 
     private static func loadStoredGatewayToken(using tokenStore: KeychainTokenStore) -> String {
         let keychainToken = (try? tokenStore.load()) ?? ""
-        let legacyToken = UserDefaults.standard
-            .string(forKey: Constants.UserDefaultsKeys.gatewayToken)?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let legacyToken = loadDefaultString(forKey: Constants.UserDefaultsKeys.gatewayToken)
 
-        if !legacyToken.isEmpty {
-            if keychainToken.isEmpty {
-                try? tokenStore.save(legacyToken)
-            }
-            UserDefaults.standard.removeObject(forKey: Constants.UserDefaultsKeys.gatewayToken)
+        if !keychainToken.isEmpty {
+            removeLegacySecretDefaults()
+            return keychainToken
         }
 
-        return keychainToken.isEmpty ? legacyToken : keychainToken
+        if !legacyToken.isEmpty {
+            do {
+                try tokenStore.save(legacyToken)
+                removeLegacySecretDefaults()
+            } catch {
+                return legacyToken
+            }
+        }
+
+        return legacyToken
+    }
+
+    private static func loadStoredDashboardURL() -> String {
+        let storedURL = loadDefaultString(forKey: Constants.UserDefaultsKeys.dashboardURL)
+        guard !storedURL.isEmpty else {
+            return Constants.defaultDashboardURL
+        }
+
+        UserDefaults.standard.set(storedURL, forKey: Constants.UserDefaultsKeys.dashboardURL)
+        return storedURL
+    }
+
+    private static func loadDefaultString(forKey key: String) -> String {
+        let currentValue = UserDefaults.standard
+            .string(forKey: key)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !currentValue.isEmpty {
+            return currentValue
+        }
+        return loadLegacyDefaultString(forKey: key)
+    }
+
+    private static func loadLegacyDefaultString(forKey key: String) -> String {
+        for suiteName in Constants.LegacyDefaults.suiteNames {
+            let value = UserDefaults(suiteName: suiteName)?
+                .string(forKey: key)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if !value.isEmpty {
+                return value
+            }
+        }
+        return ""
+    }
+
+    private static func removeLegacySecretDefaults() {
+        UserDefaults.standard.removeObject(forKey: Constants.UserDefaultsKeys.gatewayToken)
+        for suiteName in Constants.LegacyDefaults.suiteNames {
+            UserDefaults(suiteName: suiteName)?
+                .removeObject(forKey: Constants.UserDefaultsKeys.gatewayToken)
+        }
     }
 }
