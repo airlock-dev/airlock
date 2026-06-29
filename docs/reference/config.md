@@ -385,7 +385,7 @@ enforce the same profile isolation.
 
 The `server` listener is the agent data-plane. It serves MCP transports
 (`/agents/:agentId/mcp`, `/agents/:agentId/sse`, `/agents/:agentId/messages`)
-and, when `expose_tools_api` is true, the REST agent tool API
+and, when `expose_tools_api` enables it, the REST agent tool API
 (`/agents/:agentId/tools` and `/agents/:agentId/tools/invoke`).
 
 - `api_secret` is the data-plane fallback credential for tools API and MCP
@@ -399,8 +399,13 @@ and, when `expose_tools_api` is true, the REST agent tool API
 - `allowed_origins` is an exact allowlist for browser `Origin` headers. Requests
   without `Origin` are allowed so non-browser MCP clients keep working.
 - `expose_tools_api` controls the REST agent tool API on the data-plane
-  listener. It is an agent-facing execution API and uses the same per-agent
-  authentication model as MCP routes.
+  listener (an agent-facing execution API using the same per-agent auth model as
+  MCP routes). It is a mode: `all` exposes it for every agent, `none` is a hard
+  kill-switch, and `per-agent` (the default) exposes it only for agents that set
+  their own `expose_tools_api: true`. Legacy booleans are accepted (`true` →
+  `all`, `false` → `none`). **Migration note:** the default changed from
+  on-for-all to `per-agent` (off unless an agent opts in) — set `all`, or opt the
+  relevant agents in, to keep the previous behavior.
 - `management_api.enabled` starts a separate control-plane listener for
   `/health`, `/hitl/*`, `/audit`, the dashboard approval bridge (`/events`,
   `/approve`, `/deny`, `/version*`), `/activity`, `/mobile/*` including

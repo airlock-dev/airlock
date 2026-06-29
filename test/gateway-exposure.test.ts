@@ -79,6 +79,7 @@ describe('Gateway exposure controls', () => {
         host: '127.0.0.1',
         api_secret: 'data-secret',
         auth_required: true,
+        expose_tools_api: 'all',
         management_api: {
           enabled: true,
           api_secret: 'admin-secret',
@@ -193,6 +194,7 @@ describe('Gateway exposure controls', () => {
         host: '127.0.0.1',
         api_secret: 'data-secret',
         auth_required: true,
+        expose_tools_api: 'all',
         management_api: {
           enabled: false,
         },

@@ -890,6 +890,7 @@ const agentKeys = new Set([
   'http',
   'sandbox',
   'middleware',
+  'expose_tools_api',
 ]);
 const profileKeys = new Set(['extends', 'allow', 'ask', 'deny', 'arg_policy', 'arg_scope']);
 const serverKeys = new Set([

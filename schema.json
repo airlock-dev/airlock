@@ -1357,6 +1357,10 @@
                   ],
                   "additionalProperties": false
                 }
+              },
+              "expose_tools_api": {
+                "type": "boolean",
+                "default": false
               }
             },
             "additionalProperties": false
@@ -1894,8 +1898,13 @@
               "default": []
             },
             "expose_tools_api": {
-              "type": "boolean",
-              "default": true
+              "type": "string",
+              "enum": [
+                "all",
+                "none",
+                "per-agent"
+              ],
+              "default": "per-agent"
             },
             "management_api": {
               "type": "object",

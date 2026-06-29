@@ -365,6 +365,10 @@ export const AgentConfig = z
     http: AgentHttpConfig.default({}),
     sandbox: SandboxConfig.default({}),
     middleware: z.array(MiddlewareItemConfig).optional(),
+    // Per-agent opt-in for the plain-HTTP tools API (POST /agents/:id/tools/invoke).
+    // Consulted ONLY when server.expose_tools_api is 'per-agent'. Lets service consumers
+    // (e.g. an ingestion job) use HTTP while interactive agents stay MCP-only.
+    expose_tools_api: z.boolean().default(false),
   })
   .strict();
 export type AgentConfig = z.infer<typeof AgentConfig>;
@@ -526,6 +530,18 @@ export const ManagementApiConfig = z
   .strict();
 export type ManagementApiConfig = z.infer<typeof ManagementApiConfig>;
 
+// HTTP tools-API exposure mode (POST /agents/:id/tools/invoke):
+//   'all'       — every agent gets the HTTP transport.
+//   'none'      — no agent gets it; a hard kill-switch that overrides per-agent opt-ins.
+//   'per-agent' — each agent's `expose_tools_api` (default false) decides.
+// Legacy booleans are accepted: true → 'all', false → 'none'.
+export const ToolsApiMode = z.enum(['all', 'none', 'per-agent']);
+export type ToolsApiMode = z.infer<typeof ToolsApiMode>;
+const ToolsApiModeConfig = z.preprocess(
+  (v) => (v === true ? 'all' : v === false ? 'none' : v),
+  ToolsApiMode
+);
+
 export const ServerConfig = z
   .object({
     port: z.number().int().min(1).max(65535).default(4111),
@@ -534,7 +550,7 @@ export const ServerConfig = z
     auth_required: z.boolean().default(false),
     require_agent_tokens: z.boolean().default(false),
     allowed_origins: z.array(z.string()).default([]),
-    expose_tools_api: z.boolean().default(true),
+    expose_tools_api: ToolsApiModeConfig.default('per-agent'),
     management_api: ManagementApiConfig.default({}),
     // Deprecated compatibility aliases. Runtime code must use management_api.
     expose_management_api: z.boolean().optional(),

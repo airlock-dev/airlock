@@ -603,3 +603,83 @@ describe('toolsApiPlugin', () => {
     });
   });
 });
+
+// ─── Per-agent gating (isAgentEnabled) ───────────────────────────────────────
+// The gateway passes isAgentEnabled so that in 'per-agent' mode only opted-in agents
+// expose the HTTP transport; non-opted agents must 404 exactly like an unknown agent
+// (no hint they exist), BEFORE auth runs.
+describe('toolsApiPlugin per-agent gating', () => {
+  let app: FastifyInstance;
+
+  function makeDepsFor(agentId: string): AgentServerDeps {
+    const auditLogger = makeMockAuditLogger();
+    const provider = makeMockProvider();
+    const hitlEngine = new HitlEngine(auditLogger, provider, 5000);
+    const hitlBatcher = new HitlBatcher(0);
+    const config = makeAgentConfig({ allow: ['github/*'] });
+    return {
+      agentId,
+      agentConfig: config,
+      registry: makeMockRegistry(SAMPLE_TOOLS, {
+        content: [{ type: 'text', text: 'done' }],
+      }) as unknown as AgentServerDeps['registry'],
+      allowlist: new AllowlistEngine({ [agentId]: config }),
+      hitlEngine,
+      hitlBatcher,
+      hitlProvider: provider,
+      auditLogger,
+      securityConfig: { blocked_hosts: [], allowed_local: [] },
+    };
+  }
+
+  beforeEach(async () => {
+    app = Fastify({ logger: false });
+    await app.register(toolsApiPlugin, {
+      // 'enabled' is opted in; 'disabled' exists but is gated off.
+      getDeps: (agentId) =>
+        agentId === 'enabled' || agentId === 'disabled' ? makeDepsFor(agentId) : undefined,
+      isAgentEnabled: (agentId) => agentId === 'enabled',
+      secret: 'test-secret',
+    });
+    await app.ready();
+  });
+
+  afterEach(async () => {
+    await app.close();
+  });
+
+  function get(agentId: string) {
+    return app.inject({
+      method: 'GET',
+      url: `/agents/${agentId}/tools`,
+      headers: { authorization: 'Bearer test-secret' },
+    });
+  }
+  function post(agentId: string) {
+    return app.inject({
+      method: 'POST',
+      url: `/agents/${agentId}/tools/invoke`,
+      headers: { 'content-type': 'application/json', authorization: 'Bearer test-secret' },
+      payload: { tool: 'github/list_prs' },
+    });
+  }
+
+  it('serves an opted-in agent', async () => {
+    expect((await get('enabled')).statusCode).toBe(200);
+    expect((await post('enabled')).statusCode).toBe(200);
+  });
+
+  it('404s a known-but-not-opted-in agent on both routes', async () => {
+    expect((await get('disabled')).statusCode).toBe(404);
+    expect((await post('disabled')).statusCode).toBe(404);
+  });
+
+  it('gates before auth (wrong/absent token still 404, not 401, for a gated agent)', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: '/agents/disabled/tools',
+      headers: { authorization: 'Bearer WRONG' },
+    });
+    expect(res.statusCode).toBe(404);
+  });
+});

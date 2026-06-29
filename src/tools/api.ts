@@ -11,6 +11,9 @@ const log = childLogger('tools-api');
 export interface ToolsApiOpts {
   getDeps: (agentId: string, downstreamSessionKey?: string) => AgentServerDeps | undefined;
   requiresSessionId?: (agentId: string, tool: string) => boolean;
+  // Per-agent gate for the HTTP tools API. When provided and it returns false for an agent,
+  // that agent's routes 404 exactly like an unknown agent — no hint that the agent exists.
+  isAgentEnabled?: (agentId: string) => boolean;
   secret?: string;
   authRequired?: boolean;
   allowedOrigins?: string[];
@@ -55,7 +58,7 @@ export async function toolsApiPlugin(app: FastifyInstance, opts: ToolsApiOpts): 
   app.get('/agents/:agentId/tools', async (request, reply) => {
     const { agentId } = request.params as { agentId: string };
     const deps = getDeps(agentId);
-    if (!deps) {
+    if (!deps || (opts.isAgentEnabled && !opts.isAgentEnabled(agentId))) {
       return reply.status(404).send({ error: `Unknown agent: ${agentId}` });
     }
     if (!checkAgentAuth(request, reply, deps)) return;
@@ -84,7 +87,7 @@ export async function toolsApiPlugin(app: FastifyInstance, opts: ToolsApiOpts): 
       body.session_id ?? (Array.isArray(headerSessionId) ? headerSessionId[0] : headerSessionId);
     const sessionKey = downstreamSessionKey(agentId, explicitSessionId);
     const authDeps = getDeps(agentId);
-    if (!authDeps) {
+    if (!authDeps || (opts.isAgentEnabled && !opts.isAgentEnabled(agentId))) {
       return reply.status(404).send({ error: `Unknown agent: ${agentId}` });
     }
     if (!checkAgentAuth(request, reply, authDeps)) return;

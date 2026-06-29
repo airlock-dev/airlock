@@ -141,12 +141,17 @@ export class Gateway {
       getDeps: (agentId: string) => this.buildAgentDeps(agentId),
       getRequestSecurity: getDataPlaneRequestSecurity,
     });
-    if (this.config.server.expose_tools_api) {
+    // Mount the HTTP tools API unless it's globally off ('none'). Registration depends ONLY on
+    // the server mode, which is restart-guarded (assertReloadCompatible), so a hot-reload of
+    // per-agent opt-ins can never leave the routes out of sync. Per-request gating is enforced
+    // via isAgentEnabled; in 'per-agent' mode with no opted-in agents the routes 404 everything.
+    if (this.config.server.expose_tools_api !== 'none') {
       await this.app.register(toolsApiPlugin, {
         getDeps: (agentId: string, downstreamSessionKey?: string) =>
           this.buildAgentDeps(agentId, downstreamSessionKey),
         requiresSessionId: (agentId: string, tool: string) =>
           this.requiresToolsApiSessionId(agentId, tool),
+        isAgentEnabled: (agentId: string) => this.toolsApiEnabledForAgent(agentId),
         getRequestSecurity: getDataPlaneRequestSecurity,
       });
     }
@@ -400,6 +405,19 @@ export class Gateway {
 
     const providerId = resolvedToolName.slice(0, separatorIndex);
     return providerId in getMcpConfigs(this.config.providers);
+  }
+
+  // Effective HTTP tools-API access for an agent, per the server mode:
+  // 'all' → on; 'none' → off (kill-switch); 'per-agent' → the agent's own opt-in (default false).
+  private toolsApiEnabledForAgent(agentId: string): boolean {
+    switch (this.config.server.expose_tools_api) {
+      case 'all':
+        return true;
+      case 'none':
+        return false;
+      case 'per-agent':
+        return this.config.agents[agentId]?.expose_tools_api === true;
+    }
   }
 
   async reload(newConfig: Config): Promise<void> {
