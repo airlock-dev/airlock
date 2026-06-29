@@ -145,7 +145,7 @@ Recommended edge controls:
   access control.
 - Keep agent clients on bearer tokens even behind the proxy:
   `auth_required: true` and `require_agent_tokens: true`.
-- Disable APIs you do not need with `server.expose_tools_api: false` for the
+- Disable APIs you do not need with `server.expose_tools_api: none` for the
   data-plane REST tools API and `management_api.expose_hook_api: false` for the
   control-plane hook API. Split dashboard mode needs
   `management_api.enabled: true` on a trusted management route.

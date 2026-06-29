@@ -529,6 +529,7 @@ function emptyAgentConfig(): AgentConfig {
       network: { allowed_domains: [], denied_domains: [] },
       overrides: {},
     },
+    expose_tools_api: false,
   };
 }
 

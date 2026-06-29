@@ -14,7 +14,7 @@ describe('GatewayConfig schema', () => {
     expect(result.success).toBe(true);
     if (!result.success) return;
     expect(result.data.server.port).toBe(4111);
-    expect(result.data.server.expose_tools_api).toBe(true);
+    expect(result.data.server.expose_tools_api).toBe('per-agent');
     expect(result.data.server.management_api).toMatchObject({
       enabled: false,
       host: '127.0.0.1',

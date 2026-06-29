@@ -87,7 +87,8 @@ dashboard approval bridge (`/events`, `/approve`, `/deny`, `/version*`),
 listener.
 
 Agent-facing REST tool execution is not part of the management API. When
-`server.expose_tools_api` is true, `/agents/:agentId/tools` and
+`server.expose_tools_api` enables it (mode `all`, or `per-agent` with the agent
+opted in via `expose_tools_api: true`), `/agents/:agentId/tools` and
 `/agents/:agentId/tools/invoke` are served by the data-plane listener alongside
 the MCP transports and use agent-scoped authentication.
 
