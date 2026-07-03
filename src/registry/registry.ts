@@ -1,12 +1,19 @@
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type { BackendAdapter } from '../backend/types.js';
-import type { AllowlistEngine } from '../allowlist/engine.js';
+import type { AllowlistEngine, Decision } from '../allowlist/engine.js';
 import type { AgentConfig } from '../config/schema.js';
 import { sanitizeToolDescription } from './sanitizer.js';
 import { addAskPolicyGuidance } from './airlock-policy.js';
 import { childLogger } from '../util/logger.js';
 
 const log = childLogger('registry');
+
+export interface AgentVisibleTool {
+  tool: Tool;
+  decision: Exclude<Decision, 'deny'>;
+  providerId: string;
+  resolvedName: string;
+}
 
 export class ToolRegistry {
   private cachedTools: Tool[] = [];
@@ -47,12 +54,25 @@ export class ToolRegistry {
   }
 
   getFiltered(agentId: string): Tool[] {
+    return this.getFilteredWithDecisions(agentId).map((entry) => entry.tool);
+  }
+
+  getFilteredWithDecisions(agentId: string): AgentVisibleTool[] {
     const agent = this.agents[agentId];
     const overrides = agent?.tool_overrides ?? {};
 
     const filtered = this.cachedTools
-      .filter((t) => this.allowlist.evaluate(agentId, t.name) !== 'deny')
-      .map((t) => this.applyAgentView(agentId, t, overrides[t.name]?.description));
+      .map((t): AgentVisibleTool | undefined => {
+        const decision = this.allowlist.evaluate(agentId, t.name);
+        if (decision === 'deny') return undefined;
+        return {
+          tool: this.applyAgentView(agentId, t, overrides[t.name]?.description),
+          decision,
+          providerId: providerIdForTool(t.name),
+          resolvedName: t.name,
+        };
+      })
+      .filter((entry): entry is AgentVisibleTool => Boolean(entry));
 
     // Add alias tools from tool_overrides that have alias_of
     for (const [aliasName, override] of Object.entries(overrides)) {
@@ -66,10 +86,14 @@ export class ToolRegistry {
       }
 
       // Check if the alias itself is allowed
-      if (this.allowlist.evaluate(agentId, aliasName) === 'deny') continue;
+      const decision = this.allowlist.evaluate(agentId, aliasName);
+      if (decision === 'deny') continue;
 
       filtered.push({
-        ...this.applyAgentView(agentId, { ...baseTool, name: aliasName }, override.description),
+        tool: this.applyAgentView(agentId, { ...baseTool, name: aliasName }, override.description),
+        decision,
+        providerId: providerIdForTool(aliasName),
+        resolvedName: override.alias_of,
       });
     }
 
@@ -123,6 +147,11 @@ export class ToolRegistry {
     };
     return decision === 'ask' ? addAskPolicyGuidance(sanitized) : sanitized;
   }
+}
+
+function providerIdForTool(toolName: string): string {
+  const separatorIndex = toolName.indexOf('/');
+  return separatorIndex > 0 ? toolName.slice(0, separatorIndex) : toolName;
 }
 
 /** Map adapter ID conventions to the tool name prefix they own. */

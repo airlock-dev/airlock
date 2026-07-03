@@ -17,7 +17,7 @@ import { runStdioServer } from './transport/stdio-server.js';
 import { ConfigWatcher } from './config/watcher.js';
 import type { Config } from './config/loader.js';
 import type { ApprovalApi } from './hitl/providers/types.js';
-import { getMcpConfigs } from './config/schema.js';
+import { getBuiltinProviders, getMcpConfigs } from './config/schema.js';
 import { buildAdapters } from './backend/factory.js';
 import { ActivityStream } from './activity/stream.js';
 import { checkRequestSecurity, type RequestSecurityOptions } from './security/request.js';
@@ -107,13 +107,27 @@ export async function runStdioMode(
   const pool = new ClientPool(filteredMcps);
   await pool.initialize();
 
-  // Build adapters from config (MCP, builtins, CLIs, APIs)
-  const adapters = buildAdapters(config, pool, {
-    airlock: { hitlEngine, hitlBatcher, activityStream },
+  const allowlist = new AllowlistEngine(config.agents);
+  let activeConfig = config;
+  let registry!: ToolRegistry;
+
+  const airlockDeps = () => ({
+    hitlEngine,
+    hitlBatcher,
+    activityStream,
+    getAgentTools: (id: string) => registry?.getFilteredWithDecisions(id) ?? [],
+    getAgentConfig: (id: string) => activeConfig.agents[id],
+    getKnownProviderIds: () => knownProviderIds(activeConfig),
+    getProviderConnectionStatus: (providerId: string) =>
+      providerConnectionStatus(activeConfig, pool, providerId),
   });
 
-  const allowlist = new AllowlistEngine(config.agents);
-  const registry = new ToolRegistry(adapters, allowlist, config.agents);
+  // Build adapters from config (MCP, builtins, CLIs, APIs)
+  const adapters = buildAdapters(config, pool, {
+    airlock: airlockDeps(),
+  });
+
+  registry = new ToolRegistry(adapters, allowlist, config.agents);
 
   // Register callback for late-connecting MCPs (after registry exists)
   pool.onClientReady((id) => {
@@ -147,6 +161,7 @@ export async function runStdioMode(
       if (newConfig.agents[agentId]) {
         currentAgentConfig = newConfig.agents[agentId];
       }
+      activeConfig = newConfig;
       updateManagementRequestSecurity(newConfig, managementRequestSecurity);
       const newMcpConfigs = getMcpConfigs(newConfig.providers);
       pool
@@ -155,7 +170,7 @@ export async function runStdioMode(
           allowlist.reload(newConfig.agents);
           registry.reloadAgents(newConfig.agents);
           const newAdapters = buildAdapters(newConfig, pool, {
-            airlock: { hitlEngine, hitlBatcher, activityStream },
+            airlock: airlockDeps(),
           });
           registry.setAdapters(newAdapters);
           return registry.refresh();
@@ -237,6 +252,26 @@ export async function runStdioMode(
       await cleanup();
     }
   }
+}
+
+function knownProviderIds(config: Config): string[] {
+  const ids = new Set<string>([
+    ...Object.keys(getMcpConfigs(config.providers)),
+    ...getBuiltinProviders(config.providers),
+    ...Object.keys(config.clis ?? {}),
+    ...Object.keys(config.apis ?? {}),
+  ]);
+  return Array.from(ids).sort();
+}
+
+function providerConnectionStatus(config: Config, pool: ClientPool, providerId: string) {
+  if (!(providerId in getMcpConfigs(config.providers))) return undefined;
+  return (
+    pool.getProviderConnectionStatus(providerId) ?? {
+      status: 'down' as const,
+      reason: 'MCP provider is not connected',
+    }
+  );
 }
 
 function updateManagementRequestSecurity(config: Config, target: RequestSecurityOptions): void {

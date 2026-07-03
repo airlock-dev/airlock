@@ -40,7 +40,9 @@ Airlock ships with these built-in providers:
 
 - **exec** — shell command execution via `exec/run`, with per-agent command policies
 - **http** — HTTP requests via `http/get`, `http/post`, `http/put`, `http/delete`, `http/patch`, `http/head`, with domain allowlists and blocked host enforcement
-- **airlock** — notification and human prompt tools: `airlock/ask_user`, `airlock/notify_user`, and `airlock/log`
+- **airlock** — notification, human prompt, and agent-visible status tools:
+  `airlock/ask_user`, `airlock/notify_user`, `airlock/log`,
+  `airlock/status`, and `airlock/list_provider_tools`
 
 ```yaml
 providers:
@@ -49,9 +51,13 @@ providers:
   airlock: builtin
 ```
 
-The `airlock` tools must be either allowed or denied. Airlock rejects configs
-that route `airlock/ask_user`, `airlock/notify_user`, or `airlock/log` through
-`ask`, because those tools are themselves notification and approval surfaces.
+The human-attention `airlock` tools must be either allowed or denied. Airlock
+rejects configs that route `airlock/ask_user`, `airlock/notify_user`, or
+`airlock/log` through `ask`, because those tools are themselves notification
+and approval surfaces.
+`airlock/status` and `airlock/list_provider_tools` are permission-aware:
+they only show providers and tools visible to the current agent, group tools by
+`allow` and `ask`, and omit denied tools.
 
 For safe Python or other scripting workflows, expose `exec/run` aliases such as
 `python/sandboxed` with sandbox presets. See [Sandbox Presets and
@@ -98,7 +104,7 @@ Use discovered or hand-written `clis` configs when you want named MCP tools with
 Airlock manages MCP server connections through a connection pool:
 
 - **Auto-reconnect** — if an MCP server connection drops, Airlock retries in the background. The rest of the gateway keeps running.
-- **Health checks** — periodic health checks detect degraded or down MCP servers.
+- **Health checks** — periodic health checks detect MCP servers that are `up`, `connecting`, `down`, or `auth_required`.
 - **Lazy connection** — in stdio mode (`--agent`), Airlock only connects to MCP servers the agent actually references in its allow or ask lists. Unused providers stay disconnected.
 - **Parallel initialization** — all MCP servers connect concurrently at startup.
 

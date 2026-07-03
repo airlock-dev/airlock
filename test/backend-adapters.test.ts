@@ -7,6 +7,7 @@ import { ActivityStream } from '../src/activity/stream.js';
 import type { ClientPool } from '../src/pool/pool.js';
 import type { AgentConfig, SecurityConfig } from '../src/config/schema.js';
 import { GatewayConfig } from '../src/config/schema.js';
+import type { AgentVisibleTool } from '../src/registry/registry.js';
 
 function makeAgentConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
   return GatewayConfig.parse({
@@ -226,13 +227,15 @@ describe('HttpBackendAdapter', () => {
 // --- AirlockBackendAdapter ---
 
 describe('AirlockBackendAdapter', () => {
-  it('lists ask, notify, and log tools', async () => {
+  it('lists ask, notify, log, status, and provider tool inspection tools', async () => {
     const adapter = new AirlockBackendAdapter();
     const tools = await adapter.listTools();
     expect(tools.map((tool) => tool.name)).toEqual([
       'airlock/ask_user',
       'airlock/notify_user',
       'airlock/log',
+      'airlock/status',
+      'airlock/list_provider_tools',
     ]);
   });
 
@@ -264,4 +267,133 @@ describe('AirlockBackendAdapter', () => {
 
     expect(activityStream.recent()[0]).toMatchObject({ kind: 'log', title: 'Checkpoint' });
   });
+
+  it('reports visible provider status with allow and ask tool counts', async () => {
+    const adapter = new AirlockBackendAdapter({
+      getAgentConfig: () => makeAgentConfig({ allow: ['github/*', 'airlock/status'] }),
+      getKnownProviderIds: () => ['airlock', 'github'],
+      getProviderConnectionStatus: (providerId) =>
+        providerId === 'github'
+          ? { status: 'auth_required', reason: 'OAuth authorization required' }
+          : undefined,
+      getAgentTools: () => [
+        visibleTool('github/list_prs', 'allow'),
+        visibleTool('github/create_pr', 'ask'),
+        visibleTool('airlock/status', 'allow'),
+      ],
+    });
+
+    const result = await adapter.call({
+      tool: 'airlock/status',
+      agentId: 'agent1',
+      args: {},
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.data).toMatchObject({
+      providers: expect.arrayContaining([
+        {
+          id: 'github',
+          status: 'auth_required',
+          reason: 'OAuth authorization required',
+          toolCounts: { allow: 1, ask: 1, total: 2 },
+        },
+      ]),
+      summary: {
+        providers: { up: 1, connecting: 0, down: 0, auth_required: 1 },
+        tools: { allow: 2, ask: 1, total: 3 },
+      },
+    });
+  });
+
+  it('includes policy-visible providers even when no tools are currently available', async () => {
+    const adapter = new AirlockBackendAdapter({
+      getAgentConfig: () => makeAgentConfig({ allow: ['linear/*'] }),
+      getKnownProviderIds: () => ['linear'],
+      getProviderConnectionStatus: () => ({ status: 'connecting', reason: 'connection refused' }),
+      getAgentTools: () => [],
+    });
+
+    const result = await adapter.call({
+      tool: 'airlock/status',
+      agentId: 'agent1',
+      args: {},
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.data).toMatchObject({
+      providers: [
+        {
+          id: 'linear',
+          status: 'connecting',
+          reason: 'connection refused',
+          toolCounts: { allow: 0, ask: 0, total: 0 },
+        },
+      ],
+    });
+  });
+
+  it('does not reveal providers hidden by an effective deny rule', async () => {
+    const adapter = new AirlockBackendAdapter({
+      getAgentConfig: () => makeAgentConfig({ allow: ['*'], deny: ['slack/*'] }),
+      getKnownProviderIds: () => ['github', 'slack'],
+      getAgentTools: () => [],
+    });
+
+    const result = await adapter.call({
+      tool: 'airlock/status',
+      agentId: 'agent1',
+      args: {},
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.data).toMatchObject({
+      providers: [{ id: 'github', status: 'up', toolCounts: { allow: 0, ask: 0, total: 0 } }],
+    });
+  });
+
+  it('lists provider tools grouped by policy decision', async () => {
+    const adapter = new AirlockBackendAdapter({
+      getAgentConfig: () => makeAgentConfig({ allow: ['github/*'] }),
+      getKnownProviderIds: () => ['github'],
+      getAgentTools: () => [
+        visibleTool('github/list_prs', 'allow', 'List pull requests'),
+        visibleTool('github/create_pr', 'ask', 'Create pull request'),
+      ],
+    });
+
+    const result = await adapter.call({
+      tool: 'airlock/list_provider_tools',
+      agentId: 'agent1',
+      args: { provider: 'github' },
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.data).toMatchObject({
+      providers: [
+        {
+          id: 'github',
+          status: 'up',
+          toolCounts: { allow: 1, ask: 1, total: 2 },
+          tools: {
+            allow: [{ name: 'github/list_prs', description: 'List pull requests' }],
+            ask: [{ name: 'github/create_pr', description: 'Create pull request' }],
+          },
+        },
+      ],
+    });
+  });
 });
+
+function visibleTool(
+  name: string,
+  decision: AgentVisibleTool['decision'],
+  description = `${name} description`
+): AgentVisibleTool {
+  return {
+    tool: { name, description, inputSchema: { type: 'object', properties: {} } },
+    decision,
+    providerId: name.slice(0, name.indexOf('/')),
+    resolvedName: name,
+  };
+}
