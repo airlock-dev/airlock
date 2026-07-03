@@ -86,6 +86,8 @@ export function loadConfigDetailed(
     return { diagnostics: dedupeDiagnostics(diagnostics) };
   }
 
+  assignOAuthCallbackPorts(result.data);
+
   const rawConfig = structuredClone(result.data);
 
   diagnostics.push(...validateConfig(result.data));
@@ -113,6 +115,69 @@ export function loadConfigDetailed(
     rawConfig,
     diagnostics: dedupeDiagnostics(diagnostics),
   };
+}
+
+const OAUTH_CALLBACK_PORT_BASE = 18432;
+const OAUTH_CALLBACK_PORT_RANGE = 1024; // 18432..19455
+
+/** FNV-1a 32-bit hash → a port in [BASE, BASE+RANGE). Deterministic across runs and platforms. */
+function hashIdToPort(id: string): number {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < id.length; i++) {
+    hash ^= id.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return OAUTH_CALLBACK_PORT_BASE + ((hash >>> 0) % OAUTH_CALLBACK_PORT_RANGE);
+}
+
+/**
+ * Assign a stable, unique local OAuth callback port to every OAuth-enabled HTTP
+ * provider that doesn't set one explicitly.
+ *
+ * Without this, such providers all share one default port and collide with
+ * EADDRINUSE whenever two need to (re-)authorize concurrently — one flow wins the
+ * bind and the others fail, silently taking those MCPs down. The port is derived
+ * from the provider id, so it stays stable across restarts and is independent of
+ * the rest of the provider set (adding/removing a provider doesn't renumber the
+ * others). Explicit oauth_callback_port values always win and are reserved first;
+ * hash collisions are resolved by a deterministic probe.
+ *
+ * Note: a provider using a relay (oauth_callback_url) registers the relay URL as
+ * its redirect_uri, so changing its auto-assigned port never invalidates its
+ * client registration or tokens — only raw-localhost providers pay a one-time
+ * re-auth if their computed port differs from the previous shared default.
+ */
+export function assignOAuthCallbackPorts(config: Config): void {
+  const reserved = new Set<number>();
+  for (const provider of Object.values(config.providers)) {
+    if (
+      typeof provider === 'object' &&
+      provider.type === 'http' &&
+      provider.oauth &&
+      provider.oauth_callback_port !== undefined
+    ) {
+      reserved.add(provider.oauth_callback_port);
+    }
+  }
+  // Deterministic id order so probe-based collision resolution is reproducible.
+  for (const id of Object.keys(config.providers).sort()) {
+    const provider = config.providers[id];
+    if (
+      typeof provider !== 'object' ||
+      provider.type !== 'http' ||
+      !provider.oauth ||
+      provider.oauth_callback_port !== undefined
+    ) {
+      continue;
+    }
+    let port = hashIdToPort(id);
+    while (reserved.has(port)) {
+      port =
+        OAUTH_CALLBACK_PORT_BASE + ((port - OAUTH_CALLBACK_PORT_BASE + 1) % OAUTH_CALLBACK_PORT_RANGE);
+    }
+    reserved.add(port);
+    provider.oauth_callback_port = port;
+  }
 }
 
 export function loadConfig(path: string, options: LoadConfigOptions = {}): Config {

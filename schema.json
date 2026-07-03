@@ -121,8 +121,7 @@
                       "oauth_callback_port": {
                         "type": "integer",
                         "minimum": 1,
-                        "maximum": 65535,
-                        "default": 18432
+                        "maximum": 65535
                       },
                       "oauth_callback_url": {
                         "type": "string",

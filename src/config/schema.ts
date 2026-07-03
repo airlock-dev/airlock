@@ -62,7 +62,10 @@ export const McpServerConfig = z.discriminatedUnion('type', [
       url: z.string().url(),
       headers: z.record(EnvString).optional(),
       oauth: z.boolean().default(false),
-      oauth_callback_port: z.number().int().min(1).max(65535).default(18432),
+      // Local port the OAuth callback listener binds. When omitted, a stable
+      // per-provider port is auto-assigned at load time (see assignOAuthCallbackPorts)
+      // so concurrent re-authorizations don't collide on a shared default.
+      oauth_callback_port: z.number().int().min(1).max(65535).optional(),
       oauth_callback_url: z.string().url().optional(),
       client_id: EnvString.optional(),
       client_secret: EnvString.optional(),
