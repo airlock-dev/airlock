@@ -63,7 +63,7 @@ export function loadConfigDetailed(
     };
   }
 
-  const diagnostics = findUnknownKeys(parsed);
+  const diagnostics = findUnknownKeyDiagnostics(parsed);
   const resolveEnv = options.resolveEnv ?? true;
   let result: ReturnType<typeof GatewayConfig.safeParse>;
   try {
@@ -841,352 +841,47 @@ function dedupeDiagnostics(diagnostics: ConfigDiagnostic[]): ConfigDiagnostic[] 
   return result;
 }
 
-function findUnknownKeys(value: unknown): ConfigDiagnostic[] {
+
+// Unknown-key detection is single-sourced from the zod schema: every config object is `.strict()`,
+// so zod already rejects unrecognized keys. We run one structural (no-env) parse purely to harvest
+// those `unrecognized_keys` issues and render them with friendly, path-aware messages. Adding a new
+// config key therefore requires changing ONLY the schema — no parallel key list to keep in sync.
+function findUnknownKeyDiagnostics(parsed: unknown): ConfigDiagnostic[] {
+  // resolveEnvVars=false so `${VAR}` placeholders pass through untouched — this validates shape
+  // without needing any secrets and never throws on a missing env var.
+  const structural = withEnvVarResolution(false, () => GatewayConfig.safeParse(parsed));
+  if (structural.success) return [];
+
+  const found: Array<{ path: string[]; key: string }> = [];
+  collectUnrecognizedKeys(structural.error, found);
+
+  const seen = new Set<string>();
   const diagnostics: ConfigDiagnostic[] = [];
-  checkObjectKeys(diagnostics, value, [], rootKeys);
+  for (const { path, key } of found) {
+    const id = [...path, key].join('.');
+    if (seen.has(id)) continue;
+    seen.add(id);
+    diagnostics.push({
+      level: 'error',
+      message: unknownKeyMessage(key, path),
+      suggestion: unknownKeySuggestion(key, path),
+    });
+  }
   return diagnostics;
 }
 
-const rootKeys = new Set([
-  'providers',
-  'value_sets',
-  'arg_dimensions',
-  'profiles',
-  'sandbox_presets',
-  'clis',
-  'apis',
-  'agents',
-  'approvals',
-  'security',
-  'audit',
-  'server',
-  'lint',
-]);
-const providerKeys = new Set([
-  'type',
-  'enabled',
-  'command',
-  'args',
-  'env',
-  'url',
-  'headers',
-  'oauth',
-  'oauth_callback_port',
-  'oauth_callback_url',
-  'client_id',
-  'client_secret',
-]);
-const agentKeys = new Set([
-  'token',
-  'extends',
-  'allow',
-  'remember_allow',
-  'ask',
-  'deny',
-  'tool_overrides',
-  'arg_policy',
-  'arg_scope',
-  'exec',
-  'http',
-  'sandbox',
-  'middleware',
-  'expose_tools_api',
-  'limits',
-]);
-const profileKeys = new Set(['extends', 'allow', 'ask', 'deny', 'arg_policy', 'arg_scope']);
-const serverKeys = new Set([
-  'port',
-  'host',
-  'api_secret',
-  'auth_required',
-  'require_agent_tokens',
-  'allowed_origins',
-  'expose_tools_api',
-  'management_api',
-  'expose_management_api',
-  'expose_hook_api',
-]);
-const managementApiKeys = new Set([
-  'enabled',
-  'api_secret',
-  'host',
-  'port',
-  'insecure_remote_bind',
-  'expose_hook_api',
-]);
-const argDimensionKeys = new Set(['match', 'normalize', 'bindings']);
-const valueSetKeys = new Set(['values', 'expose_values']);
-const sandboxOverrideKeys = new Set(['filesystem', 'network']);
-const sandboxKeys = new Set(['enabled', 'presets', 'filesystem', 'network', 'overrides']);
-const filesystemKeys = new Set(['allow_write', 'deny_read', 'deny_write', 'allow_read']);
-const networkKeys = new Set(['allowed_domains', 'denied_domains']);
-const toolOverrideKeys = new Set(['description', 'alias_of', 'sandbox_presets', 'sandbox', 'args']);
-const argConstraintKeys = new Set([
-  'allow',
-  'equals',
-  'in',
-  'glob_in',
-  'each_in',
-  'glob_allow',
-  'each_allow',
-  'normalize',
-  'path',
-  'required',
-  'label',
-  'value_set',
-  'expose_values',
-]);
-const agentExecKeys = new Set(['allow', 'ask', 'deny', 'env', 'default_timeout_ms']);
-const agentHttpKeys = new Set(['domain_allowlist', 'max_response_bytes', 'timeout_ms']);
-const rememberAllowKeys = new Set(['tool', 'expires_at']);
-const approvalsKeys = new Set(['provider', 'timeout_ms', 'batch_window_ms']);
-const approvalProviderKeys = new Set([
-  'type',
-  'bot_token',
-  'chat_id',
-  'gateway_url',
-  'token',
-  'session_key',
-  'webhook_url',
-  'url',
-  'headers',
-  'sound',
-  'host',
-  'port',
-  'team_id',
-  'key_id',
-  'key_path',
-  'bundle_id',
-  'production',
-  'interruption_level',
-]);
-const securityKeys = new Set(['blocked_hosts', 'allowed_local', 'limits']);
-const limitsKeys = new Set([
-  'max_sessions_per_agent',
-  'max_sessions_global',
-  'session_idle_ms',
-  'session_max_lifetime_ms',
-  'new_session_max',
-  'new_session_window_ms',
-  'max_concurrent_calls_per_agent',
-  'call_execution_timeout_ms',
-]);
-const auditKeys = new Set(['db_path', 'retention_days', 'redact_fields']);
-const cliKeys = new Set(['discovered', 'shell', 'cwd', 'max_output_bytes', 'commands']);
-const cliCommandKeys = new Set(['exec', 'description', 'params', 'cwd', 'timeout']);
-const cliParamKeys = new Set(['type', 'flag', 'positional', 'required', 'default', 'description']);
-const apiKeys = new Set([
-  'spec',
-  'base_url',
-  'auth',
-  'include',
-  'exclude',
-  'timeout_ms',
-  'max_response_bytes',
-]);
-const apiAuthKeys = new Set(['type', 'token', 'name', 'value']);
-const middlewareKeys = new Set([
-  'name',
-  'enabled',
-  'tools',
-  'exclude',
-  'max_requests',
-  'window_ms',
-  'per',
-  'mode',
-  'backend',
-  'inference_url',
-  'threshold',
-  'max_lines',
-  'max_chars',
-  'model',
-  'threshold_chars',
-]);
-const lintKeys = new Set(['disable', 'severity']);
-
-function checkObjectKeys(
-  diagnostics: ConfigDiagnostic[],
-  value: unknown,
-  path: string[],
-  allowed: Set<string>
+// Recurse into `invalid_union` errors (e.g. providers, which is a z.union): an unknown key on a
+// union member is reported inside that branch's nested error, not at the top level.
+function collectUnrecognizedKeys(
+  error: z.ZodError,
+  out: Array<{ path: string[]; key: string }>
 ): void {
-  if (!isRecord(value)) return;
-  for (const key of Object.keys(value)) {
-    if (!allowed.has(key)) {
-      diagnostics.push({
-        level: 'error',
-        message: unknownKeyMessage(key, path),
-        suggestion: unknownKeySuggestion(key, path),
-      });
-    }
-  }
-
-  if (path.length === 0) {
-    checkRecordChildren(diagnostics, value.providers, ['providers'], providerKeys);
-    checkRecordChildren(diagnostics, value.value_sets, ['value_sets'], valueSetKeys);
-    checkRecordChildren(diagnostics, value.agents, ['agents'], agentKeys);
-    checkRecordChildren(diagnostics, value.profiles, ['profiles'], profileKeys);
-    checkRecordChildren(diagnostics, value.arg_dimensions, ['arg_dimensions'], argDimensionKeys);
-    checkRecordChildren(
-      diagnostics,
-      value.sandbox_presets,
-      ['sandbox_presets'],
-      sandboxOverrideKeys
-    );
-    checkRecordChildren(diagnostics, value.clis, ['clis'], cliKeys);
-    checkRecordChildren(diagnostics, value.apis, ['apis'], apiKeys);
-    checkObjectKeys(diagnostics, value.approvals, ['approvals'], approvalsKeys);
-    checkObjectKeys(diagnostics, value.security, ['security'], securityKeys);
-    if (isRecord(value.security)) {
-      checkObjectKeys(diagnostics, value.security.limits, ['security', 'limits'], limitsKeys);
-    }
-    checkObjectKeys(diagnostics, value.audit, ['audit'], auditKeys);
-    checkObjectKeys(diagnostics, value.server, ['server'], serverKeys);
-    checkObjectKeys(diagnostics, value.lint, ['lint'], lintKeys);
-  } else if (path[0] === 'agents' && path.length === 2) {
-    checkAgentChildren(diagnostics, value, path);
-  } else if (path[0] === 'profiles' && path.length === 2) {
-    checkArgPolicyKeys(diagnostics, value.arg_policy, [...path, 'arg_policy']);
-  } else if (path[0] === 'sandbox_presets' && path.length === 2) {
-    checkSandboxOverrideChildren(diagnostics, value, path);
-  } else if (path[0] === 'clis' && path.length === 2) {
-    checkRecordChildren(diagnostics, value.commands, [...path, 'commands'], cliCommandKeys);
-  } else if (path[0] === 'clis' && path[2] === 'commands' && path.length === 4) {
-    checkRecordChildren(diagnostics, value.params, [...path, 'params'], cliParamKeys);
-  } else if (path[0] === 'apis' && path.length === 2) {
-    checkObjectKeys(diagnostics, value.auth, [...path, 'auth'], apiAuthKeys);
-  } else if (path.join('.') === 'approvals') {
-    checkApprovalProviderKeys(diagnostics, value.provider, ['approvals', 'provider']);
-  } else if (path.join('.') === 'server') {
-    checkObjectKeys(
-      diagnostics,
-      value.management_api,
-      ['server', 'management_api'],
-      managementApiKeys
-    );
-  } else if (path.at(-1) === 'sandbox' || path.join('.') === 'agents') {
-    checkSandboxChildren(diagnostics, value, path);
-  }
-}
-
-function checkAgentChildren(
-  diagnostics: ConfigDiagnostic[],
-  value: Record<string, unknown>,
-  path: string[]
-): void {
-  checkArrayChildren(
-    diagnostics,
-    value.remember_allow,
-    [...path, 'remember_allow'],
-    rememberAllowKeys
-  );
-  checkRecordChildren(
-    diagnostics,
-    value.tool_overrides,
-    [...path, 'tool_overrides'],
-    toolOverrideKeys
-  );
-  checkArgPolicyKeys(diagnostics, value.arg_policy, [...path, 'arg_policy']);
-  checkObjectKeys(diagnostics, value.exec, [...path, 'exec'], agentExecKeys);
-  checkObjectKeys(diagnostics, value.http, [...path, 'http'], agentHttpKeys);
-  checkObjectKeys(diagnostics, value.sandbox, [...path, 'sandbox'], sandboxKeys);
-  checkArrayChildren(diagnostics, value.middleware, [...path, 'middleware'], middlewareKeys);
-  checkObjectKeys(diagnostics, value.limits, [...path, 'limits'], limitsKeys);
-}
-
-function checkSandboxChildren(
-  diagnostics: ConfigDiagnostic[],
-  value: unknown,
-  path: string[]
-): void {
-  if (!isRecord(value)) return;
-  checkObjectKeys(diagnostics, value.filesystem, [...path, 'filesystem'], filesystemKeys);
-  checkObjectKeys(diagnostics, value.network, [...path, 'network'], networkKeys);
-  checkRecordChildren(diagnostics, value.overrides, [...path, 'overrides'], sandboxOverrideKeys);
-}
-
-function checkSandboxOverrideChildren(
-  diagnostics: ConfigDiagnostic[],
-  value: unknown,
-  path: string[]
-): void {
-  if (!isRecord(value)) return;
-  checkObjectKeys(diagnostics, value.filesystem, [...path, 'filesystem'], filesystemKeys);
-  checkObjectKeys(diagnostics, value.network, [...path, 'network'], networkKeys);
-}
-
-function checkToolOverrideChildren(
-  diagnostics: ConfigDiagnostic[],
-  value: Record<string, unknown>,
-  path: string[]
-): void {
-  checkSandboxOverrideChildren(diagnostics, value.sandbox, [...path, 'sandbox']);
-  checkArgPolicyKeys(diagnostics, value.args, [...path, 'args']);
-}
-
-function checkArgPolicyKeys(diagnostics: ConfigDiagnostic[], value: unknown, path: string[]): void {
-  if (!isRecord(value)) return;
-
-  for (const [toolName, toolPolicy] of Object.entries(value)) {
-    if (!isRecord(toolPolicy)) continue;
-    for (const [argName, constraintOrList] of Object.entries(toolPolicy)) {
-      const constraints = Array.isArray(constraintOrList) ? constraintOrList : [constraintOrList];
-      constraints.forEach((constraint, index) => {
-        const constraintPath = [
-          ...path,
-          toolName,
-          argName,
-          ...(Array.isArray(constraintOrList) ? [String(index)] : []),
-        ];
-        checkObjectKeys(diagnostics, constraint, constraintPath, argConstraintKeys);
-      });
-    }
-  }
-}
-
-function checkApprovalProviderKeys(
-  diagnostics: ConfigDiagnostic[],
-  value: unknown,
-  path: string[]
-): void {
-  if (Array.isArray(value)) {
-    value.forEach((provider, index) =>
-      checkObjectKeys(diagnostics, provider, [...path, String(index)], approvalProviderKeys)
-    );
-    return;
-  }
-  checkObjectKeys(diagnostics, value, path, approvalProviderKeys);
-}
-
-function checkArrayChildren(
-  diagnostics: ConfigDiagnostic[],
-  value: unknown,
-  path: string[],
-  allowed: Set<string>
-): void {
-  if (!Array.isArray(value)) return;
-  value.forEach((child, index) => {
-    checkObjectKeys(diagnostics, child, [...path, String(index)], allowed);
-  });
-}
-
-function checkRecordChildren(
-  diagnostics: ConfigDiagnostic[],
-  value: unknown,
-  path: string[],
-  allowed: Set<string>
-): void {
-  if (!isRecord(value)) return;
-  for (const [name, child] of Object.entries(value)) {
-    if (isRecord(child)) {
-      checkObjectKeys(diagnostics, child, [...path, name], allowed);
-      if (path[0] === 'agents' && path[2] === 'tool_overrides') {
-        checkToolOverrideChildren(diagnostics, child, [...path, name]);
-      } else if (path[0] === 'clis' && path[2] === 'commands') {
-        checkRecordChildren(diagnostics, child.params, [...path, name, 'params'], cliParamKeys);
-      } else if (path[0] === 'sandbox_presets' || path.at(-1) === 'overrides') {
-        checkSandboxOverrideChildren(diagnostics, child, [...path, name]);
-      }
+  for (const issue of error.issues) {
+    if (issue.code === 'unrecognized_keys') {
+      const path = issue.path.map(String);
+      for (const key of issue.keys) out.push({ path, key });
+    } else if (issue.code === 'invalid_union') {
+      for (const unionError of issue.unionErrors) collectUnrecognizedKeys(unionError, out);
     }
   }
 }
