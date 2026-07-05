@@ -891,6 +891,7 @@ const agentKeys = new Set([
   'sandbox',
   'middleware',
   'expose_tools_api',
+  'limits',
 ]);
 const profileKeys = new Set(['extends', 'allow', 'ask', 'deny', 'arg_policy', 'arg_scope']);
 const serverKeys = new Set([
@@ -959,7 +960,17 @@ const approvalProviderKeys = new Set([
   'production',
   'interruption_level',
 ]);
-const securityKeys = new Set(['blocked_hosts', 'allowed_local']);
+const securityKeys = new Set(['blocked_hosts', 'allowed_local', 'limits']);
+const limitsKeys = new Set([
+  'max_sessions_per_agent',
+  'max_sessions_global',
+  'session_idle_ms',
+  'session_max_lifetime_ms',
+  'new_session_max',
+  'new_session_window_ms',
+  'max_concurrent_calls_per_agent',
+  'call_execution_timeout_ms',
+]);
 const auditKeys = new Set(['db_path', 'retention_days', 'redact_fields']);
 const cliKeys = new Set(['discovered', 'shell', 'cwd', 'max_output_bytes', 'commands']);
 const cliCommandKeys = new Set(['exec', 'description', 'params', 'cwd', 'timeout']);
@@ -1026,6 +1037,9 @@ function checkObjectKeys(
     checkRecordChildren(diagnostics, value.apis, ['apis'], apiKeys);
     checkObjectKeys(diagnostics, value.approvals, ['approvals'], approvalsKeys);
     checkObjectKeys(diagnostics, value.security, ['security'], securityKeys);
+    if (isRecord(value.security)) {
+      checkObjectKeys(diagnostics, value.security.limits, ['security', 'limits'], limitsKeys);
+    }
     checkObjectKeys(diagnostics, value.audit, ['audit'], auditKeys);
     checkObjectKeys(diagnostics, value.server, ['server'], serverKeys);
     checkObjectKeys(diagnostics, value.lint, ['lint'], lintKeys);
@@ -1077,6 +1091,7 @@ function checkAgentChildren(
   checkObjectKeys(diagnostics, value.http, [...path, 'http'], agentHttpKeys);
   checkObjectKeys(diagnostics, value.sandbox, [...path, 'sandbox'], sandboxKeys);
   checkArrayChildren(diagnostics, value.middleware, [...path, 'middleware'], middlewareKeys);
+  checkObjectKeys(diagnostics, value.limits, [...path, 'limits'], limitsKeys);
 }
 
 function checkSandboxChildren(

@@ -5,6 +5,7 @@ import { createAgentServer, connectAgentServer } from './agent-server.js';
 import type { AgentServerDeps } from './agent-server.js';
 import { childLogger } from '../util/logger.js';
 import { checkBearerAuth, checkOrigin, currentRequestSecurity, type RequestSecurityOptions } from '../security/request.js';
+import type { SessionLimiter } from './session-limiter.js';
 
 const log = childLogger('http-server');
 
@@ -17,6 +18,7 @@ export async function httpServerPlugin(
 	    authRequired?: boolean;
 	    allowedOrigins?: string[];
 	    getRequestSecurity?: () => RequestSecurityOptions;
+	    sessionLimiter?: SessionLimiter;
 	  }
 ): Promise<void> {
   const sessions = new Map<
@@ -62,6 +64,7 @@ export async function httpServerPlugin(
     if (!checkAgentAuth(request, reply, deps)) return;
 
     const sessionId = request.headers['mcp-session-id'] as string | undefined;
+    const limiter = opts.sessionLimiter;
 
     let transport: StreamableHTTPServerTransport;
 
@@ -74,17 +77,26 @@ export async function httpServerPlugin(
         return reply.status(403).send({ error: 'Session does not belong to this agent' });
       }
       transport = session.transport;
+      limiter?.touch(sessionId);
     } else {
-      // New session — create transport + MCP server before the initialize handshake.
+      // New session — enforce per-agent bulkheads BEFORE allocating a transport or upstream server,
+      // so a flooding/looping client is rejected at the door instead of piling up resources.
+      const admit = limiter?.tryOpen(profileId);
+      if (admit && !admit.ok) {
+        return reply.status(admit.status).send({ error: admit.message });
+      }
+
       const ac = new AbortController();
       transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => randomUUID(),
         onsessioninitialized: (id) => {
           sessions.set(id, { transport, ac, profileId });
+          limiter?.register(id, profileId, () => ac.abort());
           log.info({ profileId, sessionId: id }, 'HTTP session initialized');
         },
         onsessionclosed: (id) => {
           sessions.delete(id);
+          limiter?.close(id);
           ac.abort();
           log.info({ profileId, sessionId: id }, 'HTTP session closed');
         },
@@ -99,14 +111,30 @@ export async function httpServerPlugin(
 
       transport.onclose = () => {
         const id = transport.sessionId;
-        if (id) sessions.delete(id);
+        if (id) {
+          sessions.delete(id);
+          limiter?.close(id);
+        }
         ac.abort();
       };
     }
 
     // Hand off raw Node.js req/res — Fastify must not touch the response after this.
     reply.hijack();
-    await transport.handleRequest(request.raw, reply.raw);
+    // Track in-flight so the idle reaper never severs a session that is actively serving a
+    // request — including a tool call parked for minutes/hours awaiting HITL approval, whose
+    // response stream stays open the entire time. Only meaningful for existing sessions (a new
+    // session has no id yet during its initialize handshake, which is short-lived anyway).
+    if (sessionId && limiter) {
+      limiter.beginRequest(sessionId);
+      try {
+        await transport.handleRequest(request.raw, reply.raw);
+      } finally {
+        limiter.endRequest(sessionId);
+      }
+    } else {
+      await transport.handleRequest(request.raw, reply.raw);
+    }
   }
 
   app.post('/agents/:profileId/mcp', handleMcpRequest);
