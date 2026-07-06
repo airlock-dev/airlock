@@ -450,6 +450,8 @@ approvals:
     const pageRes = await app.inject('/');
     expect(pageRes.statusCode).toBe(200);
     expect(pageRes.body).toContain('Airlock Command Center');
+    expect(pageRes.body).toContain('id="providerIssues"');
+    expect(pageRes.body).toContain('function providerIssueCount()');
 
     const approveRes = await app.inject({
       method: 'POST',

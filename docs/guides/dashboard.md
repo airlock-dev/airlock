@@ -64,6 +64,13 @@ authenticated reverse proxy, private network, or tunnel.
 
 ## Features
 
+### Provider status
+
+The Providers system tab shows each provider's runtime state, visible tool
+count, and any connection error. If any provider is not up, the tab gets a red
+issue count badge so missing auth, expired tokens, disabled providers, and
+disconnects are visible without opening the provider list.
+
 ### Live updates via SSE
 
 The dashboard uses Server-Sent Events to push new approval requests and resolution updates in real time. No polling. Open the page and requests appear instantly as the agent makes them.
