@@ -1492,11 +1492,23 @@ const INDEX_HTML = `<!doctype html>
       justify-content: flex-start;
       margin-bottom: 6px;
       background: transparent;
+      gap: 8px;
     }
     .entity.active {
       background: #eaf0ff;
       border-color: #b9c8ff;
       color: #173c9c;
+    }
+    .entity-issue-pill {
+      margin-left: auto;
+      min-width: 22px;
+      min-height: 20px;
+      padding: 0 7px;
+      border-color: #f2c0bb;
+      background: #fff0ee;
+      color: var(--red);
+      font-weight: 750;
+      justify-content: center;
     }
     .surface-group {
       margin-bottom: 14px;
@@ -2121,7 +2133,7 @@ const INDEX_HTML = `<!doctype html>
         <div class="surface-group">
           <div class="section-title" style="margin-top:0">System</div>
           <button id="viewActivity" class="entity">Activity</button>
-          <button id="manageProviders" class="entity">Providers</button>
+          <button id="manageProviders" class="entity">Providers <span id="providerIssues" class="pill entity-issue-pill" hidden>0</span></button>
         </div>
         <div class="row">
           <div class="section-title">Agents</div>
@@ -2715,6 +2727,16 @@ const INDEX_HTML = `<!doctype html>
     function renderProviderNav() {
       el('manageProviders').classList.toggle('active', state.activeKind === 'providers');
       el('viewActivity').classList.toggle('active', state.activeKind === 'activity');
+      const issues = providerIssueCount();
+      const pill = el('providerIssues');
+      pill.hidden = issues === 0;
+      pill.textContent = String(issues);
+      pill.title = issues === 1 ? '1 provider issue' : issues + ' provider issues';
+    }
+
+    function providerIssueCount() {
+      if (!state.status?.summary) return 0;
+      return (state.status.summary.down || 0) + (state.status.summary.disabled || 0);
     }
 
     function renderProvidersManager() {
