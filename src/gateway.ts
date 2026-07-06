@@ -18,6 +18,7 @@ import { ApprovalStreamHub } from './hitl/approval-stream.js';
 import { CompositeHitlProvider } from './hitl/providers/composite.js';
 import { sseServerPlugin } from './transport/sse-server.js';
 import { httpServerPlugin } from './transport/http-server.js';
+import { SessionLimiter, resolveLimits } from './transport/session-limiter.js';
 import type { AgentServerDeps } from './transport/agent-server.js';
 import type { Config } from './config/loader.js';
 import type { HitlProvider, ApprovalApi } from './hitl/providers/types.js';
@@ -47,6 +48,7 @@ export class Gateway {
   private app!: FastifyInstance;
   private managementApp?: FastifyInstance;
   private downstreamSessionIds = new Map<string, string>();
+  private sessionLimiter!: SessionLimiter;
   private activityStream = new ActivityStream();
   private unsubscribeActivityNotifications?: () => void;
   private startTime = Date.now();
@@ -133,13 +135,23 @@ export class Gateway {
     const getDataPlaneRequestSecurity = () => this.dataPlaneRequestSecurity;
     const getManagementRequestSecurity = () => this.managementRequestSecurity;
 
+    // Shared per-agent session bulkheads across every transport plane. getLimits reads live
+    // config so hot-reloaded limit changes take effect without a restart.
+    this.sessionLimiter = new SessionLimiter({
+      getLimits: (profileId) =>
+        resolveLimits(this.config.agents[profileId]?.limits, this.config.security.limits),
+    });
+    this.sessionLimiter.start();
+
     await this.app.register(sseServerPlugin, {
       getDeps: (agentId: string) => this.buildAgentDeps(agentId),
       getRequestSecurity: getDataPlaneRequestSecurity,
+      sessionLimiter: this.sessionLimiter,
     });
     await this.app.register(httpServerPlugin, {
       getDeps: (agentId: string) => this.buildAgentDeps(agentId),
       getRequestSecurity: getDataPlaneRequestSecurity,
+      sessionLimiter: this.sessionLimiter,
     });
     // Mount the HTTP tools API unless it's globally off ('none'). Registration depends ONLY on
     // the server mode, which is restart-guarded (assertReloadCompatible), so a hot-reload of
@@ -231,7 +243,8 @@ export class Gateway {
       const pendingApprovals = this.hitlEngine.getPending().length;
       const uptime = Math.floor((Date.now() - this.startTime) / 1000);
       const status = dataPlane.status === 'ok' ? 'ok' : 'degraded';
-      return { status, dataPlane, mcpHealth, pendingApprovals, uptime };
+      const sessions = this.sessionLimiter.snapshot();
+      return { status, dataPlane, mcpHealth, pendingApprovals, sessions, uptime };
     });
 
     const { port, host, insecure_remote_bind } = management;
@@ -445,6 +458,7 @@ export class Gateway {
 
   async stop(): Promise<void> {
     log.info('Stopping Airlock gateway');
+    this.sessionLimiter?.stop();
     this.pool?.disableReconnect();
     await this.pool?.stop();
     await this.managementApp?.close();

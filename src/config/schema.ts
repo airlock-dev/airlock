@@ -350,6 +350,38 @@ export const MiddlewareItemConfig = z
   .strict();
 export type MiddlewareItemConfig = z.infer<typeof MiddlewareItemConfig>;
 
+// Per-agent resource safeties (bulkheads) so one agent cannot exhaust the gateway and
+// starve the others. Every field is optional; unset fields fall back to the global
+// `security.limits` block, then to built-in defaults (see resolveLimits). All *_ms fields
+// treat 0 as "disabled". These limits are deliberately HITL-aware: the idle reaper never
+// touches a session with an in-flight request (a call parked on human approval keeps its
+// request open), and call_execution_timeout_ms clocks ONLY downstream execution — never the
+// approval wait, which happens in an earlier middleware.
+export const LimitsConfig = z
+  .object({
+    // Max concurrent open MCP sessions a single agent may hold (per transport plane).
+    max_sessions_per_agent: z.number().int().positive().optional(),
+    // Absolute ceiling on open sessions across ALL agents (backstop for the whole box).
+    max_sessions_global: z.number().int().positive().optional(),
+    // Reap a session after this long with NO in-flight request. 0 = never reap on idle.
+    session_idle_ms: z.number().int().nonnegative().optional(),
+    // Hard cap on total session lifetime regardless of activity. 0 = no lifetime cap
+    // (default — an async task parked on approval for hours must survive).
+    session_max_lifetime_ms: z.number().int().nonnegative().optional(),
+    // Token-bucket rate limit on NEW sessions per agent: at most `new_session_max`
+    // initializations per `new_session_window_ms`. Stops reconnect/init storms at the door.
+    new_session_max: z.number().int().positive().optional(),
+    new_session_window_ms: z.number().int().positive().optional(),
+    // Max concurrently EXECUTING tool calls per agent (post-approval only; calls parked
+    // awaiting HITL do not count). Bounds event-loop / upstream-pool monopolization.
+    max_concurrent_calls_per_agent: z.number().int().positive().optional(),
+    // Deadline on a single downstream tool execution, excluding any HITL approval wait.
+    // 0 = disabled (default), so genuinely long async downstream calls are never severed.
+    call_execution_timeout_ms: z.number().int().nonnegative().optional(),
+  })
+  .strict();
+export type LimitsConfig = z.infer<typeof LimitsConfig>;
+
 export const AgentConfig = z
   .object({
     token: EnvString.optional(),
@@ -369,6 +401,8 @@ export const AgentConfig = z
     // Consulted ONLY when server.expose_tools_api is 'per-agent'. Lets service consumers
     // (e.g. an ingestion job) use HTTP while interactive agents stay MCP-only.
     expose_tools_api: z.boolean().default(false),
+    // Per-agent resource safeties; unset fields inherit from `security.limits` then defaults.
+    limits: LimitsConfig.optional(),
   })
   .strict();
 export type AgentConfig = z.infer<typeof AgentConfig>;
@@ -503,6 +537,8 @@ export const SecurityConfig = z
         'fe80:*',
       ]),
     allowed_local: z.array(z.string()).default([]),
+    // Gateway-wide default resource safeties. Per-agent `limits` overrides these field-by-field.
+    limits: LimitsConfig.optional(),
   })
   .strict();
 export type SecurityConfig = z.infer<typeof SecurityConfig>;

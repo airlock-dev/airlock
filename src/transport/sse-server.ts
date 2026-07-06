@@ -10,6 +10,7 @@ import {
   currentRequestSecurity,
   type RequestSecurityOptions,
 } from '../security/request.js';
+import type { SessionLimiter } from './session-limiter.js';
 
 const log = childLogger('sse-server');
 
@@ -25,9 +26,11 @@ export async function sseServerPlugin(
 	    authRequired?: boolean;
 	    allowedOrigins?: string[];
 	    getRequestSecurity?: () => RequestSecurityOptions;
+	    sessionLimiter?: SessionLimiter;
 	  }
 ): Promise<void> {
   const sessions = new Map<string, { transport: SSEServerTransport; profileId: string }>();
+  const limiter = opts.sessionLimiter;
 
   // Don't parse request bodies — handlePostMessage reads the raw stream
   // and fails with "stream encoding should not be set" if Fastify parses first.
@@ -78,23 +81,35 @@ export async function sseServerPlugin(
 
     if (!checkAgentAuth(request, reply, deps)) return;
 
+    // Per-agent bulkheads: reject a flooding client before opening a long-lived SSE channel.
+    const admit = limiter?.tryOpen(profileId);
+    if (admit && !admit.ok) {
+      return reply.status(admit.status).send({ error: admit.message });
+    }
+
     log.info({ profileId }, 'New SSE connection');
 
     // Prevent Fastify from finalising the response when the handler returns —
     // the SSE connection must stay open until the client disconnects.
     reply.hijack();
 
-    const transport = new SSEServerTransport('/agents/' + profileId + '/messages', reply.raw);
-    sessions.set(transport.sessionId, { transport, profileId });
-
-    transport.onclose = () => {
-      sessions.delete(transport.sessionId);
-      log.info({ profileId, sessionId: transport.sessionId }, 'SSE session closed');
-    };
-
     // Per-session abort controller — signals middlewares (e.g. hitl-gate)
     // that the transport is gone so they don't execute into the void.
     const sessionAc = new AbortController();
+
+    const transport = new SSEServerTransport('/agents/' + profileId + '/messages', reply.raw);
+    sessions.set(transport.sessionId, { transport, profileId });
+    limiter?.register(transport.sessionId, profileId, () => sessionAc.abort());
+    // An SSE channel is long-lived by design (kept alive by pings; ended only by socket close),
+    // so mark it persistently in-flight — it counts toward caps/ceilings but the idle reaper
+    // must never sever an agent that is merely holding an open channel without recent activity.
+    limiter?.beginRequest(transport.sessionId);
+
+    transport.onclose = () => {
+      sessions.delete(transport.sessionId);
+      limiter?.close(transport.sessionId);
+      log.info({ profileId, sessionId: transport.sessionId }, 'SSE session closed');
+    };
 
     const server = createAgentServer({
       ...deps,
@@ -117,6 +132,7 @@ export async function sseServerPlugin(
       clearInterval(pingTimer);
       sessionAc.abort();
       sessions.delete(transport.sessionId);
+      limiter?.close(transport.sessionId);
       transport.close().catch(() => {});
     });
   });
@@ -143,6 +159,7 @@ export async function sseServerPlugin(
     const deps = opts.getDeps(profileId);
     if (!deps || !checkAgentAuth(request, reply, deps)) return;
 
+    limiter?.touch(sessionId);
     await session.transport.handlePostMessage(request.raw, reply.raw);
   });
 }

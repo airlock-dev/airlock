@@ -741,6 +741,90 @@ agents:
     );
   });
 
+  it('reports an unknown key inside a provider (z.union member, via nested error)', () => {
+    const yaml = `
+providers:
+  fetch:
+    type: http
+    url: https://example.com/mcp
+    bogus_key: true
+`;
+    const path = join(dir, 'gateway.yaml');
+    writeFileSync(path, yaml);
+
+    const result = loadConfigDetailed(path);
+    expect(result.diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          level: 'error',
+          message: 'Unknown config key "providers.fetch.bogus_key".',
+        }),
+      ])
+    );
+  });
+
+  it('reports an unknown key inside a limits block with no linter changes', () => {
+    // Regression guard: the streamlined check derives allowed keys straight from the zod schema,
+    // so a new nested block (security.limits / agent limits) needs no hand-maintained key list.
+    const yaml = `
+security:
+  limits:
+    max_sessions_per_agent: 8
+    typo_key: 5
+agents:
+  dev:
+    allow:
+      - "github/*"
+    limits:
+      nonsense: 1
+`;
+    const path = join(dir, 'gateway.yaml');
+    writeFileSync(path, yaml);
+
+    const result = loadConfigDetailed(path);
+    expect(result.diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          level: 'error',
+          message: 'Unknown config key "security.limits.typo_key".',
+        }),
+        expect.objectContaining({
+          level: 'error',
+          message: 'Unknown config key "agents.dev.limits.nonsense".',
+        }),
+      ])
+    );
+  });
+
+  it('reports unknown keys even when a required env var is unset (structural, no secrets)', () => {
+    const yaml = `
+providers:
+  gh:
+    type: http
+    url: https://example.com/mcp
+    client_secret: \${DEFINITELY_UNSET_ENV_VAR}
+agents:
+  dev:
+    allow:
+      - "github/*"
+    scope:
+      github_repo: airlock_repos
+`;
+    const path = join(dir, 'gateway.yaml');
+    writeFileSync(path, yaml);
+
+    const result = loadConfigDetailed(path);
+    expect(result.diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          level: 'error',
+          message: 'Unrecognized key "scope" in agent "dev".',
+          suggestion: 'Did you mean "arg_scope"?',
+        }),
+      ])
+    );
+  });
+
   it('rejects unknown profile keys at the schema layer', () => {
     const result = GatewayConfig.safeParse({
       profiles: {
