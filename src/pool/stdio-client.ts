@@ -1,6 +1,7 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import type { ProviderConnectionStatus } from './status.js';
 import { childLogger } from '../util/logger.js';
 import { VERSION } from '../version.js';
 
@@ -26,6 +27,10 @@ export class StdioMcpClient {
   private reconnectAttempt = 0;
   private stopped = false;
   private ready = false;
+  private connecting = false;
+  private reconnectExhausted = false;
+  private reconnectTimer?: NodeJS.Timeout;
+  private lastError?: string;
   private readyListeners = new Set<() => void>();
 
   constructor(
@@ -49,11 +54,16 @@ export class StdioMcpClient {
     });
 
     this.client = new Client({ name: 'airlock', version: VERSION });
+    this.connecting = true;
+    this.reconnectExhausted = false;
 
     this.transport.onclose = () => {
       this.ready = false;
+      this.connecting = false;
+      this.lastError ??= 'process exited';
       if (!this.stopped) {
         if (this.reconnectAttempt >= MAX_RECONNECT_ATTEMPTS) {
+          this.reconnectExhausted = true;
           log.error(
             { id: this.id },
             'MCP gave up reconnecting after %d attempts',
@@ -67,7 +77,8 @@ export class StdioMcpClient {
           'MCP disconnected, reconnecting'
         );
         this.reconnectAttempt++;
-        setTimeout(() => {
+        this.reconnectTimer = setTimeout(() => {
+          this.reconnectTimer = undefined;
           void this.connect().catch((err) =>
             log.error({ id: this.id, reason: friendlyError(err) }, 'MCP reconnect failed')
           );
@@ -79,9 +90,14 @@ export class StdioMcpClient {
       await this.client.connect(this.transport);
       this.reconnectAttempt = 0;
       this.ready = true;
+      this.connecting = false;
+      this.lastError = undefined;
       log.info({ id: this.id }, 'MCP stdio client connected');
       this.notifyReady();
     } catch (err) {
+      this.ready = false;
+      this.connecting = false;
+      this.lastError = friendlyError(err);
       log.error({ id: this.id, reason: friendlyError(err) }, 'MCP stdio connect failed');
       throw err;
     }
@@ -113,6 +129,18 @@ export class StdioMcpClient {
     return this.ready;
   }
 
+  getConnectionStatus(): ProviderConnectionStatus {
+    if (this.ready) return { status: 'up' };
+    if (
+      this.connecting ||
+      this.reconnectTimer ||
+      (!this.stopped && !this.reconnectExhausted && this.reconnectAttempt > 0)
+    ) {
+      return { status: 'connecting', ...(this.lastError ? { reason: this.lastError } : {}) };
+    }
+    return { status: 'down', ...(this.lastError ? { reason: this.lastError } : {}) };
+  }
+
   private notifyReady(): void {
     for (const cb of this.readyListeners) {
       cb();
@@ -126,6 +154,10 @@ export class StdioMcpClient {
 
   async stop(): Promise<void> {
     this.stopped = true;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = undefined;
+    }
     await this.transport?.close();
   }
 

@@ -71,10 +71,11 @@ vi.mock('@modelcontextprotocol/sdk/client/index.js', () => {
 });
 
 // FileOAuthProvider: waitForAuthCode resolves immediately; no file I/O, no browser.
+let waitForAuthCodeImpl: () => Promise<string> = () => Promise.resolve('mock-auth-code');
 vi.mock('../src/pool/oauth-provider.js', () => {
   return {
     FileOAuthProvider: vi.fn().mockImplementation(() => ({
-      waitForAuthCode: vi.fn().mockResolvedValue('mock-auth-code'),
+      waitForAuthCode: vi.fn().mockImplementation(() => waitForAuthCodeImpl()),
       stopCallbackServer: vi.fn(),
     })),
   };
@@ -90,6 +91,7 @@ beforeEach(() => {
   transportInstances.length = 0;
   clientInstances.length = 0;
   clientConnectCallCount = 0;
+  waitForAuthCodeImpl = () => Promise.resolve('mock-auth-code');
   vi.clearAllMocks();
 });
 
@@ -120,6 +122,20 @@ describe('HttpMcpClient — OAuth reconnect', () => {
     await client.connect();
     await flushOAuthFlow();
     expect(client.isReady()).toBe(true);
+    expect(client.getConnectionStatus()).toEqual({ status: 'up' });
+  });
+
+  it('reports auth_required while waiting for browser OAuth', async () => {
+    let resolveAuth!: (code: string) => void;
+    waitForAuthCodeImpl = () => new Promise((resolve) => (resolveAuth = resolve));
+    const client = new HttpMcpClient('supabase', 'https://mcp.supabase.com/mcp', undefined, true);
+    await client.connect();
+    expect(client.getConnectionStatus()).toEqual({
+      status: 'auth_required',
+      reason: 'OAuth authorization required',
+    });
+    resolveAuth('mock-auth-code');
+    await flushOAuthFlow();
   });
 
   it('notifies listeners after OAuth reconnect becomes ready', async () => {

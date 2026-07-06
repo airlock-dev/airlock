@@ -22,7 +22,7 @@ import type { AgentServerDeps } from './transport/agent-server.js';
 import type { Config } from './config/loader.js';
 import type { HitlProvider, ApprovalApi } from './hitl/providers/types.js';
 import { createHitlProvider } from './hitl/provider-factory.js';
-import { getMcpConfigs } from './config/schema.js';
+import { getBuiltinProviders, getMcpConfigs } from './config/schema.js';
 import { buildAdapters } from './backend/factory.js';
 import { ActivityStream } from './activity/stream.js';
 import { childLogger } from './util/logger.js';
@@ -467,8 +467,32 @@ export class Gateway {
         hitlEngine: this.hitlEngine,
         hitlBatcher: this.hitlBatcher,
         activityStream: this.activityStream,
+        getAgentTools: (agentId) => this.registry?.getFilteredWithDecisions(agentId) ?? [],
+        getAgentConfig: (agentId) => this.config.agents[agentId],
+        getKnownProviderIds: () => this.knownProviderIds(),
+        getProviderConnectionStatus: (providerId) => this.providerConnectionStatus(providerId),
       },
     });
+  }
+
+  private providerConnectionStatus(providerId: string) {
+    if (!(providerId in getMcpConfigs(this.config.providers))) return undefined;
+    return (
+      this.pool?.getProviderConnectionStatus(providerId) ?? {
+        status: 'down' as const,
+        reason: 'MCP provider is not connected',
+      }
+    );
+  }
+
+  private knownProviderIds(): string[] {
+    const ids = new Set<string>([
+      ...Object.keys(getMcpConfigs(this.config.providers)),
+      ...getBuiltinProviders(this.config.providers),
+      ...Object.keys(this.config.clis ?? {}),
+      ...Object.keys(this.config.apis ?? {}),
+    ]);
+    return Array.from(ids).sort();
   }
 }
 

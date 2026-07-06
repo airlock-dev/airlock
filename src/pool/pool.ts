@@ -1,6 +1,7 @@
 import { StdioMcpClient } from './stdio-client.js';
 import { SseMcpClient } from './sse-client.js';
 import { HttpMcpClient } from './http-client.js';
+import type { ProviderConnectionStatus } from './status.js';
 import type { McpServerConfig } from '../config/schema.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { childLogger } from '../util/logger.js';
@@ -95,6 +96,10 @@ export class ClientPool {
     return this.clients.get(mcpId)?.isReady() ?? false;
   }
 
+  getProviderConnectionStatus(mcpId: string): ProviderConnectionStatus | undefined {
+    return this.clients.get(mcpId)?.getConnectionStatus();
+  }
+
   async callTool(
     mcpId: string,
     toolName: string,
@@ -135,7 +140,8 @@ export class ClientPool {
   healthCheck(): Record<string, HealthStatus> {
     const result: Record<string, HealthStatus> = {};
     for (const [id, client] of this.clients) {
-      result[id] = client.isReady() ? 'ok' : 'down';
+      const status = client.getConnectionStatus().status;
+      result[id] = status === 'up' ? 'ok' : status === 'down' ? 'down' : 'degraded';
     }
     return result;
   }

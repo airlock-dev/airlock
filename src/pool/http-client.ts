@@ -3,6 +3,7 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import { UnauthorizedError } from '@modelcontextprotocol/sdk/client/auth.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { FileOAuthProvider } from './oauth-provider.js';
+import type { ProviderConnectionStatus } from './status.js';
 import { childLogger } from '../util/logger.js';
 import { VERSION } from '../version.js';
 
@@ -38,6 +39,16 @@ function isInvalidSessionError(err: unknown): boolean {
   );
 }
 
+function isAuthRequiredError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return (
+    err instanceof UnauthorizedError ||
+    msg.includes('InvalidGrantError') ||
+    (err as { constructor?: { name?: string } } | undefined)?.constructor?.name ===
+      'InvalidGrantError'
+  );
+}
+
 export class HttpMcpClient {
   private client?: Client;
   private transport?: StreamableHTTPClientTransport;
@@ -49,6 +60,9 @@ export class HttpMcpClient {
   private readyListeners = new Set<() => void>();
 
   private awaitingAuth = false;
+  private connecting = false;
+  private reconnectExhausted = false;
+  private lastError?: string;
 
   constructor(
     private id: string,
@@ -105,11 +119,16 @@ export class HttpMcpClient {
     this.transport = new StreamableHTTPClientTransport(new URL(this.url), transportOpts);
 
     this.client = new Client({ name: 'airlock', version: VERSION });
+    this.connecting = true;
+    this.reconnectExhausted = false;
 
     this.transport.onclose = () => {
       this.ready = false;
+      this.connecting = false;
+      this.lastError ??= 'connection closed';
       if (!this.stopped && !this.awaitingAuth) {
         if (this.reconnectAttempt >= MAX_RECONNECT_ATTEMPTS) {
+          this.reconnectExhausted = true;
           log.error(
             { id: this.id },
             'HTTP MCP gave up reconnecting after %d attempts',
@@ -136,10 +155,17 @@ export class HttpMcpClient {
       await this.client.connect(this.transport);
       this.reconnectAttempt = 0;
       this.ready = true;
+      this.connecting = false;
+      this.lastError = undefined;
       log.info({ id: this.id, url: this.url }, 'MCP HTTP client connected');
       this.notifyReady();
     } catch (err) {
-      if (err instanceof UnauthorizedError && this.oauthProvider) {
+      this.ready = false;
+      this.connecting = false;
+      this.lastError = friendlyError(err);
+      if (isAuthRequiredError(err) && this.oauthProvider) {
+        this.awaitingAuth = true;
+        this.lastError = 'OAuth authorization required';
         // Run the browser auth flow in the background so it doesn't block
         // gateway startup (pool.initialize waits for all connect() calls).
         void this.runOAuthFlow().catch((oauthErr) =>
@@ -162,6 +188,9 @@ export class HttpMcpClient {
       log.info({ id: this.id }, 'OAuth authorization required, waiting for browser flow');
       const code = await this.oauthProvider!.waitForAuthCode();
       await this.transport!.finishAuth(code);
+    } catch (err) {
+      this.lastError = friendlyError(err);
+      throw err;
     } finally {
       this.awaitingAuth = false;
     }
@@ -198,6 +227,21 @@ export class HttpMcpClient {
 
   isReady(): boolean {
     return this.ready;
+  }
+
+  getConnectionStatus(): ProviderConnectionStatus {
+    if (this.ready) return { status: 'up' };
+    if (this.awaitingAuth) {
+      return { status: 'auth_required', reason: this.lastError ?? 'OAuth authorization required' };
+    }
+    if (
+      this.connecting ||
+      this.reconnectTimer ||
+      (!this.stopped && !this.reconnectExhausted && this.reconnectAttempt > 0)
+    ) {
+      return { status: 'connecting', ...(this.lastError ? { reason: this.lastError } : {}) };
+    }
+    return { status: 'down', ...(this.lastError ? { reason: this.lastError } : {}) };
   }
 
   private notifyReady(): void {
