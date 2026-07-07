@@ -19,6 +19,7 @@ import { CompositeHitlProvider } from './hitl/providers/composite.js';
 import { sseServerPlugin } from './transport/sse-server.js';
 import { httpServerPlugin } from './transport/http-server.js';
 import { SessionLimiter, resolveLimits } from './transport/session-limiter.js';
+import { enableTcpKeepAlive } from './transport/keepalive.js';
 import type { AgentServerDeps } from './transport/agent-server.js';
 import type { Config } from './config/loader.js';
 import type { HitlProvider, ApprovalApi } from './hitl/providers/types.js';
@@ -131,6 +132,10 @@ export class Gateway {
     // Agent data-plane server. Control-plane routes are registered on a
     // separate listener below and must never be added to this app.
     this.app = Fastify({ logger: false });
+    // Detect silently-dead peers on long-lived MCP streams: half-open TCP never emits 'close',
+    // so without keep-alive a vanished client pins its session's in-flight slot forever (see
+    // enableTcpKeepAlive). Probes surface the death and the existing onclose path reclaims it.
+    enableTcpKeepAlive(this.app.server);
 
     const getDataPlaneRequestSecurity = () => this.dataPlaneRequestSecurity;
     const getManagementRequestSecurity = () => this.managementRequestSecurity;
@@ -192,6 +197,8 @@ export class Gateway {
   ): Promise<void> {
     const management = this.config.server.management_api;
     this.managementApp = Fastify({ logger: false });
+    // Same dead-peer detection for the control plane's long-lived SSE approval stream.
+    enableTcpKeepAlive(this.managementApp.server);
 
     await this.managementApp.register(hitlApiPlugin, {
       engine: this.hitlEngine,
