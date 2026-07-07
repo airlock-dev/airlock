@@ -40,6 +40,7 @@ export function execPolicyMiddleware(): Middleware {
       log.info({ agentId: ctx.agentId, command }, 'exec command denied by policy');
       ctx.deps.auditLogger.log({
         agent_id: ctx.agentId,
+        request_id: ctx.callId,
         tool: ctx.toolName,
         args: JSON.stringify(ctx.args),
         result: 'denied',

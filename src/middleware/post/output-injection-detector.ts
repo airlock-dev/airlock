@@ -56,6 +56,7 @@ export function outputInjectionDetectorMiddleware(
       );
       ctx.deps.auditLogger.log({
         agent_id: ctx.agentId,
+        request_id: ctx.callId,
         tool: ctx.toolName,
         args: JSON.stringify(ctx.args),
         result: 'injection_detected',

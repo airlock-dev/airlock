@@ -34,6 +34,7 @@ export function executeMiddleware(): Middleware {
     if (inFlight >= limits.maxConcurrentCallsPerAgent) {
       auditLogger.log({
         agent_id: ctx.agentId,
+        request_id: ctx.callId,
         tool: ctx.toolName,
         args: serializeAuditArgs(ctx.args, ctx.meta),
         result: 'error',
@@ -47,6 +48,17 @@ export function executeMiddleware(): Middleware {
     }
     executing.set(ctx.agentId, inFlight + 1);
 
+    // Last checkpoint before handing off to the downstream. If the downstream hangs, THIS is the
+    // final row for the request_id — a 'dispatched' with no matching terminal row means the call is
+    // stuck in the downstream (visible even when callExecutionTimeoutMs is 0 and it never returns).
+    auditLogger.log({
+      agent_id: ctx.agentId,
+      request_id: ctx.callId,
+      tool: ctx.toolName,
+      args: serializeAuditArgs(ctx.args, ctx.meta),
+      result: 'dispatched',
+    });
+
     try {
       const callResult = await withExecutionTimeout(
         registry.call(ctx.toolName, ctx.args, ctx.agentId, ctx.meta),
@@ -57,6 +69,7 @@ export function executeMiddleware(): Middleware {
       const duration = Date.now() - ctx.startedAt;
       auditLogger.log({
         agent_id: ctx.agentId,
+        request_id: ctx.callId,
         tool: ctx.toolName,
         args: serializeAuditArgs(ctx.args, ctx.meta),
         result: 'success',
@@ -72,6 +85,7 @@ export function executeMiddleware(): Middleware {
       const error = err instanceof Error ? err.message : String(err);
       auditLogger.log({
         agent_id: ctx.agentId,
+        request_id: ctx.callId,
         tool: ctx.toolName,
         args: serializeAuditArgs(ctx.args, ctx.meta),
         result: 'error',

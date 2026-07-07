@@ -227,6 +227,7 @@ export function argPolicyMiddleware(): Middleware {
             `Allowed ${displayName}: ${formatAllowed(constraint)}. ${retryInstruction(constraint)}`;
           ctx.deps.auditLogger.log({
             agent_id: ctx.agentId,
+            request_id: ctx.callId,
             tool: ctx.toolName,
             args: JSON.stringify(ctx.args),
             result: 'arg_policy_denied',
@@ -241,6 +242,7 @@ export function argPolicyMiddleware(): Middleware {
             `Allowed ${displayName}: ${formatAllowed(constraint)}. ${retryInstruction(constraint)}`;
           ctx.deps.auditLogger.log({
             agent_id: ctx.agentId,
+            request_id: ctx.callId,
             tool: ctx.toolName,
             args: JSON.stringify(ctx.args),
             result: 'arg_policy_denied',

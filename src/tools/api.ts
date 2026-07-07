@@ -145,6 +145,15 @@ export async function toolsApiPlugin(app: FastifyInstance, opts: ToolsApiOpts): 
       signal: ac.signal,
     };
 
+    // Lifecycle audit: request entered the pipeline (see agent-server for the rationale).
+    ctx.deps.auditLogger.log({
+      agent_id: ctx.agentId,
+      request_id: ctx.callId,
+      tool: ctx.toolName,
+      args: JSON.stringify(ctx.args),
+      result: 'received',
+    });
+
     try {
       const response = await chain(ctx, () => {
         throw new Error('Middleware chain did not terminate — missing execute middleware');

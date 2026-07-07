@@ -105,6 +105,16 @@ export function createAgentServer(deps: AgentServerDeps): Server {
       signal: deps.signal,
     };
 
+    // Lifecycle audit: the request has entered the pipeline. Emitted BEFORE any middleware so even
+    // a call that is denied/parked/hung has a 'received' row; the terminal row shares its request_id.
+    ctx.deps.auditLogger.log({
+      agent_id: ctx.agentId,
+      request_id: ctx.callId,
+      tool: ctx.toolName,
+      args: JSON.stringify(ctx.args),
+      result: 'received',
+    });
+
     const response = await chain(ctx, () => {
       throw new Error('Middleware chain did not terminate — missing execute middleware');
     });

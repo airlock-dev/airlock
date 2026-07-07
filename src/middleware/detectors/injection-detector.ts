@@ -117,6 +117,7 @@ export function injectionDetectorMiddleware(opts: InjectionDetectorOptions = {})
     if (preInjection) {
       ctx.deps.auditLogger.log({
         agent_id: ctx.agentId,
+        request_id: ctx.callId,
         tool: ctx.toolName,
         args: JSON.stringify(ctx.args),
         result: 'injection_detected_args',
@@ -156,6 +157,7 @@ export function injectionDetectorMiddleware(opts: InjectionDetectorOptions = {})
       );
       ctx.deps.auditLogger.log({
         agent_id: ctx.agentId,
+        request_id: ctx.callId,
         tool: ctx.toolName,
         args: JSON.stringify(ctx.args),
         result: 'injection_detected_response',
