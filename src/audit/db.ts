@@ -6,10 +6,18 @@ export interface AuditEntry {
   agent_id: string;
   tool: string;
   args: string; // JSON string
-  result: string; // 'success' | 'error' | 'denied' | 'hitl_approved' | 'hitl_denied' | 'hitl_timeout'
+  // Lifecycle + terminal states. A single call emits several rows sharing request_id:
+  //   'received'   — request entered the pipeline
+  //   'dispatched' — passed policy, handed to the downstream (last checkpoint before a hang)
+  //   terminal     — 'success' | 'error' | 'denied' | 'arg_policy_denied' |
+  //                  'hitl_approved' | 'hitl_denied' | 'hitl_timeout' | 'hitl_disconnected'
+  // A request_id with 'received'/'dispatched' but no terminal row is a call still in flight (or hung).
+  result: string;
   error?: string;
   duration_ms?: number;
   hitl_code?: string;
+  /** Correlates every lifecycle row of one tool call (the ctx.callId). */
+  request_id?: string;
 }
 
 export interface HitlQueueEntry {
@@ -71,7 +79,8 @@ export class AuditDb {
         result      TEXT    NOT NULL,
         error       TEXT,
         duration_ms INTEGER,
-        hitl_code   TEXT
+        hitl_code   TEXT,
+        request_id  TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_audit_ts       ON audit_log(ts);
       CREATE INDEX IF NOT EXISTS idx_audit_agent_id ON audit_log(agent_id);
@@ -103,13 +112,31 @@ export class AuditDb {
       );
       CREATE INDEX IF NOT EXISTS idx_mobile_devices_revoked ON mobile_devices(revoked_at);
     `);
+
+    this.migrate();
+  }
+
+  /**
+   * Idempotent, additive schema migrations for DBs created by older versions. Runs after the
+   * CREATE TABLE IF NOT EXISTS block, which never adds columns to a table that already exists.
+   */
+  private migrate(): void {
+    const auditCols = new Set(
+      (this.db.pragma('table_info(audit_log)') as Array<{ name: string }>).map((c) => c.name)
+    );
+    if (!auditCols.has('request_id')) {
+      // Correlates the lifecycle rows (received/dispatched/terminal) of one tool call.
+      this.db.exec('ALTER TABLE audit_log ADD COLUMN request_id TEXT');
+    }
+    // Safe on both fresh and migrated DBs now that the column is guaranteed to exist.
+    this.db.exec('CREATE INDEX IF NOT EXISTS idx_audit_request_id ON audit_log(request_id)');
   }
 
   private prepareStatements(): void {
     this.stmts = {
       insertAudit: this.db.prepare(`
-        INSERT INTO audit_log (ts, agent_id, tool, args, result, error, duration_ms, hitl_code)
-        VALUES (@ts, @agent_id, @tool, @args, @result, @error, @duration_ms, @hitl_code)
+        INSERT INTO audit_log (ts, agent_id, tool, args, result, error, duration_ms, hitl_code, request_id)
+        VALUES (@ts, @agent_id, @tool, @args, @result, @error, @duration_ms, @hitl_code, @request_id)
       `),
       insertHitl: this.db.prepare(`
         INSERT INTO hitl_queue (id, code, agent_id, tool, args, status, created_at)
@@ -173,6 +200,7 @@ export class AuditDb {
       error: null,
       duration_ms: null,
       hitl_code: null,
+      request_id: null,
       ...entry,
     });
   }

@@ -813,3 +813,59 @@ describe('http-transport: HITL timeout', () => {
     }
   }, 10_000);
 });
+
+// ─── Audit request lifecycle ────────────────────────────────────────────────
+
+describe('http-transport: audit request lifecycle', () => {
+  const rowsFor = (srv: ServerFixture, needle: string) =>
+    (srv.auditLogger.log as unknown as ReturnType<typeof vi.fn>).mock.calls
+      .map((c) => c[0] as { tool: string; result: string; request_id?: string })
+      .filter((r) => r.tool.includes(needle));
+
+  it('emits received → dispatched → success sharing one request_id for an allowed call', async () => {
+    const srv = await buildServer();
+    try {
+      const { client } = await connect(srv.port);
+      await client.callTool({ name: 'tools_echo', arguments: { message: 'hi' } });
+
+      const rows = rowsFor(srv, 'echo');
+      const received = rows.find((r) => r.result === 'received');
+      expect(received?.request_id).toBeTruthy();
+
+      const forCall = rows.filter((r) => r.request_id === received!.request_id).map((r) => r.result);
+      expect(forCall).toContain('received');
+      expect(forCall).toContain('dispatched');
+      expect(forCall).toContain('success');
+
+      await client.close();
+    } finally {
+      await srv.teardown();
+      vi.restoreAllMocks();
+    }
+  });
+
+  it('emits received then denied (never dispatched) for a blocked call, same request_id', async () => {
+    const srv = await buildServer({ agentConfig: { allow: ['tools/echo'], ask: [], deny: [] } });
+    try {
+      const { client } = await connect(srv.port);
+      await expect(
+        client.callTool({ name: 'tools_add', arguments: { a: 1, b: 2 } })
+      ).rejects.toThrow();
+
+      const rows = rowsFor(srv, 'add');
+      const received = rows.find((r) => r.result === 'received');
+      expect(received?.request_id).toBeTruthy();
+
+      const forCall = rows.filter((r) => r.request_id === received!.request_id).map((r) => r.result);
+      expect(forCall).toContain('received');
+      expect(forCall).toContain('denied');
+      expect(forCall).not.toContain('dispatched');
+      expect(forCall).not.toContain('success');
+
+      await client.close();
+    } finally {
+      await srv.teardown();
+      vi.restoreAllMocks();
+    }
+  });
+});

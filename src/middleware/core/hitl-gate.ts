@@ -79,6 +79,7 @@ export function hitlGateMiddleware(): Middleware {
       hitlEngine.cancel(ticket.id);
       auditLogger.log({
         agent_id: ctx.agentId,
+        request_id: ctx.callId,
         tool: ctx.toolName,
         args: JSON.stringify(ctx.args),
         result: 'hitl_disconnected',
@@ -89,6 +90,7 @@ export function hitlGateMiddleware(): Middleware {
     if (result === 'denied') {
       auditLogger.log({
         agent_id: ctx.agentId,
+        request_id: ctx.callId,
         tool: ctx.toolName,
         args: serializeAuditArgs(ctx.args, ctx.meta),
         result: 'hitl_denied',
@@ -98,6 +100,7 @@ export function hitlGateMiddleware(): Middleware {
     if (result === 'timeout') {
       auditLogger.log({
         agent_id: ctx.agentId,
+        request_id: ctx.callId,
         tool: ctx.toolName,
         args: serializeAuditArgs(ctx.args, ctx.meta),
         result: 'hitl_timeout',

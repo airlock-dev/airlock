@@ -19,6 +19,7 @@ export function allowlistMiddleware(): Middleware {
       log.info({ agentId: ctx.agentId, toolName: ctx.toolName }, 'Tool call denied by allowlist');
       ctx.deps.auditLogger.log({
         agent_id: ctx.agentId,
+        request_id: ctx.callId,
         tool: ctx.toolName,
         args: JSON.stringify(ctx.args),
         result: 'denied',
