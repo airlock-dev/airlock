@@ -100,6 +100,15 @@ export class FileOAuthProvider implements OAuthClientProvider {
   }
 
   async saveTokens(tokens: OAuthTokens): Promise<void> {
+    // Preserve an existing refresh_token when a refresh response omits one.
+    // Many OAuth providers return refresh_token only on the initial authorization
+    // (or rotate it and expect the client to retain the prior value until it is
+    // replaced). Blindly overwriting would drop the refresh_token, so the next
+    // access-token expiry would fail to refresh and force a full interactive
+    // re-authorization — the exact failure that silently takes headless MCPs down.
+    if (!tokens.refresh_token && this.data.tokens?.refresh_token) {
+      tokens = { ...tokens, refresh_token: this.data.tokens.refresh_token };
+    }
     this.data.tokens = tokens;
     await this.save();
   }
