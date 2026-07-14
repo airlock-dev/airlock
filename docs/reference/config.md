@@ -9,6 +9,7 @@ providers: # MCP servers and built-ins
 value_sets: # Reusable argument value lists
 arg_dimensions: # Reusable tool-argument bindings for arg_scope
 profiles: # Reusable permission sets
+default_profile: # Optional profile every agent inherits (DRY low-risk grants)
 sandbox_presets: # Reusable sandbox envelopes
 clis: # CLI tools exposed as MCP tools
 apis: # REST APIs exposed as MCP tools
@@ -80,6 +81,29 @@ Profiles may extend other profiles. Profile inheritance is resolved once at
 config load, before agents consume profiles. Unknown profile references and
 profile cycles are fatal config errors. Profiles can also carry `arg_policy` and
 `arg_scope` entries that agents inherit alongside allow/ask/deny rules.
+
+## `default_profile`
+
+Optional. Names one profile that **every agent inherits automatically**, so a
+low-risk grant you want everywhere (self-inspection tools, a shared notify
+channel) lives in one place instead of being copied onto each agent.
+
+```yaml
+default_profile: base
+
+profiles:
+  base:
+    allow:
+      - airlock/status
+      - airlock/list_provider_tools
+```
+
+It is prepended to each agent's `extends`, so it resolves at **lowest
+precedence** — an agent can still `deny` (or `ask`-gate) anything the default
+grants (`deny > ask > allow`). Because the named profile may itself `extends` a
+chain, one entry can compose many. A referenced profile that does not exist is a
+fatal config error. Opt a single agent out with `inherit_default: false` (see
+[`agents`](#agents)).
 
 ## `value_sets` and `arg_dimensions`
 
@@ -200,6 +224,7 @@ Per-agent policy configuration.
 agents:
   claude-code:
     extends: [readonly, developer] # Inherit from profiles
+    inherit_default: true # Inherit the top-level default_profile (default: true)
     allow:
       - github/*
     ask:

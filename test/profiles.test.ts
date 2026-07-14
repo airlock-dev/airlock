@@ -435,3 +435,74 @@ describe('explainAgentPermissions()', () => {
     });
   });
 });
+
+describe('default_profile', () => {
+  it('is inherited by every agent at lowest precedence', () => {
+    const config = GatewayConfig.parse({
+      default_profile: 'base',
+      profiles: {
+        base: { allow: ['airlock/status', 'airlock/list_provider_tools'] },
+        readonly: { allow: ['github/get*'] },
+      },
+      agents: {
+        helena: { extends: ['readonly'], allow: ['exec/run'] },
+        selene: {},
+      },
+    });
+
+    applyProfiles(config);
+
+    // Agent with its own extends still gets the default, plus its own grants.
+    expect(config.agents['helena'].allow).toEqual(
+      expect.arrayContaining(['airlock/status', 'airlock/list_provider_tools', 'github/get*', 'exec/run'])
+    );
+    // Agent with no extends of its own still inherits the default.
+    expect(config.agents['selene'].allow).toEqual(
+      expect.arrayContaining(['airlock/status', 'airlock/list_provider_tools'])
+    );
+  });
+
+  it('can be overridden by an agent deny (deny wins at evaluation)', () => {
+    const config = GatewayConfig.parse({
+      default_profile: 'base',
+      profiles: { base: { allow: ['airlock/status'] } },
+      agents: { locked: { deny: ['airlock/status'] } },
+    });
+
+    applyProfiles(config);
+
+    // Resolution unions both lists; the deny is what takes effect (precedence deny > allow),
+    // so an agent can always claw back a tool the default profile grants.
+    expect(config.agents['locked'].deny).toContain('airlock/status');
+  });
+
+  it('is skipped for an agent that opts out with inherit_default: false', () => {
+    const config = GatewayConfig.parse({
+      default_profile: 'base',
+      profiles: { base: { allow: ['airlock/status'] } },
+      agents: {
+        joined: {},
+        isolated: { inherit_default: false },
+      },
+    });
+
+    applyProfiles(config);
+
+    expect(config.agents['joined'].allow).toContain('airlock/status');
+    expect(config.agents['isolated'].allow).not.toContain('airlock/status');
+  });
+
+  it('is not duplicated when an agent already extends it explicitly', () => {
+    const config = GatewayConfig.parse({
+      default_profile: 'base',
+      profiles: { base: { allow: ['airlock/status'] } },
+      agents: { dev: { extends: ['base'] } },
+    });
+
+    // The transform must not double-inject the default into extends.
+    expect(config.agents['dev'].extends).toEqual(['base']);
+
+    applyProfiles(config);
+    expect(config.agents['dev'].allow).toContain('airlock/status');
+  });
+});

@@ -490,6 +490,36 @@ agents:
     );
   });
 
+  it('errors when default_profile references an unknown profile', () => {
+    const config = GatewayConfig.parse({
+      default_profile: 'nonexistent',
+      profiles: { base: { allow: ['airlock/status'] } },
+      agents: { agent1: { token: 'agent-secret' } },
+    });
+
+    const diagnostics = validateConfig(config);
+    expect(diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          level: 'error',
+          code: 'unknown-profile-ref',
+          message: 'default_profile references unknown profile "nonexistent".',
+        }),
+      ])
+    );
+  });
+
+  it('does not error when default_profile references a real profile', () => {
+    const config = GatewayConfig.parse({
+      default_profile: 'base',
+      profiles: { base: { allow: ['airlock/status'] } },
+      agents: { agent1: { token: 'agent-secret' } },
+    });
+
+    const diagnostics = validateConfig(config);
+    expect(diagnostics.filter((d) => d.code === 'unknown-profile-ref')).toEqual([]);
+  });
+
   it('warns when management and data-plane secrets resolve to the same value', () => {
     process.env['TEST_SHARED_AIRLOCK_SECRET'] = 'same-secret';
     const yaml = `
