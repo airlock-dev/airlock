@@ -401,6 +401,9 @@
           },
           "default": {}
         },
+        "default_profile": {
+          "type": "string"
+        },
         "sandbox_presets": {
           "type": "object",
           "additionalProperties": {
@@ -654,6 +657,10 @@
                   "type": "string"
                 },
                 "default": []
+              },
+              "inherit_default": {
+                "type": "boolean",
+                "default": true
               },
               "allow": {
                 "type": "array",
@@ -1361,6 +1368,44 @@
               "expose_tools_api": {
                 "type": "boolean",
                 "default": false
+              },
+              "limits": {
+                "type": "object",
+                "properties": {
+                  "max_sessions_per_agent": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0
+                  },
+                  "max_sessions_global": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0
+                  },
+                  "session_idle_ms": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "session_max_lifetime_ms": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "new_session_max": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0
+                  },
+                  "new_session_window_ms": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0
+                  },
+                  "max_concurrent_calls_per_agent": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0
+                  },
+                  "call_execution_timeout_ms": {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                },
+                "additionalProperties": false
               }
             },
             "additionalProperties": false
@@ -1833,6 +1878,44 @@
                 "type": "string"
               },
               "default": []
+            },
+            "limits": {
+              "type": "object",
+              "properties": {
+                "max_sessions_per_agent": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0
+                },
+                "max_sessions_global": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0
+                },
+                "session_idle_ms": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "session_max_lifetime_ms": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "new_session_max": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0
+                },
+                "new_session_window_ms": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0
+                },
+                "max_concurrent_calls_per_agent": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0
+                },
+                "call_execution_timeout_ms": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "additionalProperties": false
             }
           },
           "additionalProperties": false,

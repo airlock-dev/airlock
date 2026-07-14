@@ -515,6 +515,7 @@ function explainArgScope(
 function emptyAgentConfig(): AgentConfig {
   return {
     extends: [],
+    inherit_default: true,
     allow: [],
     remember_allow: [],
     ask: [],

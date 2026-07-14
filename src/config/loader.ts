@@ -270,6 +270,15 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
     });
   }
 
+  if (config.default_profile && !profileNames.has(config.default_profile)) {
+    diagnostics.push({
+      level: 'error',
+      code: 'unknown-profile-ref',
+      message: `default_profile references unknown profile "${config.default_profile}".`,
+      suggestion: `Add "${config.default_profile}" to your profiles block, or check for typos.`,
+    });
+  }
+
   for (const [agentId, agent] of Object.entries(config.agents)) {
     // Check for unknown profile references
     for (const ref of agent.extends) {

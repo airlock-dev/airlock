@@ -386,6 +386,10 @@ export const AgentConfig = z
   .object({
     token: EnvString.optional(),
     extends: z.array(z.string()).default([]),
+    // Opt out of the top-level `default_profile` (which every agent otherwise inherits).
+    // Set false for a locked-down agent that must get nothing implicitly. No effect when
+    // `default_profile` is unset.
+    inherit_default: z.boolean().default(true),
     allow: z.array(z.string()).default([]),
     remember_allow: z.array(RememberAllowRule).default([]),
     ask: z.array(z.string()).default([]),
@@ -830,6 +834,11 @@ export const GatewayConfig = z
     value_sets: z.record(ValueSetConfig).default({}),
     arg_dimensions: z.record(ArgDimensionConfig).default({}),
     profiles: z.record(ProfileConfig).default({}),
+    // Optional profile that every agent inherits at lowest precedence, for DRY low-risk grants
+    // (e.g. self-inspection tools). Injected at the front of each agent's `extends`, so an agent
+    // can still override it (deny > ask > allow), and opt out entirely via `inherit_default: false`.
+    // The named profile may itself `extends` a chain, so one entry composes many.
+    default_profile: z.string().optional(),
     sandbox_presets: z.record(SandboxPresetConfig).default({}),
     clis: z.record(CliConfig).default({}),
     apis: z.record(ApiConfig).default({}),
@@ -846,8 +855,34 @@ export const GatewayConfig = z
     agents: Object.fromEntries(
       Object.entries(config.agents).map(([key, value]) => [
         key,
-        applySandboxPresetsToAgent(value, config.sandbox_presets),
+        applyDefaultProfileToAgent(
+          applySandboxPresetsToAgent(value, config.sandbox_presets),
+          config.default_profile,
+          config.profiles
+        ),
       ])
     ),
   }));
 export type GatewayConfig = z.infer<typeof GatewayConfig>;
+
+// Prepend the top-level `default_profile` to an agent's `extends` so it resolves at lowest
+// precedence and both the runtime resolver (applyProfiles) and the CLI `explain` path pick it up
+// from one place. Skipped when: no default is configured, the agent opted out via
+// `inherit_default: false`, the agent already extends it (avoid a duplicate in the extends tree),
+// or the profile does not exist — the last case is surfaced as a single clear diagnostic by
+// validateConfig rather than one confusing unknown-profile-ref per agent.
+function applyDefaultProfileToAgent(
+  agent: AgentConfig,
+  defaultProfile: string | undefined,
+  profiles: Record<string, ProfileConfig>
+): AgentConfig {
+  if (
+    !defaultProfile ||
+    !agent.inherit_default ||
+    !profiles[defaultProfile] ||
+    agent.extends.includes(defaultProfile)
+  ) {
+    return agent;
+  }
+  return { ...agent, extends: [defaultProfile, ...agent.extends] };
+}
