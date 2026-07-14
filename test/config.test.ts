@@ -211,6 +211,44 @@ describe('GatewayConfig schema', () => {
     });
   });
 
+  it('accepts on_miss on an argument constraint', () => {
+    const result = GatewayConfig.safeParse({
+      agents: {
+        agent1: {
+          allow: ['posthog/exec'],
+          arg_policy: {
+            'posthog/exec': {
+              command: { glob_allow: ['call query-* *'], on_miss: 'ask' },
+            },
+          },
+        },
+      },
+    });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.agents['agent1'].arg_policy).toEqual({
+      'posthog/exec': {
+        command: [{ glob_allow: ['call query-* *'], on_miss: 'ask' }],
+      },
+    });
+  });
+
+  it('rejects an unknown on_miss value', () => {
+    const result = GatewayConfig.safeParse({
+      agents: {
+        agent1: {
+          allow: ['posthog/exec'],
+          arg_policy: {
+            'posthog/exec': {
+              command: { glob_allow: ['call query-* *'], on_miss: 'maybe' },
+            },
+          },
+        },
+      },
+    });
+    expect(result.success).toBe(false);
+  });
+
   it('supports argument policy on tool override aliases', () => {
     const result = GatewayConfig.safeParse({
       agents: {

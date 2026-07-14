@@ -257,6 +257,10 @@ agents:
         branch:
           glob_in: safe_fix_branches
           label: Safe branch
+      posthog/exec:
+        command:
+          glob_allow: ['call query-* *', 'info *', 'search *']
+          on_miss: ask # escalate to HITL instead of denying (default: deny)
 
     arg_scope: # Reusable argument constraints via arg_dimensions
       github_repo: airlock_repos

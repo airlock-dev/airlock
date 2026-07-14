@@ -281,4 +281,122 @@ describe('argPolicyMiddleware', () => {
     expect(result.text).toBe('ok');
     expect(okNext).toHaveBeenCalledOnce();
   });
+
+  it('escalates to HITL instead of denying when on_miss is ask', async () => {
+    okNext.mockClear();
+    const mw = argPolicyMiddleware();
+    const ctx = makeCtx({
+      toolName: 'posthog/exec',
+      args: { command: 'call feature-flag-delete {"id": 42}' },
+      agentConfig: makeAgentConfig({
+        arg_policy: {
+          'posthog/exec': {
+            command: [
+              {
+                glob_allow: ['tools', 'search *', 'info *', 'call query-* *'],
+                label: 'read_only',
+                on_miss: 'ask',
+              },
+            ],
+          },
+        },
+      }),
+    });
+
+    const result = await mw(ctx, okNext);
+    expect(result.text).toBe('ok');
+    expect(okNext).toHaveBeenCalledOnce();
+    expect(ctx.meta.needsApproval).toBe(true);
+    expect(ctx.deps.auditLogger.log).toHaveBeenCalledWith(
+      expect.objectContaining({ result: 'arg_policy_ask' })
+    );
+  });
+
+  it('does not ask when an on_miss:ask constraint is satisfied', async () => {
+    okNext.mockClear();
+    const mw = argPolicyMiddleware();
+    const ctx = makeCtx({
+      toolName: 'posthog/exec',
+      args: { command: 'call query-trends {}' },
+      agentConfig: makeAgentConfig({
+        arg_policy: {
+          'posthog/exec': {
+            command: [{ glob_allow: ['call query-* *'], on_miss: 'ask' }],
+          },
+        },
+      }),
+    });
+
+    const result = await mw(ctx, okNext);
+    expect(result.text).toBe('ok');
+    expect(okNext).toHaveBeenCalledOnce();
+    expect(ctx.meta.needsApproval).toBeUndefined();
+  });
+
+  it('escalates to HITL when a required arg is missing and on_miss is ask', async () => {
+    okNext.mockClear();
+    const mw = argPolicyMiddleware();
+    const ctx = makeCtx({
+      toolName: 'posthog/exec',
+      args: {},
+      agentConfig: makeAgentConfig({
+        arg_policy: {
+          'posthog/exec': {
+            command: [{ glob_allow: ['call query-* *'], on_miss: 'ask' }],
+          },
+        },
+      }),
+    });
+
+    const result = await mw(ctx, okNext);
+    expect(result.text).toBe('ok');
+    expect(okNext).toHaveBeenCalledOnce();
+    expect(ctx.meta.needsApproval).toBe(true);
+  });
+
+  it('lets a hard deny win over a pending ask on the same call', async () => {
+    okNext.mockClear();
+    const mw = argPolicyMiddleware();
+    const ctx = makeCtx({
+      toolName: 'posthog/exec',
+      args: { command: 'call feature-flag-delete {}', project: 'prod' },
+      agentConfig: makeAgentConfig({
+        arg_policy: {
+          'posthog/exec': {
+            command: [{ glob_allow: ['call query-* *'], on_miss: 'ask' }],
+            project: [{ allow: ['sandbox'], label: 'sandbox_only' }],
+          },
+        },
+      }),
+    });
+
+    const result = await mw(ctx, okNext);
+    expect((result.result as { isError?: boolean }).isError).toBe(true);
+    expect(result.text).toContain('project "prod" is not permitted');
+    expect(okNext).not.toHaveBeenCalled();
+    expect(ctx.deps.auditLogger.log).toHaveBeenCalledWith(
+      expect.objectContaining({ result: 'arg_policy_denied' })
+    );
+  });
+
+  it('defaults to deny when on_miss is unset (backward compatible)', async () => {
+    okNext.mockClear();
+    const mw = argPolicyMiddleware();
+    const ctx = makeCtx({
+      toolName: 'posthog/exec',
+      args: { command: 'call feature-flag-delete {}' },
+      agentConfig: makeAgentConfig({
+        arg_policy: {
+          'posthog/exec': {
+            command: [{ glob_allow: ['call query-* *'] }],
+          },
+        },
+      }),
+    });
+
+    const result = await mw(ctx, okNext);
+    expect((result.result as { isError?: boolean }).isError).toBe(true);
+    expect(okNext).not.toHaveBeenCalled();
+    expect(ctx.meta.needsApproval).toBeUndefined();
+  });
 });

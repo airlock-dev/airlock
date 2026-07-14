@@ -213,45 +213,58 @@ export function argPolicyMiddleware(): Middleware {
     const entries = Object.entries(policy);
     if (entries.length === 0) return next();
 
+    // A failing constraint whose `on_miss` is `ask` escalates to HITL instead of denying. Deny
+    // wins: a single hard-deny short-circuits the whole call, so a pending `ask` never downgrades a
+    // deny. If nothing hard-denies but at least one `ask` constraint fired, the call proceeds to the
+    // HITL gate (which reads `ctx.meta.needsApproval`).
+    let needsApproval = false;
+
     for (const [argName, constraints] of entries) {
       for (const constraint of constraints) {
         const actual = resolveArgValue(ctx.args, argName, constraint.path);
         const required = constraint.required ?? true;
         const displayName = constraint.path ?? argName;
 
+        let message: string | undefined;
         if (actual === MISSING) {
           if (!required) continue;
-
-          const message =
+          message =
             `${displayName} is required by policy for ${ctx.toolName}. ` +
             `Allowed ${displayName}: ${formatAllowed(constraint)}. ${retryInstruction(constraint)}`;
-          ctx.deps.auditLogger.log({
-            agent_id: ctx.agentId,
-            request_id: ctx.callId,
-            tool: ctx.toolName,
-            args: JSON.stringify(ctx.args),
-            result: 'arg_policy_denied',
-            error: message,
-          });
-          return violationResponse(message);
-        }
-
-        if (!passesConstraint(actual, constraint)) {
-          const message =
+        } else if (!passesConstraint(actual, constraint)) {
+          message =
             `${displayName} ${formatValue(actual)} is not permitted for ${ctx.toolName}. ` +
             `Allowed ${displayName}: ${formatAllowed(constraint)}. ${retryInstruction(constraint)}`;
+        }
+
+        if (message === undefined) continue; // constraint satisfied
+
+        if ((constraint.on_miss ?? 'deny') === 'ask') {
+          needsApproval = true;
           ctx.deps.auditLogger.log({
             agent_id: ctx.agentId,
             request_id: ctx.callId,
             tool: ctx.toolName,
             args: JSON.stringify(ctx.args),
-            result: 'arg_policy_denied',
+            result: 'arg_policy_ask',
             error: message,
           });
-          return violationResponse(message);
+          continue;
         }
+
+        ctx.deps.auditLogger.log({
+          agent_id: ctx.agentId,
+          request_id: ctx.callId,
+          tool: ctx.toolName,
+          args: JSON.stringify(ctx.args),
+          result: 'arg_policy_denied',
+          error: message,
+        });
+        return violationResponse(message);
       }
     }
+
+    if (needsApproval) ctx.meta.needsApproval = true;
 
     return next();
   };

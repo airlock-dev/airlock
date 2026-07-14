@@ -183,6 +183,10 @@ export const ToolArgConstraintConfig = z
     label: z.string().optional(),
     value_set: z.string().optional(),
     expose_values: z.boolean().optional(),
+    // What to do when the arg is missing/out-of-set. Default `deny` (hard block, the historical
+    // behavior). `ask` escalates to human-in-the-loop approval instead — a soft scope. Deny always
+    // wins: if any constraint on the call hard-denies, that beats a pending `ask`.
+    on_miss: z.enum(['deny', 'ask']).optional(),
   })
   .strict()
   .superRefine((value, ctx) => {

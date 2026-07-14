@@ -166,6 +166,24 @@ error that names the argument, the rejected value, and the allowed value. This
 keeps the agent's world-model honest: it retries with the permitted value instead
 of believing it touched a different resource.
 
+By default a failing constraint denies. Set `on_miss: ask` to escalate to
+human-in-the-loop approval instead — a soft scope where anything outside the
+allowlist prompts you rather than being blocked outright:
+
+```yaml
+    arg_policy:
+      posthog/exec:
+        command:
+          # reads run freely; any other command (writes, deletes, admin) asks first
+          glob_allow: [tools, 'search *', 'info *', 'schema *', 'call query-* *', 'call *-get *', 'call *-list *']
+          on_miss: ask
+```
+
+`on_miss` composes with the usual precedence: **deny always wins**. If any
+constraint on a call hard-denies (`on_miss: deny`, the default), that beats a
+pending `ask` from another constraint. Otherwise, if at least one `on_miss: ask`
+constraint failed, the call goes through the HITL gate for approval.
+
 ## Tool variants
 
 The same underlying tool can be exposed under multiple names with different permission levels using `tool_overrides` and `alias_of`. See [Sandbox Presets and Variants](/concepts/sandboxing) for this pattern.
