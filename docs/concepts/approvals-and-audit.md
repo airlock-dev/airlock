@@ -8,7 +8,7 @@ When an agent calls a tool in its `ask` list:
 
 1. Airlock creates a pending approval request with a unique code
 2. The request is persisted to SQLite immediately (crash recovery)
-3. The HITL provider sends a notification (Telegram, Slack, dashboard, etc.)
+3. The approval provider presents or sends a notification (Telegram, dashboard, Slack webhook, etc.)
 4. The MCP connection stays open — the agent blocks, experiencing a slow tool call
 5. You approve or deny (by code or by ID)
 6. The tool executes or the agent receives a denial
@@ -18,16 +18,16 @@ No special client support is needed. The agent just sees a tool call that takes 
 
 ## Approval providers
 
-| Provider        | Config `type` | Best for                                      |
-| --------------- | ------------- | --------------------------------------------- |
-| stdio           | `stdio`       | Local dev and testing                         |
-| TUI             | `tui`         | Terminal-based approval with `j/k` navigation |
-| Dashboard       | `dashboard`   | Browser-based approval queue with live SSE    |
-| macOS dialog    | `macos`       | Native approve/deny popup on Mac              |
-| Telegram        | `telegram`    | Remote approval from your phone               |
-| Slack           | `slack`       | Team-visible approvals via webhook            |
-| Generic webhook | `webhook`     | Custom integrations                           |
-| OpenClaw        | `openclaw`    | WebSocket RPC to OpenClaw gateway             |
+| Provider        | Config `type` | Best for                                                       |
+| --------------- | ------------- | -------------------------------------------------------------- |
+| stdio           | `stdio`       | Local dev and testing                                          |
+| TUI             | `tui`         | Terminal-based approval with `j/k` navigation                  |
+| Dashboard       | `dashboard`   | Browser-based approval queue with live SSE                     |
+| macOS dialog    | `macos`       | Native approve/deny popup on Mac                               |
+| Telegram        | `telegram`    | Remote approval from your phone                                |
+| Slack           | `slack`       | Team-visible webhook notifications; pair with a decision route |
+| Generic webhook | `webhook`     | Custom integrations                                            |
+| OpenClaw        | `openclaw`    | WebSocket RPC to OpenClaw gateway                              |
 
 See [HITL Providers](/reference/hitl-providers) for config details and the [Dashboard guide](/guides/dashboard) for the web UI.
 

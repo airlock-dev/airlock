@@ -201,8 +201,7 @@ function discoverFromProvider(
 function loadCommandFromProvider(
   tool: string,
   provider: CompletionProvider,
-  path: string[],
-  name?: string
+  path: string[]
 ): CliCommandConfig | null {
   const neutral = provider.list(path, '') ?? [];
   const dashed = provider.list(path, '-') ?? [];
@@ -531,7 +530,7 @@ function createSessionWithAdapter(
     loadCommand(path, name) {
       const key = `${path.join(' ')}|${name ?? ''}`;
       if (commandCache.has(key)) return commandCache.get(key) ?? null;
-      const command = loadCommandFromProvider(tool, provider, path, name);
+      const command = loadCommandFromProvider(tool, provider, path);
       commandCache.set(key, command);
       return command;
     },
@@ -583,7 +582,7 @@ export function deduplicateAliases(commands: DiscoveredCommands): DiscoveredComm
   }
 
   const result: DiscoveredCommands = {};
-  for (const [exec, names] of byExec) {
+  for (const names of byExec.values()) {
     const canonical = names.sort((a, b) => b.length - a.length)[0];
     result[canonical] = commands[canonical];
   }

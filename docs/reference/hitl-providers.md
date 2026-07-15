@@ -152,4 +152,5 @@ These options work with all providers:
 - Use `stdio` or `tui` for local dev
 - Use `dashboard` when you want a browser-based approval queue
 - Use `macos` (or the Companion app) for native Mac notifications
-- Use Telegram, Slack, webhook, or OpenClaw when you want approvals to escape the local terminal
+- Use Telegram or OpenClaw for interactive approval from an existing chat
+- Use Slack or a generic webhook for notifications, paired with a slash command or another decision route

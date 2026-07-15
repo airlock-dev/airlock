@@ -1,0 +1,55 @@
+# yaml-language-server: $schema=../schema.json
+# Minimal, no-secret starter config for local use.
+
+server:
+  host: 127.0.0.1
+  port: 4111
+
+providers:
+  exec: builtin
+  http: builtin
+
+agents:
+  claude-code:
+    allow:
+      - exec/run
+      - http/get
+      - http/head
+    ask:
+      - http/post
+      - http/put
+      - http/patch
+    deny:
+      - http/delete
+
+    exec:
+      allow:
+        - pwd
+        - ls
+        - 'ls *'
+        - git status
+        - git diff
+        - 'git diff *'
+        - git log
+        - 'git log *'
+      ask:
+        - 'git commit *'
+        - 'git push *'
+        - 'npm *'
+      deny:
+        - 'rm *'
+        - 'sudo *'
+
+    http:
+      domain_allowlist:
+        - api.github.com
+        - raw.githubusercontent.com
+
+approvals:
+  provider:
+    type: tui
+  timeout_ms: 300000
+
+audit:
+  db_path: ./airlock.db
+  retention_days: 30

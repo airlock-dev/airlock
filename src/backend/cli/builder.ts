@@ -1,10 +1,13 @@
 import { escapeShellArg } from './escaper.js';
 import type { CliCommandConfig } from '../../config/schema.js';
 
-export function buildCommand(
-  config: CliCommandConfig,
-  args: Record<string, unknown>,
-): string {
+function stringifyParamValue(paramName: string, value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return value.toString();
+  throw new Error(`Parameter "${paramName}" must be a string, number, or boolean`);
+}
+
+export function buildCommand(config: CliCommandConfig, args: Record<string, unknown>): string {
   let cmd = config.exec;
 
   const usedParams = new Set<string>();
@@ -22,7 +25,7 @@ export function buildCommand(
     }
 
     usedParams.add(paramName);
-    return escapeShellArg(String(value));
+    return escapeShellArg(stringifyParamValue(paramName, value));
   });
 
   // Append flag-based params not consumed by template interpolation
@@ -41,7 +44,7 @@ export function buildCommand(
     }
 
     if (paramConfig.positional) {
-      flagParts.push(escapeShellArg(String(value)));
+      flagParts.push(escapeShellArg(stringifyParamValue(paramName, value)));
       continue;
     }
 
@@ -54,7 +57,7 @@ export function buildCommand(
 
     if (paramConfig.flag) {
       flagParts.push(paramConfig.flag);
-      flagParts.push(escapeShellArg(String(value)));
+      flagParts.push(escapeShellArg(stringifyParamValue(paramName, value)));
     }
   }
 

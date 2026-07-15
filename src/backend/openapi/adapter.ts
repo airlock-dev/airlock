@@ -4,9 +4,15 @@ import type { ToolCall, ToolResult } from '../../types.js';
 import type { ApiConfig, SecurityConfig } from '../../config/schema.js';
 import { parseOpenApiSpec, type ParsedApi, type ParsedOperation } from './parser.js';
 import { assertHostNotBlocked } from '../../security/blocked-hosts.js';
-import { childLogger } from '../../util/logger.js';
 
-const log = childLogger('openapi-adapter');
+function stringifyParameterValue(paramName: string, value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return value.toString();
+  if (Array.isArray(value)) {
+    return value.map((item) => stringifyParameterValue(paramName, item)).join(',');
+  }
+  throw new Error(`Parameter "${paramName}" must be a scalar or an array of scalars`);
+}
 
 export class OpenApiAdapter implements BackendAdapter {
   readonly id: string;
@@ -16,7 +22,7 @@ export class OpenApiAdapter implements BackendAdapter {
   constructor(
     private configKey: string,
     private config: ApiConfig,
-    private security: SecurityConfig,
+    private security: SecurityConfig
   ) {
     this.id = `api:${configKey}`;
   }
@@ -55,25 +61,34 @@ export class OpenApiAdapter implements BackendAdapter {
     // Build URL
     let url = this.parsedApi!.baseUrl + op.path;
 
-    // Replace path params
-    for (const paramName of op.pathParams) {
-      const value = toolCall.args[paramName];
-      if (value === undefined) {
-        return { success: false, error: `Missing required path parameter: ${paramName}` };
+    try {
+      // Replace path params
+      for (const paramName of op.pathParams) {
+        const value = toolCall.args[paramName];
+        if (value === undefined) {
+          return { success: false, error: `Missing required path parameter: ${paramName}` };
+        }
+        url = url.replace(
+          `{${paramName}}`,
+          encodeURIComponent(stringifyParameterValue(paramName, value))
+        );
       }
-      url = url.replace(`{${paramName}}`, encodeURIComponent(String(value)));
-    }
 
-    // Add query params
-    const queryParts: string[] = [];
-    for (const paramName of op.queryParams) {
-      const value = toolCall.args[paramName];
-      if (value !== undefined) {
-        queryParts.push(`${encodeURIComponent(paramName)}=${encodeURIComponent(String(value))}`);
+      // Add query params
+      const queryParts: string[] = [];
+      for (const paramName of op.queryParams) {
+        const value = toolCall.args[paramName];
+        if (value !== undefined) {
+          queryParts.push(
+            `${encodeURIComponent(paramName)}=${encodeURIComponent(stringifyParameterValue(paramName, value))}`
+          );
+        }
       }
-    }
-    if (queryParts.length > 0) {
-      url += '?' + queryParts.join('&');
+      if (queryParts.length > 0) {
+        url += '?' + queryParts.join('&');
+      }
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : 'Invalid parameter' };
     }
 
     // Security: check blocked hosts
@@ -164,7 +179,9 @@ export class OpenApiAdapter implements BackendAdapter {
       }
 
       const responseHeaders: Record<string, string> = {};
-      response.headers.forEach((value, key) => { responseHeaders[key] = value; });
+      response.headers.forEach((value, key) => {
+        responseHeaders[key] = value;
+      });
 
       return {
         success: response.ok,

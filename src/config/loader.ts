@@ -850,7 +850,6 @@ function dedupeDiagnostics(diagnostics: ConfigDiagnostic[]): ConfigDiagnostic[] 
   return result;
 }
 
-
 // Unknown-key detection is single-sourced from the zod schema: every config object is `.strict()`,
 // so zod already rejects unrecognized keys. We run one structural (no-env) parse purely to harvest
 // those `unrecognized_keys` issues and render them with friendly, path-aware messages. Adding a new
@@ -913,10 +912,6 @@ function unknownKeySuggestion(key: string, path: string[]): string | undefined {
   if (key === 'hitl')
     return 'Use "ask" for agent tool routing or "approvals" for approval providers.';
   return undefined;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === 'object' && !Array.isArray(value);
 }
 
 function isLoopbackHost(host: string): boolean {
