@@ -261,6 +261,14 @@ agents:
     arg_scope: # Reusable argument constraints via arg_dimensions
       github_repo: airlock_repos
 
+    command_policy: # Route a CLI-dispatcher tool's command arg (allow/ask/deny, deny > ask > allow)
+      posthog/exec:
+        command:
+          allow: ['call query-* *', 'info *', 'search *']
+          ask: ['call insight-* *', 'call dashboard-* *']
+          deny: ['* --confirm *', 'call switch-* *']
+          default: deny # unmatched → deny (fail-closed; the default)
+
     middleware: # Optional per-agent configurable middleware
       - name: rate-limiter
         max_requests: 100

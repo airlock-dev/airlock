@@ -1,6 +1,7 @@
 import { isDeepStrictEqual } from 'util';
 import type {
   AgentConfig,
+  CommandPolicyConfig,
   GatewayConfig,
   NormalizerName,
   ProfileConfig,
@@ -14,6 +15,7 @@ export interface ResolvedPermissions {
   deny: string[];
   arg_policy?: ToolArgPolicyConfig;
   arg_scope?: Record<string, string[]>;
+  command_policy?: CommandPolicyConfig;
 }
 
 export interface PermissionProvenance {
@@ -61,8 +63,27 @@ export interface ExtendsTreeNode {
 
 type PermissionSource = Pick<
   ProfileConfig | AgentConfig,
-  'allow' | 'ask' | 'deny' | 'arg_policy' | 'arg_scope'
+  'allow' | 'ask' | 'deny' | 'arg_policy' | 'arg_scope' | 'command_policy'
 >;
+
+function mergeCommandPolicy(
+  target: CommandPolicyConfig,
+  source: CommandPolicyConfig | undefined
+): CommandPolicyConfig {
+  if (!source) return target;
+
+  for (const [toolName, byArg] of Object.entries(source)) {
+    const targetTool = (target[toolName] ??= {});
+    for (const [argName, rule] of Object.entries(byArg)) {
+      const targetRule = (targetTool[argName] ??= { allow: [], ask: [], deny: [] });
+      targetRule.allow = [...targetRule.allow, ...rule.allow];
+      targetRule.ask = [...targetRule.ask, ...rule.ask];
+      targetRule.deny = [...targetRule.deny, ...rule.deny];
+    }
+  }
+
+  return target;
+}
 
 function mergeArgPolicy(
   target: ToolArgPolicyConfig,
@@ -104,6 +125,7 @@ function unionPermissions(...sources: PermissionSource[]): ResolvedPermissions {
   const deny = new Set<string>();
   const arg_policy: ToolArgPolicyConfig = {};
   const arg_scope: Record<string, string[]> = {};
+  const command_policy: CommandPolicyConfig = {};
 
   for (const source of sources) {
     for (const p of source.allow) allow.add(p);
@@ -111,6 +133,7 @@ function unionPermissions(...sources: PermissionSource[]): ResolvedPermissions {
     for (const p of source.deny) deny.add(p);
     mergeArgPolicy(arg_policy, source.arg_policy);
     mergeArgScope(arg_scope, source.arg_scope);
+    mergeCommandPolicy(command_policy, source.command_policy);
   }
 
   return {
@@ -119,6 +142,7 @@ function unionPermissions(...sources: PermissionSource[]): ResolvedPermissions {
     deny: Array.from(deny),
     ...(Object.keys(arg_policy).length > 0 ? { arg_policy } : {}),
     ...(Object.keys(arg_scope).length > 0 ? { arg_scope } : {}),
+    ...(Object.keys(command_policy).length > 0 ? { command_policy } : {}),
   };
 }
 
@@ -596,6 +620,7 @@ export function applyProfiles(config: GatewayConfig): void {
       'agents.arg_policy'
     );
     agent.arg_scope = undefined;
+    agent.command_policy = resolved.command_policy;
     agent.extends = [];
   }
 }

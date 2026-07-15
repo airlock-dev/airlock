@@ -253,6 +253,36 @@ export type ToolArgConstraintListConfig = z.infer<typeof ToolArgConstraintListCo
 export const ToolArgPolicyConfig = z.record(z.record(ToolArgConstraintListConfig));
 export type ToolArgPolicyConfig = z.infer<typeof ToolArgPolicyConfig>;
 
+// A command router for tools whose privilege lives inside a string argument — CLI-style dispatcher
+// tools (e.g. an MCP that exposes one `exec`/`run` tool taking a command string, where read vs.
+// write vs. admin is a substring of that argument, not a distinct tool name). Maps the arg's value
+// to a decision by glob-matching it against allow/ask/deny lists. Precedence deny > ask > allow;
+// anything unmatched is denied (fail-closed). Same shape and semantics as the `exec` sub-policy,
+// generalized to any tool + arg. Composes through `extends` (the lists union across the chain).
+export const CommandPolicyRuleConfig = z
+  .object({
+    allow: z.array(z.string()).default([]),
+    ask: z.array(z.string()).default([]),
+    deny: z.array(z.string()).default([]),
+    // Decision for a command that matches none of the lists. Defaults to `deny` (fail-closed).
+    // Set `ask` for the common "these specific commands run/ask, everything else needs approval"
+    // shape without a catch-all pattern that would shadow the narrower allow list.
+    default: z.enum(['allow', 'ask', 'deny']).optional(),
+  })
+  .strict()
+  .refine(
+    (rule) =>
+      rule.allow.length + rule.ask.length + rule.deny.length > 0 || rule.default !== undefined,
+    {
+      message: 'Command policy rule must define at least one allow/ask/deny pattern or a default.',
+    }
+  );
+export type CommandPolicyRuleConfig = z.infer<typeof CommandPolicyRuleConfig>;
+
+// tool name → arg name → decision lists
+export const CommandPolicyConfig = z.record(z.record(CommandPolicyRuleConfig));
+export type CommandPolicyConfig = z.infer<typeof CommandPolicyConfig>;
+
 export const ArgScopeConfig = z
   .record(z.union([z.string(), z.array(z.string()).nonempty()]))
   .transform((scope) =>
@@ -397,6 +427,7 @@ export const AgentConfig = z
     tool_overrides: z.record(ToolOverride).default({}),
     arg_policy: ToolArgPolicyConfig.optional(),
     arg_scope: ArgScopeConfig.optional(),
+    command_policy: CommandPolicyConfig.optional(),
     exec: AgentExecConfig.default({}),
     http: AgentHttpConfig.default({}),
     sandbox: SandboxConfig.default({}),
@@ -419,6 +450,7 @@ export const ProfileConfig = z
     deny: z.array(z.string()).default([]),
     arg_policy: ToolArgPolicyConfig.optional(),
     arg_scope: ArgScopeConfig.optional(),
+    command_policy: CommandPolicyConfig.optional(),
   })
   .strict();
 export type ProfileConfig = z.infer<typeof ProfileConfig>;
