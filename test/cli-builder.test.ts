@@ -113,4 +113,17 @@ describe('buildCommand()', () => {
     });
     expect(buildCommand(cmd, { count: 5 })).toBe("git log -n '5'");
   });
+
+  it('rejects complex parameter values instead of using default object stringification', () => {
+    const cmd = makeCmd({
+      exec: 'echo {value}',
+      params: {
+        value: { type: 'string', positional: false, required: true },
+      },
+    });
+
+    expect(() => buildCommand(cmd, { value: { unsafe: true } })).toThrow(
+      'Parameter "value" must be a string, number, or boolean'
+    );
+  });
 });

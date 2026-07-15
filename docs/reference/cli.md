@@ -2,11 +2,15 @@
 
 ## Run the gateway
 
-Start Airlock as a combined SSE/HTTP gateway server (default port 4111):
+Start Airlock as a combined streamable HTTP and SSE gateway server (default port 4111):
 
 ```bash
 airlock --config airlock.yaml
 ```
+
+`airlock serve --config airlock.yaml` is an explicit alias for the same
+combined mode. The data-plane endpoints are
+`/agents/:agentId/mcp` (streamable HTTP) and `/agents/:agentId/sse` (SSE).
 
 For split deployments, run only the MCP/runtime gateway and disable the
 in-process dashboard provider:
@@ -251,6 +255,19 @@ Features:
 - Navigate with `j/k`, set permissions with `a`/`s`/`d`
 - Bulk-set entire providers
 - Export: edit config directly, copy to clipboard, or print YAML
+
+## Edit config in the browser
+
+Start a loopback-only browser editor for providers, profiles, agents, and
+permissions:
+
+```bash
+airlock configure-web --config ./airlock.yaml
+```
+
+This editor updates the local YAML file and writes a backup before saving. Use
+`airlock run` when you also want live provider health, MCP status, and tool
+discovery in the same local command center.
 
 ## Setup OpenClaw integration
 

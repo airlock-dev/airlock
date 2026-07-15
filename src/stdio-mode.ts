@@ -109,13 +109,13 @@ export async function runStdioMode(
 
   const allowlist = new AllowlistEngine(config.agents);
   let activeConfig = config;
-  let registry!: ToolRegistry;
+  const registryRef: { current?: ToolRegistry } = {};
 
   const airlockDeps = () => ({
     hitlEngine,
     hitlBatcher,
     activityStream,
-    getAgentTools: (id: string) => registry?.getFilteredWithDecisions(id) ?? [],
+    getAgentTools: (id: string) => registryRef.current?.getFilteredWithDecisions(id) ?? [],
     getAgentConfig: (id: string) => activeConfig.agents[id],
     getKnownProviderIds: () => knownProviderIds(activeConfig),
     getProviderConnectionStatus: (providerId: string) =>
@@ -127,7 +127,8 @@ export async function runStdioMode(
     airlock: airlockDeps(),
   });
 
-  registry = new ToolRegistry(adapters, allowlist, config.agents);
+  const registry = new ToolRegistry(adapters, allowlist, config.agents);
+  registryRef.current = registry;
 
   // Register callback for late-connecting MCPs (after registry exists)
   pool.onClientReady((id) => {

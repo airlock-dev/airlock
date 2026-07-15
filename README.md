@@ -10,7 +10,7 @@ A permissions-aware MCP gateway that sits between AI agents (Claude Code, Cursor
 
 ```
 Agent (Claude Code / Cursor / OpenClaw)
-  │  stdio or SSE
+  │  stdio, streamable HTTP, or SSE
   ▼
 Airlock  ←→  HITL (Telegram / Slack / webhook / TUI / macOS / dashboard)
   │
@@ -23,13 +23,15 @@ Airlock  ←→  HITL (Telegram / Slack / webhook / TUI / macOS / dashboard)
 
 ## Features
 
-- **Per-agent allowlists** — each agent sees only the tools it's allowed to call, presented with namespaced names (`github/create_pr`, `filesystem/read_file`)
+- **Per-agent policy** — each agent sees only the tools it can use, with `allow`, `ask`, and `deny` decisions over namespaced tools (`github/create_pr`, `filesystem/read_file`)
 - **HITL approval** — flag sensitive tools as requiring human sign-off; the agent blocks until you approve or deny
 - **Composable profiles** — define reusable permission sets (`readonly`, `developer`) that agents inherit via `extends`
 - **Backend adapters** — unified interface for MCP servers, CLI tools, REST APIs, HTTP, and exec
 - **CLI tool discovery** — auto-generate config from `--help` output or [Fig autocomplete specs](https://github.com/withfig/autocomplete)
 - **API discovery** — auto-generate config from OpenAPI 3.x specs
 - **Configure agent TUI** — interactive terminal UI to assign allow/ask/deny per tool
+- **Browser command center** — inspect provider health and tools, then edit profiles, agents, and permissions locally
+- **Policy introspection** — validate and lint config, explain effective permissions, and reverse-lookup which agents can call a tool
 - **Batched notifications** — requests arriving within a time window are bundled into a single message
 - **Multiple HITL providers** — Telegram, Slack webhook, generic webhook, OpenClaw, TUI, macOS dialog, dashboard, or stdio
 - **Security defaults** — localhost and RFC-1918 ranges blocked for HTTP tools; per-agent domain allowlists; shell injection prevention
@@ -46,47 +48,25 @@ npm install -g airlock-bot
 ## Quick start
 
 ```bash
-# 1. Discover tools from a CLI you want to expose
-airlock discover cli git --output git-commands.yaml
+# 1. Download the no-secret starter config
+curl -fsSL -o airlock.yaml \
+  https://raw.githubusercontent.com/airlock-dev/airlock/main/examples/airlock.yaml
 
-# 2. Create your config referencing the discovered commands
-cat > airlock.yaml <<'EOF'
-providers:
-  github:
-    type: stdio
-    command: npx
-    args: ["-y", "@modelcontextprotocol/server-github"]
-    env:
-      GITHUB_PERSONAL_ACCESS_TOKEN: "${GITHUB_TOKEN}"
-  exec: builtin
-  http: builtin
+# 2. Validate it locally
+npx airlock-bot config check --config airlock.yaml
 
-clis:
-  git:
-    discovered: ./git-commands.yaml
-    commands:
-      # Inline overrides take precedence over discovered commands
-      status:
-        exec: git status
-        params: {}
+# 3. Start the streamable HTTP + SSE gateway on 127.0.0.1:4111
+npx airlock-bot --config airlock.yaml
 
-agents:
-  claude-code:
-    allow:
-      - github/*
-      - git/*
-    ask:
-      - git/push
-    deny:
-      - exec/run
-EOF
-
-# 3. Run in stdio mode for a single agent (e.g. from Claude Code)
-airlock --agent claude-code --config airlock.yaml
-
-# 4. Or run as a full gateway server (SSE on port 4111)
-airlock --config airlock.yaml
+# Or connect a local MCP client over stdio
+npx airlock-bot --agent claude-code --config airlock.yaml
 ```
+
+The starter exposes the built-in HTTP and exec tools with fail-closed command
+and domain policy. Safe read-only operations are allowed, mutating operations
+require approval, and everything else is denied. See the
+[quickstart](https://docs.airlock.bot/quickstart) to connect a client, then add
+your own providers or discovered CLI/API tools.
 
 ## Claude Code setup
 

@@ -37,7 +37,6 @@ const GREEN = `${ESC}32m`;
 const YELLOW = `${ESC}33m`;
 const RED = `${ESC}31m`;
 const CYAN = `${ESC}36m`;
-const BLUE = `${ESC}34m`;
 
 function visibleLength(s: string): number {
   // eslint-disable-next-line no-control-regex
@@ -652,7 +651,7 @@ export async function runConfigureCli(argv: string[]): Promise<void> {
 
     groups = groupCommands(commands, tool);
     const globalFlags = detectGlobalFlagsFromGroups(groups);
-    let stripGlobal = true;
+    const stripGlobal = true;
 
     process.stdout.write(
       `${GREEN}Found ${commandCount} commands${RESET}` +

@@ -20,16 +20,18 @@ It sits between agents like Claude Code, Cursor, and OpenClaw and the tools they
 - Sandboxed script variants built from `exec/run` aliases and sandbox presets
 - CLI tools exposed as named MCP tools (auto-discovered from `--help`, Fig specs, or shell completions)
 - REST APIs exposed as MCP tools (auto-discovered from OpenAPI specs)
-- External clients through the `/hook` endpoint
+- External clients through the optional control-plane `/hook` endpoint
 
 ## Key features
 
-- **Per-agent allowlists** with glob patterns and tool hiding
-- **Human-in-the-loop approval** via Telegram, Slack, dashboard, macOS, TUI, webhook, or OpenClaw
+- **Per-agent policy** with `allow`, `ask`, `deny`, glob patterns, and tool hiding
+- **Human-in-the-loop approval** via Telegram, dashboard, macOS, TUI, stdio, or OpenClaw, with Slack and generic webhook notifications for custom decision flows
 - **Composable profiles** with inheritance via `extends`
 - **Sandbox presets and tool variants** — same tool, different security envelope
 - **Middleware pipeline** — injection detection, canary tokens, PII classification, output scanning, rate limiting, schema validation
 - **Auto-discovery** for CLI tools and OpenAPI specs
+- **Local command center and config editor** for provider health, tool discovery, profiles, agents, and permissions
+- **Policy introspection** with config validation, linting, effective-permission explanations, and reverse lookup
 - **Full audit trail** to SQLite with secret redaction
 - **Management API** for querying logs and managing approvals programmatically
 - **Hot reload** — edit config without restarting

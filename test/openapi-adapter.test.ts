@@ -154,6 +154,24 @@ describe('OpenApiAdapter', () => {
     expect(url).toBe('https://petstore.example.com/v1/pets/abc-123');
   });
 
+  it('rejects complex path parameters instead of using default object stringification', async () => {
+    const adapter = new OpenApiAdapter(
+      'petstore',
+      makeConfig({ spec: specPath }),
+      DEFAULT_SECURITY
+    );
+    await adapter.listTools();
+
+    const result = await adapter.call({
+      tool: 'petstore/getPet',
+      args: { petId: { unsafe: true } },
+      agentId: 'a1',
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBe('Parameter "petId" must be a scalar or an array of scalars');
+  });
+
   it('builds URL with query params', async () => {
     const adapter = new OpenApiAdapter(
       'petstore',
@@ -211,7 +229,9 @@ describe('OpenApiAdapter', () => {
 
     const fetchSpy = vi
       .spyOn(globalThis, 'fetch')
-      .mockResolvedValue(new Response('', { status: 302, headers: { location: 'http://127.0.0.1/admin' } }));
+      .mockResolvedValue(
+        new Response('', { status: 302, headers: { location: 'http://127.0.0.1/admin' } })
+      );
 
     await adapter.call({
       tool: 'petstore/listPets',
