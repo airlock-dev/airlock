@@ -347,6 +347,39 @@ describe('applyProfiles()', () => {
     ]);
   });
 
+  it('merges command_policy lists across the extends chain', () => {
+    const config = GatewayConfig.parse({
+      profiles: {
+        'posthog-read': {
+          command_policy: {
+            'posthog/exec': {
+              command: { allow: ['call query-* *', 'info *'], deny: ['* --confirm *'] },
+            },
+          },
+        },
+      },
+      agents: {
+        analyst: {
+          extends: ['posthog-read'],
+          allow: ['posthog/exec'],
+          command_policy: {
+            'posthog/exec': {
+              command: { ask: ['call insight-* *'] },
+            },
+          },
+        },
+      },
+    });
+
+    applyProfiles(config);
+
+    expect(config.agents['analyst'].command_policy?.['posthog/exec']?.command).toEqual({
+      allow: ['call query-* *', 'info *'],
+      ask: ['call insight-* *'],
+      deny: ['* --confirm *'],
+    });
+  });
+
   it('throws on unknown agent profile refs', () => {
     const config = GatewayConfig.parse({
       profiles: {},

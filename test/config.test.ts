@@ -211,6 +211,48 @@ describe('GatewayConfig schema', () => {
     });
   });
 
+  it('accepts command_policy with allow/ask/deny lists', () => {
+    const result = GatewayConfig.safeParse({
+      agents: {
+        agent1: {
+          allow: ['posthog/exec'],
+          command_policy: {
+            'posthog/exec': {
+              command: {
+                allow: ['call query-* *', 'info *'],
+                ask: ['call *'],
+                deny: ['* --confirm *'],
+              },
+            },
+          },
+        },
+      },
+    });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.agents['agent1'].command_policy).toEqual({
+      'posthog/exec': {
+        command: {
+          allow: ['call query-* *', 'info *'],
+          ask: ['call *'],
+          deny: ['* --confirm *'],
+        },
+      },
+    });
+  });
+
+  it('rejects a command_policy rule with no allow/ask/deny patterns', () => {
+    const result = GatewayConfig.safeParse({
+      agents: {
+        agent1: {
+          allow: ['posthog/exec'],
+          command_policy: { 'posthog/exec': { command: {} } },
+        },
+      },
+    });
+    expect(result.success).toBe(false);
+  });
+
   it('supports argument policy on tool override aliases', () => {
     const result = GatewayConfig.safeParse({
       agents: {

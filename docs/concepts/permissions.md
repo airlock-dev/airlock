@@ -120,6 +120,44 @@ agents:
 
 Exec policy uses the same glob matching and deny > ask > allow > default-deny precedence.
 
+## Command policy
+
+Some MCP servers collapse their whole surface into a single dispatcher tool that takes a
+CLI-style command string — one `exec`/`run` tool where read vs. write vs. admin is a *substring*
+of the argument, not a distinct tool name. Tool-level allow/ask/deny can't tell those apart.
+`command_policy` is the general form of exec policy: it routes any tool's string argument through
+allow/ask/deny by glob-matching the value.
+
+```yaml
+agents:
+  analyst:
+    allow:
+      - posthog/exec # the tool must be permitted first
+    command_policy:
+      posthog/exec: # tool
+        command: # arg holding the command string
+          allow: # → run immediately
+            - 'call query-* *'
+            - 'call *-get *'
+            - 'info *'
+            - 'search *'
+          ask: # → human approval
+            - 'call insight-* *'
+            - 'call dashboard-* *'
+          deny: # → blocked
+            - '* --confirm *' # anything destructive
+            - 'call switch-* *' # org/project switches
+          default: deny # unmatched → deny (fail-closed; the default)
+```
+
+Precedence is `deny > ask > allow`, then `default`. `default` is `deny` unless set, so the surface
+is fail-closed — a command you never listed is blocked, not allowed. Set `default: ask` for the
+"these specific commands run, everything else needs approval" shape without a catch-all `ask`
+pattern that would shadow the narrower allow list. Patterns are anchored globs where `*` matches any
+run of characters (so `call *query-* *` matches `call --json query-trends {...}`). An `ask` decision
+routes through the same HITL approval flow as tool-level `ask`. `command_policy` composes through
+`extends` like the rest of a profile.
+
 ## HTTP domain allowlists
 
 Per-agent domain restrictions for the built-in HTTP tools:
