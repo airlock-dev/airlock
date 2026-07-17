@@ -79,6 +79,10 @@ function mergeCommandPolicy(
       targetRule.allow = [...targetRule.allow, ...rule.allow];
       targetRule.ask = [...targetRule.ask, ...rule.ask];
       targetRule.deny = [...targetRule.deny, ...rule.deny];
+      // `default` is a scalar, not a list — carry it through the merge (later sources, i.e. the
+      // agent over its profiles, win). Without this it was dropped and every resolved rule fell
+      // back to the middleware's fail-closed deny.
+      if (rule.default !== undefined) targetRule.default = rule.default;
     }
   }
 
