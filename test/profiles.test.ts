@@ -380,6 +380,36 @@ describe('applyProfiles()', () => {
     });
   });
 
+  it('carries command_policy default through the merge (agent overrides profile)', () => {
+    const config = GatewayConfig.parse({
+      profiles: {
+        base: {
+          command_policy: {
+            'posthog/exec': { command: { allow: ['call query-* *'], default: 'deny' } },
+          },
+        },
+      },
+      agents: {
+        analyst: {
+          extends: ['base'],
+          allow: ['posthog/exec'],
+          command_policy: {
+            'posthog/exec': { command: { ask: ['call insight-* *'], default: 'ask' } },
+          },
+        },
+      },
+    });
+
+    applyProfiles(config);
+
+    expect(config.agents['analyst'].command_policy?.['posthog/exec']?.command).toEqual({
+      allow: ['call query-* *'],
+      ask: ['call insight-* *'],
+      deny: [],
+      default: 'ask',
+    });
+  });
+
   it('throws on unknown agent profile refs', () => {
     const config = GatewayConfig.parse({
       profiles: {},
