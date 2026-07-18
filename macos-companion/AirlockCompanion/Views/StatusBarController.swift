@@ -3,6 +3,34 @@ import Carbon
 import SwiftUI
 
 @MainActor
+struct StatusItemPresentation {
+    static let iconSize = NSSize(width: 18, height: 18)
+
+    let label: String
+
+    init(pendingCount: Int) {
+        label = pendingCount > 9 ? "9+" : pendingCount > 0 ? "\(pendingCount)" : ""
+    }
+
+    var length: CGFloat {
+        label.isEmpty ? NSStatusItem.squareLength : NSStatusItem.variableLength
+    }
+
+    var imagePosition: NSControl.ImagePosition {
+        label.isEmpty ? .imageOnly : .imageLeading
+    }
+
+    static func configureIcon(on button: NSButton) {
+        let config = NSImage.SymbolConfiguration(pointSize: iconSize.width, weight: .regular)
+        let image = NSImage(systemSymbolName: "lock.shield", accessibilityDescription: "Airlock")?
+            .withSymbolConfiguration(config)
+        image?.size = iconSize
+        button.image = image
+        button.imageScaling = .scaleProportionallyDown
+    }
+}
+
+@MainActor
 final class StatusBarController {
     private var statusItem: NSStatusItem
     private var popover: NSPopover
@@ -13,7 +41,7 @@ final class StatusBarController {
     private var hotkeyRefs: [UInt32: EventHotKeyRef] = [:]
 
     init(viewModel: AppViewModel) {
-        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         popover = NSPopover()
 
         self.viewModel = viewModel
@@ -31,12 +59,7 @@ final class StatusBarController {
         }
 
         if let button = statusItem.button {
-            // Size the SF Symbol to fill the menu bar slot
-            let config = NSImage.SymbolConfiguration(pointSize: 18, weight: .regular)
-            let image = NSImage(systemSymbolName: "lock.shield", accessibilityDescription: "Airlock")?
-                .withSymbolConfiguration(config)
-            button.image = image
-            button.imageScaling = .scaleProportionallyUpOrDown
+            StatusItemPresentation.configureIcon(on: button)
             button.action = #selector(togglePopover)
             button.target = self
         }
@@ -213,9 +236,11 @@ final class StatusBarController {
     }
 
     func updateBadge(count: Int) {
-        let label = count > 9 ? "9+" : count > 0 ? "\(count)" : ""
+        let presentation = StatusItemPresentation(pendingCount: count)
+        statusItem.length = presentation.length
+        statusItem.button?.imagePosition = presentation.imagePosition
         statusItem.button?.attributedTitle = NSAttributedString(
-            string: label,
+            string: presentation.label,
             attributes: [
                 .font: NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .bold),
                 .foregroundColor: NSColor.systemRed,

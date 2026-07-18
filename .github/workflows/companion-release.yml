@@ -134,6 +134,22 @@ jobs:
           codesign --force --sign "Developer ID Application: ${{ secrets.APPLE_TEAM_NAME }}" \
             .build/AirlockCompanion.dmg
 
+      - name: Notarize DMG
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          xcrun notarytool submit .build/AirlockCompanion.dmg \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_ID_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait
+
+          xcrun stapler staple .build/AirlockCompanion.dmg
+          xcrun stapler validate .build/AirlockCompanion.dmg
+          codesign --verify --strict --verbose=2 .build/AirlockCompanion.dmg
+
       - name: Create zip archive
         run: |
           cd .build
