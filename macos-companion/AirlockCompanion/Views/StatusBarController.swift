@@ -7,15 +7,13 @@ final class StatusBarController {
     private var statusItem: NSStatusItem
     private var popover: NSPopover
     private weak var viewModel: AppViewModel?
-    private var badgeView: NSView?
-    private var badgeLabel: NSTextField?
     private var clickMonitor: Any?
     private var localKeyMonitor: Any?
     private var eventHandlerRef: EventHandlerRef?
     private var hotkeyRefs: [UInt32: EventHotKeyRef] = [:]
 
     init(viewModel: AppViewModel) {
-        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         popover = NSPopover()
 
         self.viewModel = viewModel
@@ -41,25 +39,6 @@ final class StatusBarController {
             button.imageScaling = .scaleProportionallyUpOrDown
             button.action = #selector(togglePopover)
             button.target = self
-
-            // Create badge view — positioned to avoid clipping at edges
-            let badgeSize: CGFloat = 14
-            let badge = NSView(frame: NSRect(x: 12, y: 10, width: badgeSize, height: badgeSize))
-            badge.wantsLayer = true
-            badge.layer?.backgroundColor = NSColor.systemRed.cgColor
-            badge.layer?.cornerRadius = badgeSize / 2
-            badge.isHidden = true
-
-            let label = NSTextField(labelWithString: "0")
-            label.font = NSFont.systemFont(ofSize: 8, weight: .bold)
-            label.textColor = .white
-            label.alignment = .center
-            label.frame = NSRect(x: 0, y: -0.5, width: badgeSize, height: badgeSize)
-            badge.addSubview(label)
-
-            button.addSubview(badge)
-            badgeView = badge
-            badgeLabel = label
         }
 
         // Close popover when clicking outside
@@ -234,8 +213,14 @@ final class StatusBarController {
     }
 
     func updateBadge(count: Int) {
-        badgeView?.isHidden = count == 0
-        badgeLabel?.stringValue = count > 9 ? "9+" : "\(count)"
+        let label = count > 9 ? "9+" : count > 0 ? "\(count)" : ""
+        statusItem.button?.attributedTitle = NSAttributedString(
+            string: label,
+            attributes: [
+                .font: NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .bold),
+                .foregroundColor: NSColor.systemRed,
+            ]
+        )
     }
 
     @objc private func togglePopover() {
