@@ -91,9 +91,27 @@ export function sanitizeInstructions(
   if (!trimmed) return undefined;
 
   let cleaned = stripSuspicious(trimmed, { providerId });
+  cleaned = demoteHeadings(cleaned);
   if (cleaned.length > MAX_INSTRUCTIONS_LENGTH) {
     log.warn({ providerId, length: cleaned.length }, 'Truncating oversized upstream instructions');
     cleaned = cleaned.slice(0, MAX_INSTRUCTIONS_LENGTH) + '…';
   }
   return cleaned;
+}
+
+/**
+ * Pushes upstream markdown headings below the `## <provider>` level the composed document uses.
+ *
+ * Providers write whatever markdown they like, and several ship instructions containing their own
+ * `##` sections. Emitted verbatim those headings sit at the same level as Airlock's per-provider
+ * headings, so a reader (human or model) cannot tell "## Storage types" — a subsection of one
+ * provider's notes — from a real provider section. Demoting keeps the document's outline honest and
+ * keeps one provider's text from appearing to introduce another.
+ */
+function demoteHeadings(text: string): string {
+  return text.replace(/^(#{1,6})(\s)/gm, (_match, hashes: string, space: string) => {
+    // Markdown tops out at h6; anything already that deep stays put.
+    const demoted = hashes.length >= 6 ? hashes : `#${hashes}`;
+    return `${demoted}${space}`;
+  });
 }

@@ -67,6 +67,23 @@ describe('sanitizeInstructions()', () => {
     expect(result).toContain('[removed]');
   });
 
+  it('demotes upstream headings so they cannot impersonate a provider section', () => {
+    // Real case: apify ships instructions containing its own "## Storage types" sections, which at
+    // h2 sit level-with Airlock's own "## <provider>" headings.
+    const result = sanitizeInstructions('apify', '## Storage types\n\nUse datasets.\n\n# Top');
+    expect(result).toContain('### Storage types');
+    expect(result).toContain('## Top');
+    expect(result).not.toMatch(/^## Storage types/m);
+  });
+
+  it('does not demote past h6', () => {
+    expect(sanitizeInstructions('x', '###### Deep')).toBe('###### Deep');
+  });
+
+  it('leaves non-heading hashes alone', () => {
+    expect(sanitizeInstructions('x', 'Use #tags and C# code')).toBe('Use #tags and C# code');
+  });
+
   it('truncates oversized instructions', () => {
     const result = sanitizeInstructions('chatty', 'a'.repeat(5000));
     expect(result!.length).toBeLessThanOrEqual(4001);
