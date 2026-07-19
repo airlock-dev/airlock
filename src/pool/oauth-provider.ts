@@ -16,6 +16,10 @@ interface PersistedData {
   clientInfo?: OAuthClientInformationFull;
   tokens?: OAuthTokens;
   codeVerifier?: string;
+  // Wall-clock (ms) when the current tokens were obtained. Used to compute when the access token
+  // should be proactively refreshed (obtainedAt + expires_in). Persisted so the schedule survives
+  // restarts; absent for tokens saved before this field existed (treated as "refresh promptly").
+  obtainedAt?: number;
 }
 
 /**
@@ -110,7 +114,27 @@ export class FileOAuthProvider implements OAuthClientProvider {
       tokens = { ...tokens, refresh_token: this.data.tokens.refresh_token };
     }
     this.data.tokens = tokens;
+    this.data.obtainedAt = Date.now();
     await this.save();
+  }
+
+  /**
+   * How long (ms) until the access token should be proactively refreshed — i.e. `bufferMs` before it
+   * expires. Returns `undefined` when there is nothing to schedule (no refresh_token, so a refresh is
+   * impossible, or no `expires_in`, so the lifetime is unknown). Never negative. Tokens persisted
+   * before `obtainedAt` existed report `0` (refresh promptly) rather than trusting a stale baseline.
+   *
+   * The caller drives proactive refresh: many OAuth servers signal access-token expiry with an
+   * application-level error rather than HTTP 401, so the reactive on-401 refresh never fires and the
+   * connection silently rots. Refreshing ahead of expiry avoids that entirely.
+   */
+  async msUntilRefresh(bufferMs: number): Promise<number | undefined> {
+    await this.load();
+    const tokens = this.data.tokens;
+    if (!tokens?.refresh_token || !tokens.expires_in) return undefined;
+    const obtainedAt = this.data.obtainedAt ?? 0;
+    const expiresAt = obtainedAt + tokens.expires_in * 1000;
+    return Math.max(0, expiresAt - bufferMs - Date.now());
   }
 
   async invalidateCredentials(scope: 'all' | 'tokens'): Promise<void> {
