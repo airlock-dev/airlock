@@ -150,6 +150,11 @@ export class ClientPool {
     return this.clients.get(mcpId)?.getServerInfo();
   }
 
+  /** Server-level usage notes the provider advertised at initialize (MCP `instructions`). */
+  getInstructions(mcpId: string): string | undefined {
+    return this.clients.get(mcpId)?.getInstructions();
+  }
+
   getMcpIds(): string[] {
     return Array.from(this.clients.keys());
   }

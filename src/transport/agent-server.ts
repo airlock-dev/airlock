@@ -12,7 +12,10 @@ import type { AgentConfig, SecurityConfig } from '../config/schema.js';
 import type { Middleware, ToolCallContext } from '../middleware/types.js';
 import { buildMiddlewareChain } from '../middleware/chain-builder.js';
 import { generateId } from '../util/id.js';
+import { childLogger } from '../util/logger.js';
 import { VERSION } from '../version.js';
+
+const log = childLogger('agent-server');
 
 export interface AgentServerDeps {
   agentId: string;
@@ -45,7 +48,22 @@ export function createAgentServer(deps: AgentServerDeps): Server {
 
   const staticChain = deps.chain;
 
-  const server = new Server({ name: 'airlock', version: VERSION }, { capabilities: { tools: {} } });
+  // Server-level instructions are fixed at construction, which is fine: a server instance is created
+  // per agent session, so each session picks up the current registry state for that agent.
+  //
+  // Best-effort: instructions are advisory context, so a failure to build them must never stop an
+  // agent from getting a session.
+  let instructions: string | undefined;
+  try {
+    instructions = registry.getInstructionsFor(agentId);
+  } catch (err) {
+    log.debug({ agentId, err }, 'Failed to build server instructions');
+  }
+
+  const server = new Server(
+    { name: 'airlock', version: VERSION },
+    { capabilities: { tools: {} }, ...(instructions ? { instructions } : {}) }
+  );
 
   // MCP tool name pattern: ^[a-zA-Z0-9_-]{1,64}$
   // Airlock namespaces tools as "provider/toolName" which contains '/'.

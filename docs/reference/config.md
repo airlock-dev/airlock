@@ -57,6 +57,32 @@ providers:
   airlock: builtin
 ```
 
+### Provider instructions
+
+MCP servers may advertise server-level `instructions` at initialize — prose describing how to use
+the server as a whole. Airlock collects them from every upstream provider and re-exposes them as its
+own `instructions`, composed per agent: an agent only sees sections for providers it can actually
+reach.
+
+Add `instructions` to a provider to attach your own notes — the things a vendor's docs can't know:
+
+```yaml
+providers:
+  railway:
+    type: http
+    url: https://mcp.railway.com
+    oauth: true
+    instructions: >
+      list-projects only returns personal-workspace projects. The Acme project is an
+      invited workspace project and will NOT appear there — pass its projectId directly
+      to get-status / get-logs / list-services.
+    upstream_instructions: include # or `ignore` to suppress the provider's own text
+```
+
+`instructions` is operator-authored, so it is trusted: never scrubbed, never truncated. Instructions
+advertised by the upstream provider are untrusted and go through the same prompt-injection scrubbing
+as tool descriptions, bounded at 4000 characters.
+
 ## `profiles`
 
 Reusable permission sets. See [Composable Profiles](/guides/profiles).
@@ -79,8 +105,14 @@ profiles:
 
 Profiles may extend other profiles. Profile inheritance is resolved once at
 config load, before agents consume profiles. Unknown profile references and
-profile cycles are fatal config errors. Profiles can also carry `arg_policy` and
-`arg_scope` entries that agents inherit alongside allow/ask/deny rules.
+profile cycles are fatal config errors. Profiles can also carry `arg_policy`,
+`arg_scope`, and `tool_overrides` entries that agents inherit alongside
+allow/ask/deny rules — so the profile that grants a provider's tools can also
+carry the notes an agent needs to use them correctly.
+
+When the same tool is overridden at several levels, later sources (the agent
+last) win field by field, with two exceptions that would otherwise destroy
+inherited config: `description_append` accumulates, and `sandbox_presets` unions.
 
 ## `default_profile`
 
@@ -294,7 +326,14 @@ agents:
           calendar_id:
             equals: work-calendar-id@group.calendar.google.com
             label: Work
+      railway/get-logs:
+        # Keeps the vendor's own description and adds a house rule after it.
+        description_append: 'Always pass projectId explicitly — list-projects will not show it.'
 ```
+
+`description` **replaces** the upstream description; `description_append` **adds** to whatever
+survives. Use `description_append` when the vendor's docs are fine and you only need to add a
+caveat, so you do not have to restate their text by hand and keep it in sync.
 
 ## `approvals`
 

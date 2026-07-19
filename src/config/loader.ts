@@ -464,6 +464,24 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
     diagnostics.push(
       ...validateArgPolicyRefs(config, profile.arg_policy, `profiles.${profileId}.arg_policy`)
     );
+    for (const [toolName, override] of Object.entries(profile.tool_overrides)) {
+      diagnostics.push(
+        ...validateArgPolicyRefs(
+          config,
+          override.args ? { [toolName]: override.args } : undefined,
+          `profiles.${profileId}.tool_overrides.${toolName}.args`
+        )
+      );
+      for (const presetName of override.sandbox_presets ?? []) {
+        if (!sandboxPresetNames.has(presetName)) {
+          diagnostics.push({
+            level: 'error',
+            message: `profiles.${profileId}.tool_overrides.${toolName}.sandbox_presets references unknown sandbox preset "${presetName}".`,
+            suggestion: `Add "${presetName}" to the top-level sandbox_presets block, or check for typos.`,
+          });
+        }
+      }
+    }
   }
 
   // Validate CLI configs

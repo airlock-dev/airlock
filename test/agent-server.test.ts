@@ -49,6 +49,7 @@ function makeMockRegistry(tools: Tool[] = [], callResult: unknown = { ok: true }
     getFiltered: vi.fn().mockReturnValue(tools),
     call: vi.fn().mockResolvedValue(callResult),
     getAllTools: vi.fn().mockReturnValue(tools),
+    getInstructionsFor: vi.fn().mockReturnValue(undefined),
   };
 }
 
