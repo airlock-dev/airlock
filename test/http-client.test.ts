@@ -24,6 +24,7 @@ const transportInstances: {
   finishAuth: ReturnType<typeof vi.fn>;
   onclose: (() => void) | null;
   close: ReturnType<typeof vi.fn>;
+  terminateSession: ReturnType<typeof vi.fn>;
 }[] = [];
 
 const clientInstances: {
@@ -40,6 +41,7 @@ vi.mock('@modelcontextprotocol/sdk/client/streamableHttp.js', () => {
         onclose: null as (() => void) | null,
         finishAuth: vi.fn().mockResolvedValue(undefined),
         close: vi.fn().mockResolvedValue(undefined),
+        terminateSession: vi.fn().mockResolvedValue(undefined),
       };
       transportInstances.push(t);
       return t;
@@ -247,6 +249,55 @@ describe('HttpMcpClient — reconnect backoff', () => {
     transportInstances[0].onclose?.();
     await new Promise((r) => setTimeout(r, 50));
     expect(transportInstances.length).toBe(countBefore);
+  });
+
+  it('terminates the server-side session on stop() so the server can reclaim the slot', async () => {
+    clientConnectCallCount = 1;
+    const client = new HttpMcpClient('icloud-calendar', 'https://example.com/mcp');
+    await client.connect();
+
+    await client.stop();
+
+    // close() alone only tears down our end; without the DELETE that terminateSession() sends,
+    // session-capped servers leak a slot on every restart until they refuse all new sessions.
+    expect(transportInstances[0].terminateSession).toHaveBeenCalledTimes(1);
+    expect(transportInstances[0].close).toHaveBeenCalled();
+  });
+
+  it('still shuts down cleanly when the server cannot be reached to terminate', async () => {
+    clientConnectCallCount = 1;
+    const client = new HttpMcpClient('icloud-calendar', 'https://example.com/mcp');
+    await client.connect();
+    transportInstances[0].terminateSession.mockRejectedValueOnce(new Error('ECONNREFUSED'));
+
+    // A dead server must never block or fail shutdown.
+    await expect(client.stop()).resolves.toBeUndefined();
+    expect(transportInstances[0].close).toHaveBeenCalled();
+  });
+
+  it('keeps retrying after the fast attempts are spent, and reports down meanwhile', async () => {
+    clientConnectCallCount = 1;
+    const client = new HttpMcpClient('icloud-calendar', 'https://example.com/mcp');
+    await client.connect();
+    const transport = transportInstances[0];
+
+    vi.useFakeTimers();
+    try {
+      // Drop the connection more times than MAX_RECONNECT_ATTEMPTS (6). Previously the client
+      // latched off permanently at the cap, so a provider that later recovered stayed dead until
+      // someone noticed and restarted the whole gateway.
+      for (let i = 0; i < 8; i++) transport.onclose?.();
+
+      // Still down — a pending retry timer must not be reported as `connecting`.
+      expect(client.getConnectionStatus().status).toBe('down');
+
+      const countBefore = transportInstances.length;
+      clientConnectCallCount = 1; // the provider has come back
+      await vi.advanceTimersByTimeAsync(31_000); // past the capped backoff step (30s)
+      expect(transportInstances.length).toBeGreaterThan(countBefore);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

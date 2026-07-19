@@ -133,27 +133,37 @@ export class HttpMcpClient {
 
     this.client = new Client({ name: 'airlock', version: VERSION });
     this.connecting = true;
-    this.reconnectExhausted = false;
 
     this.transport.onclose = () => {
       this.ready = false;
       this.connecting = false;
       this.lastError ??= 'connection closed';
       if (!this.stopped && !this.awaitingAuth) {
-        if (this.reconnectAttempt >= MAX_RECONNECT_ATTEMPTS) {
-          this.reconnectExhausted = true;
-          log.error(
-            { id: this.id },
-            'HTTP MCP gave up reconnecting after %d attempts',
-            MAX_RECONNECT_ATTEMPTS
-          );
-          return;
-        }
         const delay = BACKOFF_STEPS[Math.min(this.reconnectAttempt, BACKOFF_STEPS.length - 1)];
-        log.warn(
-          { id: this.id, attempt: this.reconnectAttempt, delay },
-          'HTTP MCP disconnected, reconnecting'
-        );
+        // Never stop retrying. A provider that recovers on its own (server restarted, network
+        // healed) must be picked back up without a gateway restart — previously we gave up after
+        // MAX_RECONNECT_ATTEMPTS and the provider stayed dead until someone noticed and restarted
+        // Airlock. Past that threshold we keep retrying at the capped interval, but report the
+        // provider as `down` rather than `connecting`, so status stays honest about a long outage.
+        if (this.reconnectAttempt >= MAX_RECONNECT_ATTEMPTS) {
+          if (!this.reconnectExhausted) {
+            this.reconnectExhausted = true;
+            log.error(
+              { id: this.id, retryInterval: delay },
+              'HTTP MCP still down after %d attempts — retrying in background',
+              MAX_RECONNECT_ATTEMPTS
+            );
+          } else {
+            // Already reported down; keep the ongoing retries at debug so a provider that is
+            // out for hours doesn't flood the log every 30s.
+            log.debug({ id: this.id, delay }, 'HTTP MCP still down, retrying');
+          }
+        } else {
+          log.warn(
+            { id: this.id, attempt: this.reconnectAttempt, delay },
+            'HTTP MCP disconnected, reconnecting'
+          );
+        }
         this.reconnectAttempt++;
         this.reconnectTimer = setTimeout(() => {
           this.reconnectTimer = undefined;
@@ -167,6 +177,9 @@ export class HttpMcpClient {
     try {
       await this.client.connect(this.transport);
       this.reconnectAttempt = 0;
+      // Cleared only on a SUCCESSFUL connect, not per attempt: while retries are in flight after
+      // the fast attempts are spent, the provider genuinely is down and status must say so.
+      this.reconnectExhausted = false;
       this.ready = true;
       this.connecting = false;
       this.lastError = undefined;
@@ -321,10 +334,13 @@ export class HttpMcpClient {
     if (this.awaitingAuth) {
       return { status: 'auth_required', reason: this.lastError ?? 'OAuth authorization required' };
     }
+    // Once the fast attempts are spent we retry forever in the background, so a pending
+    // reconnectTimer is no longer evidence of a transient blip — it is the steady state of an
+    // outage. Report `down` in that case, or a long-dead provider would masquerade as
+    // `connecting` indefinitely.
     if (
-      this.connecting ||
-      this.reconnectTimer ||
-      (!this.stopped && !this.reconnectExhausted && this.reconnectAttempt > 0)
+      !this.reconnectExhausted &&
+      (this.connecting || this.reconnectTimer || (!this.stopped && this.reconnectAttempt > 0))
     ) {
       return { status: 'connecting', ...(this.lastError ? { reason: this.lastError } : {}) };
     }
@@ -370,6 +386,15 @@ export class HttpMcpClient {
       this.refreshTimer = undefined;
     }
     this.oauthProvider?.stopCallbackServer();
+    // Release the session server-side before closing locally. transport.close() only tears down
+    // OUR end; without the DELETE that terminateSession() sends, the server keeps the session in
+    // memory forever. Servers that bound their session table then leak a slot on every gateway
+    // restart and every CLI invocation, and eventually refuse all new sessions until restarted.
+    // Best-effort: a server that can't be reached (or answers 405, which the SDK treats as "not
+    // supported" per spec) must never block or fail shutdown.
+    await this.transport?.terminateSession().catch((err) => {
+      log.debug({ id: this.id, reason: friendlyError(err) }, 'HTTP MCP session terminate failed');
+    });
     await this.transport?.close();
   }
 }
