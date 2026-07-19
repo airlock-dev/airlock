@@ -7,12 +7,14 @@ import type {
   ProfileConfig,
   ToolArgConstraintConfig,
   ToolArgPolicyConfig,
+  ToolOverride,
 } from './schema.js';
 
 export interface ResolvedPermissions {
   allow: string[];
   ask: string[];
   deny: string[];
+  tool_overrides: Record<string, ToolOverride>;
   arg_policy?: ToolArgPolicyConfig;
   arg_scope?: Record<string, string[]>;
   command_policy?: CommandPolicyConfig;
@@ -63,8 +65,49 @@ export interface ExtendsTreeNode {
 
 type PermissionSource = Pick<
   ProfileConfig | AgentConfig,
-  'allow' | 'ask' | 'deny' | 'arg_policy' | 'arg_scope' | 'command_policy'
+  'allow' | 'ask' | 'deny' | 'tool_overrides' | 'arg_policy' | 'arg_scope' | 'command_policy'
 >;
+
+/**
+ * Merges tool_overrides from one source into an accumulator, in extends order (parents first,
+ * the agent last).
+ *
+ * Most fields are last-wins, so an agent can override what a profile said. Two exceptions, because
+ * last-wins would silently destroy inherited config:
+ *   - `description_append` accumulates, so several profiles can each contribute a note to one tool.
+ *   - `sandbox_presets` unions, since it parses to `[]` by default and a plain spread would clobber
+ *     an inherited preset list with an empty one.
+ */
+function mergeToolOverrides(
+  target: Record<string, ToolOverride>,
+  source: Record<string, ToolOverride> | undefined
+): Record<string, ToolOverride> {
+  if (!source) return target;
+
+  for (const [toolName, override] of Object.entries(source)) {
+    const existing = target[toolName];
+    if (!existing) {
+      target[toolName] = { ...override };
+      continue;
+    }
+
+    const appended = [existing.description_append, override.description_append]
+      .filter((value): value is string => Boolean(value?.trim()))
+      .join('\n\n');
+    const presets = Array.from(
+      new Set([...(existing.sandbox_presets ?? []), ...(override.sandbox_presets ?? [])])
+    );
+
+    target[toolName] = {
+      ...existing,
+      ...override,
+      sandbox_presets: presets,
+      ...(appended ? { description_append: appended } : {}),
+    };
+  }
+
+  return target;
+}
 
 function mergeCommandPolicy(
   target: CommandPolicyConfig,
@@ -130,6 +173,7 @@ function unionPermissions(...sources: PermissionSource[]): ResolvedPermissions {
   const arg_policy: ToolArgPolicyConfig = {};
   const arg_scope: Record<string, string[]> = {};
   const command_policy: CommandPolicyConfig = {};
+  const tool_overrides: Record<string, ToolOverride> = {};
 
   for (const source of sources) {
     for (const p of source.allow) allow.add(p);
@@ -138,12 +182,14 @@ function unionPermissions(...sources: PermissionSource[]): ResolvedPermissions {
     mergeArgPolicy(arg_policy, source.arg_policy);
     mergeArgScope(arg_scope, source.arg_scope);
     mergeCommandPolicy(command_policy, source.command_policy);
+    mergeToolOverrides(tool_overrides, source.tool_overrides);
   }
 
   return {
     allow: Array.from(allow),
     ask: Array.from(ask),
     deny: Array.from(deny),
+    tool_overrides,
     ...(Object.keys(arg_policy).length > 0 ? { arg_policy } : {}),
     ...(Object.keys(arg_scope).length > 0 ? { arg_scope } : {}),
     ...(Object.keys(command_policy).length > 0 ? { command_policy } : {}),
@@ -603,6 +649,10 @@ export function applyProfiles(config: GatewayConfig): void {
       agent.extends.length === 0
         ? unionPermissions(agent)
         : resolveAgentPermissions(agent, config.profiles);
+
+    // Merge inherited overrides in BEFORE resolving named-set references, so that `args` declared
+    // on a profile's tool_overrides get the same value_sets resolution as ones declared inline.
+    agent.tool_overrides = resolved.tool_overrides;
 
     for (const [toolName, override] of Object.entries(agent.tool_overrides)) {
       override.args = resolveNamedSetPolicy(

@@ -37,6 +37,23 @@ function expandTilde(value: string): string {
 const EnvString = z.string().transform(substituteEnvVars);
 const PathString = z.string().transform(expandTilde);
 
+/**
+ * Operator-authored orientation text for a provider, surfaced to agents via the gateway's own
+ * server-level `instructions` (MCP `initialize`). Use it for the things a vendor's own docs can't
+ * know — house conventions, which IDs to use, which discovery calls lie.
+ *
+ * `instructions` is trusted (it comes from this config file, not the network) so it is never
+ * scrubbed or truncated. `upstream_instructions` controls whether the provider's OWN advertised
+ * instructions are included alongside it; set `ignore` to replace them outright.
+ */
+const ProviderInstructionsFields = {
+  instructions: z.string().optional(),
+  // `.optional()` rather than `.default('include')` so the parsed shape of a provider that never
+  // mentions instructions is byte-identical to what it was before this feature existed. Absent
+  // means include; getProviderInstructions() applies the fallback.
+  upstream_instructions: z.enum(['include', 'ignore']).optional(),
+};
+
 export const McpServerConfig = z.discriminatedUnion('type', [
   z
     .object({
@@ -45,6 +62,7 @@ export const McpServerConfig = z.discriminatedUnion('type', [
       command: z.string(),
       args: z.array(z.string()).default([]),
       env: z.record(EnvString).optional(),
+      ...ProviderInstructionsFields,
     })
     .strict(),
   z
@@ -53,6 +71,7 @@ export const McpServerConfig = z.discriminatedUnion('type', [
       enabled: z.boolean().default(true),
       url: z.string().url(),
       headers: z.record(EnvString).optional(),
+      ...ProviderInstructionsFields,
     })
     .strict(),
   z
@@ -66,6 +85,7 @@ export const McpServerConfig = z.discriminatedUnion('type', [
       oauth_callback_url: z.string().url().optional(),
       client_id: EnvString.optional(),
       client_secret: EnvString.optional(),
+      ...ProviderInstructionsFields,
     })
     .strict(),
 ]);
@@ -75,6 +95,7 @@ export const BuiltinProviderConfig = z
   .object({
     type: z.literal('builtin'),
     enabled: z.boolean().default(true),
+    ...ProviderInstructionsFields,
   })
   .strict();
 export type BuiltinProviderConfig = z.infer<typeof BuiltinProviderConfig>;
@@ -95,6 +116,31 @@ export function getMcpConfigs(
     if (cfg !== 'builtin' && cfg.type !== 'builtin' && cfg.enabled !== false) {
       result[id] = cfg;
     }
+  }
+  return result;
+}
+
+export interface ProviderInstructionsConfig {
+  /** Operator-authored text. Trusted: never scrubbed or truncated. */
+  instructions?: string;
+  /** Whether the provider's own advertised instructions are included alongside it. */
+  upstream: 'include' | 'ignore';
+}
+
+/**
+ * Per-provider instruction settings, keyed by provider id. Providers declared as the bare string
+ * `'builtin'` carry no settings and fall back to the defaults.
+ */
+export function getProviderInstructions(
+  providers: Record<string, ProviderConfig>
+): Record<string, ProviderInstructionsConfig> {
+  const result: Record<string, ProviderInstructionsConfig> = {};
+  for (const [id, cfg] of Object.entries(providers)) {
+    if (cfg === 'builtin') continue;
+    result[id] = {
+      ...(cfg.instructions !== undefined && { instructions: cfg.instructions }),
+      upstream: cfg.upstream_instructions ?? 'include',
+    };
   }
   return result;
 }
@@ -306,13 +352,20 @@ export type ArgDimensionConfig = z.infer<typeof ArgDimensionConfig>;
 
 export const ToolOverride = z
   .object({
+    /** Replaces the upstream description entirely. */
     description: z.string().optional(),
+    /**
+     * Appended after whatever description survives (upstream, or `description` when set). Use this
+     * for house rules you want on top of the vendor's docs without restating them by hand.
+     */
+    description_append: z.string().optional(),
     alias_of: z.string().optional(),
     sandbox_presets: SandboxPresetRef.default([]),
     sandbox: SandboxOverrideConfig.optional(),
     args: z.record(ToolArgConstraintListConfig).optional(),
   })
   .strict();
+export type ToolOverride = z.infer<typeof ToolOverride>;
 
 export const AgentExecConfig = z
   .object({
@@ -448,6 +501,9 @@ export const ProfileConfig = z
     allow: z.array(z.string()).default([]),
     ask: z.array(z.string()).default([]),
     deny: z.array(z.string()).default([]),
+    // Composes through `extends` alongside the permission lists, so a profile that grants a
+    // provider's tools can also carry the notes an agent needs to use them correctly.
+    tool_overrides: z.record(ToolOverride).default({}),
     arg_policy: ToolArgPolicyConfig.optional(),
     arg_scope: ArgScopeConfig.optional(),
     command_policy: CommandPolicyConfig.optional(),

@@ -55,6 +55,11 @@ export class McpBackendAdapter implements BackendAdapter {
     }));
   }
 
+  instructions(): string | undefined {
+    if (!this.pool.isReady(this.mcpId)) return undefined;
+    return this.pool.getInstructions(this.mcpId);
+  }
+
   async call(toolCall: ToolCall): Promise<ToolResult> {
     const prefix = `${this.mcpId}/`;
     if (!toolCall.tool.startsWith(prefix)) {

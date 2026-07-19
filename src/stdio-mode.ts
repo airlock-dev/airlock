@@ -17,7 +17,7 @@ import { runStdioServer } from './transport/stdio-server.js';
 import { ConfigWatcher } from './config/watcher.js';
 import type { Config } from './config/loader.js';
 import type { ApprovalApi } from './hitl/providers/types.js';
-import { getBuiltinProviders, getMcpConfigs } from './config/schema.js';
+import { getBuiltinProviders, getMcpConfigs, getProviderInstructions } from './config/schema.js';
 import { buildAdapters } from './backend/factory.js';
 import { ActivityStream } from './activity/stream.js';
 import { checkRequestSecurity, type RequestSecurityOptions } from './security/request.js';
@@ -127,7 +127,12 @@ export async function runStdioMode(
     airlock: airlockDeps(),
   });
 
-  const registry = new ToolRegistry(adapters, allowlist, config.agents);
+  const registry = new ToolRegistry(
+    adapters,
+    allowlist,
+    config.agents,
+    getProviderInstructions(config.providers)
+  );
   registryRef.current = registry;
 
   // Register callback for late-connecting MCPs (after registry exists)
@@ -169,7 +174,7 @@ export async function runStdioMode(
         .reload(newMcpConfigs)
         .then(() => {
           allowlist.reload(newConfig.agents);
-          registry.reloadAgents(newConfig.agents);
+          registry.reloadAgents(newConfig.agents, getProviderInstructions(newConfig.providers));
           const newAdapters = buildAdapters(newConfig, pool, {
             airlock: airlockDeps(),
           });

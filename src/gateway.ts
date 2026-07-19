@@ -24,7 +24,7 @@ import type { AgentServerDeps } from './transport/agent-server.js';
 import type { Config } from './config/loader.js';
 import type { HitlProvider, ApprovalApi } from './hitl/providers/types.js';
 import { createHitlProvider } from './hitl/provider-factory.js';
-import { getBuiltinProviders, getMcpConfigs } from './config/schema.js';
+import { getBuiltinProviders, getMcpConfigs, getProviderInstructions } from './config/schema.js';
 import { buildAdapters } from './backend/factory.js';
 import { ActivityStream } from './activity/stream.js';
 import { childLogger } from './util/logger.js';
@@ -117,7 +117,12 @@ export class Gateway {
 
     // Allowlist + registry
     this.allowlist = new AllowlistEngine(this.config.agents);
-    this.registry = new ToolRegistry(adapters, this.allowlist, this.config.agents);
+    this.registry = new ToolRegistry(
+      adapters,
+      this.allowlist,
+      this.config.agents,
+      getProviderInstructions(this.config.providers)
+    );
 
     // Register callback for late-connecting MCPs (after registry exists)
     this.pool.onClientReady((id) => {
@@ -450,7 +455,7 @@ export class Gateway {
     const mcpConfigs = getMcpConfigs(newConfig.providers);
     await this.pool.reload(mcpConfigs);
     this.allowlist.reload(newConfig.agents);
-    this.registry.reloadAgents(newConfig.agents);
+    this.registry.reloadAgents(newConfig.agents, getProviderInstructions(newConfig.providers));
     // Rebuild adapters to pick up new CLIs/APIs
     const adapters = this.buildAdapters();
     this.registry.setAdapters(adapters);

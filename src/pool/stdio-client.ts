@@ -125,6 +125,11 @@ export class StdioMcpClient {
     return this.client?.getServerVersion();
   }
 
+  /** Server-level usage notes advertised at initialize (MCP `instructions`). */
+  getInstructions(): string | undefined {
+    return this.client?.getInstructions();
+  }
+
   isReady(): boolean {
     return this.ready;
   }
