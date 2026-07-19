@@ -227,6 +227,12 @@ export class FileOAuthProvider implements OAuthClientProvider {
 
   private isExpectedState(state: string | null): boolean {
     if (this.expectedState === undefined) return true;
+    // Some authorization servers (e.g. Railway) issue no `state` on the authorize request, so
+    // `expectedState` is '' and the callback carries no `state` param (=> null here). Requiring
+    // '' === null rejected every legitimate callback and broke the whole loopback flow. When no
+    // state was issued there is nothing to validate; the loopback redirect + PKCE already bind the
+    // exchange. Scoped to the non-relay path so relay state-wrapping semantics are untouched.
+    if (this.expectedState === '' && this.relayCallbackUrl === undefined) return true;
     if (state === this.expectedState) return true;
     return this.relayCallbackUrl !== undefined && state === `${this.callbackPort}.${this.expectedState}`;
   }

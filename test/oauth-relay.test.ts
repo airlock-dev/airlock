@@ -137,4 +137,40 @@ describe('FileOAuthProvider — relay callback URL', () => {
       expect(info?.redirect_uris).toEqual([RELAY_URL]);
     });
   });
+
+  describe('callback state validation', () => {
+    it('accepts a stateless callback when the authorize request carried no state', async () => {
+      // Mirrors Railway: the authorize URL has no `state`, so the real callback has none either.
+      const provider = new FileOAuthProvider('stateless-server', PORT);
+      await provider.redirectToAuthorization(
+        new URL('https://oauth.example.com/authorize?client_id=abc')
+      );
+
+      const codePromise = provider.waitForAuthCode();
+      const res = await fetch(
+        `http://127.0.0.1:${PORT}/oauth/callback?code=the-code&iss=https%3A%2F%2Fissuer`
+      );
+
+      expect(res.status).toBe(200);
+      await expect(codePromise).resolves.toBe('the-code');
+    });
+
+    it('still rejects a mismatched state when the authorize request carried state', async () => {
+      const provider = new FileOAuthProvider('stateful-server', PORT + 1);
+      await provider.redirectToAuthorization(
+        new URL('https://oauth.example.com/authorize?client_id=abc&state=expected')
+      );
+
+      const codePromise = provider.waitForAuthCode();
+      // Attach the rejection assertion before triggering the callback so the rejection is never
+      // momentarily unhandled (the server settles it mid-fetch, before the await below is reached).
+      const rejects = expect(codePromise).rejects.toThrow('OAuth state mismatch');
+      const res = await fetch(
+        `http://127.0.0.1:${PORT + 1}/oauth/callback?code=x&state=wrong`
+      );
+
+      expect(res.status).toBe(400);
+      await rejects;
+    });
+  });
 });
