@@ -1,6 +1,6 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { UnauthorizedError } from '@modelcontextprotocol/sdk/client/auth.js';
+import { auth, UnauthorizedError } from '@modelcontextprotocol/sdk/client/auth.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { FileOAuthProvider } from './oauth-provider.js';
 import type { ProviderConnectionStatus } from './status.js';
@@ -13,6 +13,18 @@ type McpRequestMeta = Record<string, unknown>;
 
 const BACKOFF_STEPS = [1000, 2000, 4000, 8000, 16000, 30000];
 const MAX_RECONNECT_ATTEMPTS = BACKOFF_STEPS.length;
+
+// Proactive OAuth refresh: renew the access token this long before it expires. Many OAuth servers
+// report access-token expiry as an application-level error (not HTTP 401), so the SDK's reactive
+// on-401 refresh never fires and the connection silently rots — refreshing ahead of time avoids it.
+const REFRESH_BUFFER_MS = 5 * 60 * 1000;
+// setTimeout overflows past ~24.8 days (2^31 ms) and fires immediately, so cap each timer and
+// re-evaluate — long-lived tokens (e.g. a 1-year access token) chain 24h checks until near expiry.
+const MAX_REFRESH_TIMER_MS = 24 * 60 * 60 * 1000;
+// Floor so a token already at/near expiry doesn't schedule a busy 0ms loop on connect.
+const MIN_REFRESH_TIMER_MS = 5 * 1000;
+// Backoff before retrying a transiently-failed proactive refresh (network blip, 5xx).
+const REFRESH_RETRY_MS = 60 * 1000;
 
 /** Extract a short, human-readable reason from a connection error. */
 function friendlyError(err: unknown): string {
@@ -57,6 +69,7 @@ export class HttpMcpClient {
   private stopped = false;
   private ready = false;
   private reconnectTimer?: NodeJS.Timeout;
+  private refreshTimer?: NodeJS.Timeout;
   private readyListeners = new Set<() => void>();
 
   private awaitingAuth = false;
@@ -158,6 +171,10 @@ export class HttpMcpClient {
       this.connecting = false;
       this.lastError = undefined;
       log.info({ id: this.id, url: this.url }, 'MCP HTTP client connected');
+      // Best-effort: a failure to arm the refresh timer must never break the connection.
+      void this.scheduleProactiveRefresh().catch((err) =>
+        log.debug({ id: this.id, reason: friendlyError(err) }, 'Failed to schedule token refresh')
+      );
       this.notifyReady();
     } catch (err) {
       this.ready = false;
@@ -197,6 +214,71 @@ export class HttpMcpClient {
     // Tokens are now persisted by the provider. Reconnect with a fresh
     // transport — the old one was already started and cannot be reused.
     await this.connect();
+  }
+
+  /**
+   * Schedule a proactive OAuth token refresh a little before the access token expires. Re-arms
+   * itself after each refresh, and chains sub-timers for tokens whose lifetime exceeds the
+   * setTimeout ceiling. No-op for non-OAuth providers or tokens without a refresh_token/expiry.
+   */
+  private async scheduleProactiveRefresh(): Promise<void> {
+    if (!this.oauthProvider) return;
+    if (this.refreshTimer) {
+      clearTimeout(this.refreshTimer);
+      this.refreshTimer = undefined;
+    }
+    const untilRefresh = await this.oauthProvider.msUntilRefresh(REFRESH_BUFFER_MS);
+    if (untilRefresh === undefined) return;
+    const beyondCeiling = untilRefresh > MAX_REFRESH_TIMER_MS;
+    const delay = Math.max(Math.min(untilRefresh, MAX_REFRESH_TIMER_MS), MIN_REFRESH_TIMER_MS);
+    this.refreshTimer = setTimeout(() => {
+      this.refreshTimer = undefined;
+      // Still far from expiry — just re-evaluate rather than refreshing early.
+      if (beyondCeiling) {
+        void this.scheduleProactiveRefresh().catch((err) =>
+          log.debug({ id: this.id, reason: friendlyError(err) }, 'Failed to re-arm token refresh')
+        );
+        return;
+      }
+      void this.proactiveRefresh();
+    }, delay);
+    // Let the event loop exit even if a refresh is pending (matches setTimeout's usual test/CLI use).
+    this.refreshTimer.unref?.();
+  }
+
+  /**
+   * Refresh the access token via the stored refresh_token, ahead of expiry. On success the new token
+   * is persisted and picked up on the transport's next request (it reads tokens per-request), so no
+   * reconnect is needed; then re-arm the schedule. If the refresh_token itself is no longer valid,
+   * `auth()` returns 'REDIRECT' — interactive re-auth is required and the reactive path / manual
+   * re-auth will handle it, so don't loop here.
+   */
+  private async proactiveRefresh(): Promise<void> {
+    if (this.stopped || this.awaitingAuth || !this.oauthProvider) return;
+    try {
+      const result = await auth(this.oauthProvider, { serverUrl: this.url });
+      if (result === 'AUTHORIZED') {
+        log.info({ id: this.id }, 'Proactively refreshed OAuth token before expiry');
+        await this.scheduleProactiveRefresh();
+      } else {
+        log.warn(
+          { id: this.id },
+          'Proactive token refresh needs interactive re-authorization (refresh token invalid)'
+        );
+      }
+    } catch (err) {
+      log.warn(
+        { id: this.id, reason: friendlyError(err) },
+        'Proactive token refresh failed; retrying'
+      );
+      if (!this.stopped) {
+        this.refreshTimer = setTimeout(() => {
+          this.refreshTimer = undefined;
+          void this.proactiveRefresh();
+        }, REFRESH_RETRY_MS);
+        this.refreshTimer.unref?.();
+      }
+    }
   }
 
   async listTools(): Promise<Tool[]> {
@@ -282,6 +364,10 @@ export class HttpMcpClient {
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = undefined;
+    }
+    if (this.refreshTimer) {
+      clearTimeout(this.refreshTimer);
+      this.refreshTimer = undefined;
     }
     this.oauthProvider?.stopCallbackServer();
     await this.transport?.close();

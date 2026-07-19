@@ -77,6 +77,8 @@ vi.mock('../src/pool/oauth-provider.js', () => {
     FileOAuthProvider: vi.fn().mockImplementation(() => ({
       waitForAuthCode: vi.fn().mockImplementation(() => waitForAuthCodeImpl()),
       stopCallbackServer: vi.fn(),
+      // No refresh_token/expiry in these tests → proactive-refresh scheduling no-ops.
+      msUntilRefresh: vi.fn().mockResolvedValue(undefined),
     })),
   };
 });
