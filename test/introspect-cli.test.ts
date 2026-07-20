@@ -6,12 +6,17 @@ import { applyProfiles } from '../src/config/profiles.js';
 import { GatewayConfig } from '../src/config/schema.js';
 import { checkConfig, lintCommand, whoCan } from '../src/introspect/cli.js';
 
-function lintYaml(yaml: string, args: string[] = []): ReturnType<typeof lintCommand> {
+async function lintYaml(
+  yaml: string,
+  args: string[] = []
+): Promise<Awaited<ReturnType<typeof lintCommand>>> {
   const dir = mkdtempSync(join(tmpdir(), 'airlock-lint-cli-'));
   try {
     const path = join(dir, 'airlock.yaml');
     writeFileSync(path, yaml);
-    return lintCommand(['--config', path, ...args]);
+    // await INSIDE the try: lintCommand is async now, so returning the promise would let `finally`
+    // delete the config file out from under the still-running load.
+    return await lintCommand(['--config', path, ...args]);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -36,7 +41,7 @@ agents:
 `;
 
 describe('introspection CLI helpers', () => {
-  it('reverse maps effective decisions through the allowlist engine', () => {
+  it('reverse maps effective decisions through the allowlist engine', async () => {
     const config = GatewayConfig.parse({
       providers: {
         github: 'builtin',
@@ -85,7 +90,7 @@ describe('introspection CLI helpers', () => {
     ]);
   });
 
-  it('checks config structure without resolving env vars when requested', () => {
+  it('checks config structure without resolving env vars when requested', async () => {
     delete process.env['AIRLOCK_TEST_SECRET'];
     const dir = mkdtempSync(join(tmpdir(), 'airlock-introspect-cli-'));
     try {
@@ -121,7 +126,7 @@ agents:
     }
   });
 
-  it('does not include resolved secrets in config check json payloads', () => {
+  it('does not include resolved secrets in config check json payloads', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'airlock-introspect-cli-secrets-'));
     try {
       const path = join(dir, 'airlock.yaml');
@@ -152,7 +157,7 @@ agents:
     }
   });
 
-  it('exits non-zero when config check finds an unknown security key', () => {
+  it('exits non-zero when config check finds an unknown security key', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'airlock-introspect-cli-unknown-'));
     try {
       const path = join(dir, 'airlock.yaml');
@@ -180,7 +185,7 @@ agents:
     }
   });
 
-  it('exits non-zero when a declared arg_scope has no effect', () => {
+  it('exits non-zero when a declared arg_scope has no effect', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'airlock-introspect-cli-noop-scope-'));
     try {
       const path = join(dir, 'airlock.yaml');
@@ -213,7 +218,7 @@ agents:
     }
   });
 
-  it('can gate YAML scalar warnings with --fail-on warn', () => {
+  it('can gate YAML scalar warnings with --fail-on warn', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'airlock-introspect-cli-footgun-'));
     try {
       const path = join(dir, 'airlock.yaml');
@@ -251,8 +256,8 @@ agents:
     }
   });
 
-  it('collapses info lint findings to per-rule summaries by default', () => {
-    const result = lintYaml(INFO_ONLY_LINT_YAML);
+  it('collapses info lint findings to per-rule summaries by default', async () => {
+    const result = await lintYaml(INFO_ONLY_LINT_YAML);
 
     expect(result.exitCode).toBe(0);
     expect(result.text).toContain('Lint OK');
@@ -263,8 +268,8 @@ agents:
     expect(result.text).not.toContain('  - [selene] deny pattern');
   });
 
-  it('expands info lint findings with --verbose', () => {
-    const result = lintYaml(INFO_ONLY_LINT_YAML, ['--verbose']);
+  it('expands info lint findings with --verbose', async () => {
+    const result = await lintYaml(INFO_ONLY_LINT_YAML, ['--verbose']);
 
     expect(result.exitCode).toBe(0);
     expect(result.text).toContain('dead-deny: 4 (info)');
@@ -277,8 +282,8 @@ agents:
     expect(result.text).not.toContain('info collapsed');
   });
 
-  it('drops info lint summaries with --quiet', () => {
-    const result = lintYaml(INFO_ONLY_LINT_YAML, ['--quiet']);
+  it('drops info lint summaries with --quiet', async () => {
+    const result = await lintYaml(INFO_ONLY_LINT_YAML, ['--quiet']);
 
     expect(result.exitCode).toBe(0);
     expect(result.text).toContain('Lint OK (5 info hidden)');
@@ -286,12 +291,12 @@ agents:
     expect(result.text).not.toContain('unused-profile:');
   });
 
-  it('silences lint rules with --disable and lint.disable', () => {
-    const cliDisabled = lintYaml(INFO_ONLY_LINT_YAML, ['--disable', 'dead-deny,unused-profile']);
+  it('silences lint rules with --disable and lint.disable', async () => {
+    const cliDisabled = await lintYaml(INFO_ONLY_LINT_YAML, ['--disable', 'dead-deny,unused-profile']);
     expect(cliDisabled.exitCode).toBe(0);
     expect(cliDisabled.text).toBe('Lint OK');
 
-    const configDisabled = lintYaml(`
+    const configDisabled = await lintYaml(`
 lint:
   disable:
     - dead-deny
@@ -313,8 +318,8 @@ agents:
     expect(configDisabled.text).toBe('Lint OK');
   });
 
-  it('re-grades lint rules with lint.severity and --rule overrides', () => {
-    const configWarn = lintYaml(`
+  it('re-grades lint rules with lint.severity and --rule overrides', async () => {
+    const configWarn = await lintYaml(`
 lint:
   severity:
     dead-deny: warn
@@ -330,7 +335,7 @@ agents:
     expect(configWarn.exitCode).toBe(1);
     expect(configWarn.text).toContain('dead-deny: 1 (warn)');
 
-    const cliDowngrade = lintYaml(
+    const cliDowngrade = await lintYaml(
       `
 lint:
   severity:
@@ -350,13 +355,13 @@ agents:
     expect(cliDowngrade.text).toContain('dead-deny: 1 (info)');
   });
 
-  it('filters lint rules with --only and turns rules off with --rule', () => {
-    const onlyDeadDeny = lintYaml(INFO_ONLY_LINT_YAML, ['--only', 'dead-deny']);
+  it('filters lint rules with --only and turns rules off with --rule', async () => {
+    const onlyDeadDeny = await lintYaml(INFO_ONLY_LINT_YAML, ['--only', 'dead-deny']);
     expect(onlyDeadDeny.exitCode).toBe(0);
     expect(onlyDeadDeny.text).toContain('dead-deny: 4 (info)');
     expect(onlyDeadDeny.text).not.toContain('unused-profile');
 
-    const ruleOff = lintYaml(INFO_ONLY_LINT_YAML, [
+    const ruleOff = await lintYaml(INFO_ONLY_LINT_YAML, [
       '--only',
       'dead-deny',
       '--rule',
@@ -366,13 +371,13 @@ agents:
     expect(ruleOff.text).toBe('Lint OK');
   });
 
-  it('flips the lint exit code with --fail-on info', () => {
-    expect(lintYaml(INFO_ONLY_LINT_YAML).exitCode).toBe(0);
-    expect(lintYaml(INFO_ONLY_LINT_YAML, ['--fail-on', 'info']).exitCode).toBe(1);
+  it('flips the lint exit code with --fail-on info', async () => {
+    expect((await lintYaml(INFO_ONLY_LINT_YAML)).exitCode).toBe(0);
+    expect((await lintYaml(INFO_ONLY_LINT_YAML, ['--fail-on', 'info'])).exitCode).toBe(1);
   });
 
-  it('fails by default for warn-level empty-agent findings', () => {
-    const result = lintYaml(`
+  it('fails by default for warn-level empty-agent findings', async () => {
+    const result = await lintYaml(`
 agents:
   dev: {}
 `);
@@ -382,9 +387,9 @@ agents:
     expect(result.text).toContain('  - [dev] Agent has an empty effective allow/ask surface.');
   });
 
-  it('reports missing environment references as warn-level lint findings without resolving them', () => {
+  it('reports missing environment references as warn-level lint findings without resolving them', async () => {
     delete process.env['AIRLOCK_LINT_SECRET'];
-    const result = lintYaml(`
+    const result = await lintYaml(`
 server:
   auth_required: true
   api_secret: "\${AIRLOCK_LINT_SECRET}"
@@ -404,7 +409,7 @@ agents:
     );
   });
 
-  it('maps unresolvable references to a controllable lint rule', () => {
+  it('maps unresolvable references to a controllable lint rule', async () => {
     const yaml = `
 agents:
   dev:
@@ -412,22 +417,22 @@ agents:
       - missing
 `;
 
-    const defaultResult = lintYaml(yaml);
+    const defaultResult = await lintYaml(yaml);
     expect(defaultResult.exitCode).toBe(1);
     expect(defaultResult.text).toContain('unresolvable-ref: 1 (warn)');
     expect(defaultResult.text).toContain('extends references unknown profile "missing"');
 
-    const disabled = lintYaml(yaml, ['--disable', 'unresolvable-ref']);
+    const disabled = await lintYaml(yaml, ['--disable', 'unresolvable-ref']);
     expect(disabled.exitCode).toBe(0);
     expect(disabled.text).toBe('Lint OK');
 
-    const downgraded = lintYaml(yaml, ['--rule', 'unresolvable-ref=info']);
+    const downgraded = await lintYaml(yaml, ['--rule', 'unresolvable-ref=info']);
     expect(downgraded.exitCode).toBe(0);
     expect(downgraded.text).toContain('unresolvable-ref: 1 (info)');
   });
 
-  it('emits grouped lint JSON by rule', () => {
-    const result = lintYaml(INFO_ONLY_LINT_YAML, ['--json']);
+  it('emits grouped lint JSON by rule', async () => {
+    const result = await lintYaml(INFO_ONLY_LINT_YAML, ['--json']);
     const payload = result.data as {
       rule: string;
       severity: string;

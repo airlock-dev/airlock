@@ -49,6 +49,8 @@ const DEFAULT_LINT_SEVERITY: Record<LintRuleId, LintRuleSeverity> = {
   'empty-agent': 'warn',
   'missing-env-ref': 'warn',
   'unresolvable-ref': 'warn',
+  'unallocated-tool': 'info',
+  'dead-allow': 'warn',
 };
 
 const LINT_RULE_LABELS: Record<LintRuleId, string> = {
@@ -59,6 +61,8 @@ const LINT_RULE_LABELS: Record<LintRuleId, string> = {
   'empty-agent': 'Agent resolves to zero allow/ask tools.',
   'missing-env-ref': 'Environment variable reference is unset.',
   'unresolvable-ref': 'Extends, arg_scope, or value_set reference cannot be resolved.',
+  'unallocated-tool': 'Provider serves a tool no agent can reach.',
+  'dead-allow': 'Grant names a tool the provider does not serve.',
 };
 
 export async function runIntrospection(argv: string[]): Promise<void> {
@@ -97,7 +101,7 @@ export async function runIntrospection(argv: string[]): Promise<void> {
   }
 
   if (command === 'lint') {
-    const result = lintCommand(argv.slice(1));
+    const result = await lintCommand(argv.slice(1));
     writeResult(result, result.exitCode);
     return;
   }
@@ -284,7 +288,7 @@ async function toolsCommand(argv: string[]): Promise<CliResult> {
   };
 }
 
-export function lintCommand(argv: string[]): CliResult {
+export async function lintCommand(argv: string[]): Promise<CliResult> {
   const { values } = parseArgs({
     args: argv,
     options: {
@@ -295,6 +299,7 @@ export function lintCommand(argv: string[]): CliResult {
       only: { type: 'string', multiple: true },
       disable: { type: 'string', multiple: true },
       rule: { type: 'string', multiple: true },
+      'with-catalog': { type: 'boolean', default: false },
       json: { type: 'boolean', default: false },
       help: { type: 'boolean', short: 'h', default: false },
     },
@@ -333,10 +338,17 @@ export function lintCommand(argv: string[]): CliResult {
     rule: values.rule,
   });
   const resolvedConfig = unresolvableDiagnostics.length === 0 ? loaded.config : undefined;
+  // Catalog rules are opt-in because they CONNECT to every provider. Default lint stays offline so
+  // it remains usable in CI, on a laptop, and against a config whose providers aren't running.
+  const catalogFindings =
+    values['with-catalog'] && resolvedConfig
+      ? lintCatalog(resolvedConfig, await fetchLiveCatalog(values.config ?? './airlock.yaml'))
+      : [];
   const findings = applyLintControls(
     [
       ...unresolvableDiagnostics.map(lintFindingFromDiagnostic),
       ...lintConfig(loaded.rawConfig, resolvedConfig),
+      ...catalogFindings,
     ],
     controls
   );
@@ -348,6 +360,92 @@ export function lintCommand(argv: string[]): CliResult {
     data: values.json ? rules : payload,
     text: formatLint(payload, { verbose: values.verbose, quiet: values.quiet }),
   };
+}
+
+/**
+ * The live tool catalog, as `provider/tool` names grouped by provider. Absent providers (down,
+ * unreachable, disabled) must simply not appear — every catalog-aware rule below is scoped to
+ * providers we actually heard from, so an outage can never be mistaken for drift.
+ */
+export type LiveCatalog = Map<string, Set<string>>;
+
+/**
+ * Connect to every configured provider and record what it serves, as `provider/tool`.
+ *
+ * Providers that fail to answer are simply absent from the map — never present-but-empty. The
+ * catalog rules key off presence, so an unreachable provider produces silence rather than a flood
+ * of "this tool no longer exists" findings about a provider that is merely asleep.
+ */
+export async function fetchLiveCatalog(configPath: string): Promise<LiveCatalog> {
+  const discovered = await discoverTools(configPath);
+  const catalog: LiveCatalog = new Map();
+  for (const tool of discovered.tools) {
+    const existing = catalog.get(tool.provider);
+    if (existing) existing.add(tool.name);
+    else catalog.set(tool.provider, new Set([tool.name]));
+  }
+  return catalog;
+}
+
+/**
+ * Rules that compare config against what providers ACTUALLY serve. Split out from lintConfig
+ * because they need the network: the rest of lint is offline and must stay that way for CI.
+ *
+ * These exist because of a real incident (2026-07-20): a sidecar image sat 9 days behind its
+ * source, so a tool present in the repo was served by nothing while a tool that WAS served had
+ * silently lost two parameters. Config was valid, the provider was healthy, and every existing
+ * check was green. Drift lives in the gap between what a provider offers and what policy names.
+ */
+export function lintCatalog(resolvedConfig: Config, catalog: LiveCatalog): LintFinding[] {
+  const findings: LintFinding[] = [];
+  const agents = Object.entries(resolvedConfig.agents);
+
+  // unallocated-tool — the provider serves it, but no agent's allow/ask reaches it. Not an error:
+  // default-deny means this is SAFE, and plenty of tools are deliberately ungranted. It is
+  // reported because an unreachable tool is invisible to MCP introspection, so a capability you
+  // meant to grant looks identical to one you meant to withhold.
+  for (const [providerId, toolNames] of catalog) {
+    for (const toolName of toolNames) {
+      const reachable = agents.some(([, agent]) =>
+        [...agent.allow, ...agent.ask].some((pattern) => matches(pattern, toolName))
+      );
+      if (!reachable) {
+        findings.push({
+          rule: 'unallocated-tool',
+          severity: DEFAULT_LINT_SEVERITY['unallocated-tool'],
+          message: `${toolName} is served by provider "${providerId}" but no agent can reach it.`,
+          example: toolName,
+        });
+      }
+    }
+  }
+
+  // dead-allow — policy names a tool that no longer exists. Wildcards are skipped (a pattern that
+  // matches nothing today may match tomorrow's tool, which is the point of a wildcard), and so are
+  // providers missing from the catalog entirely: a provider that failed to connect would otherwise
+  // report its whole grant surface as dead, which is exactly the false alarm that trains people to
+  // ignore a linter.
+  const seenDeadGrants = new Set<string>();
+  for (const [agentName, agent] of agents) {
+    for (const pattern of [...agent.allow, ...agent.ask]) {
+      if (pattern.includes('*')) continue;
+      const providerId = pattern.split('/')[0];
+      const served = catalog.get(providerId);
+      if (!served || served.has(pattern)) continue;
+      const key = `${agentName}\0${pattern}`;
+      if (seenDeadGrants.has(key)) continue;
+      seenDeadGrants.add(key);
+      findings.push({
+        rule: 'dead-allow',
+        severity: DEFAULT_LINT_SEVERITY['dead-allow'],
+        agent: agentName,
+        message: `grants "${pattern}", which provider "${providerId}" does not serve.`,
+        example: `[${agentName}] ${pattern}`,
+      });
+    }
+  }
+
+  return findings;
 }
 
 export function lintConfig(rawConfig: Config, resolvedConfig?: Config): LintFinding[] {
@@ -930,10 +1028,13 @@ function lintHelp(): string {
   const rules = LINT_RULE_IDS.map(
     (rule) => `  ${rule} (${DEFAULT_LINT_SEVERITY[rule]}) - ${LINT_RULE_LABELS[rule]}`
   ).join('\n');
-  return `Run static hygiene rules over a config without connecting to providers.
+  return `Run static hygiene rules over a config. Offline by default; --with-catalog also compares
+policy against what providers ACTUALLY serve.
 
 Rules:
 ${rules}
+
+unallocated-tool and dead-allow require --with-catalog; without it they never fire.
 
 Default output prints warn/error findings in full and collapses each info rule to one summary line.
 
@@ -945,5 +1046,8 @@ Options:
   --disable ids                Disable comma-separated rule ids for this invocation
   --rule id=off|info|warn|error
                                Override a rule severity for this invocation
+  --with-catalog               Connect to providers and check policy against the live tool list.
+                               Finds tools nobody can reach, and grants naming tools that are gone.
+                               Providers that fail to answer are skipped, never reported as empty.
   --json                       Print grouped machine-readable findings`;
 }

@@ -795,6 +795,8 @@ export const LINT_RULE_IDS = [
   'empty-agent',
   'missing-env-ref',
   'unresolvable-ref',
+  'unallocated-tool',
+  'dead-allow',
 ] as const;
 export type LintRuleId = (typeof LINT_RULE_IDS)[number];
 

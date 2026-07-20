@@ -116,6 +116,12 @@ Returns gateway health status, pending HITL count, and uptime.
       "checkedAt": "2026-04-01T12:00:00.000Z"
     }
   },
+  "toolCatalog": {
+    "github": {
+      "count": 42,
+      "fingerprint": "sha256:9f2b…"
+    }
+  },
   "uptime": 3600,
   "pendingApprovals": 2
 }
@@ -141,6 +147,30 @@ Providers Airlock authenticates itself (`oauth: true`) report through the
 transport and need no configuration. Everything else stays `unknown` until you
 give it a [`credential_probe`](./config.md#credential-probe) — a green that
 hasn't been earned is worse than an honest `unknown`.
+
+`toolCatalog` answers a third question neither of the others can: **has the
+provider changed what its tools do?** One entry per provider, hashing every tool
+name, description, and input schema as agents actually receive them.
+
+| Field         | Meaning                                                |
+| ------------- | ------------------------------------------------------ |
+| `count`       | Tools currently served by that provider                |
+| `fingerprint` | `sha256:<hex>` over the provider's whole tool contract |
+
+The fingerprint is order-independent — tools are sorted by name and schema keys
+are sorted at every depth — so a reconnect never looks like a change. It moves
+only when the contract does.
+
+Pin it. A monitor that asserts the fingerprint you last reviewed will tell you
+the day a provider renames a parameter, drops one, or rewrites a description,
+none of which move `count` and none of which any other check notices. This is
+also a prompt-injection tripwire: a tool description is instructions to an
+agent, so an upstream silently rewriting one deserves a human read before it
+takes effect. Expect it to change on legitimate upstream updates too — that is
+the point, and re-pinning is the act of reviewing what changed.
+
+Recomputed on registry refresh, never per request, so polling `/health` costs
+nothing extra.
 
 Probes are cached per provider and refreshed lazily on read, so polling
 `/health` on a short interval costs at most one real call per `interval_ms` and

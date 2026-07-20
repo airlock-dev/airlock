@@ -272,7 +272,20 @@ export class Gateway {
       const uptime = Math.floor((Date.now() - this.startTime) / 1000);
       const status = dataPlane.status === 'ok' ? 'ok' : 'degraded';
       const sessions = this.sessionLimiter.snapshot();
-      return { status, dataPlane, mcpHealth, credentialHealth, pendingApprovals, sessions, uptime };
+      // Per-provider contract fingerprints. mcpHealth says a provider ANSWERS and credentialHealth
+      // says its credential WORKS; neither notices the provider quietly changing what its tools
+      // accept or what they tell an agent to do. Pin these downstream and you find out.
+      const toolCatalog = this.registry.getCatalogSummary();
+      return {
+        status,
+        dataPlane,
+        mcpHealth,
+        credentialHealth,
+        toolCatalog,
+        pendingApprovals,
+        sessions,
+        uptime,
+      };
     });
 
     const { port, host, insecure_remote_bind } = management;
