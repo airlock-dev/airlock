@@ -51,11 +51,62 @@ providers:
     client_secret: ${CLIENT_SECRET}
     oauth_callback_port: 9876
 
+  # MCP server authenticated as the APP itself (no user, no browser)
+  bot:
+    type: http
+    url: https://mcp.example.com
+    client_credentials:
+      token_url: https://api.example.com/oauth/token
+      client_id: ${BOT_CLIENT_ID}
+      client_secret: ${BOT_CLIENT_SECRET}
+      scope: read,write
+
   # Built-ins
   exec: builtin
   http: builtin
   airlock: builtin
 ```
+
+### App identity: `client_credentials`
+
+`oauth: true` runs the authorization-code flow: a human authorizes in a browser and the provider
+carries **that person's** identity. Everything an agent does through it lands under their name.
+
+`client_credentials` runs the OAuth2 client-credentials grant instead — Airlock authenticates as the
+**application**, with no user in the loop. Use it for autonomous agents whose writes should be
+attributable to a bot rather than to whoever last clicked "authorize":
+
+```yaml
+providers:
+  bot:
+    type: http
+    url: https://mcp.example.com
+    client_credentials:
+      token_url: https://api.example.com/oauth/token
+      client_id: ${BOT_CLIENT_ID}
+      client_secret: ${BOT_CLIENT_SECRET}
+      scope: read,write # verbatim — separator is the issuer's to define
+```
+
+| Field           | Effect                                                                |
+| --------------- | --------------------------------------------------------------------- |
+| `token_url`     | The issuer's token endpoint                                           |
+| `client_id`     | App client id (`${ENV}` supported)                                    |
+| `client_secret` | App client secret (`${ENV}` supported)                                |
+| `scope`         | Optional; passed through untouched, so use the issuer's own separator |
+
+Tokens are minted on demand, cached under `~/.airlock/oauth/<provider>.client-credentials.json` at
+`0600`, re-minted inside a 5-minute expiry buffer, and force-re-minted once on a `401` (rotating an
+app's client secret revokes every live token, and expiry is not the only way one dies). The disk
+cache is not just an optimization: issuers cap how many client-credentials tokens an app may hold at
+once, so minting fresh on every restart would eventually exhaust that quota.
+
+A provider declares **one** identity — setting both `oauth: true` and `client_credentials` is a
+config error. To have both, declare two providers and grant each to different agents.
+
+Credentials the issuer rejects outright (`invalid_client`, `unauthorized_client`, `invalid_scope`)
+are reported as `auth_required` in [`credentialHealth`](./management-api.md#get-health); a `503` from
+the issuer is not, so a flaky token endpoint never sends you off rotating a working secret.
 
 ### Provider instructions
 

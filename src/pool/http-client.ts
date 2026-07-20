@@ -3,6 +3,8 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import { auth, UnauthorizedError } from '@modelcontextprotocol/sdk/client/auth.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { FileOAuthProvider } from './oauth-provider.js';
+import { ClientCredentialsTokenSource } from './client-credentials.js';
+import type { ClientCredentialsConfig } from '../config/schema.js';
 import type { ProviderConnectionStatus } from './status.js';
 import { childLogger } from '../util/logger.js';
 import { VERSION } from '../version.js';
@@ -65,6 +67,7 @@ export class HttpMcpClient {
   private client?: Client;
   private transport?: StreamableHTTPClientTransport;
   private oauthProvider?: FileOAuthProvider;
+  private tokenSource?: ClientCredentialsTokenSource;
   private reconnectAttempt = 0;
   private stopped = false;
   private ready = false;
@@ -85,7 +88,8 @@ export class HttpMcpClient {
     private oauthCallbackPort = 18432,
     private clientId?: string,
     private clientSecret?: string,
-    private oauthCallbackUrl?: string
+    private oauthCallbackUrl?: string,
+    clientCredentials?: ClientCredentialsConfig
   ) {
     if (this.oauth) {
       this.oauthProvider = new FileOAuthProvider(
@@ -95,6 +99,11 @@ export class HttpMcpClient {
         this.clientSecret,
         this.oauthCallbackUrl
       );
+    }
+    // App-identity auth. Mutually exclusive with `oauth` (the loader rejects both together), so
+    // these two never fight over the Authorization header.
+    if (clientCredentials) {
+      this.tokenSource = new ClientCredentialsTokenSource(this.id, clientCredentials);
     }
   }
 
@@ -127,6 +136,10 @@ export class HttpMcpClient {
 
     if (this.oauthProvider) {
       transportOpts.authProvider = this.oauthProvider;
+    }
+
+    if (this.tokenSource) {
+      transportOpts.fetch = this.clientCredentialsFetch();
     }
 
     this.transport = new StreamableHTTPClientTransport(new URL(this.url), transportOpts);
@@ -206,6 +219,42 @@ export class HttpMcpClient {
       log.error({ id: this.id, reason: friendlyError(err) }, 'MCP HTTP connect failed');
       throw err;
     }
+  }
+
+  /**
+   * A `fetch` that stamps every request with the app's client-credentials token, minting it on
+   * first use and re-minting when it expires.
+   *
+   * This deliberately bypasses the SDK's own `auth()` machinery: that path assumes an authorization
+   * -code flow and would try to open a browser on a 401 — meaningless for an identity with no user
+   * behind it. Injecting at the transport's fetch seam keeps the whole grant self-contained.
+   *
+   * A 401 gets ONE forced re-mint and retry: expiry is not the only way these tokens die (rotating
+   * the client secret revokes every live token at once), and the alternative is a provider that
+   * stays dead until someone restarts the gateway.
+   */
+  private clientCredentialsFetch(): (url: string | URL, init?: RequestInit) => Promise<Response> {
+    const source = this.tokenSource!;
+    return async (url, init) => {
+      const send = async (force: boolean): Promise<Response> => {
+        const token = await source.getToken(force);
+        const headers = new Headers(init?.headers);
+        headers.set('Authorization', `Bearer ${token}`);
+        return fetch(url, { ...init, headers });
+      };
+
+      const res = await send(false);
+      if (res.status !== 401) return res;
+
+      // A streaming body can't be replayed, so a retry would send an empty request. MCP sends JSON
+      // strings, so this is the theoretical case — but silently sending a bodiless retry would be
+      // a nightmare to debug, so hand back the 401 and let the normal error path report it.
+      if (init?.body instanceof ReadableStream) return res;
+
+      await res.body?.cancel().catch(() => {});
+      log.info({ id: this.id }, 'Provider rejected client-credentials token — re-minting');
+      return send(true);
+    };
   }
 
   /**
@@ -334,6 +383,10 @@ export class HttpMcpClient {
     if (this.awaitingAuth) {
       return { status: 'auth_required', reason: this.lastError ?? 'OAuth authorization required' };
     }
+    // A rejected client secret is a credential problem, not an outage — say so, or it hides among
+    // the reconnect noise below and reads as "the provider is down".
+    const mintFailure = this.tokenSource?.lastAuthFailure;
+    if (mintFailure) return { status: 'auth_required', reason: mintFailure };
     // Once the fast attempts are spent we retry forever in the background, so a pending
     // reconnectTimer is no longer evidence of a transient blip — it is the steady state of an
     // outage. Report `down` in that case, or a long-dead provider would masquerade as

@@ -270,6 +270,22 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
     });
   }
 
+  // A provider carries ONE identity. `oauth: true` is a user's (authorization code, browser flow);
+  // `client_credentials` is the application's (no user at all). Declaring both is not a merge — it
+  // is an unanswerable question about whose name an agent's writes land under, so reject it here
+  // rather than let whichever code path runs first decide silently.
+  for (const [providerId, provider] of Object.entries(config.providers)) {
+    if (provider === 'builtin' || provider.type !== 'http') continue;
+    if (provider.oauth && provider.client_credentials) {
+      diagnostics.push({
+        level: 'error',
+        message: `Provider "${providerId}" sets both oauth: true and client_credentials.`,
+        suggestion:
+          'Pick one identity: oauth: true authenticates as a USER (browser flow), client_credentials authenticates as the APP. To have both, declare two providers.',
+      });
+    }
+  }
+
   if (config.default_profile && !profileNames.has(config.default_profile)) {
     diagnostics.push({
       level: 'error',
