@@ -532,6 +532,54 @@ agents:
     );
   });
 
+  it('errors when a provider declares both oauth and client_credentials', () => {
+    const config = GatewayConfig.parse({
+      providers: {
+        linearBot: {
+          type: 'http',
+          url: 'https://mcp.linear.app/mcp',
+          oauth: true,
+          client_credentials: {
+            token_url: 'https://api.linear.app/oauth/token',
+            client_id: 'cid',
+            client_secret: 'csecret',
+          },
+        },
+      },
+      agents: { agent1: { token: 'agent-secret' } },
+    });
+
+    const diagnostics = validateConfig(config);
+    expect(diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          level: 'error',
+          message: 'Provider "linearBot" sets both oauth: true and client_credentials.',
+        }),
+      ])
+    );
+  });
+
+  it('accepts a provider with client_credentials alone', () => {
+    const config = GatewayConfig.parse({
+      providers: {
+        linearBot: {
+          type: 'http',
+          url: 'https://mcp.linear.app/mcp',
+          client_credentials: {
+            token_url: 'https://api.linear.app/oauth/token',
+            client_id: 'cid',
+            client_secret: 'csecret',
+            scope: 'read,write',
+          },
+        },
+      },
+      agents: { agent1: { token: 'agent-secret' } },
+    });
+
+    expect(validateConfig(config).filter((d) => d.level === 'error')).toEqual([]);
+  });
+
   it('errors when default_profile references an unknown profile', () => {
     const config = GatewayConfig.parse({
       default_profile: 'nonexistent',

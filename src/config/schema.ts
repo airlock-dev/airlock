@@ -90,6 +90,37 @@ const CredentialProbeFields = {
   credential_probe: CredentialProbeConfig.optional(),
 };
 
+/**
+ * OAuth2 client-credentials grant — the gateway authenticates as the APPLICATION, with no user in
+ * the loop and no browser flow. Use it for provider-side bot/service identities: actions land as
+ * the app rather than as whoever last authorized it, which is what makes an autonomous agent's
+ * writes attributable.
+ *
+ * Distinct from `oauth: true`, which is the authorization-code flow and carries a USER's identity.
+ * The two are mutually exclusive (see the loader diagnostic) — a provider has one identity.
+ *
+ * Tokens are minted on demand, cached to disk, and re-minted proactively before expiry or reactively
+ * on a 401. Disk caching is load-bearing rather than an optimization: issuers cap how many tokens an
+ * app may hold at once (Linear allows 1000), so a gateway that minted on every restart would burn
+ * through that quota.
+ */
+export const ClientCredentialsConfig = z
+  .object({
+    /** The issuer's token endpoint, e.g. `https://api.linear.app/oauth/token`. */
+    token_url: z.string().url(),
+    client_id: EnvString,
+    client_secret: EnvString,
+    /**
+     * Scopes to request, verbatim — the separator is the issuer's to define (Linear uses commas,
+     * the OAuth2 spec says spaces), so the string is passed through untouched. Omit to accept the
+     * issuer's default scopes. NOTE: some issuers revoke every live token when an app's scopes
+     * change, so treat this as a value that is changed deliberately, not tuned.
+     */
+    scope: z.string().optional(),
+  })
+  .strict();
+export type ClientCredentialsConfig = z.infer<typeof ClientCredentialsConfig>;
+
 export const McpServerConfig = z.discriminatedUnion('type', [
   z
     .object({
@@ -123,6 +154,7 @@ export const McpServerConfig = z.discriminatedUnion('type', [
       oauth_callback_url: z.string().url().optional(),
       client_id: EnvString.optional(),
       client_secret: EnvString.optional(),
+      client_credentials: ClientCredentialsConfig.optional(),
       ...ProviderInstructionsFields,
       ...CredentialProbeFields,
     })
