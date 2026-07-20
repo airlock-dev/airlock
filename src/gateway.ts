@@ -3,6 +3,7 @@ import { createConnection, isIP } from 'net';
 import Fastify from 'fastify';
 import type { FastifyInstance } from 'fastify';
 import { ClientPool } from './pool/pool.js';
+import { CredentialHealthMonitor } from './pool/credential-health.js';
 import { ToolRegistry } from './registry/registry.js';
 import { AllowlistEngine } from './allowlist/engine.js';
 import { HitlEngine } from './hitl/engine.js';
@@ -24,7 +25,12 @@ import type { AgentServerDeps } from './transport/agent-server.js';
 import type { Config } from './config/loader.js';
 import type { HitlProvider, ApprovalApi } from './hitl/providers/types.js';
 import { createHitlProvider } from './hitl/provider-factory.js';
-import { getBuiltinProviders, getMcpConfigs, getProviderInstructions } from './config/schema.js';
+import {
+  getBuiltinProviders,
+  getCredentialProbes,
+  getMcpConfigs,
+  getProviderInstructions,
+} from './config/schema.js';
 import { buildAdapters } from './backend/factory.js';
 import { ActivityStream } from './activity/stream.js';
 import { childLogger } from './util/logger.js';
@@ -38,6 +44,7 @@ export interface GatewayOptions {
 
 export class Gateway {
   private pool!: ClientPool;
+  private credentialHealth!: CredentialHealthMonitor;
   private registry!: ToolRegistry;
   private allowlist!: AllowlistEngine;
   private hitlEngine!: HitlEngine;
@@ -111,6 +118,14 @@ export class Gateway {
     const mcpConfigs = getMcpConfigs(this.config.providers);
     this.pool = new ClientPool(mcpConfigs);
     await this.pool.initialize();
+
+    // Credential probes. Primed here (not on a timer) so the first /health poll after a restart
+    // carries real verdicts; afterwards it refreshes lazily on read.
+    this.credentialHealth = new CredentialHealthMonitor(
+      this.pool,
+      getCredentialProbes(this.config.providers)
+    );
+    void this.credentialHealth.prime();
 
     // Build adapters from config (MCP, builtins, CLIs, APIs)
     const adapters = this.buildAdapters();
@@ -252,11 +267,12 @@ export class Gateway {
       if (!checkRequestSecurity(request, reply, getRequestSecurity())) return;
       const dataPlane = await this.dataPlaneHealth();
       const mcpHealth = this.pool.healthCheck();
+      const credentialHealth = this.credentialHealth.snapshot();
       const pendingApprovals = this.hitlEngine.getPending().length;
       const uptime = Math.floor((Date.now() - this.startTime) / 1000);
       const status = dataPlane.status === 'ok' ? 'ok' : 'degraded';
       const sessions = this.sessionLimiter.snapshot();
-      return { status, dataPlane, mcpHealth, pendingApprovals, sessions, uptime };
+      return { status, dataPlane, mcpHealth, credentialHealth, pendingApprovals, sessions, uptime };
     });
 
     const { port, host, insecure_remote_bind } = management;
@@ -454,6 +470,7 @@ export class Gateway {
     this.hitlEngine.setTimeoutMs(newConfig.approvals.timeout_ms);
     const mcpConfigs = getMcpConfigs(newConfig.providers);
     await this.pool.reload(mcpConfigs);
+    this.credentialHealth.reload(getCredentialProbes(newConfig.providers));
     this.allowlist.reload(newConfig.agents);
     this.registry.reloadAgents(newConfig.agents, getProviderInstructions(newConfig.providers));
     // Rebuild adapters to pick up new CLIs/APIs
@@ -471,6 +488,7 @@ export class Gateway {
   async stop(): Promise<void> {
     log.info('Stopping Airlock gateway');
     this.sessionLimiter?.stop();
+    this.credentialHealth?.stop();
     this.pool?.disableReconnect();
     await this.pool?.stop();
     await this.managementApp?.close();

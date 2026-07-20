@@ -83,6 +83,49 @@ providers:
 advertised by the upstream provider are untrusted and go through the same prompt-injection scrubbing
 as tool descriptions, bounded at 4000 characters.
 
+### Credential probe
+
+`mcpHealth` proves a provider is _reachable_. It cannot prove its _credential still works_ — those
+are independent facts, and the gap between them is where outages hide: a Google Workspace sidecar
+whose refresh token expired keeps answering MCP normally, so health stays green for as long as it
+takes someone to notice nothing works.
+
+`credential_probe` closes that gap by making a real, cheap, read-only call and reporting the result
+as [`credentialHealth`](./management-api.md#get-health):
+
+```yaml
+providers:
+  gwsPersonal:
+    type: http
+    url: http://gws-personal:8000/mcp
+    credential_probe:
+      tool: search_gmail_messages # provider-local name, unprefixed
+      args: { query: 'label:receipts', page_size: 1 }
+      expect_contains: 'Found' # what a HEALTHY response looks like
+      interval_ms: 900000 # cache TTL; default 15m, floor 1m
+      timeout_ms: 15000 # default 15s
+```
+
+Pick the cheapest read the provider offers and scope it tightly — this runs unattended, forever.
+
+A thrown error or an `isError` result is a failure, and the failure text decides `auth_required` vs
+`error`. That covers most providers. It does not cover the ones that report a dead credential as a
+_successful_ text response — the Google sidecar's `ACTION REQUIRED: authorize…` arrives as a normal
+200 — which is what the two matchers are for:
+
+| Field             | Effect                                             |
+| ----------------- | -------------------------------------------------- |
+| `expect_contains` | A healthy response must contain this substring     |
+| `reject_contains` | A healthy response must not contain this substring |
+
+Prefer `expect_contains`, anchored on the shape of a healthy response. Both matchers scan the whole
+payload, so `reject_contains` can be tripped by the phrase appearing in returned _data_ — a probe
+that reads mail will eventually meet a message subject reading "Action Required".
+
+Providers with `oauth: true` are authenticated by Airlock itself and report through the transport,
+so they need no probe. A provider without one is reported as `unknown` rather than `ok`: transport-up
+is not credential-valid, and the gateway will not imply otherwise.
+
 ## `profiles`
 
 Reusable permission sets. See [Composable Profiles](/guides/profiles).
