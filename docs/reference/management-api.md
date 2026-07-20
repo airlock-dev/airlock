@@ -130,12 +130,12 @@ provider whose OAuth refresh token has died keeps serving MCP happily, so
 `mcpHealth` stays `ok` while every real call fails. One entry per pooled
 provider:
 
-| Field | Meaning |
-| --- | --- |
-| `status` | `ok`, `auth_required`, `error`, or `unknown` |
-| `source` | `connection` (the transport's own OAuth state), `probe` (an actual call), or `none` |
-| `reason` | Short explanation; omitted on a clean `ok` |
-| `checkedAt` | ISO timestamp of the last completed probe; only when `source` is `probe` |
+| Field       | Meaning                                                                             |
+| ----------- | ----------------------------------------------------------------------------------- |
+| `status`    | `ok`, `auth_required`, `error`, or `unknown`                                        |
+| `source`    | `connection` (the transport's own OAuth state), `probe` (an actual call), or `none` |
+| `reason`    | Short explanation; omitted on a clean `ok`                                          |
+| `checkedAt` | ISO timestamp of the last completed probe; only when `source` is `probe`            |
 
 Providers Airlock authenticates itself (`oauth: true`) report through the
 transport and need no configuration. Everything else stays `unknown` until you

@@ -85,7 +85,7 @@ as tool descriptions, bounded at 4000 characters.
 
 ### Credential probe
 
-`mcpHealth` proves a provider is *reachable*. It cannot prove its *credential still works* — those
+`mcpHealth` proves a provider is _reachable_. It cannot prove its _credential still works_ — those
 are independent facts, and the gap between them is where outages hide: a Google Workspace sidecar
 whose refresh token expired keeps answering MCP normally, so health stays green for as long as it
 takes someone to notice nothing works.
@@ -110,16 +110,16 @@ Pick the cheapest read the provider offers and scope it tightly — this runs un
 
 A thrown error or an `isError` result is a failure, and the failure text decides `auth_required` vs
 `error`. That covers most providers. It does not cover the ones that report a dead credential as a
-*successful* text response — the Google sidecar's `ACTION REQUIRED: authorize…` arrives as a normal
+_successful_ text response — the Google sidecar's `ACTION REQUIRED: authorize…` arrives as a normal
 200 — which is what the two matchers are for:
 
-| Field | Effect |
-| --- | --- |
-| `expect_contains` | A healthy response must contain this substring |
+| Field             | Effect                                             |
+| ----------------- | -------------------------------------------------- |
+| `expect_contains` | A healthy response must contain this substring     |
 | `reject_contains` | A healthy response must not contain this substring |
 
 Prefer `expect_contains`, anchored on the shape of a healthy response. Both matchers scan the whole
-payload, so `reject_contains` can be tripped by the phrase appearing in returned *data* — a probe
+payload, so `reject_contains` can be tripped by the phrase appearing in returned _data_ — a probe
 that reads mail will eventually meet a message subject reading "Action Required".
 
 Providers with `oauth: true` are authenticated by Airlock itself and report through the transport,
