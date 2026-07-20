@@ -109,6 +109,13 @@ Returns gateway health status, pending HITL count, and uptime.
   "mcpHealth": {
     "github": "ok"
   },
+  "credentialHealth": {
+    "github": {
+      "status": "ok",
+      "source": "probe",
+      "checkedAt": "2026-04-01T12:00:00.000Z"
+    }
+  },
   "uptime": 3600,
   "pendingApprovals": 2
 }
@@ -116,6 +123,29 @@ Returns gateway health status, pending HITL count, and uptime.
 
 `dataPlane` is a live TCP probe of the agent MCP listener. `mcpHealth` reports
 the downstream MCP provider pool behind that listener.
+
+`credentialHealth` answers a different question: not "is this provider
+reachable?" but "does its credential still work?" The two are independent — a
+provider whose OAuth refresh token has died keeps serving MCP happily, so
+`mcpHealth` stays `ok` while every real call fails. One entry per pooled
+provider:
+
+| Field | Meaning |
+| --- | --- |
+| `status` | `ok`, `auth_required`, `error`, or `unknown` |
+| `source` | `connection` (the transport's own OAuth state), `probe` (an actual call), or `none` |
+| `reason` | Short explanation; omitted on a clean `ok` |
+| `checkedAt` | ISO timestamp of the last completed probe; only when `source` is `probe` |
+
+Providers Airlock authenticates itself (`oauth: true`) report through the
+transport and need no configuration. Everything else stays `unknown` until you
+give it a [`credential_probe`](./config.md#credential-probe) — a green that
+hasn't been earned is worse than an honest `unknown`.
+
+Probes are cached per provider and refreshed lazily on read, so polling
+`/health` on a short interval costs at most one real call per `interval_ms` and
+never blocks on one. Alert on `auth_required`; treat `unknown` as "not yet
+answered", not as a failure.
 
 ### `GET /hitl/pending`
 

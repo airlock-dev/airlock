@@ -77,6 +77,39 @@
                           "include",
                           "ignore"
                         ]
+                      },
+                      "credential_probe": {
+                        "type": "object",
+                        "properties": {
+                          "tool": {
+                            "type": "string"
+                          },
+                          "args": {
+                            "type": "object",
+                            "additionalProperties": {},
+                            "default": {}
+                          },
+                          "expect_contains": {
+                            "type": "string"
+                          },
+                          "reject_contains": {
+                            "type": "string"
+                          },
+                          "interval_ms": {
+                            "type": "integer",
+                            "minimum": 60000,
+                            "default": 900000
+                          },
+                          "timeout_ms": {
+                            "type": "integer",
+                            "minimum": 1000,
+                            "default": 15000
+                          }
+                        },
+                        "required": [
+                          "tool"
+                        ],
+                        "additionalProperties": false
                       }
                     },
                     "required": [
@@ -115,6 +148,39 @@
                           "include",
                           "ignore"
                         ]
+                      },
+                      "credential_probe": {
+                        "type": "object",
+                        "properties": {
+                          "tool": {
+                            "type": "string"
+                          },
+                          "args": {
+                            "type": "object",
+                            "additionalProperties": {},
+                            "default": {}
+                          },
+                          "expect_contains": {
+                            "type": "string"
+                          },
+                          "reject_contains": {
+                            "type": "string"
+                          },
+                          "interval_ms": {
+                            "type": "integer",
+                            "minimum": 60000,
+                            "default": 900000
+                          },
+                          "timeout_ms": {
+                            "type": "integer",
+                            "minimum": 1000,
+                            "default": 15000
+                          }
+                        },
+                        "required": [
+                          "tool"
+                        ],
+                        "additionalProperties": false
                       }
                     },
                     "required": [
@@ -173,6 +239,39 @@
                           "include",
                           "ignore"
                         ]
+                      },
+                      "credential_probe": {
+                        "type": "object",
+                        "properties": {
+                          "tool": {
+                            "type": "string"
+                          },
+                          "args": {
+                            "type": "object",
+                            "additionalProperties": {},
+                            "default": {}
+                          },
+                          "expect_contains": {
+                            "type": "string"
+                          },
+                          "reject_contains": {
+                            "type": "string"
+                          },
+                          "interval_ms": {
+                            "type": "integer",
+                            "minimum": 60000,
+                            "default": 900000
+                          },
+                          "timeout_ms": {
+                            "type": "integer",
+                            "minimum": 1000,
+                            "default": 15000
+                          }
+                        },
+                        "required": [
+                          "tool"
+                        ],
+                        "additionalProperties": false
                       }
                     },
                     "required": [

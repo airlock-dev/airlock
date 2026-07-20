@@ -54,6 +54,42 @@ const ProviderInstructionsFields = {
   upstream_instructions: z.enum(['include', 'ignore']).optional(),
 };
 
+/**
+ * A cheap, read-only call used to prove the provider's CREDENTIAL still works — as opposed to
+ * `mcpHealth`, which only proves the transport is reachable. The distinction is not academic: a
+ * Google Workspace sidecar answers MCP happily for weeks after its refresh token dies, so the
+ * gateway reported `ok` the entire time nobody could read mail.
+ *
+ * Pick the cheapest read the provider offers, and scope it tightly — this runs unattended.
+ *
+ * Classification: a thrown error or an `isError` result is a failure, and the failure text decides
+ * `auth_required` vs `error`. Providers that report expired credentials as a SUCCESSFUL text
+ * response (the Google sidecar's "ACTION REQUIRED: authorize…" is one) can't be caught that way,
+ * which is what `expect_contains` / `reject_contains` are for. Prefer `expect_contains` and anchor
+ * it on the shape of a healthy response: `reject_contains` matches the whole payload, so a probe
+ * that returns user data can trip on the phrase appearing in that data (an email subject line
+ * reading "Action Required" would do it).
+ */
+export const CredentialProbeConfig = z
+  .object({
+    /** Provider-local tool name — unprefixed, e.g. `search_gmail_messages`. */
+    tool: z.string(),
+    args: z.record(z.unknown()).default({}),
+    /** Healthy responses must contain this substring; otherwise the credential is auth_required. */
+    expect_contains: z.string().optional(),
+    /** Healthy responses must NOT contain this substring. See the caveat above. */
+    reject_contains: z.string().optional(),
+    /** Cache TTL. Floored at a minute so a hot /health poll can't hammer a provider's API quota. */
+    interval_ms: z.number().int().min(60_000).default(900_000),
+    timeout_ms: z.number().int().min(1_000).default(15_000),
+  })
+  .strict();
+export type CredentialProbeConfig = z.infer<typeof CredentialProbeConfig>;
+
+const CredentialProbeFields = {
+  credential_probe: CredentialProbeConfig.optional(),
+};
+
 export const McpServerConfig = z.discriminatedUnion('type', [
   z
     .object({
@@ -63,6 +99,7 @@ export const McpServerConfig = z.discriminatedUnion('type', [
       args: z.array(z.string()).default([]),
       env: z.record(EnvString).optional(),
       ...ProviderInstructionsFields,
+      ...CredentialProbeFields,
     })
     .strict(),
   z
@@ -72,6 +109,7 @@ export const McpServerConfig = z.discriminatedUnion('type', [
       url: z.string().url(),
       headers: z.record(EnvString).optional(),
       ...ProviderInstructionsFields,
+      ...CredentialProbeFields,
     })
     .strict(),
   z
@@ -86,6 +124,7 @@ export const McpServerConfig = z.discriminatedUnion('type', [
       client_id: EnvString.optional(),
       client_secret: EnvString.optional(),
       ...ProviderInstructionsFields,
+      ...CredentialProbeFields,
     })
     .strict(),
 ]);
@@ -116,6 +155,21 @@ export function getMcpConfigs(
     if (cfg !== 'builtin' && cfg.type !== 'builtin' && cfg.enabled !== false) {
       result[id] = cfg;
     }
+  }
+  return result;
+}
+
+/**
+ * Credential probes for the providers that declare one, keyed by provider id. Providers without a
+ * probe are simply absent — the monitor still reports on them, using the transport's own OAuth
+ * state, and says `unknown` rather than guessing.
+ */
+export function getCredentialProbes(
+  providers: Record<string, ProviderConfig>
+): Record<string, CredentialProbeConfig> {
+  const result: Record<string, CredentialProbeConfig> = {};
+  for (const [id, cfg] of Object.entries(getMcpConfigs(providers))) {
+    if (cfg.credential_probe) result[id] = cfg.credential_probe;
   }
   return result;
 }
