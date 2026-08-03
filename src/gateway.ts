@@ -146,6 +146,12 @@ export class Gateway {
         .refresh()
         .catch((err) => log.error({ err }, 'Failed to refresh registry after MCP ready'));
     });
+    this.pool.onToolsChanged((id) => {
+      log.info({ id }, 'MCP tools changed, refreshing tool registry');
+      this.registry
+        .refresh()
+        .catch((err) => log.error({ err }, 'Failed to refresh registry after MCP tools changed'));
+    });
 
     await this.registry.refresh();
 

@@ -60,8 +60,11 @@ export function executeMiddleware(): Middleware {
     });
 
     try {
+      const registryCall = ctx.requestOptions
+        ? registry.call(ctx.toolName, ctx.args, ctx.agentId, ctx.meta, ctx.requestOptions)
+        : registry.call(ctx.toolName, ctx.args, ctx.agentId, ctx.meta);
       const callResult = await withExecutionTimeout(
-        registry.call(ctx.toolName, ctx.args, ctx.agentId, ctx.meta),
+        registryCall,
         limits.callExecutionTimeoutMs,
         ctx.toolName
       );
@@ -110,7 +113,11 @@ export function executeMiddleware(): Middleware {
  * timeoutMs === 0 disables the deadline entirely (the default, so genuinely long downstream calls
  * are never severed).
  */
-function withExecutionTimeout<T>(promise: Promise<T>, timeoutMs: number, toolName: string): Promise<T> {
+function withExecutionTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  toolName: string
+): Promise<T> {
   if (!timeoutMs || timeoutMs <= 0) return promise;
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => {
