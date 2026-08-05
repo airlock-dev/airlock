@@ -55,8 +55,12 @@ function isInvalidSessionError(err: unknown): boolean {
 
 function isAuthRequiredError(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err);
+  const normalized = msg.toLowerCase();
   return (
     err instanceof UnauthorizedError ||
+    normalized.includes('unauthorized') ||
+    /(^|\D)401(\D|$)/.test(normalized) ||
+    normalized.includes('invalid grant') ||
     msg.includes('InvalidGrantError') ||
     (err as { constructor?: { name?: string } } | undefined)?.constructor?.name ===
       'InvalidGrantError'
@@ -79,6 +83,8 @@ export class HttpMcpClient {
   private connecting = false;
   private reconnectExhausted = false;
   private lastError?: string;
+  /** Sticky until a successful reconnect; unlike awaitingAuth it survives callback/listener errors. */
+  private authorizationRequired = false;
 
   constructor(
     private id: string,
@@ -89,7 +95,8 @@ export class HttpMcpClient {
     private clientId?: string,
     private clientSecret?: string,
     private oauthCallbackUrl?: string,
-    clientCredentials?: ClientCredentialsConfig
+    clientCredentials?: ClientCredentialsConfig,
+    private requestTimeoutMs = 60_000
   ) {
     if (this.oauth) {
       this.oauthProvider = new FileOAuthProvider(
@@ -195,6 +202,7 @@ export class HttpMcpClient {
       this.reconnectExhausted = false;
       this.ready = true;
       this.connecting = false;
+      this.authorizationRequired = false;
       this.lastError = undefined;
       log.info({ id: this.id, url: this.url }, 'MCP HTTP client connected');
       // Best-effort: a failure to arm the refresh timer must never break the connection.
@@ -207,13 +215,7 @@ export class HttpMcpClient {
       this.connecting = false;
       this.lastError = friendlyError(err);
       if (isAuthRequiredError(err) && this.oauthProvider) {
-        this.awaitingAuth = true;
-        this.lastError = 'OAuth authorization required';
-        // Run the browser auth flow in the background so it doesn't block
-        // gateway startup (pool.initialize waits for all connect() calls).
-        void this.runOAuthFlow().catch((oauthErr) =>
-          log.error({ id: this.id, reason: friendlyError(oauthErr) }, 'OAuth flow failed')
-        );
+        this.startOAuthFlow(true);
         return;
       }
       log.error({ id: this.id, reason: friendlyError(err) }, 'MCP HTTP connect failed');
@@ -261,9 +263,22 @@ export class HttpMcpClient {
    * Run the full browser OAuth flow: wait for the user to authorize in the
    * browser, finish the auth exchange, then reconnect with fresh tokens.
    */
-  private async runOAuthFlow(): Promise<void> {
+  private async runOAuthFlow(authorizationPrepared: boolean): Promise<void> {
     this.awaitingAuth = true;
     try {
+      if (!authorizationPrepared) {
+        const result = await auth(this.oauthProvider!, { serverUrl: this.url });
+        if (result === 'AUTHORIZED') {
+          // The reactive 401 raced a usable refresh token. Reconnect without asking the operator
+          // to complete a browser flow that is no longer necessary.
+          this.awaitingAuth = false;
+          const oldTransport = this.transport;
+          if (oldTransport) oldTransport.onclose = undefined;
+          await oldTransport?.close();
+          await this.connect();
+          return;
+        }
+      }
       log.info({ id: this.id }, 'OAuth authorization required, waiting for browser flow');
       const code = await this.oauthProvider!.waitForAuthCode();
       await this.transport!.finishAuth(code);
@@ -276,6 +291,36 @@ export class HttpMcpClient {
     // Tokens are now persisted by the provider. Reconnect with a fresh
     // transport — the old one was already started and cannot be reused.
     await this.connect();
+  }
+
+  /**
+   * Move the provider to an honest auth_required state and start exactly one callback listener.
+   * The SDK has already generated the authorization URL/PKCE verifier by the time it surfaces an
+   * UnauthorizedError (including JSON-RPC "Unauthorized" failures), so this completes that flow.
+   */
+  private startOAuthFlow(authorizationPrepared = false): void {
+    if (!this.oauthProvider || this.stopped) return;
+    this.ready = false;
+    this.connecting = false;
+    this.authorizationRequired = true;
+    this.lastError = 'OAuth authorization required';
+    if (this.refreshTimer) {
+      clearTimeout(this.refreshTimer);
+      this.refreshTimer = undefined;
+    }
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = undefined;
+    }
+    if (this.awaitingAuth) return;
+
+    // Set this synchronously before launching the promise so concurrent failed tool calls cannot
+    // race multiple callback servers onto the same provider port.
+    this.awaitingAuth = true;
+    void this.runOAuthFlow(authorizationPrepared).catch((oauthErr) => {
+      this.lastError = friendlyError(oauthErr);
+      log.error({ id: this.id, reason: this.lastError }, 'OAuth flow failed');
+    });
   }
 
   /**
@@ -327,6 +372,7 @@ export class HttpMcpClient {
           { id: this.id },
           'Proactive token refresh needs interactive re-authorization (refresh token invalid)'
         );
+        this.startOAuthFlow(true);
       }
     } catch (err) {
       log.warn(
@@ -346,7 +392,7 @@ export class HttpMcpClient {
   async listTools(): Promise<Tool[]> {
     return this.withSessionRetry('listTools', async () => {
       if (!this.client || !this.ready) throw new Error(`MCP ${this.id} not connected`);
-      const result = await this.client.listTools();
+      const result = await this.client.listTools(undefined, { timeout: this.requestTimeoutMs });
       return result.tools;
     });
   }
@@ -361,7 +407,7 @@ export class HttpMcpClient {
       const request = requestMeta
         ? { name, arguments: args, _meta: requestMeta }
         : { name, arguments: args };
-      return this.client.callTool(request);
+      return this.client.callTool(request, undefined, { timeout: this.requestTimeoutMs });
     });
   }
 
@@ -380,7 +426,7 @@ export class HttpMcpClient {
 
   getConnectionStatus(): ProviderConnectionStatus {
     if (this.ready) return { status: 'up' };
-    if (this.awaitingAuth) {
+    if (this.authorizationRequired) {
       return { status: 'auth_required', reason: this.lastError ?? 'OAuth authorization required' };
     }
     // A rejected client secret is a credential problem, not an outage — say so, or it hides among
@@ -410,6 +456,10 @@ export class HttpMcpClient {
     try {
       return await fn();
     } catch (err) {
+      if (this.oauthProvider && isAuthRequiredError(err)) {
+        this.startOAuthFlow();
+        throw err;
+      }
       if (!isInvalidSessionError(err)) throw err;
       log.warn(
         { id: this.id, operation, reason: friendlyError(err) },

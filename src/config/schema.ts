@@ -155,6 +155,12 @@ export const McpServerConfig = z.discriminatedUnion('type', [
       client_id: EnvString.optional(),
       client_secret: EnvString.optional(),
       client_credentials: ClientCredentialsConfig.optional(),
+      /**
+       * Per-request MCP SDK deadline. The SDK otherwise imposes an invisible 60s default even when
+       * Airlock's outer call_execution_timeout_ms is higher, so slow but healthy providers can
+       * never use the operator-configured execution budget.
+       */
+      request_timeout_ms: z.number().int().positive().default(60_000),
       ...ProviderInstructionsFields,
       ...CredentialProbeFields,
     })

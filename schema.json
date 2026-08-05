@@ -230,6 +230,35 @@
                       "client_secret": {
                         "type": "string"
                       },
+                      "client_credentials": {
+                        "type": "object",
+                        "properties": {
+                          "token_url": {
+                            "type": "string",
+                            "format": "uri"
+                          },
+                          "client_id": {
+                            "type": "string"
+                          },
+                          "client_secret": {
+                            "type": "string"
+                          },
+                          "scope": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "token_url",
+                          "client_id",
+                          "client_secret"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "request_timeout_ms": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "default": 60000
+                      },
                       "instructions": {
                         "type": "string"
                       },
@@ -2489,7 +2518,9 @@
                   "unused-dimension",
                   "empty-agent",
                   "missing-env-ref",
-                  "unresolvable-ref"
+                  "unresolvable-ref",
+                  "unallocated-tool",
+                  "dead-allow"
                 ]
               },
               "default": []
@@ -2512,7 +2543,9 @@
                   "unused-dimension",
                   "empty-agent",
                   "missing-env-ref",
-                  "unresolvable-ref"
+                  "unresolvable-ref",
+                  "unallocated-tool",
+                  "dead-allow"
                 ]
               },
               "default": {}
