@@ -82,7 +82,8 @@ export class ClientPool {
           cfg.client_id,
           cfg.client_secret,
           cfg.oauth_callback_url,
-          cfg.client_credentials
+          cfg.client_credentials,
+          cfg.request_timeout_ms
         );
     }
   }

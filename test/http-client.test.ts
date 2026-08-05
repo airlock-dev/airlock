@@ -34,6 +34,13 @@ const clientInstances: {
   getServerVersion: ReturnType<typeof vi.fn>;
 }[] = [];
 
+const authMock = vi.hoisted(() => vi.fn());
+
+vi.mock('@modelcontextprotocol/sdk/client/auth.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@modelcontextprotocol/sdk/client/auth.js')>()),
+  auth: authMock,
+}));
+
 vi.mock('@modelcontextprotocol/sdk/client/streamableHttp.js', () => {
   return {
     StreamableHTTPClientTransport: vi.fn().mockImplementation(() => {
@@ -96,6 +103,7 @@ beforeEach(() => {
   clientInstances.length = 0;
   clientConnectCallCount = 0;
   waitForAuthCodeImpl = () => Promise.resolve('mock-auth-code');
+  authMock.mockReset().mockResolvedValue('AUTHORIZED');
   vi.clearAllMocks();
 });
 
@@ -330,10 +338,14 @@ describe('HttpMcpClient — stale Streamable HTTP session recovery', () => {
     });
     expect(transportInstances).toHaveLength(2);
     expect(transportInstances[0].close).toHaveBeenCalledTimes(1);
-    expect(clientInstances[1].callTool).toHaveBeenCalledWith({
-      name: 'health_get_health_status',
-      arguments: {},
-    });
+    expect(clientInstances[1].callTool).toHaveBeenCalledWith(
+      {
+        name: 'health_get_health_status',
+        arguments: {},
+      },
+      undefined,
+      { timeout: 60_000 }
+    );
   });
 
   it('does not reconnect for non-session tool errors', async () => {
@@ -348,5 +360,67 @@ describe('HttpMcpClient — stale Streamable HTTP session recovery', () => {
     );
     expect(transportInstances).toHaveLength(1);
     expect(transportInstances[0].close).not.toHaveBeenCalled();
+  });
+
+  it('marks an OAuth provider auth_required when a tool call returns Unauthorized', async () => {
+    clientConnectCallCount = 1;
+    waitForAuthCodeImpl = () => new Promise(() => {});
+    authMock.mockResolvedValueOnce('REDIRECT');
+    const client = new HttpMcpClient('amoura', 'https://mcp.amoura.io/mcp', undefined, true);
+    await client.connect();
+    clientInstances[0].callTool.mockRejectedValueOnce(new Error('Unauthorized'));
+
+    await expect(client.callTool('health_get_health_status', {})).rejects.toThrow('Unauthorized');
+    expect(client.isReady()).toBe(false);
+    expect(client.getConnectionStatus()).toEqual({
+      status: 'auth_required',
+      reason: 'OAuth authorization required',
+    });
+    expect(authMock).toHaveBeenCalledWith(expect.anything(), {
+      serverUrl: 'https://mcp.amoura.io/mcp',
+    });
+  });
+
+  it('marks an OAuth provider auth_required when proactive refresh needs reauthorization', async () => {
+    clientConnectCallCount = 1;
+    waitForAuthCodeImpl = () => new Promise(() => {});
+    authMock.mockResolvedValueOnce('REDIRECT');
+    const client = new HttpMcpClient('amoura', 'https://mcp.amoura.io/mcp', undefined, true);
+    await client.connect();
+
+    await (client as unknown as { proactiveRefresh(): Promise<void> }).proactiveRefresh();
+
+    expect(client.isReady()).toBe(false);
+    expect(client.getConnectionStatus()).toEqual({
+      status: 'auth_required',
+      reason: 'OAuth authorization required',
+    });
+  });
+
+  it('passes the configured request timeout to listTools and callTool', async () => {
+    clientConnectCallCount = 1;
+    const client = new HttpMcpClient(
+      'amoura',
+      'https://mcp.amoura.io/mcp',
+      undefined,
+      false,
+      18432,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      110_000
+    );
+    await client.connect();
+
+    await client.listTools();
+    await client.callTool('health_get_health_status', {});
+
+    expect(clientInstances[0].listTools).toHaveBeenCalledWith(undefined, { timeout: 110_000 });
+    expect(clientInstances[0].callTool).toHaveBeenCalledWith(
+      { name: 'health_get_health_status', arguments: {} },
+      undefined,
+      { timeout: 110_000 }
+    );
   });
 });

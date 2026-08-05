@@ -50,6 +50,9 @@ providers:
     client_id: ${CLIENT_ID}
     client_secret: ${CLIENT_SECRET}
     oauth_callback_port: 9876
+    # Override the MCP SDK's 60s default for slow providers. Keep this below the
+    # consuming agent's call_execution_timeout_ms so Airlock retains the outer bound.
+    request_timeout_ms: 110000
 
   # MCP server authenticated as the APP itself (no user, no browser)
   bot:
