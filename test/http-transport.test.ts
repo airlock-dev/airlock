@@ -39,6 +39,7 @@ import type { AuditLogger } from '../src/audit/logger.js';
 import type { BackendAdapter } from '../src/backend/types.js';
 import type { ToolCall, ToolResult } from '../src/types.js';
 import type { AgentServerDeps } from '../src/transport/agent-server.js';
+import { DEFAULT_LIMITS, SessionLimiter } from '../src/transport/session-limiter.js';
 
 // ─── FakeAdapter (same pattern as e2e-stack.test.ts) ─────────────────────────
 
@@ -138,6 +139,8 @@ interface BuildServerOpts {
   allowedOrigins?: string[];
   /** Additional named agents beyond 'test' */
   extraAgents?: Record<string, AgentConfig>;
+  /** Optional shared transport limiter */
+  sessionLimiter?: SessionLimiter;
 }
 
 async function buildServer(opts: BuildServerOpts = {}): Promise<ServerFixture> {
@@ -186,6 +189,7 @@ async function buildServer(opts: BuildServerOpts = {}): Promise<ServerFixture> {
     secret: opts.secret,
     authRequired: opts.authRequired,
     allowedOrigins: opts.allowedOrigins,
+    sessionLimiter: opts.sessionLimiter,
   });
   await app.listen({ port: 0, host: '127.0.0.1' });
   const port = (app.server.address() as AddressInfo).port;
@@ -641,6 +645,46 @@ describe('http-transport: session management', () => {
 
     await a.client.close();
     await b.client.close();
+  });
+});
+
+describe('http-transport: idle session reaping', () => {
+  it('removes a reaped session so stale requests receive 404', async () => {
+    const clock = { now: 0 };
+    const sessionLimiter = new SessionLimiter({
+      getLimits: () => ({
+        ...DEFAULT_LIMITS,
+        sessionIdleMs: 100,
+        sessionMaxLifetimeMs: 0,
+      }),
+      now: () => clock.now,
+    });
+    const srv = await buildServer({ sessionLimiter });
+
+    try {
+      const { client, transport } = await connect(srv.port);
+      const sessionId = transport.sessionId!;
+      expect(sessionId).toBeTruthy();
+
+      clock.now = 101;
+      sessionLimiter.sweep();
+
+      const res = await fetch(`http://127.0.0.1:${srv.port}/agents/test/mcp`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Mcp-Session-Id': sessionId,
+        },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'ping' }),
+      });
+      expect(res.status).toBe(404);
+      expect(await res.json()).toEqual({ error: `Session not found: ${sessionId}` });
+
+      await client.close().catch(() => {});
+    } finally {
+      sessionLimiter.stop();
+      await srv.teardown();
+    }
   });
 });
 

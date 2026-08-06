@@ -76,6 +76,10 @@ export function hitlGateMiddleware(): Middleware {
     }
 
     if (result === 'disconnected') {
+      // With a zero/small batch window the notification timer may not have fired yet. Remove the
+      // dead request first so operators never receive an approval push for a ticket that the
+      // engine is about to mark cancelled and that no companion can open.
+      hitlBatcher.remove(ticket.id);
       hitlEngine.cancel(ticket.id);
       auditLogger.log({
         agent_id: ctx.agentId,
