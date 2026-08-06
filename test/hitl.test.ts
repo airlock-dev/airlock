@@ -260,4 +260,49 @@ describe('HitlBatcher', () => {
     expect(cb).toHaveBeenCalledTimes(2);
     vi.useRealTimers();
   });
+
+  it('does not dispatch a request removed before the batch window closes', () => {
+    vi.useFakeTimers();
+    const batcher = new HitlBatcher(1000);
+    const cb = vi.fn();
+    batcher.onBatchReady(cb);
+
+    batcher.add({
+      id: 'cancelled',
+      code: 'CANCEL01',
+      agentId: 'agent1',
+      tool: 'messages/send',
+      args: {},
+      timeoutMs: 5000,
+    });
+
+    expect(batcher.remove('cancelled')).toBe(true);
+    vi.advanceTimersByTime(1100);
+    expect(cb).not.toHaveBeenCalled();
+    vi.useRealTimers();
+  });
+
+  it('keeps the remaining requests when one item is removed from a batch', () => {
+    vi.useFakeTimers();
+    const batcher = new HitlBatcher(1000);
+    const cb = vi.fn();
+    batcher.onBatchReady(cb);
+
+    for (const id of ['keep', 'cancelled']) {
+      batcher.add({
+        id,
+        code: id === 'keep' ? 'KEEP0001' : 'CANCEL01',
+        agentId: 'agent1',
+        tool: 'messages/send',
+        args: {},
+        timeoutMs: 5000,
+      });
+    }
+
+    expect(batcher.remove('cancelled')).toBe(true);
+    vi.advanceTimersByTime(1100);
+    expect(cb).toHaveBeenCalledOnce();
+    expect(cb.mock.calls[0][1].map((request: { id: string }) => request.id)).toEqual(['keep']);
+    vi.useRealTimers();
+  });
 });

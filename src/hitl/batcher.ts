@@ -33,6 +33,23 @@ export class HitlBatcher {
     }
   }
 
+  /** Remove a request that was cancelled before its notification batch was dispatched. */
+  remove(id: string): boolean {
+    for (const [agentId, batch] of this.batches) {
+      const index = batch.requests.findIndex((request) => request.id === id);
+      if (index === -1) continue;
+
+      batch.requests.splice(index, 1);
+      if (batch.requests.length === 0) {
+        clearTimeout(batch.timer);
+        this.batches.delete(agentId);
+      }
+      log.debug({ agentId, id }, 'Removed cancelled request from notification batch');
+      return true;
+    }
+    return false;
+  }
+
   private flush(agentId: string): void {
     const batch = this.batches.get(agentId);
     if (!batch) return;

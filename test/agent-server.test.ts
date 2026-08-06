@@ -406,6 +406,9 @@ describe('call_tool — HITL gate', () => {
     const provider = makeMockProvider();
     const hitlEngine = new HitlEngine(auditLogger, provider, 10000);
     const hitlBatcher = new HitlBatcher(50);
+    hitlBatcher.onBatchReady((_agentId, requests) => {
+      void provider.notify(requests);
+    });
     const registry = makeMockRegistry([], { merged: true });
     const ac = new AbortController();
 
@@ -437,6 +440,9 @@ describe('call_tool — HITL gate', () => {
     expect(auditLogger.log).toHaveBeenCalledWith(
       expect.objectContaining({ result: 'hitl_disconnected' })
     );
+    // The queued push must be removed along with the ticket, not delivered after cancellation.
+    await new Promise((r) => setTimeout(r, 75));
+    expect(provider.notify).not.toHaveBeenCalled();
   });
 
   it('errors immediately when signal is already aborted before call', async () => {

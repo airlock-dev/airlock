@@ -99,7 +99,17 @@ export async function httpServerPlugin(
         sessionIdGenerator: () => randomUUID(),
         onsessioninitialized: (id) => {
           sessions.set(id, { transport, ac, profileId });
-          limiter?.register(id, profileId, () => ac.abort());
+          limiter?.register(id, profileId, () => {
+            // A reaped transport must stop being addressable immediately. Aborting only the
+            // agent signal leaves the MCP session in `sessions`, so a stale client can keep using
+            // it: reads work, while every HITL call sees the permanently-aborted signal and is
+            // cancelled as soon as its approval is created.
+            sessions.delete(id);
+            ac.abort();
+            void transport.close().catch((err: unknown) => {
+              log.warn({ profileId, sessionId: id, err }, 'Failed to close reaped MCP transport');
+            });
+          });
           log.info({ profileId, sessionId: id }, 'HTTP session initialized');
         },
         onsessionclosed: (id) => {
