@@ -3,6 +3,8 @@ import type { CredentialProbeConfig } from '../config/schema.js';
 import { childLogger } from '../util/logger.js';
 
 const log = childLogger('credential-health');
+const AUTOMATIC_OAUTH_PROBE_INTERVAL_MS = 15 * 60 * 1000;
+const AUTOMATIC_OAUTH_PROBE_TIMEOUT_MS = 15 * 1000;
 
 export type CredentialHealthState = 'ok' | 'auth_required' | 'error' | 'unknown';
 
@@ -106,7 +108,10 @@ export class CredentialHealthMonitor {
 
   /** Run every configured probe once, concurrently. Failures are recorded, never thrown. */
   async prime(): Promise<void> {
-    await Promise.allSettled(Object.keys(this.probes).map((id) => this.refresh(id)));
+    const ids = this.pool
+      .getMcpIds()
+      .filter((id) => this.probes[id] || this.pool.isOAuthProvider(id));
+    await Promise.allSettled(ids.map((id) => this.refresh(id)));
   }
 
   /**
@@ -135,7 +140,8 @@ export class CredentialHealthMonitor {
     }
 
     const probe = this.probes[id];
-    if (!probe) {
+    const automaticOAuthProbe = !probe && this.pool.isOAuthProvider(id);
+    if (!probe && !automaticOAuthProbe) {
       // No probe, and the transport is not complaining. Transport-up is NOT credential-valid, so
       // say so plainly rather than reporting a green that hasn't been earned.
       return {
@@ -166,14 +172,55 @@ export class CredentialHealthMonitor {
 
   private async refresh(id: string): Promise<void> {
     const probe = this.probes[id];
-    if (!probe || this.stopped) return;
+    const automaticOAuthProbe = !probe && this.pool.isOAuthProvider(id);
+    if ((!probe && !automaticOAuthProbe) || this.stopped) return;
 
-    const health = await this.runProbe(id, probe);
+    const health = probe ? await this.runProbe(id, probe) : await this.runAutomaticOAuthProbe(id);
     if (this.stopped) return;
-    this.cache.set(id, { ...health, expiresAt: Date.now() + probe.interval_ms });
+    this.cache.set(id, {
+      ...health,
+      expiresAt: Date.now() + (probe?.interval_ms ?? AUTOMATIC_OAUTH_PROBE_INTERVAL_MS),
+    });
 
     if (health.status !== 'ok') {
       log.warn({ id, status: health.status, reason: health.reason }, 'Credential probe failed');
+    }
+  }
+
+  /**
+   * Every authorization-code provider gets a free authenticated probe. listTools is universal MCP,
+   * read-only, and still traverses the live OAuth transport; connector-specific business probes can
+   * override it when a server is known to keep listing tools after its downstream credential dies.
+   */
+  private async runAutomaticOAuthProbe(id: string): Promise<CredentialHealth> {
+    const checkedAt = new Date().toISOString();
+    if (!this.pool.isReady(id)) {
+      const connection = this.pool.getProviderConnectionStatus(id);
+      return {
+        status: 'unknown',
+        source: 'probe',
+        reason: truncate(
+          `provider not connected: ${connection?.reason ?? connection?.status ?? 'unknown'}`
+        ),
+        checkedAt,
+      };
+    }
+
+    try {
+      await this.withTimeout(
+        this.pool.listTools(id),
+        AUTOMATIC_OAUTH_PROBE_TIMEOUT_MS,
+        `automatic OAuth probe timed out after ${AUTOMATIC_OAUTH_PROBE_TIMEOUT_MS}ms`
+      );
+      return { status: 'ok', source: 'probe', checkedAt };
+    } catch (err) {
+      const message = errorMessage(err);
+      return {
+        status: looksLikeAuthFailure(message) ? 'auth_required' : 'error',
+        source: 'probe',
+        reason: truncate(message),
+        checkedAt,
+      };
     }
   }
 

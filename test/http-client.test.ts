@@ -81,11 +81,14 @@ vi.mock('@modelcontextprotocol/sdk/client/index.js', () => {
 
 // FileOAuthProvider: waitForAuthCode resolves immediately; no file I/O, no browser.
 let waitForAuthCodeImpl: () => Promise<string> = () => Promise.resolve('mock-auth-code');
+let waitForTokenChangeImpl: () => Promise<void> = () => new Promise(() => {});
 vi.mock('../src/pool/oauth-provider.js', () => {
   return {
     FileOAuthProvider: vi.fn().mockImplementation(() => ({
       waitForAuthCode: vi.fn().mockImplementation(() => waitForAuthCodeImpl()),
       stopCallbackServer: vi.fn(),
+      tokenVersion: vi.fn().mockResolvedValue(undefined),
+      waitForTokenChange: vi.fn().mockImplementation(() => waitForTokenChangeImpl()),
       // No refresh_token/expiry in these tests → proactive-refresh scheduling no-ops.
       msUntilRefresh: vi.fn().mockResolvedValue(undefined),
     })),
@@ -103,6 +106,7 @@ beforeEach(() => {
   clientInstances.length = 0;
   clientConnectCallCount = 0;
   waitForAuthCodeImpl = () => Promise.resolve('mock-auth-code');
+  waitForTokenChangeImpl = () => new Promise(() => {});
   authMock.mockReset().mockResolvedValue('AUTHORIZED');
   vi.clearAllMocks();
 });
@@ -189,6 +193,22 @@ describe('HttpMcpClient — OAuth reconnect', () => {
     // If awaitingAuth were still true this would silently return without creating a transport
     await client.connect();
     expect(transportInstances.length).toBeGreaterThan(countBefore);
+  });
+
+  it('recovers when another OAuth helper replaces credentials during the browser flow', async () => {
+    let credentialsChanged!: () => void;
+    waitForAuthCodeImpl = () => new Promise(() => {});
+    waitForTokenChangeImpl = () => new Promise<void>((resolve) => (credentialsChanged = resolve));
+    authMock.mockResolvedValueOnce('AUTHORIZED');
+
+    const client = new HttpMcpClient('amoura', 'https://mcp.amoura.io/mcp', undefined, true);
+    await client.connect();
+    credentialsChanged();
+    await flushOAuthFlow();
+
+    expect(client.isReady()).toBe(true);
+    expect(client.getConnectionStatus()).toEqual({ status: 'up' });
+    expect(transportInstances).toHaveLength(2);
   });
 });
 

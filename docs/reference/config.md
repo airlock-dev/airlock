@@ -176,9 +176,12 @@ Prefer `expect_contains`, anchored on the shape of a healthy response. Both matc
 payload, so `reject_contains` can be tripped by the phrase appearing in returned _data_ — a probe
 that reads mail will eventually meet a message subject reading "Action Required".
 
-Providers with `oauth: true` are authenticated by Airlock itself and report through the transport,
-so they need no probe. A provider without one is reported as `unknown` rather than `ok`: transport-up
-is not credential-valid, and the gateway will not imply otherwise.
+Providers with `oauth: true` are authenticated by Airlock itself. They report negative failures
+through the transport and automatically earn positive health through a cached, read-only
+`listTools` probe. An explicit `credential_probe` overrides that generic check and is still
+recommended when a provider can list tools even though a separate downstream credential is dead.
+Non-OAuth providers without an explicit probe are reported as `unknown` rather than `ok`:
+transport-up is not credential-valid, and the gateway will not imply otherwise.
 
 ## `profiles`
 

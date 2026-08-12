@@ -113,6 +113,24 @@ describe('ClientCredentialsTokenSource', () => {
     expect(await source.getToken()).toBe('tok-2');
   });
 
+  it('does not continuously mint when the token lifetime is only five minutes', async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ access_token: 'tok-1', expires_in: 300 }))
+      .mockResolvedValueOnce(jsonResponse({ access_token: 'tok-2', expires_in: 300 }));
+
+    vi.useFakeTimers();
+    const now = Date.now();
+    const source = new ClientCredentialsTokenSource('linearBot', CFG, storeDir);
+    expect(await source.getToken()).toBe('tok-1');
+    expect(await source.getToken()).toBe('tok-1');
+
+    vi.setSystemTime(now + 269_000);
+    expect(await source.getToken()).toBe('tok-1');
+    vi.setSystemTime(now + 271_000);
+    expect(await source.getToken()).toBe('tok-2');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it('holds a token with no declared expiry until forced', async () => {
     fetchMock
       .mockResolvedValueOnce(jsonResponse({ access_token: 'tok-1' }))

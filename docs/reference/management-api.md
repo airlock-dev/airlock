@@ -143,10 +143,13 @@ provider:
 | `reason`    | Short explanation; omitted on a clean `ok`                                          |
 | `checkedAt` | ISO timestamp of the last completed probe; only when `source` is `probe`            |
 
-Providers Airlock authenticates itself (`oauth: true`) report through the
-transport and need no configuration. Everything else stays `unknown` until you
-give it a [`credential_probe`](./config.md#credential-probe) — a green that
-hasn't been earned is worse than an honest `unknown`.
+Providers Airlock authenticates itself (`oauth: true`) automatically receive a
+cached, read-only `listTools` probe, so they earn a positive result without
+configuration as well as reporting negative failures from the transport. Define
+a [`credential_probe`](./config.md#credential-probe) to override that generic
+check with a stronger business call. Everything else stays `unknown` until it
+has an explicit probe — a green that hasn't been earned is worse than an honest
+`unknown`.
 
 `toolCatalog` answers a third question neither of the others can: **has the
 provider changed what its tools do?** One entry per provider, hashing every tool

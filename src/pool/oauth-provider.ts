@@ -1,6 +1,7 @@
-import { chmod, readFile, writeFile, mkdir } from 'fs/promises';
+import { readFile } from 'fs/promises';
 import { join } from 'path';
 import { execFile } from 'child_process';
+import { createHash } from 'crypto';
 import { createServer, type Server as HttpServer } from 'http';
 import type { OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.js';
 import type {
@@ -9,8 +10,12 @@ import type {
   OAuthTokens,
 } from '@modelcontextprotocol/sdk/shared/auth.js';
 import { childLogger } from '../util/logger.js';
+import { atomicWritePrivateFile } from '../util/atomic-file.js';
+import { adaptiveExpiryBuffer } from './oauth-timing.js';
 
 const log = childLogger('oauth');
+const PERSIST_RETRY_MS = 30 * 1000;
+const TOKEN_CHANGE_POLL_MS = 2 * 1000;
 
 interface PersistedData {
   clientInfo?: OAuthClientInformationFull;
@@ -33,6 +38,11 @@ export class FileOAuthProvider implements OAuthClientProvider {
   private authCodeResolve?: (code: string) => void;
   private browserOpenedAt = 0;
   private expectedState?: string;
+  /** A rotated token that is usable in memory but could not yet be committed to disk. */
+  private persistenceDirty = false;
+  private persistenceRetryTimer?: NodeJS.Timeout;
+  /** Serializes atomic replacements so an older save can never land after a newer one. */
+  private saveQueue: Promise<void> = Promise.resolve();
 
   constructor(
     private serverId: string,
@@ -104,6 +114,9 @@ export class FileOAuthProvider implements OAuthClientProvider {
   }
 
   async saveTokens(tokens: OAuthTokens): Promise<void> {
+    // A fresh provider instance must load the persisted refresh token before handling a refresh
+    // response that may omit it.
+    await this.load();
     // Preserve an existing refresh_token when a refresh response omits one.
     // Many OAuth providers return refresh_token only on the initial authorization
     // (or rotate it and expect the client to retain the prior value until it is
@@ -115,7 +128,19 @@ export class FileOAuthProvider implements OAuthClientProvider {
     }
     this.data.tokens = tokens;
     this.data.obtainedAt = Date.now();
-    await this.save();
+    this.persistenceDirty = true;
+    try {
+      await this.save();
+    } catch (err) {
+      // The freshly rotated token still works in this process. Do not make the SDK retry the token
+      // endpoint: that can invalidate this token too. Hold it in memory and retry only the disk
+      // commit until storage recovers.
+      log.warn(
+        { serverId: this.serverId, reason: err instanceof Error ? err.message : String(err) },
+        'Could not persist OAuth tokens; holding them in memory and retrying storage'
+      );
+      this.schedulePersistenceRetry();
+    }
   }
 
   /**
@@ -133,8 +158,37 @@ export class FileOAuthProvider implements OAuthClientProvider {
     const tokens = this.data.tokens;
     if (!tokens?.refresh_token || !tokens.expires_in) return undefined;
     const obtainedAt = this.data.obtainedAt ?? 0;
-    const expiresAt = obtainedAt + tokens.expires_in * 1000;
-    return Math.max(0, expiresAt - bufferMs - Date.now());
+    const lifetimeMs = tokens.expires_in * 1000;
+    const expiresAt = obtainedAt + lifetimeMs;
+    const effectiveBufferMs = adaptiveExpiryBuffer(lifetimeMs, bufferMs);
+    return Math.max(0, expiresAt - effectiveBufferMs - Date.now());
+  }
+
+  /** Opaque marker used to notice credentials completed by another Airlock process/tool. */
+  async tokenVersion(): Promise<string | undefined> {
+    await this.load();
+    if (!this.data.tokens) return undefined;
+    return createHash('sha256').update(JSON.stringify(this.data.tokens)).digest('hex');
+  }
+
+  /** Wait until an out-of-band OAuth helper replaces the token file. */
+  async waitForTokenChange(previous: string | undefined, signal: AbortSignal): Promise<void> {
+    while (!signal.aborted) {
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, TOKEN_CHANGE_POLL_MS);
+        timer.unref?.();
+        signal.addEventListener(
+          'abort',
+          () => {
+            clearTimeout(timer);
+            resolve();
+          },
+          { once: true }
+        );
+      });
+      if (signal.aborted) return;
+      if ((await this.tokenVersion()) !== previous) return;
+    }
   }
 
   async invalidateCredentials(scope: 'all' | 'tokens'): Promise<void> {
@@ -258,10 +312,15 @@ export class FileOAuthProvider implements OAuthClientProvider {
     // exchange. Scoped to the non-relay path so relay state-wrapping semantics are untouched.
     if (this.expectedState === '' && this.relayCallbackUrl === undefined) return true;
     if (state === this.expectedState) return true;
-    return this.relayCallbackUrl !== undefined && state === `${this.callbackPort}.${this.expectedState}`;
+    return (
+      this.relayCallbackUrl !== undefined && state === `${this.callbackPort}.${this.expectedState}`
+    );
   }
 
   private async load(): Promise<void> {
+    // Never replace a newer rotated token held in memory with the stale on-disk token merely
+    // because the previous disk commit failed.
+    if (this.persistenceDirty) return;
     try {
       const data = await readFile(this.storePath, 'utf-8');
       this.data = JSON.parse(data) as PersistedData;
@@ -271,10 +330,34 @@ export class FileOAuthProvider implements OAuthClientProvider {
   }
 
   private async save(): Promise<void> {
-    const dir = join(this.storePath, '..');
-    await mkdir(dir, { recursive: true, mode: 0o700 });
-    await chmod(dir, 0o700).catch(() => {});
-    await writeFile(this.storePath, JSON.stringify(this.data, null, 2), { mode: 0o600 });
-    await chmod(this.storePath, 0o600).catch(() => {});
+    const snapshot = JSON.stringify(this.data, null, 2);
+    const write = this.saveQueue.then(() => atomicWritePrivateFile(this.storePath, snapshot));
+    this.saveQueue = write.catch(() => {});
+    await write;
+
+    // A newer mutation may have arrived while this snapshot waited on the queue. Only declare the
+    // store clean when the file we just committed still represents current memory.
+    if (snapshot === JSON.stringify(this.data, null, 2)) {
+      this.persistenceDirty = false;
+      if (this.persistenceRetryTimer) {
+        clearTimeout(this.persistenceRetryTimer);
+        this.persistenceRetryTimer = undefined;
+      }
+    }
+  }
+
+  private schedulePersistenceRetry(): void {
+    if (this.persistenceRetryTimer) return;
+    this.persistenceRetryTimer = setTimeout(() => {
+      this.persistenceRetryTimer = undefined;
+      void this.save().catch((err) => {
+        log.warn(
+          { serverId: this.serverId, reason: err instanceof Error ? err.message : String(err) },
+          'OAuth token persistence still unavailable; retrying'
+        );
+        this.schedulePersistenceRetry();
+      });
+    }, PERSIST_RETRY_MS);
+    this.persistenceRetryTimer.unref?.();
   }
 }

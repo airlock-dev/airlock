@@ -102,6 +102,12 @@ export class ClientPool {
     return this.clients.get(mcpId)?.getConnectionStatus();
   }
 
+  /** Whether Airlock owns an authorization-code OAuth credential for this provider. */
+  isOAuthProvider(mcpId: string): boolean {
+    const cfg = this.mcps[mcpId];
+    return cfg?.type === 'http' && cfg.oauth === true;
+  }
+
   async callTool(
     mcpId: string,
     toolName: string,
