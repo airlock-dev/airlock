@@ -22,17 +22,22 @@ interface FakePoolOptions {
   connection?: ProviderConnectionStatus;
   ready?: boolean;
   callTool?: (id: string, tool: string, args: Record<string, unknown>) => Promise<unknown>;
+  oauth?: boolean;
+  listTools?: (id: string) => Promise<unknown>;
 }
 
 function fakePool(options: FakePoolOptions = {}) {
   const callTool = vi.fn(options.callTool ?? (async () => textResult('ok')));
+  const listTools = vi.fn(options.listTools ?? (async () => []));
   const pool = {
     getMcpIds: () => options.ids ?? ['gwsPersonal'],
     getProviderConnectionStatus: () => options.connection ?? ({ status: 'up' } as const),
     isReady: () => options.ready ?? true,
+    isOAuthProvider: () => options.oauth ?? false,
     callTool,
+    listTools,
   } as unknown as ClientPool;
-  return { pool, callTool };
+  return { pool, callTool, listTools };
 }
 
 describe('CredentialHealthMonitor', () => {
@@ -63,6 +68,31 @@ describe('CredentialHealthMonitor', () => {
     // The whole point: transport-up is not credential-valid, and we refuse to imply it is.
     expect(health.status).toBe('unknown');
     expect(health.reason).toBe('no credential_probe configured');
+  });
+
+  it('automatically probes every Airlock-managed OAuth provider with listTools', async () => {
+    const { pool, listTools, callTool } = fakePool({ oauth: true });
+    const monitor = new CredentialHealthMonitor(pool, {});
+
+    await monitor.prime();
+
+    expect(monitor.snapshot().gwsPersonal).toMatchObject({ status: 'ok', source: 'probe' });
+    expect(listTools).toHaveBeenCalledWith('gwsPersonal');
+    expect(callTool).not.toHaveBeenCalled();
+  });
+
+  it('reports auth_required when the automatic OAuth probe is rejected', async () => {
+    const { pool } = fakePool({
+      oauth: true,
+      listTools: async () => {
+        throw new Error('401 Unauthorized');
+      },
+    });
+    const monitor = new CredentialHealthMonitor(pool, {});
+
+    await monitor.prime();
+
+    expect(monitor.snapshot().gwsPersonal.status).toBe('auth_required');
   });
 
   it('trusts the transport when Airlock holds the OAuth itself', () => {

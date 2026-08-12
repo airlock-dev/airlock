@@ -279,9 +279,39 @@ export class HttpMcpClient {
           return;
         }
       }
-      log.info({ id: this.id }, 'OAuth authorization required, waiting for browser flow');
-      const code = await this.oauthProvider!.waitForAuthCode();
-      await this.transport!.finishAuth(code);
+      // Usually the callback completes this process's flow. A CLI/helper may instead finish OAuth
+      // and replace the shared credential file. Notice that replacement and recover immediately;
+      // previously this client waited forever until Airlock was restarted.
+      while (true) {
+        log.info({ id: this.id }, 'OAuth authorization required, waiting for browser flow');
+        const previousTokenVersion = await this.oauthProvider!.tokenVersion();
+        const tokenChangeAbort = new AbortController();
+        const outcome = await Promise.race([
+          this.oauthProvider!.waitForAuthCode().then((code) => ({ code })),
+          this.oauthProvider!.waitForTokenChange(
+            previousTokenVersion,
+            tokenChangeAbort.signal
+          ).then(() => ({ credentialsChanged: true as const })),
+        ]);
+        tokenChangeAbort.abort();
+
+        if ('code' in outcome) {
+          await this.transport!.finishAuth(outcome.code);
+          break;
+        }
+
+        this.oauthProvider!.stopCallbackServer();
+        const result = await auth(this.oauthProvider!, { serverUrl: this.url });
+        if (result === 'AUTHORIZED') {
+          const oldTransport = this.transport;
+          if (oldTransport) oldTransport.onclose = undefined;
+          await oldTransport?.close();
+          await this.connectAfterOAuth();
+          return;
+        }
+        // The replacement was not usable. auth() prepared a fresh authorization request; wait for
+        // that callback (or another external replacement) without latching stale state.
+      }
     } catch (err) {
       this.lastError = friendlyError(err);
       throw err;
@@ -290,6 +320,12 @@ export class HttpMcpClient {
     }
     // Tokens are now persisted by the provider. Reconnect with a fresh
     // transport — the old one was already started and cannot be reused.
+    await this.connectAfterOAuth();
+  }
+
+  /** Reconnect while runOAuthFlow still owns the awaitingAuth latch. */
+  private async connectAfterOAuth(): Promise<void> {
+    this.awaitingAuth = false;
     await this.connect();
   }
 

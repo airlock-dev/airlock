@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rm, writeFile } from 'fs/promises';
+import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -84,6 +84,35 @@ describe('FileOAuthProvider — refresh_token preservation', () => {
     const tokens = await provider.tokens();
     expect(tokens?.refresh_token).toBe('refresh-2');
   });
+
+  it('keeps a rotated token in memory when persistence fails instead of refreshing it again', async () => {
+    const provider = new FileOAuthProvider('broken\0path', 18432);
+    await expect(provider.saveTokens(initial)).resolves.toBeUndefined();
+
+    expect((await provider.tokens())?.refresh_token).toBe('refresh-1');
+  });
+
+  it('does not truncate the last known-good token file when a replacement write fails', async () => {
+    const provider = new FileOAuthProvider('test-server', 18432);
+    await provider.saveTokens(initial);
+    const path = join(tempHome, '.airlock', 'oauth', 'test-server.json');
+    const original = await readFile(path, 'utf-8');
+    const protectedParent = join(tempHome, '.airlock');
+
+    await chmod(protectedParent, 0o000);
+    try {
+      await provider.saveTokens({
+        access_token: 'access-2',
+        token_type: 'Bearer',
+        refresh_token: 'refresh-2',
+        expires_in: 3600,
+      });
+      expect((await provider.tokens())?.refresh_token).toBe('refresh-2');
+    } finally {
+      await chmod(protectedParent, 0o700);
+    }
+    expect(await readFile(path, 'utf-8')).toBe(original);
+  });
 });
 
 describe('FileOAuthProvider — proactive refresh schedule (msUntilRefresh)', () => {
@@ -133,15 +162,31 @@ describe('FileOAuthProvider — proactive refresh schedule (msUntilRefresh)', ()
     expect(await provider.msUntilRefresh(BUFFER)).toBeUndefined();
   });
 
-  it('never returns negative for an already-expired token', async () => {
+  it('uses a proportional buffer for short-lived tokens instead of refreshing immediately', async () => {
+    const provider = new FileOAuthProvider('short', 18432);
+    await provider.saveTokens({
+      access_token: 'a',
+      token_type: 'Bearer',
+      refresh_token: 'r',
+      expires_in: 300,
+    });
+    const ms = await provider.msUntilRefresh(BUFFER);
+    expect(ms).toBeLessThanOrEqual(270_000);
+    expect(ms).toBeGreaterThan(265_000);
+  });
+
+  it('never returns negative for an actually expired token', async () => {
+    vi.useFakeTimers();
     const provider = new FileOAuthProvider('expired', 18432);
     await provider.saveTokens({
       access_token: 'a',
       token_type: 'Bearer',
       refresh_token: 'r',
-      expires_in: 10, // 10s < 5min buffer → already past the refresh point
+      expires_in: 10,
     });
+    vi.setSystemTime(Date.now() + 11_000);
     expect(await provider.msUntilRefresh(BUFFER)).toBe(0);
+    vi.useRealTimers();
   });
 
   it('refreshes promptly for a legacy token persisted without obtainedAt', async () => {
