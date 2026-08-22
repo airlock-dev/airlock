@@ -56,6 +56,34 @@ describe('untrustedEnvelopeMiddleware', () => {
     expect(result.text.endsWith(`</untrusted-output-${boundary}>`)).toBe(true);
     expect(result.text.match(new RegExp(`</untrusted-output-${boundary}>`, 'g'))).toHaveLength(1);
   });
+
+  it('does not mark first-party Airlock tool output as untrusted', async () => {
+    const mw = untrustedEnvelopeMiddleware();
+    const result = await mw(
+      makeCtx({ toolName: 'airlock/status' }),
+      makeNext('gateway status: healthy')
+    );
+
+    expect(result.text).toBe('gateway status: healthy');
+    expect(result.text).not.toContain('untrusted-output-');
+  });
+
+  it('does not trust an unknown tool merely because it uses the airlock namespace', async () => {
+    const mw = untrustedEnvelopeMiddleware();
+    const result = await mw(makeCtx({ toolName: 'airlock/not-a-builtin' }), makeNext('spoofed'));
+
+    expect(result.text).toMatch(/^<untrusted-output-[a-f0-9]{12} /);
+  });
+
+  it('continues to wrap self-hosted provider output', async () => {
+    const mw = untrustedEnvelopeMiddleware();
+    const result = await mw(
+      makeCtx({ toolName: 'knowledgebase/read_note' }),
+      makeNext('operator-authored note')
+    );
+
+    expect(result.text).toMatch(/^<untrusted-output-[a-f0-9]{12} /);
+  });
 });
 
 describe('stripQueryParamsMiddleware', () => {

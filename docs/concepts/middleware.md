@@ -153,7 +153,9 @@ agents:
 ### Untrusted Envelope
 
 Wraps tool responses in randomized untrusted-output tags so untrusted content
-cannot reliably terminate the envelope.
+cannot reliably terminate the envelope. Airlock's built-in `airlock/*` tools are
+first-party gateway output and bypass this envelope; downstream and sidecar
+providers remain wrapped.
 
 ```yaml
 agents:
