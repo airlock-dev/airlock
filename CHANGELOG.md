@@ -1,5 +1,44 @@
 # Changelog
 
+## [0.3.0](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.38...airlock-bot-v0.3.0) (2026-08-22)
+
+
+### ⚠ BREAKING CHANGES
+
+* **config:** the default flips from on-for-all to per-agent (off unless an agent opts in). Set server.expose_tools_api: all (or opt agents in) to keep prior behavior; explicit legacy true/false still work.
+
+### Features
+
+* **audit:** log request lifecycle (received → dispatched → result) by request_id ([#153](https://github.com/airlock-dev/airlock/issues/153)) ([8278b6f](https://github.com/airlock-dev/airlock/commit/8278b6f16f1887810b47f093f14c213362e07809))
+* **command-policy:** general allow/ask/deny router for dispatcher-tool command args ([#158](https://github.com/airlock-dev/airlock/issues/158)) ([38ab1b0](https://github.com/airlock-dev/airlock/commit/38ab1b0b07c986ee2a04bbb26003234e3acdbe29))
+* **config:** optional default_profile inherited by every agent ([#156](https://github.com/airlock-dev/airlock/issues/156)) ([70da4ff](https://github.com/airlock-dev/airlock/commit/70da4ffef16dd0f406a05e77951d0721b668e2a0))
+* **config:** per-agent expose_tools_api with all/none/per-agent modes ([#146](https://github.com/airlock-dev/airlock/issues/146)) ([4ba0ac4](https://github.com/airlock-dev/airlock/commit/4ba0ac4616a95a1778515159363599efa052f527))
+* **dashboard:** show provider status issue count ([#151](https://github.com/airlock-dev/airlock/issues/151)) ([7017451](https://github.com/airlock-dev/airlock/commit/70174519748b306ebd3188d09165b1348d19d442))
+* expose agent-visible provider status ([#149](https://github.com/airlock-dev/airlock/issues/149)) ([5f037ea](https://github.com/airlock-dev/airlock/commit/5f037eac50e93a21b632aec9b10af34539555955))
+* **health:** report per-provider credential health, not just reachability ([#168](https://github.com/airlock-dev/airlock/issues/168)) ([fee65ca](https://github.com/airlock-dev/airlock/commit/fee65cae4a3bea6110209888fa68a21abaaaea75))
+* **oauth:** proactively refresh access tokens before expiry ([#164](https://github.com/airlock-dev/airlock/issues/164)) ([4ef11ff](https://github.com/airlock-dev/airlock/commit/4ef11ff14660b0ec2c37a77cb536c40dd1682415))
+* per-agent session bulkheads so one agent can't starve the others ([#150](https://github.com/airlock-dev/airlock/issues/150)) ([575784e](https://github.com/airlock-dev/airlock/commit/575784e7a6f38f351b3713faa763a775cce1dd09))
+* **pool:** authenticate providers as an app via client_credentials ([#169](https://github.com/airlock-dev/airlock/issues/169)) ([d293d5d](https://github.com/airlock-dev/airlock/commit/d293d5d9d3e7498372ef7ef0981f79938fa75be6))
+* **registry:** detect tool-catalog drift — fingerprints and two lint rules ([#170](https://github.com/airlock-dev/airlock/issues/170)) ([ce8d1c8](https://github.com/airlock-dev/airlock/commit/ce8d1c8340654ba6ded08cbbe0a45b0764f87c10))
+* **registry:** proxy MCP server instructions, and let config extend them ([#165](https://github.com/airlock-dev/airlock/issues/165)) ([5639398](https://github.com/airlock-dev/airlock/commit/5639398de6f4c2340ecc0974cfb4289d158c1e2b))
+* **transport:** log MCP requests at the transport layer to surface session wedges ([#154](https://github.com/airlock-dev/airlock/issues/154)) ([416b6e5](https://github.com/airlock-dev/airlock/commit/416b6e5b9bd92b467b9257b258beb6357fc20991))
+
+
+### Bug Fixes
+
+* align docs and reject complex parameters ([#159](https://github.com/airlock-dev/airlock/issues/159)) ([2397579](https://github.com/airlock-dev/airlock/commit/23975794ca5abe7743bcc2ab57d0815a64c3f680))
+* close reaped sessions before HITL requests ([#171](https://github.com/airlock-dev/airlock/issues/171)) ([6f01ba7](https://github.com/airlock-dev/airlock/commit/6f01ba74b26fe8d89f9a0a9911e2d42133cd2078))
+* **command-policy:** carry `default` through the profile merge ([#160](https://github.com/airlock-dev/airlock/issues/160)) ([fd4c41c](https://github.com/airlock-dev/airlock/commit/fd4c41c87a10348a9176a5c35e28371cd7badeb1))
+* **companion:** avoid status item redraw loop ([#161](https://github.com/airlock-dev/airlock/issues/161)) ([e907420](https://github.com/airlock-dev/airlock/commit/e9074207b445cde2547494c99d607e7ba937f057))
+* **companion:** constrain status icon and notarize dmg ([#162](https://github.com/airlock-dev/airlock/issues/162)) ([ab3b6e8](https://github.com/airlock-dev/airlock/commit/ab3b6e897dc7e6edafccc4e154fa5e226f42e95f))
+* **middleware:** trust built-in Airlock output ([#173](https://github.com/airlock-dev/airlock/issues/173)) ([68a71c7](https://github.com/airlock-dev/airlock/commit/68a71c7f0139c823971b95a79cf800e837630d3a))
+* **oauth:** accept stateless loopback callbacks when no state was issued ([#163](https://github.com/airlock-dev/airlock/issues/163)) ([b768fec](https://github.com/airlock-dev/airlock/commit/b768fec43c1134c36b4106e4d0ecb2fa28c6b8c4))
+* **oauth:** harden refresh and credential persistence ([#172](https://github.com/airlock-dev/airlock/issues/172)) ([2db1ee7](https://github.com/airlock-dev/airlock/commit/2db1ee732a969439e47db94eca4fe47de0fa3d55))
+* **oauth:** preserve refresh_token when a refresh response omits one ([#155](https://github.com/airlock-dev/airlock/issues/155)) ([cfac992](https://github.com/airlock-dev/airlock/commit/cfac992b9ef6bfc0979f041257ded016f8257a67))
+* **pool:** stop leaking MCP sessions and stop giving up on downed providers ([#167](https://github.com/airlock-dev/airlock/issues/167)) ([8a780f7](https://github.com/airlock-dev/airlock/commit/8a780f7ec873a40a0952166dd98912c1a80b425d))
+* **registry:** demote upstream headings in proxied instructions ([#166](https://github.com/airlock-dev/airlock/issues/166)) ([6a306ce](https://github.com/airlock-dev/airlock/commit/6a306ce1f8680b68843b8107c8bec8711aa35798))
+* **transport:** TCP keep-alive so silently-dead peers release their MCP session ([#152](https://github.com/airlock-dev/airlock/issues/152)) ([597f3a6](https://github.com/airlock-dev/airlock/commit/597f3a6695d38c1d7b00fdd0da04e3426b79762b))
+
 ## [0.2.38](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.37...airlock-bot-v0.2.38) (2026-06-25)
 
 
