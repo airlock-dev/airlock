@@ -41,6 +41,8 @@ Airlock  ←→  HITL (Telegram / Slack / webhook / TUI / macOS / dashboard)
 
 ## Install
 
+Requires Node.js 22 or newer.
+
 ```bash
 npm install -g airlock-bot
 ```
