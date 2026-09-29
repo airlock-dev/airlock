@@ -17,7 +17,7 @@
     "airlock.service"
   ],
   "engines": {
-    "node": ">=18"
+    "node": ">=22"
   },
   "repository": {
     "type": "git",
@@ -63,7 +63,7 @@
     "@modelcontextprotocol/sdk": "^1.27.1",
     "ai": "^6.0.116",
     "ajv": "^8.18.0",
-    "better-sqlite3": "^11.0.0",
+    "better-sqlite3": "^13.0.3",
     "chokidar": "^3.6.0",
     "fastify": "^5.0.0",
     "pino": "^9.0.0",
