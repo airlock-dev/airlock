@@ -214,7 +214,17 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
             return
         }
 
+        guard ["APPROVE", "ALLOW_ONE_HOUR", "ALWAYS_ALLOW", "DENY"].contains(response.actionIdentifier) else {
+            await refreshApprovalNotifications(using: client)
+            postRefresh()
+            return
+        }
+
         do {
+            let pending = try await client.pendingApprovals()
+            guard pending.contains(where: { $0.id == approvalId && !$0.isExpired() }) else {
+                throw AirlockAPIError.alreadyResolved
+            }
             switch response.actionIdentifier {
             case "APPROVE":
                 try await client.decide(id: approvalId, decision: .approved)
@@ -233,12 +243,15 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
                 break
             }
             UserDefaults.standard.removeObject(forKey: "lastNotificationActionError")
+            await removeDeliveredApprovalNotification(matching: approvalId)
+        } catch AirlockAPIError.alreadyResolved {
+            UserDefaults.standard.set(AirlockAPIError.alreadyResolved.localizedDescription, forKey: "lastNotificationActionError")
+            await removeDeliveredApprovalNotification(matching: approvalId)
         } catch {
             UserDefaults.standard.set(error.localizedDescription, forKey: "lastNotificationActionError")
         }
 
-        await refreshAppBadge(using: client)
-        removeDeliveredApprovalNotification(matching: approvalId)
+        await refreshApprovalNotifications(using: client)
         postRefresh()
     }
 
@@ -253,55 +266,71 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
             return false
         }
 
+        // Finish local cleanup before returning to iOS's background completion handler,
+        // even when the management API is unreachable.
         if let approvalId = userInfo["approval_id"] as? String {
-            removeDeliveredApprovalNotification(matching: approvalId)
+            await removeDeliveredApprovalNotification(matching: approvalId)
+        } else if let code = userInfo["code"] as? String {
+            await removeDeliveredApprovalNotification(matching: code)
+        }
+        if let client = clientFromDefaults() {
+            await refreshApprovalNotifications(using: client)
         }
         postRefresh()
         return true
     }
 
-    func removeDeliveredApprovalNotification(matching idOrCode: String) {
-        UNUserNotificationCenter.current().getDeliveredNotifications { notifications in
-            let matchingIdentifiers = notifications.compactMap { notification -> String? in
-                let userInfo = notification.request.content.userInfo
-                let approvalId = userInfo["approval_id"] as? String
-                return approvalId == idOrCode ? notification.request.identifier : nil
-            }
-
-            guard !matchingIdentifiers.isEmpty else { return }
-            UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: matchingIdentifiers)
-            UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: matchingIdentifiers)
+    func removeDeliveredApprovalNotification(matching idOrCode: String) async {
+        let center = UNUserNotificationCenter.current()
+        let notifications = await center.deliveredNotifications()
+        let identifiers = notifications.compactMap { notification -> String? in
+            guard notification.request.content.categoryIdentifier == "AIRLOCK_APPROVAL" else { return nil }
+            let userInfo = notification.request.content.userInfo
+            let matches = userInfo["approval_id"] as? String == idOrCode || userInfo["code"] as? String == idOrCode
+            return matches ? notification.request.identifier : nil
+        }
+        // APNs chooses request identifiers; map the payload's approval identity to them.
+        if !identifiers.isEmpty {
+            center.removeDeliveredNotifications(withIdentifiers: identifiers)
         }
     }
 
-    func removeDeliveredApprovalNotifications(excluding activeApprovalIds: Set<String>) {
-        UNUserNotificationCenter.current().getDeliveredNotifications { notifications in
-            let staleIdentifiers = notifications.compactMap { notification -> String? in
-                guard notification.request.content.categoryIdentifier == "AIRLOCK_APPROVAL" else {
-                    return nil
-                }
-                let userInfo = notification.request.content.userInfo
-                guard let approvalId = userInfo["approval_id"] as? String
-                else {
-                    return nil
-                }
-                return activeApprovalIds.contains(approvalId) ? nil : notification.request.identifier
+    func reconcileApprovalNotifications(with approvals: [ApprovalRequest], fetchedAfter: Date) async {
+        let active = approvals.filter { !$0.isExpired() }
+        let activeIds = Set(active.map(\.id))
+        let activeCodes = Set(active.map(\.code))
+        let center = UNUserNotificationCenter.current()
+        let notifications = await center.deliveredNotifications()
+        let identifiers = notifications.compactMap { notification -> String? in
+            // A notification arriving during the fetch may be newer than its snapshot.
+            guard notification.date <= fetchedAfter,
+                  notification.request.content.categoryIdentifier == "AIRLOCK_APPROVAL"
+            else { return nil }
+            let userInfo = notification.request.content.userInfo
+            if let id = userInfo["approval_id"] as? String {
+                return activeIds.contains(id) ? nil : notification.request.identifier
             }
-
-            guard !staleIdentifiers.isEmpty else { return }
-            UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: staleIdentifiers)
-            UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: staleIdentifiers)
+            if let code = userInfo["code"] as? String {
+                return activeCodes.contains(code) ? nil : notification.request.identifier
+            }
+            return nil
         }
-    }
-
-    private func refreshAppBadge(using client: AirlockAPIClient) async {
-        guard let approvals = try? await client.pendingApprovals() else { return }
-        let activeCount = approvals.filter { !$0.isExpired() }.count
+        if !identifiers.isEmpty {
+            center.removeDeliveredNotifications(withIdentifiers: identifiers)
+        }
         if #available(iOS 17.0, *) {
-            try? await UNUserNotificationCenter.current().setBadgeCount(activeCount)
+            try? await center.setBadgeCount(active.count)
         } else {
-            UIApplication.shared.applicationIconBadgeNumber = activeCount
+            UIApplication.shared.applicationIconBadgeNumber = active.count
         }
+    }
+
+    private func refreshApprovalNotifications(using client: AirlockAPIClient) async {
+        let startedAt = Date()
+        // Background execution has a limited budget. A failed fetch must not be
+        // interpreted as an empty queue or prevent explicit resolution cleanup.
+        guard let approvals = try? await client.pendingApprovals(timeoutInterval: 10) else { return }
+        await reconcileApprovalNotifications(with: approvals, fetchedAfter: startedAt)
     }
 
     func clientFromDefaults() -> AirlockAPIClient? {

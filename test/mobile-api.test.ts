@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
-import { mkdtempSync, rmSync } from 'fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { AuditLogger } from '../src/audit/logger.js';
@@ -24,9 +24,12 @@ describe('mobileApiPlugin', () => {
   let engine: HitlEngine;
   let activityStream: ActivityStream;
   let approvalStream: { addClient: ReturnType<typeof vi.fn> };
+  let configPath: string;
 
   beforeEach(async () => {
     dir = mkdtempSync(join(tmpdir(), 'airlock-mobile-test-'));
+    configPath = join(dir, 'config.yaml');
+    writeFileSync(configPath, 'agents:\n  dev:\n    ask: [exec/run]\n');
     const config: AuditConfig = {
       db_path: join(dir, 'audit.db'),
       retention_days: 90,
@@ -48,10 +51,12 @@ describe('mobileApiPlugin', () => {
       secret: 'admin-secret',
       authRequired: true,
       approvalStream,
+      configPath,
     });
   });
 
   afterEach(async () => {
+    vi.useRealTimers();
     await app.close();
     auditLogger.stop();
     rmSync(dir, { recursive: true });
@@ -137,6 +142,47 @@ describe('mobileApiPlugin', () => {
     expect(decision.statusCode).toBe(409);
     expect(auditLogger.getHitlById(id)?.status).toBe('pending');
   });
+
+  it.each(['approved', 'denied', 'cancelled', 'timeout'] as const)(
+    'rejects every stale notification action after %s without changing decisions or permissions',
+    async (resolution) => {
+      vi.useFakeTimers();
+      const ticket = engine.create({ agentId: 'dev', tool: 'exec/run', args: {} });
+      if (resolution === 'approved') engine.approve(ticket.id);
+      if (resolution === 'denied') engine.deny(ticket.id, 'Resolved elsewhere');
+      if (resolution === 'cancelled') engine.cancel(ticket.id);
+      if (resolution === 'timeout') vi.advanceTimersByTime(300000);
+      await expect(ticket.result).resolves.toBe(resolution);
+      vi.useRealTimers();
+
+      const originalRow = auditLogger.getHitlById(ticket.id);
+      const originalConfig = readFileSync(configPath, 'utf8');
+      const approve = vi.spyOn(engine, 'approve');
+      const deny = vi.spyOn(engine, 'deny');
+      for (const payload of [
+        { decision: 'approved' },
+        { decision: 'denied' },
+        { decision: 'approved', remember: 'always' },
+        { decision: 'approved', remember: 'temporary', duration_ms: 3600000 },
+      ]) {
+        const response = await app.inject({
+          method: 'POST',
+          url: `/mobile/approvals/${ticket.id}/decision`,
+          headers: { authorization: 'Bearer admin-secret' },
+          payload,
+        });
+        expect(response.statusCode).toBe(409);
+        expect(response.json()).toEqual({
+          error: 'Approval already resolved',
+          code: 'approval_resolved',
+        });
+      }
+      expect(approve).not.toHaveBeenCalled();
+      expect(deny).not.toHaveBeenCalled();
+      expect(auditLogger.getHitlById(ticket.id)).toEqual(originalRow);
+      expect(readFileSync(configPath, 'utf8')).toBe(originalConfig);
+    }
+  );
 
   it('rejects unauthenticated mobile requests', async () => {
     const response = await app.inject({
