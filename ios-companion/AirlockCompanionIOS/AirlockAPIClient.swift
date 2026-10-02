@@ -43,12 +43,13 @@ struct AirlockAPIClient: Sendable {
         )
     }
 
-    func pendingApprovals() async throws -> [ApprovalRequest] {
+    func pendingApprovals(timeoutInterval: TimeInterval = 60) async throws -> [ApprovalRequest] {
         let response = try await request(
             path: "/mobile/approvals",
             method: "GET",
             body: Optional<EmptyBody>.none,
-            response: ApprovalListResponse.self
+            response: ApprovalListResponse.self,
+            timeoutInterval: timeoutInterval
         )
         return response.approvals
     }
@@ -98,13 +99,15 @@ struct AirlockAPIClient: Sendable {
         path: String,
         method: String,
         body: Body?,
-        response: Response.Type
+        response: Response.Type,
+        timeoutInterval: TimeInterval = 60
     ) async throws -> Response {
         guard let url = URL(string: path, relativeTo: baseURL) else {
             throw URLError(.badURL)
         }
 
         var request = URLRequest(url: url)
+        request.timeoutInterval = timeoutInterval
         request.httpMethod = method
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         if let bearerToken {
@@ -120,6 +123,13 @@ struct AirlockAPIClient: Sendable {
             throw URLError(.badServerResponse)
         }
         guard (200...299).contains(httpResponse.statusCode) else {
+            let serverError = try? JSONDecoder().decode(ServerErrorResponse.self, from: data)
+            if httpResponse.statusCode == 409, serverError?.code == "approval_resolved" {
+                throw AirlockAPIError.alreadyResolved
+            }
+            if let message = serverError?.error {
+                throw AirlockAPIError.server(message)
+            }
             let message = String(data: data, encoding: .utf8) ?? "HTTP \(httpResponse.statusCode)"
             throw AirlockAPIError.server(message)
         }
@@ -131,14 +141,22 @@ struct AirlockAPIClient: Sendable {
 }
 
 enum AirlockAPIError: Error, LocalizedError {
+    case alreadyResolved
     case server(String)
 
     var errorDescription: String? {
         switch self {
+        case .alreadyResolved:
+            return "Approval already resolved."
         case .server(let message):
             return message
         }
     }
+}
+
+private struct ServerErrorResponse: Decodable {
+    let error: String
+    let code: String?
 }
 
 private struct EmptyBody: Encodable {}

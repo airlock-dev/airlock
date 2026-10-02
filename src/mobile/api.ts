@@ -201,9 +201,13 @@ export function mobileApiPlugin(app: FastifyInstance, opts: MobileApiOptions): v
     }
 
     const row = auditLogger.getHitlById(id);
-    if (!row || row.status !== 'pending') {
+    if (!row) {
       reply.code(404);
       return { error: 'No pending approval found' };
+    }
+    if (row.status !== 'pending') {
+      reply.code(409);
+      return { error: 'Approval already resolved', code: 'approval_resolved' };
     }
     if (!engine.hasPending(id)) {
       reply.code(409);

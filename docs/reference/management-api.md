@@ -373,6 +373,12 @@ List recent activity events in the mobile app shape.
 Approve or deny a pending approval by canonical approval ID. Short approval
 codes are not accepted here.
 
+An already-resolved approval returns HTTP `409` with
+`{"error":"Approval already resolved","code":"approval_resolved"}`. The original
+decision and remembered permissions remain unchanged. An unknown ID returns
+`404`; a pending database row with no active engine request returns `409` with
+`{"error":"Pending approval is not active in the approval engine"}`.
+
 ```bash
 curl -X POST http://localhost:4113/mobile/approvals/550e8400-e29b-41d4-a716-446655440000/decision \
   -H "Authorization: Bearer $AIRLOCK_MOBILE_DEVICE_TOKEN" \

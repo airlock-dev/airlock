@@ -147,30 +147,20 @@ final class AppViewModel: ObservableObject {
         isRefreshing = true
         defer { isRefreshing = false }
 
+        let startedAt = Date()
         do {
             async let pending = client.pendingApprovals()
             async let history = client.approvalHistory()
             async let activity = client.activityEvents()
             self.pending = try await pending
+            await NotificationManager.shared.reconcileApprovalNotifications(with: self.pending, fetchedAfter: startedAt)
             self.history = try await history
             self.activityEvents = try await activity
             connectionMessage = "Connected"
             lastError = nil
-            await updateAppBadge()
         } catch {
             connectionMessage = "Offline"
             lastError = error.localizedDescription
-        }
-    }
-
-    private func updateAppBadge() async {
-        let badgeCount = activePendingCount
-        let activeIds = Set(activePending.map(\.id))
-        NotificationManager.shared.removeDeliveredApprovalNotifications(excluding: activeIds)
-        if #available(iOS 17.0, *) {
-            try? await UNUserNotificationCenter.current().setBadgeCount(badgeCount)
-        } else {
-            UIApplication.shared.applicationIconBadgeNumber = badgeCount
         }
     }
 
@@ -221,7 +211,11 @@ final class AppViewModel: ObservableObject {
         deviceId = ""
         deviceToken = ""
         lastNotificationActionError = ""
-        await updateAppBadge()
+        if #available(iOS 17.0, *) {
+            try? await UNUserNotificationCenter.current().setBadgeCount(activePendingCount)
+        } else {
+            UIApplication.shared.applicationIconBadgeNumber = activePendingCount
+        }
 
         if let revokeError {
             lastError = "Forgot locally. Server revoke failed: \(revokeError.localizedDescription)"

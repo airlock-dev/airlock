@@ -325,10 +325,11 @@ export class ApnsClient {
     status: ApnsApprovalStatusPayload
   ): Promise<ApnsSendResult> {
     return new Promise((resolve, reject) => {
+      // Background pushes cannot include badge, sound, or alert keys in aps.
+      // The companion refreshes its badge from the current pending queue.
       const payload = JSON.stringify({
         aps: {
           'content-available': 1,
-          badge: normalizeBadgeCount(status.badgeCount) ?? 0,
         },
         event: 'approval_resolved',
         approval_id: status.id,
