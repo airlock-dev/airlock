@@ -89,6 +89,7 @@ platform :ios do
       api_key: api_key,
       ipa: "build/AirlockCompanionIOS.ipa",
       skip_waiting_for_build_processing: testflight_groups.empty?,
+      submit_beta_review: false,
       uses_non_exempt_encryption: false,
       changelog: ENV["AIRLOCK_IOS_RELEASE_NOTES"]
     }
