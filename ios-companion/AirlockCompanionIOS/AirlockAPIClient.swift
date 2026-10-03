@@ -64,6 +64,19 @@ struct AirlockAPIClient: Sendable {
         return response.approvals
     }
 
+    func approvalPreview(id: String) async throws -> ApprovalPreview {
+        do {
+            return try await request(
+                path: "/mobile/approvals/\(id)/preview",
+                method: "POST",
+                body: Optional<EmptyBody>.none,
+                response: ApprovalPreview.self
+            )
+        } catch AirlockAPIError.unsupportedPreview {
+            return ApprovalPreview(status: "unavailable")
+        }
+    }
+
     func activityEvents() async throws -> [ActivityEvent] {
         let response = try await request(
             path: "/mobile/activity",
@@ -130,6 +143,9 @@ struct AirlockAPIClient: Sendable {
             if let message = serverError?.error {
                 throw AirlockAPIError.server(message)
             }
+            if httpResponse.statusCode == 404 && path.hasSuffix("/preview") {
+                throw AirlockAPIError.unsupportedPreview
+            }
             let message = String(data: data, encoding: .utf8) ?? "HTTP \(httpResponse.statusCode)"
             throw AirlockAPIError.server(message)
         }
@@ -143,6 +159,7 @@ struct AirlockAPIClient: Sendable {
 enum AirlockAPIError: Error, LocalizedError {
     case alreadyResolved
     case server(String)
+    case unsupportedPreview
 
     var errorDescription: String? {
         switch self {
@@ -150,6 +167,8 @@ enum AirlockAPIError: Error, LocalizedError {
             return "Approval already resolved."
         case .server(let message):
             return message
+        case .unsupportedPreview:
+            return "Approval previews are not supported by this gateway."
         }
     }
 }

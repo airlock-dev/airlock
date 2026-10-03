@@ -41,6 +41,11 @@ Approval payloads include:
 - Approval code (short, human-friendly)
 - Timeout duration
 
+The web, iOS, and macOS detail views can also fetch operator-only context through explicitly
+configured [approval previews](/reference/config#approval-previews). Fetched
+content is separate from agent-supplied reasons and notes and is not returned
+to the requesting agent or included in notifications.
+
 For sandboxed tool variants, operators also see:
 
 - Applied preset names

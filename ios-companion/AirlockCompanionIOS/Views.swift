@@ -84,6 +84,10 @@ private struct QueueApprovalDetailView: View {
                     },
                     onAfterResolve: {
                         advancePast(approval)
+                    },
+                    loadPreview: { id in
+                        guard let client = viewModel.client else { throw URLError(.userAuthenticationRequired) }
+                        return try await client.approvalPreview(id: id)
                     }
                 )
                 .id(approval.id)
@@ -546,8 +550,12 @@ struct ApprovalDetailView: View {
     let onAllowOneHour: () -> Void
     let onAlwaysAllow: () -> Void
     var onAfterResolve: () -> Void = {}
+    var loadPreview: ((String) async throws -> ApprovalPreview)? = nil
     @Environment(\.dismiss) private var dismiss
     @State private var actionFeedback: ApprovalActionFeedback?
+    @State private var preview: ApprovalPreview?
+    @State private var previewLoading = false
+    @State private var previewError: String?
 
     var body: some View {
         ScrollView {
@@ -565,6 +573,42 @@ struct ApprovalDetailView: View {
                     .font(.caption.monospaced())
                     .foregroundStyle(.secondary)
                 }
+
+                if mode == .pending && actionFeedback == nil {
+                    if previewLoading {
+                        ProgressView("Loading fetched preview…")
+                    } else if let preview, preview.status == "ready" {
+                        VStack(alignment: .leading, spacing: 8) {
+                            if let fields = preview.fields, !fields.isEmpty {
+                                ApprovalPreviewFieldsView(fields: fields)
+                            } else {
+                              Text(verbatim: preview.text ?? "")
+                                .font(.body)
+                                .textSelection(.enabled)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            Text(verbatim: "Fetched via \(preview.tool ?? "")\(preview.truncated == true ? " · Truncated" : "")")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        .padding(12)
+                        .background(Color(.secondarySystemGroupedBackground))
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                    } else if let message = previewError ?? (preview?.status == "error" ? preview?.message : nil) {
+                        DetailTextBlock(title: "Fetched preview", value: message)
+                    }
+                }
+
+                    if mode == .pending && actionFeedback == nil, let fields = preview?.requestedFields, preview?.status == "ready", !fields.isEmpty {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Requested action").font(.caption).foregroundStyle(.secondary)
+                            ApprovalPreviewFieldsView(fields: fields)
+                        }
+                        .padding(12)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color(.secondarySystemGroupedBackground))
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                    }
 
                 if approval.isUserQuestion, let context = approval.questionContext {
                     VStack(alignment: .leading, spacing: 8) {
@@ -609,82 +653,99 @@ struct ApprovalDetailView: View {
                             .clipShape(RoundedRectangle(cornerRadius: 8))
                     }
                 }
+            }
+            .padding()
+        }
+        .safeAreaInset(edge: .bottom) {
+            if mode == .pending {
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    let isExpired = approval.isExpired(at: context.date)
+                    let isResolved = actionFeedback != nil
+                    VStack(spacing: 12) {
+                        if let expiresAt = approval.effectiveExpiresAt {
+                            if isExpired {
+                                ExpiredApprovalNotice(expiredAt: expiresAt)
+                            } else if !isResolved {
+                                TimeoutCountdownView(
+                                    createdAt: approval.createdAt,
+                                    expiresAt: expiresAt
+                                )
+                            }
+                        }
 
-                if mode == .pending {
-                    TimelineView(.periodic(from: .now, by: 1)) { context in
-                        let isExpired = approval.isExpired(at: context.date)
-                        let isResolved = actionFeedback != nil
-                        VStack(spacing: 12) {
-                            if let expiresAt = approval.effectiveExpiresAt {
-                                if isExpired {
-                                    ExpiredApprovalNotice(expiredAt: expiresAt)
-                                } else if !isResolved {
-                                    TimeoutCountdownView(
-                                        createdAt: approval.createdAt,
-                                        expiresAt: expiresAt
-                                    )
+                        if let actionFeedback {
+                            DecisionFeedbackBanner(feedback: actionFeedback)
+                        }
+
+                        if !isExpired && !isResolved {
+                            VStack(spacing: 12) {
+                                HStack {
+                                    Button {
+                                        resolve(.approved, action: onApprove)
+                                    } label: {
+                                        Label(approval.approveLabel, systemImage: "checkmark")
+                                            .frame(maxWidth: .infinity)
+                                    }
+                                    .buttonStyle(.borderedProminent)
+                                    .tint(.green)
+
+                                    Button(role: .destructive) {
+                                        resolve(.denied, action: onDeny)
+                                    } label: {
+                                        Label("Reject", systemImage: "xmark")
+                                            .frame(maxWidth: .infinity)
+                                    }
+                                    .buttonStyle(.borderedProminent)
+                                    .tint(.red)
                                 }
-                            }
 
-                            if let actionFeedback {
-                                DecisionFeedbackBanner(feedback: actionFeedback)
-                            }
-
-                            if !isExpired && !isResolved {
-                                VStack(spacing: 12) {
+                                if !approval.isUserQuestion {
                                     HStack {
                                         Button {
-                                            resolve(.approved, action: onApprove)
+                                            resolve(.allowOneHour, action: onAllowOneHour)
                                         } label: {
-                                            Label(approval.approveLabel, systemImage: "checkmark")
+                                            Label("1 Hour", systemImage: "timer")
                                                 .frame(maxWidth: .infinity)
                                         }
-                                        .buttonStyle(.borderedProminent)
-                                        .tint(.green)
+                                        .buttonStyle(.bordered)
 
-                                        Button(role: .destructive) {
-                                            resolve(.denied, action: onDeny)
+                                        Button {
+                                            resolve(.alwaysAllow, action: onAlwaysAllow)
                                         } label: {
-                                            Label("Reject", systemImage: "xmark")
+                                            Label("Always", systemImage: "infinity")
                                                 .frame(maxWidth: .infinity)
                                         }
-                                        .buttonStyle(.borderedProminent)
-                                        .tint(.red)
-                                    }
-
-                                    if !approval.isUserQuestion {
-                                        HStack {
-                                            Button {
-                                                resolve(.allowOneHour, action: onAllowOneHour)
-                                            } label: {
-                                                Label("1 Hour", systemImage: "timer")
-                                                    .frame(maxWidth: .infinity)
-                                            }
-                                            .buttonStyle(.bordered)
-
-                                            Button {
-                                                resolve(.alwaysAllow, action: onAlwaysAllow)
-                                            } label: {
-                                                Label("Always", systemImage: "infinity")
-                                                    .frame(maxWidth: .infinity)
-                                            }
-                                            .buttonStyle(.bordered)
-                                        }
+                                        .buttonStyle(.bordered)
                                     }
                                 }
-                                .disabled(actionFeedback != nil)
-                                .controlSize(.large)
-                                .opacity(actionFeedback == nil ? 1 : 0.55)
                             }
+                            .disabled(actionFeedback != nil)
+                            .controlSize(.large)
+                            .opacity(actionFeedback == nil ? 1 : 0.55)
                         }
                     }
                 }
+                .padding()
+                .background(Color(.systemGroupedBackground))
             }
-            .padding()
         }
         .background(Color(.systemGroupedBackground))
         .navigationTitle(approval.isUserQuestion ? "Question" : "Approval")
         .navigationBarTitleDisplayMode(.inline)
+        .task(id: approval.id) {
+            preview = nil
+            previewError = nil
+            guard mode == .pending, !approval.isUserQuestion, let loadPreview else { return }
+            previewLoading = true
+            defer { previewLoading = false }
+            do {
+                let fetched = try await loadPreview(approval.id)
+                try Task.checkCancellation()
+                preview = fetched
+            } catch {
+                if !Task.isCancelled { previewError = "Preview unavailable. You can still approve or reject this request." }
+            }
+        }
     }
 
     private func resolve(_ feedback: ApprovalActionFeedback, action: @escaping () -> Void) {
@@ -873,5 +934,32 @@ struct TimeoutCountdownView: View {
     private func format(_ interval: TimeInterval) -> String {
         let seconds = Int(interval.rounded(.down))
         return "\(seconds / 60):\(String(format: "%02d", seconds % 60))"
+    }
+}
+
+private struct ApprovalPreviewFieldsView: View {
+    let fields: [ApprovalPreviewField]
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 10) {
+                ForEach(Array(fields.enumerated()).filter { $0.element.primary != true }, id: \.offset) { item in
+                    GridRow(alignment: .top) {
+                        Text(verbatim: item.element.label).foregroundStyle(.secondary)
+                        Text(verbatim: item.element.value).textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+            }
+            if fields.contains(where: { $0.primary == true }) && fields.contains(where: { $0.primary != true }) { Divider() }
+            ForEach(Array(fields.enumerated()).filter { $0.element.primary == true }, id: \.offset) { item in
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(verbatim: item.element.label).font(.caption).foregroundStyle(.secondary)
+                    Text(verbatim: item.element.value).textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }

@@ -13,6 +13,7 @@ import { IOSHitlProvider } from './providers/ios.js';
 import { childLogger } from '../util/logger.js';
 import type { AuditLogger } from '../audit/logger.js';
 import { ApprovalStreamHub } from './approval-stream.js';
+import type { ApprovalPreviewReader } from './preview.js';
 
 const log = childLogger('hitl-factory');
 
@@ -20,6 +21,7 @@ interface HitlProviderFactoryOptions {
   configPath?: string;
   auditLogger?: AuditLogger;
   approvalStream?: ApprovalStreamHub;
+  approvalPreviews?: ApprovalPreviewReader;
 }
 
 export function createHitlProvider(
@@ -63,7 +65,8 @@ function createSingleProvider(
       const dashboard = new DashboardHitlProvider(
         { host: cfg.host, port: cfg.port, config_path: options.configPath },
         approvalApi,
-        approvalStream
+        approvalStream,
+        options.approvalPreviews
       );
       if (options.approvalStream) return dashboard;
       log.warn('Dashboard HITL provider created without a shared approval stream');

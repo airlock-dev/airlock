@@ -5,6 +5,7 @@ import { childLogger } from '../../util/logger.js';
 import { ApprovalDashboardRoutes } from '../approval-dashboard.js';
 import type { ApprovalStreamHub } from '../approval-stream.js';
 import type { ApprovalApi, HitlNotification, HitlProvider } from './types.js';
+import type { ApprovalPreviewReader } from '../preview.js';
 
 const log = childLogger('hitl-dashboard');
 
@@ -21,7 +22,8 @@ export class DashboardHitlProvider implements HitlProvider {
   constructor(
     private config: DashboardHitlConfig,
     private approvalApi: ApprovalApi,
-    private approvalStream: ApprovalStreamHub
+    private approvalStream: ApprovalStreamHub,
+    private previews?: ApprovalPreviewReader
   ) {}
 
   async init(): Promise<void> {
@@ -30,7 +32,11 @@ export class DashboardHitlProvider implements HitlProvider {
       return;
     }
 
-    this.approvalRoutes = new ApprovalDashboardRoutes(this.approvalApi, this.approvalStream);
+    this.approvalRoutes = new ApprovalDashboardRoutes(
+      this.approvalApi,
+      this.approvalStream,
+      this.previews
+    );
     this.app = createConfigureWebApp(this.config.config_path, { approvals: this.approvalRoutes });
 
     try {

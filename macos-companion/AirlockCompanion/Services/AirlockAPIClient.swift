@@ -33,6 +33,21 @@ final class AirlockAPIClient: Sendable {
         return try JSONDecoder().decode(ApprovalListResponse.self, from: data).approvals
     }
 
+    func approvalPreview(id: String) async throws -> ApprovalPreview {
+        let request = try makePreviewRequest(id: id)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
+        // Older gateways have no preview route.
+        if http.statusCode == 404 { return ApprovalPreview(status: "unavailable") }
+        guard (200...299).contains(http.statusCode) else { throw URLError(.badServerResponse) }
+        return try JSONDecoder().decode(ApprovalPreview.self, from: data)
+    }
+
+    func makePreviewRequest(id: String) throws -> URLRequest {
+        let escapedId = id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? id
+        return try connection.request(path: "/mobile/approvals/\(escapedId)/preview", method: "POST")
+    }
+
     private func postDecision(id: String, decision: String, remember: ApprovalRememberMode? = nil, durationMs: Int? = nil) async throws {
         let request = try makeDecisionRequest(id: id, decision: decision, remember: remember, durationMs: durationMs)
         let (_, response) = try await URLSession.shared.data(for: request)

@@ -124,6 +124,10 @@ final class AppViewModel: ObservableObject {
         connectSSE()
     }
 
+    func approvalPreview(id: String) async throws -> ApprovalPreview {
+        try await apiClient.approvalPreview(id: id)
+    }
+
     func approve(id: String, remember: ApprovalRememberMode? = nil, durationMs: Int? = nil) {
         guard !markExpiredIfNeeded(id: id) else { return }
         let code = seenRequests[id]?.code ?? id

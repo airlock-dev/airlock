@@ -296,11 +296,50 @@ curl -X POST \
   "http://localhost:4113/deny?code=ABC123"
 ```
 
+### `POST /approval-preview/:id`
+
+Read configured operator context for a pending approval by canonical ID. This
+route is available only on the management listener and operator dashboard, not
+the agent tool listener. The request body cannot select the tool or arguments;
+those come from `approvals.previews` and the pending request.
+
+The response is one of:
+
+```json
+{
+  "status": "ready",
+  "tool": "provider/read",
+  "text": "Subject: Replacement approved",
+  "truncated": false,
+  "fields": [{ "label": "Subject", "value": "Replacement approved", "primary": false }],
+  "requestedFields": [{ "label": "Message to send", "value": "Thank you.", "primary": true }]
+}
+```
+
+```json
+{ "status": "unavailable" }
+```
+
+```json
+{ "status": "error", "message": "Preview read failed." }
+```
+
+`fields` and `requestedFields` are optional ordered lists. `fields` come from the
+configured provider read; `requestedFields` come from selected request arguments
+and are displayed separately as the requested action. `text` remains the readable
+fallback for clients without field rendering.
+
+Unknown or resolved approvals return HTTP 409. Responses use
+`Cache-Control: no-store`. Reads leave the approval pending and never return
+their content to the requesting agent. See
+[approval previews](/reference/config#approval-previews) and
+[dashboard access boundaries](/guides/dashboard#fetched-approval-previews).
+
 ## Mobile companion API
 
 The mobile endpoints are exposed with the management API. Registering or
 revoking devices requires the management bearer token. Queue, history, push
-token update, and decision calls may use either the management token or the
+token update, preview, and decision calls may use either the management token or the
 per-device token returned during registration.
 
 ### `POST /mobile/devices/register`
@@ -367,6 +406,20 @@ List recently resolved approvals from the persisted HITL queue.
 ### `GET /mobile/activity`
 
 List recent activity events in the mobile app shape.
+
+### `POST /mobile/approvals/:id/preview`
+
+Fetch operator-only context for a pending approval using a management or active
+per-device bearer token. This uses the same configured lookup, pending-only
+access, in-memory cache, response shapes, and no-store behavior as
+[`POST /approval-preview/:id`](#post-approval-preview-id). Caller-supplied bodies
+cannot change the lookup. It works before notification delivery; unknown or
+resolved IDs return HTTP 409. Revoked device tokens return HTTP 401.
+
+The updated iOS and macOS companions call this route when opening a pending
+approval's detail view. Preview content is not added to queue, history, streams,
+or push payloads. Gateways without this route return HTTP 404, which companions
+treat as an unavailable preview.
 
 ### `POST /mobile/approvals/:id/decision`
 
