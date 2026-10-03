@@ -8,7 +8,8 @@ import { HitlBatcher } from '../src/hitl/batcher.js';
 import type { AgentServerDeps } from '../src/transport/agent-server.js';
 import type { AgentConfig } from '../src/config/schema.js';
 import type { AuditLogger } from '../src/audit/logger.js';
-import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import type { Middleware } from '../src/middleware/types.js';
+import { ToolListChangedNotificationSchema, type Tool } from '@modelcontextprotocol/sdk/types.js';
 import { ToolRegistry } from '../src/registry/registry.js';
 import { ExecBackendAdapter } from '../src/backend/exec-adapter.js';
 
@@ -45,11 +46,19 @@ function makeMockProvider() {
 }
 
 function makeMockRegistry(tools: Tool[] = [], callResult: unknown = { ok: true }) {
+  const toolsChangedListeners = new Set<() => void>();
   return {
     getFiltered: vi.fn().mockReturnValue(tools),
     call: vi.fn().mockResolvedValue(callResult),
     getAllTools: vi.fn().mockReturnValue(tools),
     getInstructionsFor: vi.fn().mockReturnValue(undefined),
+    onToolsChanged: vi.fn((cb: () => void) => {
+      toolsChangedListeners.add(cb);
+      return () => toolsChangedListeners.delete(cb);
+    }),
+    emitToolsChanged: () => {
+      for (const listener of toolsChangedListeners) listener();
+    },
   };
 }
 
@@ -119,6 +128,20 @@ describe('list_tools', () => {
     const result = await client.listTools();
     expect(result.tools).toHaveLength(0);
   });
+
+  it('advertises and forwards tool list change notifications', async () => {
+    const registry = makeMockRegistry([]);
+    const deps = makeDeps({
+      registry: registry as unknown as AgentServerDeps['registry'],
+    });
+    const client = await buildConnectedClient(deps);
+    const changed = vi.fn();
+    client.setNotificationHandler(ToolListChangedNotificationSchema, changed);
+
+    expect(client.getServerCapabilities()?.tools?.listChanged).toBe(true);
+    registry.emitToolsChanged();
+    await vi.waitFor(() => expect(changed).toHaveBeenCalledTimes(1));
+  });
 });
 
 // ─── call_tool — allowlist ───────────────────────────────────────────────────
@@ -135,6 +158,65 @@ describe('call_tool — allowlist enforcement', () => {
     expect(JSON.parse((result.content[0] as { text: string }).text)).toEqual(callResult);
   });
 
+  it('applies transformed text to MCP results while preserving content and result metadata', async () => {
+    const callResult = {
+      content: [
+        { type: 'text', text: 'untrusted response' },
+        { type: 'image', data: 'aW1hZ2U=', mimeType: 'image/png' },
+        { type: 'resource', resource: { uri: 'file:///secret.txt', text: 'embedded secret' } },
+        { type: 'resource_link', uri: 'file:///secret.txt', name: 'secret.txt' },
+      ],
+      structuredContent: { status: 'ok' },
+      isError: false,
+      _meta: { source: 'downstream' },
+    };
+    const chain: Middleware = async () => ({
+      result: callResult,
+      text: '[REDACTED: suspected injection]',
+    });
+    const deps = makeDeps({ chain });
+    const client = await buildConnectedClient(deps);
+
+    const result = await client.callTool({ name: 'github/create_pr', arguments: {} });
+
+    expect(result.content).toEqual([
+      { type: 'text', text: '[REDACTED: suspected injection]' },
+      { type: 'image', data: 'aW1hZ2U=', mimeType: 'image/png' },
+    ]);
+    expect(result.structuredContent).toBeUndefined();
+    expect(JSON.stringify(result.content)).not.toContain('embedded secret');
+    expect(result.isError).toBe(true);
+    expect(result._meta).toEqual({ source: 'downstream' });
+  });
+
+  it('keeps structured content for additive wrappers without duplicating raw resource content', async () => {
+    const callResult = {
+      content: [
+        { type: 'text', text: 'untrusted response' },
+        { type: 'resource', resource: { uri: 'file:///secret.txt', text: 'embedded secret' } },
+        { type: 'resource_link', uri: 'file:///secret.txt', name: 'secret.txt' },
+      ],
+      structuredContent: { status: 'ok' },
+      isError: false,
+      _meta: { source: 'downstream' },
+    };
+    const chain: Middleware = async () => ({
+      result: callResult,
+      text: `<untrusted-output>${JSON.stringify(callResult)}</untrusted-output>`,
+    });
+    const deps = makeDeps({ chain });
+    const client = await buildConnectedClient(deps);
+
+    const result = await client.callTool({ name: 'github/create_pr', arguments: {} });
+
+    expect(result.content).toHaveLength(2);
+    expect(result.content[0]).toMatchObject({ type: 'text' });
+    expect(result.content[1]).toMatchObject({ type: 'resource_link' });
+    expect(result.content.some((block) => block.type === 'resource')).toBe(false);
+    expect(result.structuredContent).toEqual({ status: 'ok' });
+    expect(result.isError).toBe(false);
+  });
+
   it('passes preserved MCP request metadata and downstream session id to registry calls', async () => {
     const registry = makeMockRegistry([], { ok: true });
     const deps = makeDeps({
@@ -149,10 +231,83 @@ describe('call_tool — allowlist enforcement', () => {
       _meta: { progressToken: 'progress-1' },
     });
 
-    expect(registry.call).toHaveBeenCalledWith('github/create_pr', { repo: 'test' }, 'agent1', {
-      mcpRequestMeta: { progressToken: 'progress-1' },
-      downstreamSessionId: 'session-agent-1',
+    expect(registry.call).toHaveBeenCalledWith(
+      'github/create_pr',
+      { repo: 'test' },
+      'agent1',
+      {
+        mcpRequestMeta: { progressToken: 'progress-1' },
+        downstreamSessionId: 'session-agent-1',
+      },
+      expect.objectContaining({
+        signal: expect.any(AbortSignal),
+        onprogress: expect.any(Function),
+      })
+    );
+  });
+
+  it('bridges downstream progress to the initiating MCP request', async () => {
+    const registry = makeMockRegistry([], {
+      content: [{ type: 'text', text: 'done' }],
     });
+    (registry.call as ReturnType<typeof vi.fn>).mockImplementation(
+      async (
+        _tool: string,
+        _args: Record<string, unknown>,
+        _agentId: string,
+        _meta: Record<string, unknown>,
+        options: { onprogress?: (progress: { progress: number; total?: number }) => void }
+      ) => {
+        options.onprogress?.({ progress: 1, total: 2 });
+        return { content: [{ type: 'text', text: 'done' }] };
+      }
+    );
+    const client = await buildConnectedClient(
+      makeDeps({ registry: registry as unknown as AgentServerDeps['registry'] })
+    );
+    const onprogress = vi.fn();
+
+    await client.callTool({ name: 'github/create_pr', arguments: {} }, undefined, { onprogress });
+
+    await vi.waitFor(() =>
+      expect(onprogress).toHaveBeenCalledWith(expect.objectContaining({ progress: 1, total: 2 }))
+    );
+  });
+
+  it('propagates per-request cancellation to downstream execution', async () => {
+    const registry = makeMockRegistry();
+    let downstreamSignal: AbortSignal | undefined;
+    (registry.call as ReturnType<typeof vi.fn>).mockImplementation(
+      (
+        _tool: string,
+        _args: Record<string, unknown>,
+        _agentId: string,
+        _meta: Record<string, unknown>,
+        options: { signal: AbortSignal }
+      ) => {
+        downstreamSignal = options.signal;
+        return new Promise((_resolve, reject) => {
+          options.signal.addEventListener(
+            'abort',
+            () => reject(options.signal.reason ?? new Error('cancelled')),
+            { once: true }
+          );
+        });
+      }
+    );
+    const client = await buildConnectedClient(
+      makeDeps({ registry: registry as unknown as AgentServerDeps['registry'] })
+    );
+    const controller = new AbortController();
+    const call = client.callTool({ name: 'github/create_pr', arguments: {} }, undefined, {
+      signal: controller.signal,
+    });
+
+    await vi.waitFor(() => expect(downstreamSignal).toBeDefined());
+    controller.abort();
+
+    await expect(call).rejects.toThrow();
+    expect(downstreamSignal?.aborted).toBe(true);
   });
 
   it('rejects tool not in allowlist with MCP error', async () => {

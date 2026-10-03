@@ -1,6 +1,7 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import type { McpCallOptions } from '../types.js';
 import type { ProviderConnectionStatus } from './status.js';
 import { childLogger } from '../util/logger.js';
 import { VERSION } from '../version.js';
@@ -32,6 +33,7 @@ export class StdioMcpClient {
   private reconnectTimer?: NodeJS.Timeout;
   private lastError?: string;
   private readyListeners = new Set<() => void>();
+  private toolsChangedListeners = new Set<() => void>();
 
   constructor(
     private id: string,
@@ -45,6 +47,10 @@ export class StdioMcpClient {
     this.readyListeners.add(cb);
   }
 
+  onToolsChanged(cb: () => void): void {
+    this.toolsChangedListeners.add(cb);
+  }
+
   async connect(): Promise<void> {
     this.transport = new StdioClientTransport({
       command: this.command,
@@ -53,7 +59,24 @@ export class StdioMcpClient {
       stderr: this.stderr,
     });
 
-    this.client = new Client({ name: 'airlock', version: VERSION });
+    this.client = new Client(
+      { name: 'airlock', version: VERSION },
+      {
+        listChanged: {
+          tools: {
+            autoRefresh: false,
+            debounceMs: 0,
+            onChanged: (error) => {
+              if (error) {
+                log.warn({ id: this.id, err: error }, 'MCP tools/list_changed refresh failed');
+                return;
+              }
+              this.notifyToolsChanged();
+            },
+          },
+        },
+      }
+    );
     this.connecting = true;
     this.reconnectExhausted = false;
 
@@ -105,20 +128,40 @@ export class StdioMcpClient {
 
   async listTools(): Promise<Tool[]> {
     if (!this.client || !this.ready) throw new Error(`MCP ${this.id} not connected`);
-    const result = await this.client.listTools();
-    return result.tools;
+    // The SDK caches output-schema validators per response page (the final page
+    // wins). Airlock keeps the aggregate definitions here and does not use that
+    // private cache for task filtering; tool fields remain intact across pages.
+    const tools: Tool[] = [];
+    const cursors = new Set<string>();
+    let cursor: string | undefined;
+
+    while (true) {
+      const result = await this.client.listTools(cursor === undefined ? undefined : { cursor });
+      tools.push(...result.tools);
+
+      const nextCursor = result.nextCursor;
+      if (nextCursor === undefined) return tools;
+      if (cursors.has(nextCursor)) {
+        throw new Error(`MCP ${this.id} returned a repeated tools/list cursor`);
+      }
+      cursors.add(nextCursor);
+      cursor = nextCursor;
+    }
   }
 
   async callTool(
     name: string,
     args: Record<string, unknown>,
-    requestMeta?: McpRequestMeta
+    requestMeta?: McpRequestMeta,
+    options?: McpCallOptions
   ): Promise<unknown> {
     if (!this.client || !this.ready) throw new Error(`MCP ${this.id} not connected`);
     const request = requestMeta
       ? { name, arguments: args, _meta: requestMeta }
       : { name, arguments: args };
-    return this.client.callTool(request);
+    return options
+      ? this.client.callTool(request, undefined, options)
+      : this.client.callTool(request);
   }
 
   getServerInfo(): { name: string; version: string } | undefined {
@@ -148,6 +191,12 @@ export class StdioMcpClient {
 
   private notifyReady(): void {
     for (const cb of this.readyListeners) {
+      cb();
+    }
+  }
+
+  private notifyToolsChanged(): void {
+    for (const cb of this.toolsChangedListeners) {
       cb();
     }
   }

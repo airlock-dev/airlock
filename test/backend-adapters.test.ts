@@ -110,14 +110,37 @@ describe('McpBackendAdapter', () => {
   });
 
   it('returns error on pool failure', async () => {
+    const failure = new Error('connection lost');
     const pool = makePool({
-      callTool: vi.fn().mockRejectedValue(new Error('connection lost')),
+      callTool: vi.fn().mockRejectedValue(failure),
     });
     const adapter = new McpBackendAdapter('github', pool);
 
     const result = await adapter.call({ tool: 'github/create_pr', args: {}, agentId: 'a1' });
     expect(result.success).toBe(false);
     expect(result.error).toBe('connection lost');
+    expect(result.cause).toBe(failure);
+  });
+
+  it('passes request cancellation and progress options to the MCP client pool', async () => {
+    const pool = makePool({
+      callTool: vi.fn().mockResolvedValue({ content: [{ type: 'text', text: 'ok' }] }),
+    });
+    const adapter = new McpBackendAdapter('github', pool);
+    const controller = new AbortController();
+    const onprogress = vi.fn();
+
+    await adapter.call({
+      tool: 'github/create_pr',
+      args: {},
+      agentId: 'a1',
+      options: { signal: controller.signal, onprogress },
+    });
+
+    expect(pool.callTool).toHaveBeenCalledWith('github', 'create_pr', {}, undefined, {
+      signal: controller.signal,
+      onprogress,
+    });
   });
 
   it('has correct id format', () => {

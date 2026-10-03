@@ -142,6 +142,12 @@ export async function runStdioMode(
       .refresh()
       .catch((err) => log.error({ err }, 'Failed to refresh registry after MCP ready'));
   });
+  pool.onToolsChanged((id) => {
+    log.info({ id }, 'MCP tools changed, refreshing tool registry');
+    registry
+      .refresh()
+      .catch((err) => log.error({ err }, 'Failed to refresh registry after MCP tools changed'));
+  });
 
   await registry.refresh();
 

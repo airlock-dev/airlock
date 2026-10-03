@@ -4,6 +4,7 @@ import type { HitlEngine } from '../hitl/engine.js';
 import type { HitlBatcher } from '../hitl/batcher.js';
 import type { AuditLogger } from '../audit/logger.js';
 import type { AgentConfig, SecurityConfig } from '../config/schema.js';
+import type { McpCallOptions } from '../types.js';
 
 export interface ToolCallContext {
   callId: string;
@@ -12,6 +13,7 @@ export interface ToolCallContext {
   toolName: string;
   args: Record<string, unknown>;
   meta: Record<string, unknown>;
+  requestOptions?: McpCallOptions;
   deps: MiddlewareDeps;
   startedAt: number;
   /** Signals that the transport/session has been closed. */
