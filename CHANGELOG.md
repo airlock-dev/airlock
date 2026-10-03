@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.1](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.3.0...airlock-bot-v0.3.1) (2026-10-03)
+
+
+### Features
+
+* add operator-only structured approval previews ([#177](https://github.com/airlock-dev/airlock/issues/177)) ([69f76d8](https://github.com/airlock-dev/airlock/commit/69f76d8b4a6b18e6ba8fd12f5229420ac9dcce72))
+
 ## [0.3.0](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.2.38...airlock-bot-v0.3.0) (2026-10-02)
 
 
