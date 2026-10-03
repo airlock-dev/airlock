@@ -77,7 +77,8 @@ struct PopoverContentView: View {
                     onPrev:    adjacentRequest(from: request, by: -1).map { prev in
                         { navigate(to: prev) }
                     },
-                    argsScrollView: $detailArgsScrollView
+                    argsScrollView: $detailArgsScrollView,
+                    loadPreview: { try await viewModel.approvalPreview(id: $0) }
                 )
             } else {
                 if viewModel.pendingCount > 0 {

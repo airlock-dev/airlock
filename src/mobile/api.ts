@@ -2,6 +2,7 @@ import { createHash, randomBytes } from 'crypto';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { AuditLogger } from '../audit/logger.js';
 import type { ApprovalStreamClient } from '../hitl/approval-stream.js';
+import type { ApprovalPreviewReader } from '../hitl/preview.js';
 import type { HitlEngine } from '../hitl/engine.js';
 import type { ActivityStream, AirlockActivityEvent } from '../activity/stream.js';
 import { rememberAllow, type RememberAllowMode } from '../config/mutator.js';
@@ -18,6 +19,7 @@ interface MobileApiOptions {
   allowedOrigins?: string[];
   getRequestSecurity?: () => RequestSecurityOptions;
   approvalStream?: ApprovalStreamClient;
+  approvalPreviews?: ApprovalPreviewReader;
 }
 
 interface RegisterDeviceBody {
@@ -187,6 +189,22 @@ export function mobileApiPlugin(app: FastifyInstance, opts: MobileApiOptions): v
       return { error: 'Approval stream is not available' };
     }
     opts.approvalStream.addClient(request, reply);
+  });
+
+  app.post('/mobile/approvals/:id/preview', async (request, reply) => {
+    reply.header('Cache-Control', 'no-store');
+    if (!checkMobileOrAdminAuth(request, reply, opts)) return;
+    const { id } = request.params as { id: string };
+    if (!engine.hasPending(id)) {
+      return reply.code(409).send({ error: 'Approval has resolved or is unavailable.' });
+    }
+    const preview = opts.approvalPreviews
+      ? await opts.approvalPreviews.readPending(id)
+      : { status: 'unavailable' };
+    if (!engine.hasPending(id)) {
+      return reply.code(409).send({ error: 'Approval has resolved.' });
+    }
+    return preview;
   });
 
   app.post('/mobile/approvals/:id/decision', async (request, reply) => {

@@ -16,6 +16,7 @@ import { hookApiPlugin } from './hook/api.js';
 import { toolsApiPlugin } from './tools/api.js';
 import { ApprovalDashboardRoutes } from './hitl/approval-dashboard.js';
 import { ApprovalStreamHub } from './hitl/approval-stream.js';
+import { ApprovalPreviewReader } from './hitl/preview.js';
 import { CompositeHitlProvider } from './hitl/providers/composite.js';
 import { sseServerPlugin } from './transport/sse-server.js';
 import { httpServerPlugin } from './transport/http-server.js';
@@ -52,6 +53,7 @@ export class Gateway {
   private hitlProvider!: HitlProvider;
   private approvalRoutes!: ApprovalDashboardRoutes;
   private approvalStream!: ApprovalStreamHub;
+  private approvalPreviews!: ApprovalPreviewReader;
   private auditLogger!: AuditLogger;
   private app!: FastifyInstance;
   private managementApp?: FastifyInstance;
@@ -89,7 +91,18 @@ export class Gateway {
       denyByCode: (code, reason) => this.hitlEngine.denyByCode(code, reason),
     };
 
-    this.approvalRoutes = new ApprovalDashboardRoutes(approvalForwarder, this.approvalStream);
+    this.approvalPreviews = new ApprovalPreviewReader({
+      getHooks: () => this.config.approvals.previews,
+      getRegistry: () => this.registry,
+      isPending: (id) => this.hitlEngine.hasPending(id),
+      getRequest: (id) => this.hitlEngine.getPreviewRequest(id),
+      auditLogger: this.auditLogger,
+    });
+    this.approvalRoutes = new ApprovalDashboardRoutes(
+      approvalForwarder,
+      this.approvalStream,
+      this.approvalPreviews
+    );
     this.hitlProvider = this.buildHitlProvider(approvalForwarder);
     this.unsubscribeActivityNotifications = this.activityStream.subscribe((event) => {
       void this.hitlProvider
@@ -235,6 +248,7 @@ export class Gateway {
       configPath: this.configPath,
       getRequestSecurity,
       approvalStream: this.approvalStream,
+      approvalPreviews: this.approvalPreviews,
     });
     await this.managementApp.register((adminApp, _opts, done) => {
       adminApp.addHook('preHandler', (request, reply, hookDone) => {
@@ -410,6 +424,7 @@ export class Gateway {
           configPath: this.configPath,
           auditLogger: this.auditLogger,
           approvalStream: this.approvalStream,
+          approvalPreviews: this.approvalPreviews,
         })
       );
     }

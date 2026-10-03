@@ -7,7 +7,9 @@ import { AuditLogger } from '../src/audit/logger.js';
 import { mobileApiPlugin } from '../src/mobile/api.js';
 import { HitlEngine } from '../src/hitl/engine.js';
 import { ActivityStream } from '../src/activity/stream.js';
-import type { AuditConfig } from '../src/config/schema.js';
+import { ApprovalPreviewConfig, type AuditConfig } from '../src/config/schema.js';
+import { ApprovalPreviewReader } from '../src/hitl/preview.js';
+import type { ToolRegistry } from '../src/registry/registry.js';
 
 function makeProvider() {
   return {
@@ -25,6 +27,7 @@ describe('mobileApiPlugin', () => {
   let activityStream: ActivityStream;
   let approvalStream: { addClient: ReturnType<typeof vi.fn> };
   let configPath: string;
+  let previewCall: ReturnType<typeof vi.fn>;
 
   beforeEach(async () => {
     dir = mkdtempSync(join(tmpdir(), 'airlock-mobile-test-'));
@@ -44,6 +47,26 @@ describe('mobileApiPlugin', () => {
       }),
     };
     app = Fastify({ logger: false });
+    previewCall = vi
+      .fn()
+      .mockResolvedValue({ content: [{ type: 'text', text: 'Operator-only record' }] });
+    const approvalPreviews = new ApprovalPreviewReader({
+      getHooks: () => ({
+        'records/update': ApprovalPreviewConfig.parse({
+          tool: 'records/read',
+          args_from: { id: 'record_id' },
+        }),
+      }),
+      getRegistry: () =>
+        ({
+          call: previewCall,
+          getAllTools: () => [{ name: 'records/read', annotations: { readOnlyHint: true } }],
+          resolveToolName: (name: string) => name,
+        }) as unknown as ToolRegistry,
+      isPending: (id) => engine.hasPending(id),
+      getRequest: (id) => engine.getPreviewRequest(id),
+      auditLogger,
+    });
     await app.register(mobileApiPlugin, {
       auditLogger,
       engine,
@@ -52,6 +75,7 @@ describe('mobileApiPlugin', () => {
       authRequired: true,
       approvalStream,
       configPath,
+      approvalPreviews,
     });
   });
 
@@ -60,6 +84,111 @@ describe('mobileApiPlugin', () => {
     await app.close();
     auditLogger.stop();
     rmSync(dir, { recursive: true });
+  });
+
+  it('shares pending previews across authenticated companion reads without publishing content', async () => {
+    const registered = (
+      await app.inject({
+        method: 'POST',
+        url: '/mobile/devices/register',
+        headers: { authorization: 'Bearer admin-secret' },
+        payload: { name: 'Test companion', platform: 'ios', pushToken: 'synthetic-apns-token' },
+      })
+    ).json<{ token: string }>();
+    const ticket = engine.create({
+      agentId: 'researcher',
+      tool: 'records/update',
+      args: { record_id: 'opaque-17' },
+    });
+    const url = `/mobile/approvals/${ticket.id}/preview`;
+    expect((await app.inject({ method: 'POST', url })).statusCode).toBe(401);
+    expect(previewCall).not.toHaveBeenCalled();
+    const response = await app.inject({
+      method: 'POST',
+      url,
+      headers: { authorization: `Bearer ${registered.token}` },
+      payload: { tool: 'records/delete', args: { id: 'other' } },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['cache-control']).toBe('no-store');
+    expect(response.json()).toMatchObject({ status: 'ready', text: 'Operator-only record' });
+    expect(previewCall).toHaveBeenCalledWith(
+      'records/read',
+      { id: 'opaque-17' },
+      'researcher',
+      expect.any(Object)
+    );
+    expect(
+      (
+        await app.inject({ method: 'POST', url, headers: { authorization: 'Bearer admin-secret' } })
+      ).json()
+    ).toEqual(response.json());
+    expect(previewCall).toHaveBeenCalledOnce();
+    const queue = await app.inject({
+      method: 'GET',
+      url: '/mobile/approvals',
+      headers: { authorization: 'Bearer admin-secret' },
+    });
+    expect(queue.body).not.toContain('Operator-only record');
+    expect(JSON.stringify(auditLogger.getHitlById(ticket.id))).not.toContain(
+      'Operator-only record'
+    );
+    await app.inject({
+      method: 'DELETE',
+      url: '/mobile/device',
+      headers: { authorization: `Bearer ${registered.token}` },
+    });
+    expect(
+      (
+        await app.inject({
+          method: 'POST',
+          url,
+          headers: { authorization: `Bearer ${registered.token}` },
+        })
+      ).statusCode
+    ).toBe(401);
+    engine.approve(ticket.id);
+    await expect(ticket.result).resolves.toBe('approved');
+    expect(
+      (await app.inject({ method: 'POST', url, headers: { authorization: 'Bearer admin-secret' } }))
+        .statusCode
+    ).toBe(409);
+    expect(
+      (
+        await app.inject({
+          method: 'POST',
+          url: `/mobile/approvals/${ticket.code}/preview`,
+          headers: { authorization: 'Bearer admin-secret' },
+        })
+      ).statusCode
+    ).toBe(409);
+  });
+
+  it('discards a companion preview resolved while its lookup is in flight', async () => {
+    const ticket = engine.create({
+      agentId: 'researcher',
+      tool: 'records/update',
+      args: { record_id: 'opaque-17' },
+    });
+    let complete!: (value: unknown) => void;
+    previewCall.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          complete = resolve;
+        })
+    );
+    const pending = app.inject({
+      method: 'POST',
+      url: `/mobile/approvals/${ticket.id}/preview`,
+      headers: { authorization: 'Bearer admin-secret' },
+    });
+    await vi.waitFor(() => expect(previewCall).toHaveBeenCalledOnce());
+    engine.deny(ticket.id);
+    complete({ content: [{ type: 'text', text: 'Operator-only record' }] });
+    const response = await pending;
+    expect(response.statusCode).toBe(409);
+    expect(response.body).not.toContain('Operator-only record');
+    await expect(ticket.result).resolves.toBe('denied');
   });
 
   it('registers an iOS device and accepts approval decisions from its token', async () => {

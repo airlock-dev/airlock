@@ -594,6 +594,7 @@ interface RemotePendingApproval {
   agent_id?: string;
   tool: string;
   args: Record<string, unknown>;
+  context?: { reason?: string; note?: string };
   status?: string;
   created_at?: string;
   createdAt?: string;
@@ -661,7 +662,10 @@ async function readRemoteAuditLogs(
       code: entry.code,
       agent_id: entry.agent_id ?? entry.agentId ?? '',
       tool: entry.tool,
-      args: JSON.stringify(entry.args ?? {}),
+      args: JSON.stringify({
+        ...(entry.args ?? {}),
+        ...(entry.context ? { _airlock: entry.context } : {}),
+      }),
       status: 'pending' as const,
       created_at: entry.created_at ?? entry.createdAt ?? new Date().toISOString(),
     })),
@@ -673,6 +677,20 @@ function registerRemoteGatewayRoutes(
   configPath: string,
   remoteGateway: RemoteGatewayOptions
 ): void {
+  app.post('/approval-preview/:id', async (request, reply) => {
+    reply.header('Cache-Control', 'no-store');
+    const { id } = request.params as { id: string };
+    try {
+      const response = await remoteGatewayFetch(
+        remoteGateway,
+        '/approval-preview/' + encodeURIComponent(id),
+        { method: 'POST' }
+      );
+      return reply.code(response.status).send(await response.json());
+    } catch {
+      return reply.code(502).send({ error: 'Approval preview unavailable.' });
+    }
+  });
   app.get('/events', (request, reply) => {
     const controller = new AbortController();
     request.raw.on('close', () => controller.abort());
@@ -2610,6 +2628,7 @@ const INDEX_HTML = `<!doctype html>
       el('approvalModalTitle').textContent = question ? questionText(pending) : pending.tool;
       el('approvalModalMeta').textContent = 'agent ' + pending.agentId + ' · code ' + pending.code;
       el('approvalModalBody').innerHTML =
+        '<div id="approvalFetchedPreview" hidden></div>' +
         '<div class="detail-label">Status</div><div>' + escapeHtml(pending.status) + '</div>' +
         '<div class="detail-label">Created</div><div>' + escapeHtml(formatTime(pending.createdAt)) + '</div>' +
         (pending.timeoutMs ? '<div class="detail-label">Timeout</div><div>' + Math.round(pending.timeoutMs / 1000) + 's</div>' : '') +
@@ -2620,6 +2639,7 @@ const INDEX_HTML = `<!doctype html>
         '<div class="detail-label">Arguments</div><pre class="log-args">' + escapeHtml(prettyJson(pending.args)) + '</pre>';
       el('approvalModalFooter').innerHTML = approvalButtons(pending.code, { remember: !question, approveLabel: question ? 'Confirm' : 'Approve' });
       el('approvalModal').classList.add('open');
+      if (!question) loadApprovalPreview(pending.id);
       el('approvalModalFooter').querySelectorAll('[data-approval-action]').forEach((button) => {
         button.addEventListener('click', () => {
           actApproval(
@@ -2630,6 +2650,73 @@ const INDEX_HTML = `<!doctype html>
           ).catch((error) => alert(error.message));
         });
       });
+    }
+
+    function renderPreviewFields(fields) {
+      const metadata = document.createElement('dl');
+      metadata.style.cssText = 'display:grid;grid-template-columns:max-content minmax(0,1fr);gap:10px 20px;margin:0;white-space:normal';
+      const primary = document.createElement('div');
+      fields.forEach((field) => {
+        const label = document.createElement(field.primary ? 'div' : 'dt');
+        label.className = 'subtle';
+        label.textContent = field.label;
+        const value = document.createElement(field.primary ? 'div' : 'dd');
+        value.style.cssText = 'margin:0;white-space:pre-wrap;overflow-wrap:anywhere';
+        value.textContent = field.value;
+        if (field.primary) {
+          const block = document.createElement('div');
+          block.style.cssText = 'margin-top:18px;padding-top:14px;border-top:1px solid var(--border);font-size:16px';
+          block.append(label, value);
+          primary.append(block);
+        } else { metadata.append(label, value); }
+      });
+      const group = document.createElement('div');
+      group.append(metadata, primary);
+      return group;
+    }
+
+    async function loadApprovalPreview(id) {
+      const target = el('approvalFetchedPreview');
+      target.hidden = false;
+      target.textContent = 'Loading fetched preview…';
+      try {
+        const response = await fetch('/approval-preview/' + encodeURIComponent(id), { method: 'POST' });
+        if (state.currentApprovalId !== id || !target.isConnected) return;
+        if (response.status === 404) { target.hidden = true; return; }
+        const preview = await response.json();
+        if (state.currentApprovalId !== id || !target.isConnected) return;
+        if (!response.ok) throw new Error(preview.error || 'Preview unavailable.');
+        if (preview.status === 'unavailable') { target.hidden = true; return; }
+        target.replaceChildren();
+        if (preview.status === 'ready') {
+          const content = document.createElement('div');
+          content.className = 'log-args';
+          content.style.fontFamily = 'inherit';
+          content.style.fontSize = '14px';
+          content.style.maxHeight = '40vh';
+          content.style.overflow = 'auto';
+          if (Array.isArray(preview.fields) && preview.fields.length) {
+            content.append(renderPreviewFields(preview.fields));
+          } else { content.style.whiteSpace = 'pre-wrap'; content.textContent = preview.text; }
+          const provenance = document.createElement('div');
+          provenance.className = 'subtle';
+          provenance.textContent = 'Fetched via ' + preview.tool + (preview.truncated ? ' · Truncated' : '');
+          target.append(content, provenance);
+          if (Array.isArray(preview.requestedFields) && preview.requestedFields.length) {
+            const heading = document.createElement('div');
+            heading.className = 'subtle';
+            heading.textContent = 'Requested action · From request arguments';
+            heading.style.marginTop = '18px';
+            target.append(heading, renderPreviewFields(preview.requestedFields));
+          }
+        } else {
+          target.textContent = preview.message || 'Preview unavailable.';
+        }
+      } catch (error) {
+        if (state.currentApprovalId === id && target.isConnected) {
+          target.textContent = error.message || 'Preview unavailable.';
+        }
+      }
     }
 
     function closeApprovalModal() {
@@ -3376,6 +3463,7 @@ const INDEX_HTML = `<!doctype html>
           }
         }
         if (message.type === 'resolved') {
+          if (message.id === state.currentApprovalId) closeApprovalModal();
           if (message.id) {
             delete state.livePendingById[message.id];
           } else if (message.code) {

@@ -173,6 +173,12 @@ export class HitlEngine implements ApprovalApi {
     return this.pending.has(id);
   }
 
+  getPreviewRequest(
+    id: string
+  ): Pick<PendingRequest, 'id' | 'agentId' | 'tool' | 'args'> | undefined {
+    return this.pending.get(id);
+  }
+
   private resolveRequestByCode(code: string): PendingRequest | undefined {
     const id = this.byCode.get(code);
     if (id) return this.pending.get(id);

@@ -672,6 +672,38 @@ export type ApprovalProviderConfig = z.infer<typeof ApprovalProviderConfig>;
 // Keep HitlProviderConfig as an alias for internal code that references it
 export type HitlProviderConfig = ApprovalProviderConfig;
 
+const PreviewToolName = z.string().regex(/^[^/*\s]+\/[^/*\s]+$/, 'Use an exact provider/tool name');
+
+const PreviewField = z
+  .object({
+    label: z.string().min(1).max(100),
+    path: z
+      .string()
+      .max(500)
+      .regex(/^(?:\/(?:[^~]|~[01])*)?$/)
+      .optional(),
+    text_prefix: z.string().min(1).max(100).optional(),
+    primary: z.boolean().default(false),
+  })
+  .strict()
+  .refine(
+    (field) => (field.path !== undefined) !== (field.text_prefix !== undefined),
+    'Choose either path or text_prefix'
+  );
+
+export const ApprovalPreviewConfig = z
+  .object({
+    tool: PreviewToolName,
+    args: z.record(z.unknown()).default({}),
+    args_from: z.record(z.string().min(1)).default({}),
+    fields: z.array(PreviewField).max(20).optional(),
+    request_fields: z.array(PreviewField).max(20).optional(),
+    timeout_ms: z.number().int().min(100).max(30000).default(5000),
+    max_chars: z.number().int().min(100).max(50000).default(12000),
+  })
+  .strict();
+export type ApprovalPreviewConfig = z.infer<typeof ApprovalPreviewConfig>;
+
 export const ApprovalsConfig = z
   .object({
     provider: z
@@ -679,6 +711,7 @@ export const ApprovalsConfig = z
       .default({ type: 'stdio' }),
     timeout_ms: z.number().int().min(0).default(300000), // 5 minutes; 0 = no timeout
     batch_window_ms: z.number().int().min(0).default(0),
+    previews: z.record(PreviewToolName, ApprovalPreviewConfig).default({}),
   })
   .strict();
 export type ApprovalsConfig = z.infer<typeof ApprovalsConfig>;

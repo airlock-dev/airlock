@@ -1,5 +1,21 @@
 import Foundation
 
+struct ApprovalPreviewField: Decodable, Sendable {
+    let label: String
+    let value: String
+    var primary: Bool? = nil
+}
+
+struct ApprovalPreview: Decodable, Sendable {
+    let status: String
+    var tool: String? = nil
+    var text: String? = nil
+    var truncated: Bool? = nil
+    var message: String? = nil
+    var fields: [ApprovalPreviewField]? = nil
+    var requestedFields: [ApprovalPreviewField]? = nil
+}
+
 enum JSONValue: Codable, Equatable, Sendable {
     case string(String)
     case number(Double)

@@ -4,6 +4,7 @@ import { childLogger } from '../util/logger.js';
 import { VERSION } from '../version.js';
 import type { ApprovalStreamHub } from './approval-stream.js';
 import type { ApprovalApi, HitlNotification } from './providers/types.js';
+import type { ApprovalPreviewReader } from './preview.js';
 
 const log = childLogger('hitl-dashboard');
 
@@ -13,15 +14,35 @@ const CACHE_TTL_MS = 60 * 60 * 1000;
 export class ApprovalDashboardRoutes {
   constructor(
     private approvalApi: ApprovalApi,
-    private stream: ApprovalStreamHub
+    private stream: ApprovalStreamHub,
+    private previews?: ApprovalPreviewReader
   ) {}
 
   registerRoutes(app: FastifyInstance, configPath?: string): void {
     app.get('/events', (request, reply) => this.handleEvents(request, reply));
     app.post('/approve', async (request, reply) => this.handleApprove(request, reply, configPath));
     app.post('/deny', (request, reply) => this.handleDeny(request, reply));
+    this.registerPreviewRoute(app);
     app.get('/version', () => ({ version: VERSION }));
     app.get('/version/latest', async (_request, reply) => this.handleLatestVersion(reply));
+  }
+
+  registerPreviewRoute(app: FastifyInstance): void {
+    app.post('/approval-preview/:id', async (request, reply) => {
+      reply.header('Cache-Control', 'no-store');
+      const { id } = request.params as { id: string };
+      const pending = this.stream.getPendingById(id);
+      if (this.previews ? !this.previews.isPending(id) : !pending) {
+        return reply.code(409).send({ error: 'Approval has resolved or is unavailable.' });
+      }
+      const preview = this.previews
+        ? await this.previews.readPending(id)
+        : { status: 'unavailable' };
+      if (this.previews && !this.previews.isPending(id)) {
+        return reply.code(409).send({ error: 'Approval has resolved.' });
+      }
+      return preview;
+    });
   }
 
   private handleEvents(request: FastifyRequest, reply: FastifyReply): void {

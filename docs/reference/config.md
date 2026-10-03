@@ -474,6 +474,87 @@ configurable middleware: `schema-validator`, `untrusted-envelope`, and
 or include `{ name: <middleware>, enabled: false }` to disable one default. See
 [Middleware Pipeline](/concepts/middleware).
 
+### Approval previews
+
+`approvals.previews` maps an exact requested tool name to a read used by the web, iOS, and macOS
+approval detail views. It is empty by default. For example:
+
+```yaml
+approvals:
+  provider:
+    type: dashboard
+  previews:
+    gwsPersonal/get_gmail_message_content:
+      tool: gwsPersonal/get_gmail_message_content
+      args_from:
+        message_id: message_id
+        user_google_email: user_google_email
+      timeout_ms: 5000
+      max_chars: 12000
+```
+
+Each entry supports:
+
+| Field            | Meaning                                                                                                                           |
+| ---------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `tool`           | Exact upstream `provider/tool` to read; aliases and patterns are unsupported.                                                     |
+| `args`           | Optional fixed arguments, such as a provider's metadata-only format option.                                                       |
+| `args_from`      | Preview argument name → top-level argument name from the pending request. Mapped values override fixed arguments.                 |
+| `timeout_ms`     | Preview response deadline, 100–30000 ms; default 5000.                                                                            |
+| `max_chars`      | Display limit, 100–50000 characters; default 12000.                                                                               |
+| `fields`         | Optional ordered fetched fields. Each has `label`, either `path` or `text_prefix`, and optional `primary: true` for body content. |
+| `request_fields` | Optional fields selected from request arguments, displayed separately as the requested action. Never labeled as fetched data.     |
+
+`path` selects from the provider result after MCP text/structured-content and a
+single-key `result` wrapper are decoded. Use slash-separated paths (`/title`,
+`/lastMessage/text`); `~0` and `~1` escape `~` and `/`. An array `*` segment selects
+all items, for example `/participants/*/address`. Missing values are omitted.
+`text_prefix` selects a literal line prefix from text output. A primary text field
+includes the rest of the text after that prefix. If a configured primary/body
+field is missing, Airlock retains the full plain-text fallback instead of showing
+only headers. Match prefixes and paths to your provider's actual response format.
+
+Integrations can instead return `{ fields: [{ label, value, primary }] }` directly.
+Field values display as literal text, never HTML or Markdown. Up to 20 fields share
+`max_chars`; requested fields have a separate budget of the same size. Older
+companions receive a readable `text` fallback.
+
+For example, an existing iMessage chat can be resolved without marking it read:
+
+```yaml
+approvals:
+  previews:
+    bluebubbles/send_message:
+      tool: bluebubbles/get_chat
+      args_from: { chat_guid: chat_guid }
+      fields:
+        - { label: Conversation, path: /displayName }
+        - { label: Participants, path: /participants/*/contactName }
+        - { label: Addresses, path: /participants/*/address }
+        - { label: Latest message, path: /lastMessage/text, primary: true }
+      request_fields:
+        - { label: Message to send, path: /message, primary: true }
+```
+
+See [`examples/approval-previews.yaml`](https://github.com/airlock-dev/airlock/blob/main/examples/approval-previews.yaml)
+for configuration fragments covering email, BlueBubbles, tasks, calendars, Notion,
+GitHub/Gitea, Telegram, notes, and parcels. They are opt-in templates, not live
+configuration. Verify the response selectors against your provider version.
+Threaded replies should preview the exact referenced message, not merely the latest
+message. Batch task changes, folders, PR merge checks, and multi-resource lookups
+need their own bounded read; a single-target mapping does not represent them.
+
+This uses existing connected provider tools without scripts or model calls. Configure only reads: the mapping explicitly
+authorizes an operator lookup before the original action is approved. Airlock
+rejects tools that advertise `readOnlyHint: false`, but missing or inaccurate
+annotations cannot establish that a tool is safe. Preview reads bypass agent
+permission and middleware rules, use only configured arguments, and cannot be
+redirected by an agent's tool aliases. Missing or redacted mapped arguments fail
+without calling the provider.
+
+See [Dashboard approval previews](/guides/dashboard#fetched-approval-previews)
+for timing, access boundaries, and content handling.
+
 ## `lint`
 
 Static hygiene rule configuration for `airlock lint`.
