@@ -4,6 +4,7 @@ import { HttpMcpClient } from './http-client.js';
 import type { ProviderConnectionStatus } from './status.js';
 import type { McpServerConfig } from '../config/schema.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import type { McpCallOptions } from '../types.js';
 import { childLogger } from '../util/logger.js';
 
 const log = childLogger('pool');
@@ -22,6 +23,7 @@ export class ClientPool {
   private clients = new Map<string, McpClient>();
   private healthTimer?: NodeJS.Timeout;
   private _onClientReady?: (id: string) => void;
+  private _onToolsChanged?: (id: string) => void;
 
   constructor(
     private mcps: Record<string, McpServerConfig>,
@@ -30,6 +32,10 @@ export class ClientPool {
 
   onClientReady(cb: (id: string) => void): void {
     this._onClientReady = cb;
+  }
+
+  onToolsChanged(cb: (id: string) => void): void {
+    this._onToolsChanged = cb;
   }
 
   async initialize(): Promise<void> {
@@ -42,6 +48,7 @@ export class ClientPool {
     const client = this.createClient(id, cfg);
     this.clients.set(id, client);
     client.onReady(() => this.notifyClientReady(id));
+    client.onToolsChanged(() => this.notifyToolsChanged(id));
     try {
       await client.connect();
       if (!client.isReady()) {
@@ -64,6 +71,11 @@ export class ClientPool {
   private notifyClientReady(id: string): void {
     log.info({ id }, 'MCP connected');
     this._onClientReady?.(id);
+  }
+
+  private notifyToolsChanged(id: string): void {
+    log.info({ id }, 'MCP tools changed');
+    this._onToolsChanged?.(id);
   }
 
   private createClient(id: string, cfg: McpServerConfig): McpClient {
@@ -112,12 +124,13 @@ export class ClientPool {
     mcpId: string,
     toolName: string,
     args: Record<string, unknown>,
-    requestMeta?: McpRequestMeta
+    requestMeta?: McpRequestMeta,
+    options?: McpCallOptions
   ): Promise<unknown> {
     const client = this.clients.get(mcpId);
     if (!client) throw new Error(`Unknown MCP: ${mcpId}`);
     if (!client.isReady()) throw new Error(`MCP ${mcpId} is not connected`);
-    return client.callTool(toolName, args, requestMeta);
+    return client.callTool(toolName, args, requestMeta, options);
   }
 
   async reload(newMcps: Record<string, McpServerConfig>): Promise<void> {

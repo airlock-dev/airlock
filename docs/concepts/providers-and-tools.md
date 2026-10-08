@@ -34,6 +34,25 @@ providers:
     oauth_callback_port: 9876
 ```
 
+Airlock is a tools gateway, not a transparent proxy for every MCP capability.
+Within the tools surface it:
+
+- reads every page of `tools/list`, namespaces tool names, and retains tool
+  fields such as schemas, annotations, execution metadata, and `_meta`;
+- sanitizes upstream descriptions and may add agent-specific approval guidance;
+- refreshes its registry on upstream `tools/list_changed` notifications and
+  notifies connected agents when their effective tool catalog changes;
+- forwards tool-call cancellation, progress notifications, typed MCP errors,
+  and unchanged structured result metadata; destructive output transforms
+  withhold structured or resource payloads that would bypass the transform;
+- validates input and structured output against the declared JSON Schema
+  dialect (2020-12 by default); and
+- hides tools with `execution.taskSupport: required`, because Airlock does not
+  currently implement MCP task storage or task lifecycle methods.
+
+Resources, prompts, sampling, elicitation, roots, logging, completions, tasks,
+and other non-tool MCP surfaces are not proxied.
+
 ### Built-in providers
 
 Airlock ships with these built-in providers:

@@ -1,8 +1,10 @@
 import { createHash } from 'crypto';
-import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import { ErrorCode, McpError, type Tool } from '@modelcontextprotocol/sdk/types.js';
+import { isDeepStrictEqual } from 'node:util';
 import type { BackendAdapter } from '../backend/types.js';
 import type { AllowlistEngine, Decision } from '../allowlist/engine.js';
 import type { AgentConfig, ProviderInstructionsConfig, ToolOverride } from '../config/schema.js';
+import type { McpCallOptions } from '../types.js';
 import { sanitizeToolDescription, sanitizeInstructions } from './sanitizer.js';
 import { addAskPolicyGuidance } from './airlock-policy.js';
 import { childLogger } from '../util/logger.js';
@@ -40,47 +42,96 @@ export interface AgentVisibleTool {
   resolvedName: string;
 }
 
+/**
+ * The MCP server boundary replaces namespace separators with underscores. Keep
+ * this mapping in one place so registry validation matches the transport's
+ * agent-facing names exactly.
+ */
+export function sanitizeAgentToolName(name: string): string {
+  return name.replace(/\//g, '_');
+}
+
 export class ToolRegistry {
   private cachedTools: Tool[] = [];
   /** Upstream-advertised instructions, keyed by provider id, captured on refresh(). */
   private cachedInstructions = new Map<string, string>();
   /** Per-provider contract hash, recomputed on refresh() so /health never pays for hashing. */
   private cachedCatalogSummary: Record<string, ProviderCatalogSummary> = {};
+  private requiredTaskTools = new Set<string>();
+  private toolsChangedListeners = new Set<() => void>();
 
   constructor(
     private adapters: BackendAdapter[],
     private allowlist: AllowlistEngine,
     private agents: Record<string, AgentConfig>,
     private providerInstructions: Record<string, ProviderInstructionsConfig> = {}
-  ) {}
+  ) {
+    assertUniqueAdapterPrefixes(adapters);
+  }
 
   reloadAgents(
     agents: Record<string, AgentConfig>,
     providerInstructions?: Record<string, ProviderInstructionsConfig>
   ): void {
+    const changed = !isDeepStrictEqual(this.agents, agents);
     this.agents = agents;
     if (providerInstructions) this.providerInstructions = providerInstructions;
+    if (changed) {
+      for (const listener of this.toolsChangedListeners) listener();
+    }
   }
 
   setAdapters(adapters: BackendAdapter[]): void {
+    assertUniqueAdapterPrefixes(adapters);
     this.adapters = adapters;
   }
 
+  onToolsChanged(cb: () => void): () => void {
+    this.toolsChangedListeners.add(cb);
+    return () => this.toolsChangedListeners.delete(cb);
+  }
+
   async refresh(): Promise<void> {
+    assertUniqueAdapterPrefixes(this.adapters);
     const tools: Tool[] = [];
     const instructions = new Map<string, string>();
+    const owners = new Map<string, string>();
+    const requiredTaskTools = new Set<string>();
 
     for (const adapter of this.adapters) {
+      let adapterTools: Tool[];
       try {
-        const adapterTools = await adapter.listTools();
-        for (const tool of adapterTools) {
-          tools.push({
-            ...tool,
-            description: sanitizeToolDescription(tool.name, tool.description),
-          });
-        }
+        adapterTools = await adapter.listTools();
       } catch (err) {
         log.warn({ err, adapterId: adapter.id }, 'Failed to list tools from adapter');
+        continue;
+      }
+
+      for (const tool of adapterTools) {
+        const owner = owners.get(tool.name);
+        if (owner) {
+          throw new Error(
+            `Tool name collision for "${tool.name}" between adapters "${owner}" and "${adapter.id}"`
+          );
+        }
+        owners.set(tool.name, adapter.id);
+
+        // Airlock has no task store or tasks/* forwarding surface. A required
+        // task tool cannot be called through the gateway and must not be
+        // advertised as available.
+        if (tool.execution?.taskSupport === 'required') {
+          requiredTaskTools.add(tool.name);
+          log.warn(
+            { adapterId: adapter.id, toolName: tool.name },
+            'Skipping MCP tool that requires unsupported task execution'
+          );
+          continue;
+        }
+
+        tools.push({
+          ...tool,
+          description: sanitizeToolDescription(tool.name, tool.description),
+        });
       }
 
       // Instructions are best-effort and must never block a tool refresh.
@@ -95,13 +146,19 @@ export class ToolRegistry {
       }
     }
 
+    assertUniqueAgentFacingNames(tools);
+    const changed = !isDeepStrictEqual(this.cachedTools, tools);
     this.cachedTools = tools;
+    this.requiredTaskTools = requiredTaskTools;
     this.cachedInstructions = instructions;
     this.cachedCatalogSummary = summarizeCatalog(tools);
     log.info(
       { count: tools.length, providersWithInstructions: instructions.size },
       'Tool registry refreshed'
     );
+    if (changed) {
+      for (const listener of this.toolsChangedListeners) listener();
+    }
   }
 
   /**
@@ -186,6 +243,7 @@ export class ToolRegistry {
       });
     }
 
+    assertUniqueAgentFacingNames(filtered.map((entry) => entry.tool));
     return filtered;
   }
 
@@ -193,19 +251,33 @@ export class ToolRegistry {
     namespacedName: string,
     args: Record<string, unknown>,
     agentId: string,
-    meta?: Record<string, unknown>
+    meta?: Record<string, unknown>,
+    options?: McpCallOptions
   ): Promise<unknown> {
     const resolvedName = this.resolveToolName(namespacedName, agentId);
     if (resolvedName !== namespacedName) {
       log.info({ alias: namespacedName, resolved: resolvedName }, 'Resolved tool alias');
+    }
+    if (this.requiredTaskTools.has(resolvedName)) {
+      throw new McpError(
+        ErrorCode.InvalidRequest,
+        `Tool requires unsupported MCP task execution: ${resolvedName}`
+      );
     }
 
     // Find the adapter that owns this tool by matching its prefix
     for (const adapter of this.adapters) {
       const prefix = getAdapterPrefix(adapter);
       if (prefix && resolvedName.startsWith(prefix)) {
-        const result = await adapter.call({ tool: resolvedName, args, agentId, meta });
+        const result = await adapter.call({
+          tool: resolvedName,
+          args,
+          agentId,
+          ...(meta ? { meta } : {}),
+          ...(options ? { options } : {}),
+        });
         if (!result.success) {
+          if (result.cause instanceof Error) throw result.cause;
           throw new Error(result.error ?? 'Tool call failed');
         }
         return result.data;
@@ -310,4 +382,49 @@ function getAdapterPrefix(adapter: BackendAdapter): string | null {
   if (id.startsWith('cli:')) return id.slice(4) + '/';
   if (id.startsWith('api:')) return id.slice(4) + '/';
   return null;
+}
+
+function assertUniqueAdapterPrefixes(adapters: BackendAdapter[]): void {
+  const owners = new Map<string, string>();
+
+  for (const adapter of adapters) {
+    const prefix = getAdapterPrefix(adapter);
+    if (!prefix) continue;
+
+    const owner = owners.get(prefix);
+    if (owner) {
+      throw new Error(
+        `Adapter namespace collision for "${prefix.slice(0, -1)}" between adapters "${owner}" and "${adapter.id}"`
+      );
+    }
+    owners.set(prefix, adapter.id);
+  }
+}
+
+function assertUniqueAgentFacingNames(tools: readonly Tool[]): void {
+  const names = new Map<string, string[]>();
+
+  for (const tool of tools) {
+    const agentName = sanitizeAgentToolName(tool.name);
+    const originals = names.get(agentName);
+    if (originals) {
+      originals.push(tool.name);
+    } else {
+      names.set(agentName, [tool.name]);
+    }
+  }
+
+  const collisions = [...names.entries()]
+    .filter(([, originals]) => originals.length > 1)
+    .sort(([left], [right]) => left.localeCompare(right));
+
+  if (collisions.length === 0) return;
+
+  const details = collisions
+    .map(([agentName, originals]) => {
+      const uniqueOriginals = [...new Set(originals)].sort();
+      return `"${agentName}" <- ${uniqueOriginals.join(', ')}`;
+    })
+    .join('; ');
+  throw new Error(`Agent-facing tool name collision: ${details}`);
 }

@@ -2,6 +2,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { auth, UnauthorizedError } from '@modelcontextprotocol/sdk/client/auth.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import type { McpCallOptions } from '../types.js';
 import { FileOAuthProvider } from './oauth-provider.js';
 import { ClientCredentialsTokenSource } from './client-credentials.js';
 import type { ClientCredentialsConfig } from '../config/schema.js';
@@ -85,6 +86,7 @@ export class HttpMcpClient {
   private lastError?: string;
   /** Sticky until a successful reconnect; unlike awaitingAuth it survives callback/listener errors. */
   private authorizationRequired = false;
+  private toolsChangedListeners = new Set<() => void>();
 
   constructor(
     private id: string,
@@ -116,6 +118,10 @@ export class HttpMcpClient {
 
   onReady(cb: () => void): void {
     this.readyListeners.add(cb);
+  }
+
+  onToolsChanged(cb: () => void): void {
+    this.toolsChangedListeners.add(cb);
   }
 
   async connect(): Promise<void> {
@@ -151,7 +157,24 @@ export class HttpMcpClient {
 
     this.transport = new StreamableHTTPClientTransport(new URL(this.url), transportOpts);
 
-    this.client = new Client({ name: 'airlock', version: VERSION });
+    this.client = new Client(
+      { name: 'airlock', version: VERSION },
+      {
+        listChanged: {
+          tools: {
+            autoRefresh: false,
+            debounceMs: 0,
+            onChanged: (error) => {
+              if (error) {
+                log.warn({ id: this.id, err: error }, 'MCP tools/list_changed refresh failed');
+                return;
+              }
+              this.notifyToolsChanged();
+            },
+          },
+        },
+      }
+    );
     this.connecting = true;
 
     this.transport.onclose = () => {
@@ -428,22 +451,45 @@ export class HttpMcpClient {
   async listTools(): Promise<Tool[]> {
     return this.withSessionRetry('listTools', async () => {
       if (!this.client || !this.ready) throw new Error(`MCP ${this.id} not connected`);
-      const result = await this.client.listTools(undefined, { timeout: this.requestTimeoutMs });
-      return result.tools;
+      // The SDK caches output-schema validators per response page (the final page
+      // wins). Airlock keeps the aggregate definitions here and does not use that
+      // private cache for task filtering; tool fields remain intact across pages.
+      const tools: Tool[] = [];
+      const cursors = new Set<string>();
+      let cursor: string | undefined;
+
+      while (true) {
+        const result = await this.client.listTools(cursor === undefined ? undefined : { cursor }, {
+          timeout: this.requestTimeoutMs,
+        });
+        tools.push(...result.tools);
+
+        const nextCursor = result.nextCursor;
+        if (nextCursor === undefined) return tools;
+        if (cursors.has(nextCursor)) {
+          throw new Error(`MCP ${this.id} returned a repeated tools/list cursor`);
+        }
+        cursors.add(nextCursor);
+        cursor = nextCursor;
+      }
     });
   }
 
   async callTool(
     name: string,
     args: Record<string, unknown>,
-    requestMeta?: McpRequestMeta
+    requestMeta?: McpRequestMeta,
+    options?: McpCallOptions
   ): Promise<unknown> {
     return this.withSessionRetry('callTool', async () => {
       if (!this.client || !this.ready) throw new Error(`MCP ${this.id} not connected`);
       const request = requestMeta
         ? { name, arguments: args, _meta: requestMeta }
         : { name, arguments: args };
-      return this.client.callTool(request, undefined, { timeout: this.requestTimeoutMs });
+      return this.client.callTool(request, undefined, {
+        timeout: this.requestTimeoutMs,
+        ...options,
+      });
     });
   }
 
@@ -484,6 +530,12 @@ export class HttpMcpClient {
 
   private notifyReady(): void {
     for (const cb of this.readyListeners) {
+      cb();
+    }
+  }
+
+  private notifyToolsChanged(): void {
+    for (const cb of this.toolsChangedListeners) {
       cb();
     }
   }

@@ -74,16 +74,34 @@ export class McpBackendAdapter implements BackendAdapter {
 
     // If sandbox config is present and server is stdio, spawn an ephemeral sandboxed instance
     if (sandbox && this.serverConfig?.type === 'stdio') {
-      return this.callSandboxed(originalName, toolCall.args, sandbox, requestMeta);
+      return this.callSandboxed(
+        originalName,
+        toolCall.args,
+        sandbox,
+        requestMeta,
+        toolCall.options
+      );
     }
 
     try {
-      const data = requestMeta
-        ? await this.pool.callTool(this.mcpId, originalName, toolCall.args, requestMeta)
-        : await this.pool.callTool(this.mcpId, originalName, toolCall.args);
+      const data = toolCall.options
+        ? await this.pool.callTool(
+            this.mcpId,
+            originalName,
+            toolCall.args,
+            requestMeta,
+            toolCall.options
+          )
+        : requestMeta
+          ? await this.pool.callTool(this.mcpId, originalName, toolCall.args, requestMeta)
+          : await this.pool.callTool(this.mcpId, originalName, toolCall.args);
       return { success: true, data };
     } catch (err) {
-      return { success: false, error: err instanceof Error ? err.message : String(err) };
+      return {
+        success: false,
+        error: err instanceof Error ? err.message : String(err),
+        cause: err,
+      };
     }
   }
 
@@ -94,7 +112,8 @@ export class McpBackendAdapter implements BackendAdapter {
     toolName: string,
     args: Record<string, unknown>,
     sandbox: ResolvedSandboxConfig,
-    requestMeta?: McpRequestMeta
+    requestMeta?: McpRequestMeta,
+    options?: ToolCall['options']
   ): Promise<ToolResult> {
     if (!this.serverConfig || this.serverConfig.type !== 'stdio') {
       return { success: false, error: 'Sandboxed call requires stdio MCP server config' };
@@ -126,10 +145,16 @@ export class McpBackendAdapter implements BackendAdapter {
       const request = requestMeta
         ? { name: toolName, arguments: args, _meta: requestMeta }
         : { name: toolName, arguments: args };
-      const data = await client.callTool(request);
+      const data = options
+        ? await client.callTool(request, undefined, options)
+        : await client.callTool(request);
       return { success: true, data };
     } catch (err) {
-      return { success: false, error: err instanceof Error ? err.message : String(err) };
+      return {
+        success: false,
+        error: err instanceof Error ? err.message : String(err),
+        cause: err,
+      };
     } finally {
       await transport?.close().catch(() => {});
     }
