@@ -8,6 +8,7 @@ import { ToolRegistry } from './registry/registry.js';
 import { AllowlistEngine } from './allowlist/engine.js';
 import { HitlEngine } from './hitl/engine.js';
 import { HitlBatcher } from './hitl/batcher.js';
+import { createGrantStore, engineOptionsFromConfig, wireBatcher } from './hitl/runtime.js';
 import { AuditLogger } from './audit/logger.js';
 import { hitlApiPlugin } from './hitl/api.js';
 import { auditApiPlugin } from './audit/api.js';
@@ -85,9 +86,9 @@ export class Gateway {
     this.approvalStream = new ApprovalStreamHub({ activityStream: this.activityStream });
 
     const approvalForwarder: ApprovalApi = {
-      approve: (id) => this.hitlEngine.approve(id),
+      approve: (id, options) => this.hitlEngine.approve(id, options),
       deny: (id, reason) => this.hitlEngine.deny(id, reason),
-      approveByCode: (code) => this.hitlEngine.approveByCode(code),
+      approveByCode: (code, options) => this.hitlEngine.approveByCode(code, options),
       denyByCode: (code, reason) => this.hitlEngine.denyByCode(code, reason),
     };
 
@@ -110,19 +111,18 @@ export class Gateway {
         .catch((err) => log.error({ err }, 'Failed to send activity notification'));
     });
 
+    const getConfig = () => this.config;
     this.hitlEngine = new HitlEngine(
       this.auditLogger,
       this.hitlProvider,
-      this.config.approvals.timeout_ms
+      this.config.approvals.timeout_ms,
+      {
+        grants: createGrantStore(this.auditLogger, getConfig),
+        ...engineOptionsFromConfig(this.config, getConfig),
+      }
     );
 
-    // Wire batcher → provider
-    this.hitlBatcher.onBatchReady((_agentId, requests) => {
-      const badgeCount = this.hitlEngine.getPending().length;
-      void this.hitlProvider
-        .notify(requests.map((request) => ({ ...request, badgeCount })))
-        .catch((err) => log.error({ err }, 'Failed to send approval notifications'));
-    });
+    wireBatcher(this.hitlBatcher, this.hitlEngine, this.hitlProvider);
 
     await this.hitlProvider.init();
     await this.hitlEngine.recoverPending();
@@ -273,6 +273,8 @@ export class Gateway {
         hitlEngine: this.hitlEngine,
         hitlBatcher: this.hitlBatcher,
         auditLogger: this.auditLogger,
+        getApprovalMode: (agentId) => this.config.agents[agentId]?.approval_mode,
+        getToolTier: (agentId, tool) => this.registry.toolTier(agentId, tool),
         getRequestSecurity,
       });
     }
@@ -496,6 +498,7 @@ export class Gateway {
     this.config = newConfig;
     this.updateRequestSecurity(newConfig);
     this.hitlEngine.setTimeoutMs(newConfig.approvals.timeout_ms);
+    this.hitlEngine.configure(engineOptionsFromConfig(newConfig, () => this.config));
     const mcpConfigs = getMcpConfigs(newConfig.providers);
     await this.pool.reload(mcpConfigs);
     this.credentialHealth.reload(getCredentialProbes(newConfig.providers));

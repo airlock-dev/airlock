@@ -8,6 +8,12 @@ import type { ActivityStream, AirlockActivityEvent } from '../activity/stream.js
 import { rememberAllow, type RememberAllowMode } from '../config/mutator.js';
 import { checkRequestSecurity, type RequestSecurityOptions } from '../security/request.js';
 import { generateId } from '../util/id.js';
+import {
+  approveWithGrant,
+  parseGrantSpecInput,
+  registerGrantRoutes,
+  rememberToGrantSpec,
+} from '../hitl/grant-api.js';
 
 interface MobileApiOptions {
   auditLogger: AuditLogger;
@@ -37,6 +43,8 @@ interface DecisionBody {
   remember?: string;
   duration_ms?: number;
   reason?: string;
+  /** Also allow similar calls for a while: { scope, tier?, profile?, duration_ms?, max_uses? }. */
+  grant?: unknown;
 }
 
 interface MobileApproval {
@@ -207,6 +215,10 @@ export function mobileApiPlugin(app: FastifyInstance, opts: MobileApiOptions): v
     return preview;
   });
 
+  registerGrantRoutes(app, engine, '/mobile', (request, reply) =>
+    checkMobileOrAdminAuth(request, reply, opts)
+  );
+
   app.post('/mobile/approvals/:id/decision', async (request, reply) => {
     if (!checkMobileOrAdminAuth(request, reply, opts)) return;
 
@@ -233,12 +245,41 @@ export function mobileApiPlugin(app: FastifyInstance, opts: MobileApiOptions): v
     }
 
     if (decision === 'approved') {
+      // `remember=temporary` used to write an expiring rule into the config file; it is now an
+      // in-memory grant like any other. `remember=always` still persists to config.
+      const grant = body.grant
+        ? parseGrantSpecInput(body.grant)
+        : rememberToGrantSpec(body.remember, body.duration_ms);
+      if (grant.error) {
+        reply.code(400);
+        return { error: grant.error };
+      }
+      if (
+        body.remember !== undefined &&
+        body.remember !== 'always' &&
+        body.remember !== 'temporary'
+      ) {
+        reply.code(400);
+        return { error: 'Invalid remember mode' };
+      }
+      // Remembering allows the tool itself, which only makes sense for a routine tool call.
+      const pendingEntry = body.remember
+        ? engine.getPending().find((entry) => entry.id === id)
+        : undefined;
+      if (pendingEntry && (pendingEntry.kind !== 'call' || pendingEntry.escalated)) {
+        reply.code(400);
+        return { error: 'Only a routine tool call can be remembered' };
+      }
+      // Approve (validating any grant) before persisting an "always" rule, so a rejected grant
+      // never leaves a permanent config change behind.
+      const result = approveWithGrant(engine, id, grant.spec, reply);
+      if ('error' in result || body.remember !== 'always') return result;
       const rememberResult = applyRemember(opts.configPath, row, body);
       if (rememberResult.error) {
         reply.code(rememberResult.status);
-        return { error: rememberResult.error };
+        return { ...result, error: rememberResult.error };
       }
-      engine.approve(id);
+      return result;
     } else {
       engine.deny(id, body.reason ?? 'Denied from iOS');
     }

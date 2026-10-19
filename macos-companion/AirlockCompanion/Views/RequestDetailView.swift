@@ -5,6 +5,7 @@ struct RequestDetailView: View {
     let request: ApprovalRequest
     let onApprove: () -> Void
     let onDeny: () -> Void
+    var onApproveWithGrant: ((GrantSpec) -> Void)? = nil
     let onDismiss: () -> Void
     var onNext: (() -> Void)? = nil
     var onPrev: (() -> Void)? = nil
@@ -34,6 +35,7 @@ struct RequestDetailView: View {
                     Text(request.displaySubtitle)
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
+                    RequestBadgesView(request: request)
                 }
 
                 Spacer()
@@ -56,6 +58,19 @@ struct RequestDetailView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     ScrollViewProbe(captured: $argsScrollView).frame(height: 0)
+
+                    if request.escalated {
+                        Label(
+                            "Flagged by a security check. Review this request on its own; it is never part of \"Approve all\" and cannot become a grant.",
+                            systemImage: "exclamationmark.triangle.fill"
+                        )
+                        .font(.system(size: 12))
+                        .foregroundStyle(.orange)
+                        .padding(10)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color.orange.opacity(0.12))
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                    }
 
                     if previewLoading {
                         ProgressView("Loading fetched preview…")
@@ -97,9 +112,21 @@ struct RequestDetailView: View {
                             title: "Timeout",
                             value: request.timeoutMs > 0 ? "\(request.timeoutMs / 1000)s" : "None"
                         )
-                        detailPill(title: "Args", value: "\(request.args.count)")
+                        if request.isPlan {
+                            detailPill(title: "Calls", value: "\(request.planEntries.count)")
+                        } else {
+                            detailPill(title: "Args", value: "\(request.args.count)")
+                        }
                         if request.isUserQuestion {
                             detailPill(title: "Kind", value: "Question")
+                        } else if request.isPlan {
+                            detailPill(title: "Kind", value: "Plan")
+                        }
+                        if let tier = request.tierLabel {
+                            detailPill(title: "Tier", value: tier)
+                        }
+                        if let provider = request.provider, !provider.isEmpty {
+                            detailPill(title: "Provider", value: provider)
                         }
                     }
 
@@ -126,11 +153,22 @@ struct RequestDetailView: View {
                         contextBox(title: "Request note", value: note)
                     }
 
-                    if request.args.isEmpty {
+                    if request.isPlan {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Planned calls")
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundStyle(.secondary)
+                            PlanEntriesView(entries: request.planEntries, fontSize: 12)
+                        }
+                        .padding(10)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(.quaternary.opacity(0.45))
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                    } else if request.args.isEmpty {
                         Text("No arguments").font(.system(size: 12)).foregroundStyle(.secondary)
                     }
 
-                    ForEach(sortedArgKeys, id: \.self) { key in
+                    ForEach(request.isPlan ? [] : sortedArgKeys, id: \.self) { key in
                         if let value = request.args[key] {
                             VStack(alignment: .leading, spacing: 6) {
                                 Text(key)
@@ -154,7 +192,11 @@ struct RequestDetailView: View {
                 fontSize: 14,
                 verticalPadding: 9,
                 cornerRadius: 8,
-                approveLabel: request.approveLabel
+                approveLabel: request.approveLabel,
+                grantOptions: request.escalated ? [] : request.grantOptions,
+                onApproveWithGrant: onApproveWithGrant.map { approve in
+                    { spec in approve(spec); onDismiss() }
+                }
             )
         }
         .padding(20)
@@ -162,7 +204,7 @@ struct RequestDetailView: View {
         .task(id: request.id) {
             preview = nil
             previewError = nil
-            guard !request.isUserQuestion, let loadPreview else { return }
+            guard !request.isUserQuestion, !request.isPlan, let loadPreview else { return }
             previewLoading = true
             defer { previewLoading = false }
             do {

@@ -416,4 +416,25 @@ describe('mobileApiPlugin', () => {
     expect(deviceStream.json()).toEqual({ stream: true });
     expect(approvalStream.addClient).toHaveBeenCalledOnce();
   });
+
+  it('refuses to remember a plan, so approving one can never allow request_approval itself', async () => {
+    const plan = engine.create({
+      agentId: 'dev',
+      tool: 'airlock/request_approval',
+      args: { reason: 'x' },
+      kind: 'plan',
+      plan: [{ tool: 'exec/run', fingerprint: 'f', args: {} }],
+    });
+    for (const remember of ['always', 'temporary']) {
+      const response = await app.inject({
+        method: 'POST',
+        url: `/mobile/approvals/${plan.id}/decision`,
+        headers: { authorization: 'Bearer admin-secret' },
+        payload: { decision: 'approved', remember },
+      });
+      expect(response.statusCode).toBe(400);
+    }
+    expect(readFileSync(configPath, 'utf8')).not.toContain('request_approval');
+    expect(engine.hasPending(plan.id)).toBe(true);
+  });
 });

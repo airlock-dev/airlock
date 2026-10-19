@@ -63,7 +63,9 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
     func configure() {
         let center = UNUserNotificationCenter.current()
         center.delegate = self
-        center.setNotificationCategories([approvalCategory, activityCategory])
+        center.setNotificationCategories([
+            approvalCategory, approvalPlainCategory, approvalBatchCategory, activityCategory,
+        ])
     }
 
     func requestAuthorization() {
@@ -152,6 +154,50 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         )
     }
 
+    /// Single-approval categories: routine calls, and plans/questions/flagged calls (approve or deny only).
+    static let singleApprovalCategories: Set<String> = ["AIRLOCK_APPROVAL", "AIRLOCK_APPROVAL_PLAIN"]
+
+    /// Plans, questions and flagged calls: no "Allow 1 Hour"/"Always Allow", which remember the tool.
+    private var approvalPlainCategory: UNNotificationCategory {
+        let approve = UNNotificationAction(
+            identifier: "APPROVE",
+            title: "Approve",
+            options: [.authenticationRequired]
+        )
+        let deny = UNNotificationAction(
+            identifier: "DENY",
+            title: "Deny",
+            options: [.destructive, .authenticationRequired]
+        )
+
+        return UNNotificationCategory(
+            identifier: "AIRLOCK_APPROVAL_PLAIN",
+            actions: [approve, deny],
+            intentIdentifiers: [],
+            options: []
+        )
+    }
+
+    private var approvalBatchCategory: UNNotificationCategory {
+        let approveAll = UNNotificationAction(
+            identifier: "APPROVE_ALL",
+            title: "Approve All",
+            options: [.authenticationRequired]
+        )
+        let denyAll = UNNotificationAction(
+            identifier: "DENY_ALL",
+            title: "Deny All",
+            options: [.destructive, .authenticationRequired]
+        )
+
+        return UNNotificationCategory(
+            identifier: "AIRLOCK_APPROVAL_BATCH",
+            actions: [approveAll, denyAll],
+            intentIdentifiers: [],
+            options: []
+        )
+    }
+
     private var activityCategory: UNNotificationCategory {
         UNNotificationCategory(
             identifier: "AIRLOCK_ACTIVITY",
@@ -201,6 +247,11 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
             return
         }
 
+        if response.notification.request.content.categoryIdentifier == "AIRLOCK_APPROVAL_BATCH" {
+            await handleBatch(response: response)
+            return
+        }
+
         let approvalId = userInfo["approval_id"] as? String
         guard let approvalId else {
             UserDefaults.standard.set("Notification did not include an approval id.", forKey: "lastNotificationActionError")
@@ -229,11 +280,9 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
             case "APPROVE":
                 try await client.decide(id: approvalId, decision: .approved)
             case "ALLOW_ONE_HOUR":
-                try await client.decide(
+                try await client.approve(
                     id: approvalId,
-                    decision: .approved,
-                    remember: .temporary,
-                    durationMs: 60 * 60 * 1000
+                    grant: GrantRequest(scope: "tool", durationMs: GrantDuration.oneHour.rawValue)
                 )
             case "ALWAYS_ALLOW":
                 try await client.decide(id: approvalId, decision: .approved, remember: .always)
@@ -251,6 +300,52 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
             UserDefaults.standard.set(error.localizedDescription, forKey: "lastNotificationActionError")
         }
 
+        await refreshApprovalNotifications(using: client)
+        postRefresh()
+    }
+
+    private func handleBatch(response: UNNotificationResponse) async {
+        let content = response.notification.request.content
+        let userInfo = content.userInfo
+        let batchId = userInfo["batch_id"] as? String
+            ?? userInfo["batch_code"] as? String
+        guard let batchId else {
+            UserDefaults.standard.set("Notification did not include a batch id.", forKey: "lastNotificationActionError")
+            postRefresh()
+            return
+        }
+
+        guard let client = clientFromDefaults() else {
+            UserDefaults.standard.set("Airlock URL or device token is missing.", forKey: "lastNotificationActionError")
+            postRefresh()
+            return
+        }
+
+        guard ["APPROVE_ALL", "DENY_ALL"].contains(response.actionIdentifier) else {
+            await refreshApprovalNotifications(using: client)
+            postRefresh()
+            return
+        }
+
+        do {
+            // The server skips escalated members on approve-all; they stay pending for review.
+            switch response.actionIdentifier {
+            case "APPROVE_ALL":
+                try await client.decideBatch(batchId, decision: .approved)
+            case "DENY_ALL":
+                try await client.decideBatch(batchId, decision: .denied, reason: "Denied from iOS notification")
+            default:
+                break
+            }
+            UserDefaults.standard.removeObject(forKey: "lastNotificationActionError")
+        } catch {
+            UserDefaults.standard.set(error.localizedDescription, forKey: "lastNotificationActionError")
+        }
+
+        UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: [response.notification.request.identifier])
+        for approvalId in userInfo["approval_ids"] as? [String] ?? [] {
+            await removeDeliveredApprovalNotification(matching: approvalId)
+        }
         await refreshApprovalNotifications(using: client)
         postRefresh()
     }
@@ -273,6 +368,10 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         } else if let code = userInfo["code"] as? String {
             await removeDeliveredApprovalNotification(matching: code)
         }
+        if let batchId = userInfo["batch_id"] as? String,
+           Self.intValue(userInfo["batch_pending"]) == 0 {
+            await removeDeliveredBatchNotification(batchId: batchId)
+        }
         if let client = clientFromDefaults() {
             await refreshApprovalNotifications(using: client)
         }
@@ -284,7 +383,9 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         let center = UNUserNotificationCenter.current()
         let notifications = await center.deliveredNotifications()
         let identifiers = notifications.compactMap { notification -> String? in
-            guard notification.request.content.categoryIdentifier == "AIRLOCK_APPROVAL" else { return nil }
+            guard Self.singleApprovalCategories.contains(notification.request.content.categoryIdentifier) else {
+                return nil
+            }
             let userInfo = notification.request.content.userInfo
             let matches = userInfo["approval_id"] as? String == idOrCode || userInfo["code"] as? String == idOrCode
             return matches ? notification.request.identifier : nil
@@ -295,18 +396,40 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         }
     }
 
+    func removeDeliveredBatchNotification(batchId: String) async {
+        let center = UNUserNotificationCenter.current()
+        let notifications = await center.deliveredNotifications()
+        // apns-collapse-id is the batch id, so it is normally the request identifier too.
+        var identifiers = Set([batchId])
+        for notification in notifications where notification.request.content.categoryIdentifier == "AIRLOCK_APPROVAL_BATCH" {
+            if notification.request.content.userInfo["batch_id"] as? String == batchId {
+                identifiers.insert(notification.request.identifier)
+            }
+        }
+        center.removeDeliveredNotifications(withIdentifiers: Array(identifiers))
+    }
+
     func reconcileApprovalNotifications(with approvals: [ApprovalRequest], fetchedAfter: Date) async {
         let active = approvals.filter { !$0.isExpired() }
         let activeIds = Set(active.map(\.id))
         let activeCodes = Set(active.map(\.code))
+        let activeBatchIds = Set(active.compactMap(\.batchId))
         let center = UNUserNotificationCenter.current()
         let notifications = await center.deliveredNotifications()
         let identifiers = notifications.compactMap { notification -> String? in
             // A notification arriving during the fetch may be newer than its snapshot.
-            guard notification.date <= fetchedAfter,
-                  notification.request.content.categoryIdentifier == "AIRLOCK_APPROVAL"
-            else { return nil }
+            guard notification.date <= fetchedAfter else { return nil }
             let userInfo = notification.request.content.userInfo
+            if notification.request.content.categoryIdentifier == "AIRLOCK_APPROVAL_BATCH" {
+                // Keep a batch push while any of its members is still pending. The push itemizes only
+                // the first few members, so match on the batch id too.
+                if let batchId = userInfo["batch_id"] as? String, activeBatchIds.contains(batchId) { return nil }
+                guard let memberIds = userInfo["approval_ids"] as? [String], !memberIds.isEmpty else { return nil }
+                return memberIds.contains(where: activeIds.contains) ? nil : notification.request.identifier
+            }
+            guard Self.singleApprovalCategories.contains(notification.request.content.categoryIdentifier) else {
+                return nil
+            }
             if let id = userInfo["approval_id"] as? String {
                 return activeIds.contains(id) ? nil : notification.request.identifier
             }
@@ -348,6 +471,13 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
 
     private func postRefresh() {
         NotificationCenter.default.post(name: .airlockShouldRefresh, object: nil)
+    }
+
+    private static func intValue(_ value: Any?) -> Int? {
+        if let value = value as? Int { return value }
+        if let value = value as? NSNumber { return value.intValue }
+        if let value = value as? String { return Int(value) }
+        return nil
     }
 
     private func isActivityNotification(userInfo: [AnyHashable: Any]) -> Bool {

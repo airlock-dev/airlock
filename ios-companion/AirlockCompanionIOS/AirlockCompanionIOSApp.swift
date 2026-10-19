@@ -38,6 +38,15 @@ struct RootView: View {
             }
             .badge(viewModel.activePendingCount)
 
+            // Standing permissions get their own tab: they're what you check and revoke, not
+            // something to dig for. The icon fills while any grant is active.
+            NavigationStack {
+                GrantsView(viewModel: viewModel)
+            }
+            .tabItem {
+                Label("Grants", systemImage: viewModel.activeGrants.isEmpty ? "key.horizontal" : "key.horizontal.fill")
+            }
+
             NavigationStack {
                 HistoryView(viewModel: viewModel)
             }

@@ -15,6 +15,7 @@ final class AppViewModel: ObservableObject {
     @Published var pendingRequests: [ApprovalRequest] = []
     @Published var resolvedRequests: [ResolvedRequest] = []
     @Published var activityEvents: [ActivityEvent] = []
+    @Published private(set) var grants: [ApprovalGrant] = []
     @Published var connectionState: ConnectionState = .disconnected(nil)
     @Published var selectedIndex: Int = 0
     @Published private(set) var appVersion: String
@@ -65,6 +66,12 @@ final class AppViewModel: ObservableObject {
     private var seenRequests: [String: ApprovalRequest] = [:]
 
     var pendingCount: Int { pendingRequests.count }
+
+    /// Visible requests that share a notification batch (or, without one, an agent), in list order.
+    /// Only groups of two or more get "Approve all" / "Deny all" controls.
+    var approvalGroups: [ApprovalGroup] {
+        ApprovalGroup.groups(from: pendingRequests)
+    }
 
     init() {
         let storedURL = Self.loadStoredDashboardURL()
@@ -128,18 +135,26 @@ final class AppViewModel: ObservableObject {
         try await apiClient.approvalPreview(id: id)
     }
 
-    func approve(id: String, remember: ApprovalRememberMode? = nil, durationMs: Int? = nil) {
+    func approve(id: String, remember: ApprovalRememberMode? = nil, durationMs: Int? = nil, grant: GrantSpec? = nil) {
         guard !markExpiredIfNeeded(id: id) else { return }
         let code = seenRequests[id]?.code ?? id
         moveToResolved(id: id, action: "approved")
         notificationManager.removeNotification(id: id)
 
         let client = apiClient
+        let createsGrant = grant != nil || remember == .temporary
         Task { [weak self] in
             do {
-                try await client.approve(id: id, remember: remember, durationMs: durationMs)
+                let outcome = try await client.approve(id: id, remember: remember, durationMs: durationMs, grant: grant)
                 await MainActor.run {
-                    self?.lastNotificationActionError = ""
+                    guard let self else { return }
+                    self.lastNotificationActionError = ""
+                    // A new grant can auto-approve other pending requests; SSE will confirm too.
+                    for otherId in outcome.approved where otherId != id {
+                        self.moveToResolved(id: otherId, action: "approved")
+                        self.notificationManager.removeNotification(id: otherId)
+                    }
+                    if createsGrant { self.refreshGrants() }
                 }
             } catch {
                 await MainActor.run {
@@ -167,6 +182,48 @@ final class AppViewModel: ObservableObject {
                     self?.lastNotificationActionError = "Deny \(code) failed: \(error.localizedDescription)"
                 }
             }
+        }
+    }
+
+    /// Approve an explicit set of visible requests. Escalated requests and questions are never
+    /// included; they must be decided individually.
+    func approveAll(ids: [String]) {
+        let eligible = ids.filter { id in
+            guard let request = pendingRequests.first(where: { $0.id == id }) else { return false }
+            return request.canBulkApprove && !request.isExpired()
+        }
+        guard !eligible.isEmpty else { return }
+        decideMany(ids: eligible, decision: "approved")
+    }
+
+    func denyAll(ids: [String]) {
+        let eligible = ids.filter { id in pendingRequests.contains(where: { $0.id == id && !$0.isExpired() }) }
+        guard !eligible.isEmpty else { return }
+        decideMany(ids: eligible, decision: "denied")
+    }
+
+    func refreshGrants() {
+        let client = apiClient
+        Task { [weak self] in
+            guard let fetched = try? await client.grants() else { return }
+            await MainActor.run {
+                self?.grants = fetched.filter { !$0.isExpired() }
+            }
+        }
+    }
+
+    func revokeGrant(id: String) {
+        grants.removeAll { $0.id == id }
+        let client = apiClient
+        Task { [weak self] in
+            do {
+                try await client.revokeGrant(id: id)
+            } catch {
+                await MainActor.run {
+                    self?.lastNotificationActionError = "Revoke grant failed: \(error.localizedDescription)"
+                }
+            }
+            await MainActor.run { self?.refreshGrants() }
         }
     }
 
@@ -216,6 +273,32 @@ final class AppViewModel: ObservableObject {
     }
 
     // MARK: - Private
+
+    private func decideMany(ids: [String], decision: String) {
+        for id in ids {
+            moveToResolved(id: id, action: decision)
+            notificationManager.removeNotification(id: id)
+        }
+
+        let client = apiClient
+        Task { [weak self] in
+            do {
+                let outcome = try await client.decide(ids: ids, decision: decision)
+                guard let self else { return }
+                self.lastNotificationActionError = ""
+                // Anything the server skipped may still be pending; re-sync now rather than on the next tick.
+                if !outcome.skipped.isEmpty {
+                    self.resolvedRequests.removeAll { outcome.skipped.contains($0.id) }
+                    await self.reconcilePendingRequests()
+                }
+            } catch {
+                await MainActor.run {
+                    let verb = decision == "approved" ? "Approve" : "Deny"
+                    self?.lastNotificationActionError = "\(verb) all (\(ids.count)) failed: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
 
     private func connectSSE() {
         sseTask?.cancel()
@@ -380,6 +463,7 @@ final class AppViewModel: ObservableObject {
 
                 if Date() >= nextReconcile {
                     await self.reconcilePendingRequests()
+                    self.refreshGrants()
                     nextReconcile = Date().addingTimeInterval(Constants.PendingMaintenance.reconcileInterval)
                 }
 
@@ -433,6 +517,13 @@ final class AppViewModel: ObservableObject {
     }
 
     private static func loadStoredGatewayToken(using tokenStore: KeychainTokenStore) -> String {
+        #if DEBUG
+        // Dev builds pointed at a test gateway must never read (or prompt for) the installed app's
+        // Keychain item, which shares this service name.
+        if let override = ProcessInfo.processInfo.environment["AIRLOCK_COMPANION_TOKEN"] {
+            return override
+        }
+        #endif
         let keychainToken = (try? tokenStore.load()) ?? ""
         let legacyToken = loadDefaultString(forKey: Constants.UserDefaultsKeys.gatewayToken)
 
@@ -454,6 +545,11 @@ final class AppViewModel: ObservableObject {
     }
 
     private static func loadStoredDashboardURL() -> String {
+        #if DEBUG
+        if let override = ProcessInfo.processInfo.environment["AIRLOCK_COMPANION_URL"] {
+            return override
+        }
+        #endif
         let storedURL = loadDefaultString(forKey: Constants.UserDefaultsKeys.dashboardURL)
         guard !storedURL.isEmpty else {
             return Constants.defaultDashboardURL

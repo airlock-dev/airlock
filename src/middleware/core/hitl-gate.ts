@@ -1,7 +1,9 @@
 import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
 import type { AirlockCallContext } from '../../airlock/context.js';
 import type { SandboxDisplayInfo } from '../../sandbox/index.js';
-import type { Middleware, ToolCallResponse } from '../types.js';
+import type { Middleware, ToolCallContext, ToolCallResponse } from '../types.js';
+import { fingerprintCall, type ApprovalSubject } from '../../hitl/grants.js';
+import { providerIdForTool } from '../../util/tool-name.js';
 
 function errorResponse(message: string): ToolCallResponse {
   return {
@@ -13,66 +15,151 @@ function errorResponse(message: string): ToolCallResponse {
 function serializeAuditArgs(args: Record<string, unknown>, meta: Record<string, unknown>): string {
   const sandbox = meta.sandbox_info;
   const context = meta.airlockContext as AirlockCallContext | undefined;
-  if (!sandbox && !context) return JSON.stringify(args);
+  const grant = meta.approvalGrantId as string | undefined;
+  if (!sandbox && !context && !grant) return JSON.stringify(args);
   return JSON.stringify({
     ...args,
-    _airlock: { ...(context ?? {}), ...(sandbox ? { sandbox } : {}) },
+    _airlock: { ...(context ?? {}), ...(sandbox ? { sandbox } : {}), ...(grant ? { grant } : {}) },
   });
 }
 
-function redactApprovalArgs(
-  auditLogger: { redactArgs?: (args: Record<string, unknown>) => Record<string, unknown> },
-  args: Record<string, unknown>
-): Record<string, unknown> {
-  return auditLogger.redactArgs?.(args) ?? args;
+/** What the grant store and approval UIs need to know about this call. */
+export function approvalSubjectFor(ctx: ToolCallContext): ApprovalSubject {
+  const sessionId = ctx.meta.downstreamSessionId;
+  return {
+    agentId: ctx.agentId,
+    tool: ctx.toolName,
+    fingerprint: fingerprintCall(ctx.toolName, ctx.args),
+    provider: providerIdForTool(ctx.toolName),
+    tier: ctx.deps.registry.toolTier?.(ctx.agentId, ctx.toolName) ?? 'destructive',
+    ...(typeof sessionId === 'string' ? { sessionId } : {}),
+    escalated: ctx.meta.needsApproval === true,
+  };
+}
+
+function pendingResponse(tool: string, ticket: { id: string; code: string }): ToolCallResponse {
+  const text =
+    `Approval pending: Airlock asked the user to approve ${tool} (approval id ${ticket.id}, code ${ticket.code}). ` +
+    'Nothing was executed. Once the user approves, retry this exact call with identical arguments. ' +
+    'To wait for the decision, call airlock_await_approval with {"id": "' +
+    ticket.id +
+    '"} if that tool is available. Do not re-request it in the meantime.';
+  return { result: { content: [{ type: 'text', text }], isError: true }, text };
+}
+
+const PROGRESS_INTERVAL_MS = 15_000;
+
+/** Keep a held-open call alive for clients that reset their timeout on progress notifications. */
+function startProgressKeepalive(ctx: ToolCallContext, code: string): () => void {
+  const send = ctx.sendProgress;
+  if (!send) return () => {};
+  let ticks = 0;
+  const timer = setInterval(() => {
+    ticks += 1;
+    try {
+      send(ticks, `Waiting for human approval (code ${code})`);
+    } catch {
+      /* best effort */
+    }
+  }, PROGRESS_INTERVAL_MS);
+  timer.unref();
+  return () => clearInterval(timer);
 }
 
 export function hitlGateMiddleware(): Middleware {
   return async (ctx, next) => {
-    if (!ctx.meta.needsApproval) return next();
+    if (!ctx.meta.needsApproval && !ctx.meta.policyAsk) return next();
 
     const { hitlEngine, hitlBatcher, auditLogger } = ctx.deps;
     const sandboxInfo = ctx.meta.sandbox_info as SandboxDisplayInfo | undefined;
     const airlockContext = ctx.meta.airlockContext as AirlockCallContext | undefined;
-    const approvalArgs = redactApprovalArgs(auditLogger, ctx.args);
+    const subject = approvalSubjectFor(ctx);
+
+    const grant = hitlEngine.consumeGrant(subject);
+    if (grant) {
+      ctx.meta.approvalGrantId = grant.id;
+      auditLogger.log({
+        agent_id: ctx.agentId,
+        request_id: ctx.callId,
+        tool: ctx.toolName,
+        args: serializeAuditArgs(ctx.args, ctx.meta),
+        result: 'hitl_granted',
+      });
+      return next();
+    }
+
+    const mode = ctx.agentConfig.approval_mode ?? hitlEngine.defaultMode;
+    if (mode === 'async') {
+      if (hitlEngine.wasRecentlyDenied(subject.agentId, subject.fingerprint)) {
+        auditLogger.log({
+          agent_id: ctx.agentId,
+          request_id: ctx.callId,
+          tool: ctx.toolName,
+          args: serializeAuditArgs(ctx.args, ctx.meta),
+          result: 'hitl_denied',
+        });
+        return errorResponse(
+          'Request denied by operator. Do not retry this call; ask the user how to proceed.'
+        );
+      }
+      const existing = hitlEngine.findPendingCall(subject.agentId, subject.fingerprint);
+      if (existing) return pendingResponse(ctx.toolName, existing);
+    }
+
+    // The engine redacts args before they are stored or shown to the operator.
     const ticket = hitlEngine.create({
       agentId: ctx.agentId,
       tool: ctx.toolName,
-      args: approvalArgs,
+      args: ctx.args,
       ...(airlockContext ? { context: airlockContext } : {}),
       sandbox: sandboxInfo,
+      kind: 'call',
+      mode,
+      subject,
     });
 
-    hitlBatcher.add({
-      id: ticket.id,
-      code: ticket.code,
-      agentId: ctx.agentId,
-      tool: ctx.toolName,
-      args: approvalArgs,
-      ...(airlockContext ? { context: airlockContext } : {}),
-      ...(sandboxInfo ? { sandbox: sandboxInfo } : {}),
-      timeoutMs: hitlEngine.timeoutMs,
-    });
+    const notification = hitlEngine.buildNotification(ticket.id);
+    if (notification) hitlBatcher.add(notification);
+
+    if (mode === 'async') {
+      // The approval outlives this call: on approval the engine leaves a single-use grant that the
+      // agent's retry consumes, so neither a client timeout nor a reconnect loses the decision.
+      auditLogger.log({
+        agent_id: ctx.agentId,
+        request_id: ctx.callId,
+        tool: ctx.toolName,
+        args: serializeAuditArgs(ctx.args, ctx.meta),
+        result: 'hitl_pending',
+        hitl_code: ticket.code,
+      });
+      return pendingResponse(ctx.toolName, ticket);
+    }
+
+    const stopKeepalive = startProgressKeepalive(ctx, ticket.code);
 
     // If the transport provides an abort signal, race the HITL promise against it
     // so we don't execute a tool on a dead session.
     let result: Awaited<typeof ticket.result> | 'disconnected';
-    if (ctx.signal && !ctx.signal.aborted) {
-      result = await Promise.race([
-        ticket.result,
-        new Promise<'disconnected'>((resolve) => {
-          if (ctx.signal!.aborted) {
-            resolve('disconnected');
-          } else {
-            ctx.signal!.addEventListener('abort', () => resolve('disconnected'), { once: true });
-          }
-        }),
-      ]);
-    } else if (ctx.signal?.aborted) {
-      // Already disconnected before we even started waiting
-      result = 'disconnected';
-    } else {
-      result = await ticket.result;
+    try {
+      if (ctx.signal && !ctx.signal.aborted) {
+        result = await Promise.race([
+          ticket.result,
+          new Promise<'disconnected'>((resolve) => {
+            if (ctx.signal!.aborted) {
+              resolve('disconnected');
+            } else {
+              ctx.signal!.addEventListener('abort', () => resolve('disconnected'), { once: true });
+            }
+          }),
+        ]);
+      } else if (ctx.signal?.aborted) {
+        // Already disconnected before we even started waiting
+        result = 'disconnected';
+      } else {
+        result = await ticket.result;
+      }
+    } finally {
+      stopKeepalive();
     }
 
     if (result === 'disconnected') {

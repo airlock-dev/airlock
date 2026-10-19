@@ -1,6 +1,6 @@
 import { AuditDb } from './db.js';
 import { redactFields } from './redactor.js';
-import type { AuditEntry, HitlQueueEntry, MobileDeviceEntry } from './db.js';
+import type { ApprovalGrantEntry, AuditEntry, HitlQueueEntry, MobileDeviceEntry } from './db.js';
 import type { AuditConfig } from '../config/schema.js';
 
 export class AuditLogger {
@@ -57,6 +57,24 @@ export class AuditLogger {
   }
   getHitlHistory(limit?: number): HitlQueueEntry[] {
     return this.db.getHitlHistory(limit);
+  }
+  insertGrant(entry: ApprovalGrantEntry): void {
+    this.db.insertGrant(entry);
+  }
+  updateGrantUses(id: string, usesRemaining: number): void {
+    this.db.updateGrantUses(id, usesRemaining);
+  }
+  consumeGrantUse(id: string): boolean {
+    return this.db.consumeGrantUse(id);
+  }
+  getGrantById(id: string): ApprovalGrantEntry | undefined {
+    return this.db.getGrantById(id);
+  }
+  revokeGrant(id: string): void {
+    this.db.revokeGrant(id);
+  }
+  getActiveGrants(): ApprovalGrantEntry[] {
+    return this.db.getActiveGrants();
   }
   upsertMobileDevice(entry: Omit<MobileDeviceEntry, 'revoked_at'>): void {
     this.db.upsertMobileDevice(entry);

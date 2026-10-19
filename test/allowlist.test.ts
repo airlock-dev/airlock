@@ -507,3 +507,28 @@ describe('AllowlistEngine', () => {
     });
   });
 });
+
+describe('implicit approval tools', () => {
+  const base = {
+    allow: [],
+    ask: [],
+    deny: [],
+    tool_overrides: {},
+    exec: { allow: [], ask: [], deny: [], env: {}, default_timeout_ms: 30000 },
+  } as unknown as AgentConfig;
+
+  it('allows request/await approval for agents that can hit an approval, unless denied', () => {
+    const engine = new AllowlistEngine({
+      none: base,
+      asker: { ...base, ask: ['gmail/send'] },
+      execAsker: { ...base, exec: { ...base.exec, ask: ['git push*'] } },
+      denier: { ...base, ask: ['gmail/send'], deny: ['airlock/*'] },
+    });
+    expect(engine.evaluate('none', 'airlock/await_approval')).toBe('deny');
+    expect(engine.evaluate('asker', 'airlock/await_approval')).toBe('allow');
+    expect(engine.evaluate('asker', 'airlock/request_approval')).toBe('allow');
+    expect(engine.evaluate('asker', 'airlock/ask_user')).toBe('deny');
+    expect(engine.evaluate('execAsker', 'airlock/await_approval')).toBe('allow');
+    expect(engine.evaluate('denier', 'airlock/await_approval')).toBe('deny');
+  });
+});

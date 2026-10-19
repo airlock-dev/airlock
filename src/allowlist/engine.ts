@@ -1,4 +1,5 @@
 import { bestSpecificity, specificity } from './pattern.js';
+import { isAirlockApprovalTool } from '../airlock/tools.js';
 import type { AgentConfig } from '../config/schema.js';
 
 export type Decision = 'allow' | 'ask' | 'deny';
@@ -53,6 +54,10 @@ export class AllowlistEngine {
 
     const best = Math.max(denySpec, rememberedAllowSpec, askSpec, allowSpec);
     if (best < 0) {
+      if (isAirlockApprovalTool(toolName) && canNeedApproval(agent)) {
+        // Implicitly available to any agent that can hit an approval at all.
+        return { decision: 'allow', candidates };
+      }
       return { decision: 'default-deny', candidates };
     }
 
@@ -88,4 +93,17 @@ function matchingPatterns(
         match.specificity >= 0 &&
         (source === 'deny' || source === 'remember_allow' || source === 'ask' || source === 'allow')
     );
+}
+
+/**
+ * Whether anything in the agent's config can route a call to human approval: an ask rule, an exec
+ * or command policy ask, or a detector in escalate mode.
+ */
+function canNeedApproval(agent: AgentConfig): boolean {
+  return (
+    agent.ask.length > 0 ||
+    (agent.exec?.ask.length ?? 0) > 0 ||
+    agent.command_policy !== undefined ||
+    (agent.middleware ?? []).some((item) => item.mode === 'escalate')
+  );
 }

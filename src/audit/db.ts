@@ -30,6 +30,22 @@ export interface HitlQueueEntry {
   reason?: string;
   created_at: string;
   resolved_at?: string;
+  /** JSON-encoded approval metadata (fingerprint, mode, plan, batch, …) for restart recovery. */
+  meta?: string | null;
+}
+
+export interface ApprovalGrantEntry {
+  id: string;
+  agent_id: string;
+  session_id: string | null;
+  scope: string; // JSON-encoded GrantScope
+  source: string;
+  approval_id: string | null;
+  label: string | null;
+  created_at: string;
+  expires_at: string | null;
+  uses_remaining: number | null;
+  revoked_at: string | null;
 }
 
 export interface MobileDeviceEntry {
@@ -60,6 +76,13 @@ export class AuditDb {
     revokeMobileDevice: Database.Statement;
     cleanupAudit: Database.Statement;
     cleanupHitl: Database.Statement;
+    insertGrant: Database.Statement;
+    updateGrantUses: Database.Statement;
+    consumeGrantUse: Database.Statement;
+    getGrantById: Database.Statement;
+    revokeGrant: Database.Statement;
+    getActiveGrants: Database.Statement;
+    cleanupGrants: Database.Statement;
   };
 
   constructor(dbPath: string) {
@@ -111,6 +134,21 @@ export class AuditDb {
         revoked_at      TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_mobile_devices_revoked ON mobile_devices(revoked_at);
+
+      CREATE TABLE IF NOT EXISTS approval_grants (
+        id             TEXT PRIMARY KEY,
+        agent_id       TEXT NOT NULL,
+        session_id     TEXT,
+        scope          TEXT NOT NULL,
+        source         TEXT NOT NULL,
+        approval_id    TEXT,
+        label          TEXT,
+        created_at     TEXT NOT NULL,
+        expires_at     TEXT,
+        uses_remaining INTEGER,
+        revoked_at     TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_grants_agent ON approval_grants(agent_id);
     `);
 
     this.migrate();
@@ -130,6 +168,13 @@ export class AuditDb {
     }
     // Safe on both fresh and migrated DBs now that the column is guaranteed to exist.
     this.db.exec('CREATE INDEX IF NOT EXISTS idx_audit_request_id ON audit_log(request_id)');
+
+    const hitlCols = new Set(
+      (this.db.pragma('table_info(hitl_queue)') as Array<{ name: string }>).map((c) => c.name)
+    );
+    if (!hitlCols.has('meta')) {
+      this.db.exec('ALTER TABLE hitl_queue ADD COLUMN meta TEXT');
+    }
   }
 
   private prepareStatements(): void {
@@ -139,8 +184,8 @@ export class AuditDb {
         VALUES (@ts, @agent_id, @tool, @args, @result, @error, @duration_ms, @hitl_code, @request_id)
       `),
       insertHitl: this.db.prepare(`
-        INSERT INTO hitl_queue (id, code, agent_id, tool, args, status, created_at)
-        VALUES (@id, @code, @agent_id, @tool, @args, @status, @created_at)
+        INSERT INTO hitl_queue (id, code, agent_id, tool, args, status, created_at, meta)
+        VALUES (@id, @code, @agent_id, @tool, @args, @status, @created_at, @meta)
       `),
       updateHitlStatus: this.db.prepare(`
         UPDATE hitl_queue SET status = @status, reason = @reason, resolved_at = @resolved_at WHERE id = @id
@@ -192,6 +237,38 @@ export class AuditDb {
       cleanupHitl: this.db.prepare(
         "DELETE FROM hitl_queue WHERE status != 'pending' AND resolved_at < ?"
       ),
+      insertGrant: this.db.prepare(`
+        INSERT INTO approval_grants (
+          id, agent_id, session_id, scope, source, approval_id, label,
+          created_at, expires_at, uses_remaining, revoked_at
+        )
+        VALUES (
+          @id, @agent_id, @session_id, @scope, @source, @approval_id, @label,
+          @created_at, @expires_at, @uses_remaining, @revoked_at
+        )
+      `),
+      updateGrantUses: this.db.prepare(
+        'UPDATE approval_grants SET uses_remaining = @uses_remaining WHERE id = @id'
+      ),
+      // Atomic across processes sharing this DB (stdio mode runs one process per session).
+      consumeGrantUse: this.db.prepare(`
+        UPDATE approval_grants SET uses_remaining = uses_remaining - 1
+        WHERE id = ? AND revoked_at IS NULL AND uses_remaining > 0
+      `),
+      getGrantById: this.db.prepare('SELECT * FROM approval_grants WHERE id = ?'),
+      revokeGrant: this.db.prepare(
+        'UPDATE approval_grants SET revoked_at = @revoked_at WHERE id = @id AND revoked_at IS NULL'
+      ),
+      getActiveGrants: this.db.prepare(`
+        SELECT * FROM approval_grants
+        WHERE revoked_at IS NULL
+          AND (expires_at IS NULL OR expires_at > ?)
+          AND (uses_remaining IS NULL OR uses_remaining > 0)
+        ORDER BY created_at ASC
+      `),
+      cleanupGrants: this.db.prepare(
+        'DELETE FROM approval_grants WHERE COALESCE(revoked_at, expires_at, created_at) < ?'
+      ),
     };
   }
 
@@ -237,7 +314,32 @@ export class AuditDb {
   }
 
   insertHitl(entry: HitlQueueEntry): void {
-    this.stmts.insertHitl.run(entry);
+    this.stmts.insertHitl.run({ ...entry, meta: entry.meta ?? null });
+  }
+
+  insertGrant(entry: ApprovalGrantEntry): void {
+    this.stmts.insertGrant.run(entry);
+  }
+
+  updateGrantUses(id: string, usesRemaining: number): void {
+    this.stmts.updateGrantUses.run({ id, uses_remaining: usesRemaining });
+  }
+
+  /** Spend one use of a limited grant. False when it is used up or revoked (maybe elsewhere). */
+  consumeGrantUse(id: string): boolean {
+    return this.stmts.consumeGrantUse.run(id).changes > 0;
+  }
+
+  getGrantById(id: string): ApprovalGrantEntry | undefined {
+    return this.stmts.getGrantById.get(id) as ApprovalGrantEntry | undefined;
+  }
+
+  revokeGrant(id: string): void {
+    this.stmts.revokeGrant.run({ id, revoked_at: new Date().toISOString() });
+  }
+
+  getActiveGrants(): ApprovalGrantEntry[] {
+    return this.stmts.getActiveGrants.all(new Date().toISOString()) as ApprovalGrantEntry[];
   }
 
   updateHitlStatus(id: string, status: HitlQueueEntry['status'], reason?: string): void {
@@ -296,6 +398,7 @@ export class AuditDb {
     const cutoff = new Date(Date.now() - retentionDays * 86400_000).toISOString();
     this.stmts.cleanupAudit.run(cutoff);
     this.stmts.cleanupHitl.run(cutoff);
+    this.stmts.cleanupGrants.run(cutoff);
   }
 
   close(): void {

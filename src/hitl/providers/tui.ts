@@ -105,8 +105,44 @@ export class TuiHitlProvider implements HitlProvider {
       return;
     }
 
+    // A = approve every visible pending request (flagged ones excepted)
+    if (key === 'A') {
+      // Plans and questions need their own look, as do flagged calls.
+      const routine = pending.filter(
+        (item) => !item.req.escalated && (item.req.kind ?? 'call') === 'call'
+      );
+      for (const item of routine) {
+        item.status = 'approved';
+        this.approvalApi.approveByCode(item.req.code);
+      }
+      log.info({ count: routine.length }, 'Approved all via TUI');
+      this.selected = 0;
+      this.render();
+      return;
+    }
+
+    // t = approve and allow this tool for 15 minutes
+    if (key === 't') {
+      const item = pending[this.selected];
+      if (item) {
+        item.status = 'approved';
+        try {
+          this.approvalApi.approveByCode(item.req.code, {
+            grant: { scope: 'tool', durationMs: 15 * 60_000 },
+          });
+        } catch (err) {
+          log.warn({ err, code: item.req.code }, 'Grant rejected; approved once');
+          this.approvalApi.approveByCode(item.req.code);
+        }
+        log.info({ code: item.req.code }, 'Approved with 15m tool grant via TUI');
+        this.selected = Math.min(this.selected, Math.max(pending.length - 2, 0));
+        this.render();
+      }
+      return;
+    }
+
     // a = approve
-    if (key === 'a' || key === 'A') {
+    if (key === 'a') {
       const item = pending[this.selected];
       if (item) {
         item.status = 'approved';
@@ -140,7 +176,7 @@ export class TuiHitlProvider implements HitlProvider {
     const lines: string[] = [];
     lines.push('');
     lines.push(
-      `${BOLD}${CYAN}  Airlock Approvals${RESET}  ${DIM}[a]pprove  [d]eny  [j/k] navigate${RESET}`
+      `${BOLD}${CYAN}  Airlock Approvals${RESET}  ${DIM}[a]pprove  [A]pprove all  [t] allow tool 15m  [d]eny  [j/k] navigate${RESET}`
     );
     lines.push(`${DIM}  ${'─'.repeat(60)}${RESET}`);
 

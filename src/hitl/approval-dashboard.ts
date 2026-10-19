@@ -5,6 +5,8 @@ import { VERSION } from '../version.js';
 import type { ApprovalStreamHub } from './approval-stream.js';
 import type { ApprovalApi, HitlNotification } from './providers/types.js';
 import type { ApprovalPreviewReader } from './preview.js';
+import { GrantSpecError } from './engine.js';
+import { parseGrantSpecInput, rememberToGrantSpec } from './grant-api.js';
 
 const log = childLogger('hitl-dashboard');
 
@@ -60,16 +62,51 @@ export class ApprovalDashboardRoutes {
 
     const pendingRequest = this.stream.getPendingByCode(code);
     const remember = typeof query.remember === 'string' ? query.remember : undefined;
-    if (remember) {
+    // `grant_scope=tool|tier|provider|profile` (+ grant_tier, grant_profile, duration_ms, max_uses)
+    // widens the approval into a grant. Legacy `remember=temporary` is a tool grant.
+    const grant =
+      typeof query.grant_scope === 'string'
+        ? parseGrantSpecInput({
+            scope: query.grant_scope,
+            tier: query.grant_tier,
+            profile: query.grant_profile,
+            duration_ms: query.duration_ms,
+            max_uses: query.max_uses,
+          })
+        : rememberToGrantSpec(remember, query.duration_ms);
+    if (grant.error) {
+      reply.code(400);
+      return { error: grant.error };
+    }
+    const persistRemember = remember !== undefined && remember !== 'temporary';
+    if (persistRemember) {
+      const invalid = this.validateRemember(configPath, pendingRequest, remember);
+      if (invalid) {
+        reply.code(invalid.status);
+        return { error: invalid.error };
+      }
+    }
+
+    // Approve (validating any grant) before persisting an "always" rule, so a rejected grant never
+    // leaves a permanent config change behind.
+    try {
+      this.approvalApi.approveByCode(code, grant.spec ? { grant: grant.spec } : undefined);
+    } catch (err) {
+      if (err instanceof GrantSpecError) {
+        reply.code(400);
+        return { error: err.message };
+      }
+      throw err;
+    }
+    log.info({ code, grant: grant.spec }, 'Approved via dashboard');
+
+    if (persistRemember) {
       const result = this.rememberDecision(configPath, pendingRequest, remember, query.duration_ms);
       if (result.error) {
         reply.code(result.status);
         return { error: result.error };
       }
     }
-
-    this.approvalApi.approveByCode(code);
-    log.info({ code }, 'Approved via dashboard');
     return { ok: true };
   }
 
@@ -104,17 +141,32 @@ export class ApprovalDashboardRoutes {
     }
   }
 
+  private validateRemember(
+    configPath: string | undefined,
+    pendingRequest: HitlNotification | undefined,
+    remember: string
+  ): { status: number; error: string } | undefined {
+    if (!configPath) return { status: 400, error: 'Config mutation is not available' };
+    if (remember !== 'always') {
+      return { status: 400, error: 'Invalid remember mode' };
+    }
+    if (!pendingRequest) return { status: 404, error: 'No pending request found for code' };
+    if ((pendingRequest.kind ?? 'call') !== 'call' || pendingRequest.escalated) {
+      return { status: 400, error: 'Only a routine tool call can be remembered' };
+    }
+    return undefined;
+  }
+
   private rememberDecision(
     configPath: string | undefined,
     pendingRequest: HitlNotification | undefined,
     remember: string,
     durationMsValue: unknown
   ): { status: number; error?: string } {
-    if (!configPath) return { status: 400, error: 'Config mutation is not available' };
-    if (remember !== 'always' && remember !== 'temporary') {
-      return { status: 400, error: 'Invalid remember mode' };
+    const invalid = this.validateRemember(configPath, pendingRequest, remember);
+    if (invalid || !configPath || !pendingRequest) {
+      return invalid ?? { status: 400, error: 'Config mutation is not available' };
     }
-    if (!pendingRequest) return { status: 404, error: 'No pending request found for code' };
 
     const durationMs =
       typeof durationMsValue === 'string' && durationMsValue.trim()

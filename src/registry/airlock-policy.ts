@@ -2,7 +2,7 @@ import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { AIRLOCK_CONTEXT_KEY } from '../airlock/context.js';
 
 const ASK_POLICY_TEXT =
-  'This tool is proxied by Airlock, a human-in-the-loop gateway for MCP tools. Policy: ask. Calling it will notify the user and pause until approved or denied. Include _airlock.reason explaining why you are requesting this action now. If the action is risky, briefly name the relevant risk.';
+  'This tool is proxied by Airlock, a human-in-the-loop gateway for MCP tools. Policy: ask. Calling it will notify the user and pause until approved or denied. Include _airlock.reason explaining why you are requesting this action now. If the action is risky, briefly name the relevant risk. If you need several approval-gated calls, request them together first with airlock_request_approval so the user approves once.';
 
 export function addAskPolicyGuidance(tool: Tool): Tool {
   return {
