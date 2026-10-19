@@ -446,7 +446,7 @@ approvals:
     bot_token: '${TELEGRAM_BOT_TOKEN}'
     chat_id: '${TELEGRAM_CHAT_ID}'
   timeout_ms: 300000
-  batch_window_ms: 500 # group parallel calls into one notification (0 = off)
+  batch_window_ms: 250 # group parallel calls into one notification (0 = off)
   mode: sync # or async: answer "pending" at once; the agent retries once approved
   grants:
     default_duration_ms: 900000 # "approve & allow…" grants default to 15 minutes

@@ -42,7 +42,6 @@ export function canaryTokenInjectorMiddleware(opts: { mode?: CanaryTokenMode } =
         });
         if (mode === 'escalate') {
           ctx.meta.needsApproval = true;
-          ctx.meta.approvalEscalated = true;
         }
       }
     }

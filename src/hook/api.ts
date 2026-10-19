@@ -1,16 +1,12 @@
 import type { FastifyInstance } from 'fastify';
 import type { AllowlistEngine } from '../allowlist/engine.js';
 import type { ApprovalMode, HitlEngine } from '../hitl/engine.js';
-import {
-  fingerprintCall,
-  providerOf,
-  type ApprovalSubject,
-  type ToolTier,
-} from '../hitl/grants.js';
+import { fingerprintCall, type ApprovalSubject, type ToolTier } from '../hitl/grants.js';
 import type { HitlBatcher } from '../hitl/batcher.js';
 import type { AuditLogger } from '../audit/logger.js';
 import { normalizeTool } from './normalizer.js';
 import { childLogger } from '../util/logger.js';
+import { providerIdForTool } from '../util/tool-name.js';
 import { checkRequestSecurity, type RequestSecurityOptions } from '../security/request.js';
 
 const log = childLogger('hook-api');
@@ -93,7 +89,7 @@ export async function hookApiPlugin(app: FastifyInstance, opts: HookApiOpts): Pr
       agentId,
       tool: normalized.name,
       fingerprint: fingerprintCall(normalized.name, input),
-      provider: providerOf(normalized.name),
+      provider: providerIdForTool(normalized.name),
       tier: opts.getToolTier?.(agentId, normalized.name) ?? 'destructive',
       ...(session_id ? { sessionId: session_id } : {}),
       escalated: false,
@@ -165,15 +161,7 @@ function createTicket(
   mode: ApprovalMode
 ): ReturnType<HitlEngine['create']> {
   const ticket = hitlEngine.create({ agentId, tool, args, kind: 'call', mode, subject });
-  hitlBatcher.add(
-    hitlEngine.buildNotification(ticket.id) ?? {
-      id: ticket.id,
-      code: ticket.code,
-      agentId,
-      tool,
-      args,
-      timeoutMs: hitlEngine.timeoutMs,
-    }
-  );
+  const notification = hitlEngine.buildNotification(ticket.id);
+  if (notification) hitlBatcher.add(notification);
   return ticket;
 }

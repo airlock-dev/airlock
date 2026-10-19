@@ -2,7 +2,8 @@ import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
 import type { AirlockCallContext } from '../../airlock/context.js';
 import type { SandboxDisplayInfo } from '../../sandbox/index.js';
 import type { Middleware, ToolCallContext, ToolCallResponse } from '../types.js';
-import { fingerprintCall, providerOf, type ApprovalSubject } from '../../hitl/grants.js';
+import { fingerprintCall, type ApprovalSubject } from '../../hitl/grants.js';
+import { providerIdForTool } from '../../util/tool-name.js';
 
 function errorResponse(message: string): ToolCallResponse {
   return {
@@ -22,13 +23,6 @@ function serializeAuditArgs(args: Record<string, unknown>, meta: Record<string, 
   });
 }
 
-function redactApprovalArgs(
-  auditLogger: { redactArgs?: (args: Record<string, unknown>) => Record<string, unknown> },
-  args: Record<string, unknown>
-): Record<string, unknown> {
-  return auditLogger.redactArgs?.(args) ?? args;
-}
-
 /** What the grant store and approval UIs need to know about this call. */
 export function approvalSubjectFor(ctx: ToolCallContext): ApprovalSubject {
   const sessionId = ctx.meta.downstreamSessionId;
@@ -36,10 +30,10 @@ export function approvalSubjectFor(ctx: ToolCallContext): ApprovalSubject {
     agentId: ctx.agentId,
     tool: ctx.toolName,
     fingerprint: fingerprintCall(ctx.toolName, ctx.args),
-    provider: providerOf(ctx.toolName),
+    provider: providerIdForTool(ctx.toolName),
     tier: ctx.deps.registry.toolTier?.(ctx.agentId, ctx.toolName) ?? 'destructive',
     ...(typeof sessionId === 'string' ? { sessionId } : {}),
-    escalated: ctx.meta.approvalEscalated === true,
+    escalated: ctx.meta.needsApproval === true,
   };
 }
 
@@ -74,7 +68,7 @@ function startProgressKeepalive(ctx: ToolCallContext, code: string): () => void 
 
 export function hitlGateMiddleware(): Middleware {
   return async (ctx, next) => {
-    if (!ctx.meta.needsApproval) return next();
+    if (!ctx.meta.needsApproval && !ctx.meta.policyAsk) return next();
 
     const { hitlEngine, hitlBatcher, auditLogger } = ctx.deps;
     const sandboxInfo = ctx.meta.sandbox_info as SandboxDisplayInfo | undefined;
@@ -112,11 +106,11 @@ export function hitlGateMiddleware(): Middleware {
       if (existing) return pendingResponse(ctx.toolName, existing);
     }
 
-    const approvalArgs = redactApprovalArgs(auditLogger, ctx.args);
+    // The engine redacts args before they are stored or shown to the operator.
     const ticket = hitlEngine.create({
       agentId: ctx.agentId,
       tool: ctx.toolName,
-      args: approvalArgs,
+      args: ctx.args,
       ...(airlockContext ? { context: airlockContext } : {}),
       sandbox: sandboxInfo,
       kind: 'call',
@@ -124,18 +118,8 @@ export function hitlGateMiddleware(): Middleware {
       subject,
     });
 
-    hitlBatcher.add(
-      hitlEngine.buildNotification(ticket.id) ?? {
-        id: ticket.id,
-        code: ticket.code,
-        agentId: ctx.agentId,
-        tool: ctx.toolName,
-        args: approvalArgs,
-        ...(airlockContext ? { context: airlockContext } : {}),
-        ...(sandboxInfo ? { sandbox: sandboxInfo } : {}),
-        timeoutMs: hitlEngine.timeoutMs,
-      }
-    );
+    const notification = hitlEngine.buildNotification(ticket.id);
+    if (notification) hitlBatcher.add(notification);
 
     if (mode === 'async') {
       // The approval outlives this call: on approval the engine leaves a single-use grant that the

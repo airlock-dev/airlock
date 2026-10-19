@@ -230,7 +230,7 @@ function batchPayload(members: HitlNotification[]): ApnsApprovalPayload {
     batch: {
       id: first.batchId!,
       code: first.batchCode ?? first.code,
-      approvalIds: members.map((member) => member.id),
+      size: members.length,
       flagged,
       items,
     },

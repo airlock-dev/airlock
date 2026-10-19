@@ -28,7 +28,8 @@ export interface ApnsApprovalPayload {
 export interface ApnsApprovalBatch {
   id: string;
   code: string;
-  approvalIds: string[];
+  /** Total members. Only the first few are itemized: APNs payloads are capped at 4KB. */
+  size: number;
   /** Number of members a security check flagged; "approve all" skips these. */
   flagged: number;
   items: Array<{ id: string; code: string; tool: string; summary: string }>;
@@ -149,39 +150,7 @@ export class ApnsClient {
     approval: ApnsApprovalPayload
   ): Promise<ApnsSendResult> {
     return new Promise((resolve, reject) => {
-      const badgeCount = normalizeBadgeCount(approval.badgeCount);
-      const batch = approval.batch;
-      const payload = JSON.stringify({
-        aps: {
-          alert: {
-            title: approvalAlertTitle(approval),
-            body: approval.body,
-          },
-          category: approvalCategory(approval),
-          sound: 'default',
-          'thread-id': 'airlock-approvals',
-          'summary-arg': approval.tool,
-          ...(batch ? { 'summary-arg-count': batch.approvalIds.length } : {}),
-          ...(badgeCount !== undefined ? { badge: badgeCount } : {}),
-          ...(this.config.interruptionLevel
-            ? { 'interruption-level': this.config.interruptionLevel }
-            : {}),
-        },
-        approval_id: approval.id,
-        code: approval.code,
-        tool: approval.tool,
-        agent_id: approval.agentId,
-        ...(batch
-          ? {
-              batch_id: batch.id,
-              batch_code: batch.code,
-              approval_ids: batch.approvalIds,
-              airlock: { batch },
-            }
-          : approval.context
-            ? { airlock: { approval: approval.context } }
-            : {}),
-      });
+      const payload = approvalPayloadJson(approval, this.config.interruptionLevel);
 
       const request = session.request({
         [constants.HTTP2_HEADER_METHOD]: 'POST',
@@ -446,6 +415,58 @@ function normalizeBadgeCount(value: number | undefined): number | undefined {
   return Math.max(0, Math.floor(value));
 }
 
+/** APNs rejects alert payloads over 4096 bytes; stay a little under. */
+export const APNS_MAX_PAYLOAD_BYTES = 4000;
+
+/**
+ * Serialize an approval alert, trimming batch items and then the body until it fits APNs' payload
+ * limit — an oversized push is rejected outright and the operator would get nothing.
+ */
+export function approvalPayloadJson(
+  approval: ApnsApprovalPayload,
+  interruptionLevel?: ApnsConfig['interruptionLevel']
+): string {
+  const badgeCount = normalizeBadgeCount(approval.badgeCount);
+  let items = approval.batch?.items ?? [];
+  let body = approval.body;
+  let context = approval.context;
+  for (;;) {
+    const batch = approval.batch ? { ...approval.batch, items } : undefined;
+    const payload = JSON.stringify({
+      aps: {
+        alert: { title: approvalAlertTitle(approval), body },
+        category: approvalCategory(approval),
+        sound: 'default',
+        'thread-id': 'airlock-approvals',
+        'summary-arg': approval.tool,
+        ...(batch ? { 'summary-arg-count': batch.size } : {}),
+        ...(badgeCount !== undefined ? { badge: badgeCount } : {}),
+        ...(interruptionLevel ? { 'interruption-level': interruptionLevel } : {}),
+      },
+      approval_id: approval.id,
+      code: approval.code,
+      tool: approval.tool,
+      agent_id: approval.agentId,
+      ...(batch
+        ? {
+            batch_id: batch.id,
+            batch_code: batch.code,
+            approval_ids: items.map((item) => item.id),
+            airlock: { batch },
+          }
+        : context
+          ? { airlock: { approval: context } }
+          : {}),
+    });
+    if (Buffer.byteLength(payload) <= APNS_MAX_PAYLOAD_BYTES) return payload;
+    if (items.length > 1) items = items.slice(0, -1);
+    else if (context && context.args.length > 0)
+      context = { ...context, args: context.args.slice(0, -1) };
+    else if (body.length > 40) body = `${body.slice(0, Math.floor(body.length / 2))}…`;
+    else return payload;
+  }
+}
+
 /**
  * Batches get approve-all/deny-all. Plans, questions and flagged calls get approve/deny only:
  * "Allow 1 hour" and "Always allow" remember the tool, which only makes sense for a routine call.
@@ -461,7 +482,7 @@ function approvalCategory(approval: ApnsApprovalPayload): string {
 }
 
 function approvalAlertTitle(approval: ApnsApprovalPayload): string {
-  if (approval.batch) return `${approval.agentId}: ${approval.batch.approvalIds.length} approvals`;
+  if (approval.batch) return `${approval.agentId}: ${approval.batch.size} approvals`;
   if (approval.tool === 'airlock/ask_user') {
     const question = approval.context?.args.find((arg) =>
       ['question', 'title', 'message'].includes(arg.key)

@@ -749,8 +749,9 @@ export const ApprovalsConfig = z
       .default({ type: 'stdio' }),
     timeout_ms: z.number().int().min(0).default(300000), // 5 minutes; 0 = no timeout
     // Requests from one agent arriving within this window are notified together and can be
-    // approved with one "approve all". Short by default: it exists to catch parallel tool calls.
-    batch_window_ms: z.number().int().min(0).default(500),
+    // approved with one "approve all". Parallel tool calls land within milliseconds of each other,
+    // so a short window catches them while adding little latency to a lone sequential call.
+    batch_window_ms: z.number().int().min(0).default(250),
     // sync: hold the tool call open until decided. async: answer "pending" immediately; the agent
     // retries (or calls airlock/await_approval) once approved. Per-agent `approval_mode` overrides.
     mode: z.enum(['sync', 'async']).default('sync'),

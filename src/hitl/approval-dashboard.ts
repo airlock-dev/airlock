@@ -78,14 +78,17 @@ export class ApprovalDashboardRoutes {
       reply.code(400);
       return { error: grant.error };
     }
-    if (remember && remember !== 'temporary') {
-      const result = this.rememberDecision(configPath, pendingRequest, remember, query.duration_ms);
-      if (result.error) {
-        reply.code(result.status);
-        return { error: result.error };
+    const persistRemember = remember !== undefined && remember !== 'temporary';
+    if (persistRemember) {
+      const invalid = this.validateRemember(configPath, pendingRequest, remember);
+      if (invalid) {
+        reply.code(invalid.status);
+        return { error: invalid.error };
       }
     }
 
+    // Approve (validating any grant) before persisting an "always" rule, so a rejected grant never
+    // leaves a permanent config change behind.
     try {
       this.approvalApi.approveByCode(code, grant.spec ? { grant: grant.spec } : undefined);
     } catch (err) {
@@ -96,6 +99,14 @@ export class ApprovalDashboardRoutes {
       throw err;
     }
     log.info({ code, grant: grant.spec }, 'Approved via dashboard');
+
+    if (persistRemember) {
+      const result = this.rememberDecision(configPath, pendingRequest, remember, query.duration_ms);
+      if (result.error) {
+        reply.code(result.status);
+        return { error: result.error };
+      }
+    }
     return { ok: true };
   }
 
@@ -130,12 +141,11 @@ export class ApprovalDashboardRoutes {
     }
   }
 
-  private rememberDecision(
+  private validateRemember(
     configPath: string | undefined,
     pendingRequest: HitlNotification | undefined,
-    remember: string,
-    durationMsValue: unknown
-  ): { status: number; error?: string } {
+    remember: string
+  ): { status: number; error: string } | undefined {
     if (!configPath) return { status: 400, error: 'Config mutation is not available' };
     if (remember !== 'always') {
       return { status: 400, error: 'Invalid remember mode' };
@@ -143,6 +153,19 @@ export class ApprovalDashboardRoutes {
     if (!pendingRequest) return { status: 404, error: 'No pending request found for code' };
     if ((pendingRequest.kind ?? 'call') !== 'call' || pendingRequest.escalated) {
       return { status: 400, error: 'Only a routine tool call can be remembered' };
+    }
+    return undefined;
+  }
+
+  private rememberDecision(
+    configPath: string | undefined,
+    pendingRequest: HitlNotification | undefined,
+    remember: string,
+    durationMsValue: unknown
+  ): { status: number; error?: string } {
+    const invalid = this.validateRemember(configPath, pendingRequest, remember);
+    if (invalid || !configPath || !pendingRequest) {
+      return invalid ?? { status: 400, error: 'Config mutation is not available' };
     }
 
     const durationMs =

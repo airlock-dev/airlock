@@ -49,7 +49,6 @@ export function execPolicyMiddleware(): Middleware {
     }
     if (cmdDecision === 'ask') {
       ctx.meta.needsApproval = true;
-      ctx.meta.approvalEscalated = true;
     }
 
     return next();

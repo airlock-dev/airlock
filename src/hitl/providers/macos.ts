@@ -64,14 +64,14 @@ export class MacosHitlProvider implements HitlProvider {
     ];
     const escaped = escapeAppleScript(lines.join('\n'));
     const title = escapeAppleScript(`Airlock — ${requests.length} approvals`);
-    const timeoutSec = Math.ceil((requests[0].timeoutMs || 300_000) / 1000);
+    const giveUp = giveUpClause(requests[0].timeoutMs);
     const scriptLines: string[] = [];
     if (this.sound) {
       scriptLines.push(`do shell script "afplay /System/Library/Sounds/${this.sound}.aiff &"`);
     }
     scriptLines.push(
       `set msg to "${escaped}"`,
-      `display dialog msg with title "${title}" buttons {"Deny all", "Review each", "Approve all"} default button "Approve all" with icon caution giving up after ${timeoutSec}`
+      `display dialog msg with title "${title}" buttons {"Deny all", "Review each", "Approve all"} default button "Approve all" with icon caution${giveUp}`
     );
 
     return new Promise((resolve) => {
@@ -120,7 +120,7 @@ export class MacosHitlProvider implements HitlProvider {
         .join('\n')}`;
     });
 
-    const timeoutSec = Math.ceil(req.timeoutMs / 1000);
+    const giveUp = giveUpClause(req.timeoutMs);
     const tool = req.tool.replace(/^[^/]+\//, '');
     const contextLines = [
       req.context?.reason ? `Request reason: ${req.context.reason}` : undefined,
@@ -142,7 +142,7 @@ export class MacosHitlProvider implements HitlProvider {
     const buttons = canGrant ? '{"Deny", "Allow 15m", "Approve"}' : '{"Deny", "Approve"}';
     scriptLines.push(
       `set msg to "${escaped}"`,
-      `display dialog msg with title "${title}" buttons ${buttons} default button "Approve" with icon caution giving up after ${timeoutSec}`
+      `display dialog msg with title "${title}" buttons ${buttons} default button "Approve" with icon caution${giveUp}`
     );
     const script = scriptLines.join('\n');
 
@@ -186,6 +186,11 @@ export class MacosHitlProvider implements HitlProvider {
       });
     });
   }
+}
+
+/** No timeout (0) means the dialog waits; otherwise it closes when the approval expires. */
+function giveUpClause(timeoutMs: number): string {
+  return timeoutMs > 0 ? ` giving up after ${Math.ceil(timeoutMs / 1000)}` : '';
 }
 
 /** Escape a string for use inside AppleScript double-quoted literals. */

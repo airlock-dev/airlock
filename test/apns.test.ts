@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { connect, constants } from 'http2';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { ApnsClient } from '../src/mobile/apns.js';
+import { ApnsClient, APNS_MAX_PAYLOAD_BYTES, approvalPayloadJson } from '../src/mobile/apns.js';
 
 vi.mock('http2', async (importOriginal) => ({
   ...(await importOriginal<typeof import('http2')>()),
@@ -131,7 +131,7 @@ describe('APNs approval notifications', () => {
           ...base,
           id: 'b',
           tool: 'exec/run',
-          batch: { id: 'batch', code: 'B', approvalIds: ['1', '2'], flagged: 0, items: [] },
+          batch: { id: 'batch', code: 'B', size: 2, flagged: 0, items: [] },
         },
       ],
     ];
@@ -139,5 +139,29 @@ describe('APNs approval notifications', () => {
     sends.forEach(([category], index) => {
       expect(JSON.parse(end.mock.calls[index][0]).aps.category).toBe(category);
     });
+  });
+
+  it('keeps a large batch push under the APNs payload limit', () => {
+    const items = Array.from({ length: 60 }, (_, i) => ({
+      id: `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`,
+      code: `CODE${String(i).padStart(4, '0')}`,
+      tool: 'gmail/read_email',
+      summary: `message_id: ${'x'.repeat(48)}`,
+    }));
+    const json = approvalPayloadJson({
+      id: items[0].id,
+      code: items[0].code,
+      agentId: 'dev',
+      tool: 'gmail/read_email',
+      body: 'b'.repeat(900),
+      timeoutMs: 0,
+      batch: { id: 'batch', code: 'BATCHCOD', size: 60, flagged: 0, items },
+    });
+    expect(Buffer.byteLength(json)).toBeLessThanOrEqual(APNS_MAX_PAYLOAD_BYTES);
+    const payload = JSON.parse(json);
+    expect(payload.aps.alert.title).toBe('dev: 60 approvals');
+    expect(payload.airlock.batch.size).toBe(60);
+    expect(payload.approval_ids.length).toBe(payload.airlock.batch.items.length);
+    expect(payload.approval_ids.length).toBeGreaterThan(0);
   });
 });

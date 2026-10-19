@@ -7,12 +7,12 @@ import { AuditLogger } from '../src/audit/logger.js';
 import { HitlEngine, GrantSpecError } from '../src/hitl/engine.js';
 import {
   GrantStore,
-  canonicalJson,
   fingerprintCall,
   tierFromAnnotations,
   type ApprovalSubject,
 } from '../src/hitl/grants.js';
 import { registerGrantRoutes } from '../src/hitl/grant-api.js';
+import { stableStringify } from '../src/util/stable-json.js';
 import { parseApprovalCommand } from '../src/hitl/parser.js';
 import { formatBatch } from '../src/hitl/formatter.js';
 import { hitlGateMiddleware } from '../src/middleware/core/hitl-gate.js';
@@ -67,8 +67,8 @@ function createCall(engine: HitlEngine, s: ApprovalSubject, mode: 'sync' | 'asyn
 
 describe('fingerprints and tiers', () => {
   it('canonicalizes key order', () => {
-    expect(canonicalJson({ b: 1, a: { d: 2, c: [1, { y: 1, x: 2 }] } })).toBe(
-      canonicalJson({ a: { c: [1, { x: 2, y: 1 }], d: 2 }, b: 1 })
+    expect(stableStringify({ b: 1, a: { d: 2, c: [1, { y: 1, x: 2 }] } })).toBe(
+      stableStringify({ a: { c: [1, { x: 2, y: 1 }], d: 2 }, b: 1 })
     );
     expect(fingerprintCall('t/x', { a: 1, b: 2 })).toBe(fingerprintCall('t/x', { b: 2, a: 1 }));
     expect(fingerprintCall('t/x', { a: 1 })).not.toBe(fingerprintCall('t/y', { a: 1 }));
@@ -391,6 +391,20 @@ describe('HitlEngine grants and batches', () => {
     expect((await engine.waitFor(ticket.id, 'agent1', 1000))?.status).toBe('approved');
   });
 
+  it('does not notify requests resolved while they waited in the batch window', async () => {
+    const batcher = new HitlBatcher(0);
+    wireBatcher(batcher, engine, provider);
+    const a = createCall(engine, subject({ fingerprint: '1' }));
+    const b = createCall(engine, subject({ fingerprint: '2' }));
+    batcher.add(engine.buildNotification(a.id)!);
+    batcher.add(engine.buildNotification(b.id)!);
+    engine.approve(b.id);
+    await vi.waitFor(() => expect(provider.notify).toHaveBeenCalled());
+    const notified = provider.notify.mock.calls[0][0];
+    expect(notified.map((n: { id: string }) => n.id)).toEqual([a.id]);
+    expect(notified[0].batchCode).toBeUndefined();
+  });
+
   it('wires batches through the batcher with a shared batch code', async () => {
     const batcher = new HitlBatcher(0);
     wireBatcher(batcher, engine, provider);
@@ -453,7 +467,7 @@ describe('hitl gate with grants and async mode', () => {
       } as AgentConfig,
       toolName: 'gmail/read_email',
       args: { id: '42' },
-      meta: { needsApproval: true, downstreamSessionId: 's1' },
+      meta: { policyAsk: true, downstreamSessionId: 's1' },
       deps: {
         registry: { toolTier: () => 'read' } as any,
         allowlist: {} as any,
@@ -479,6 +493,24 @@ describe('hitl gate with grants and async mode', () => {
     expect(ctx.deps.auditLogger.log).toHaveBeenCalledWith(
       expect.objectContaining({ result: 'hitl_granted' })
     );
+  });
+
+  it('fails closed: a call any middleware flagged is never covered by a broad grant', async () => {
+    const engine = new HitlEngine(makeAuditLogger(), makeProvider(), 0);
+    engine.createOperatorGrant({
+      agentId: 'agent1',
+      scope: { kind: 'provider', provider: 'gmail' },
+    });
+    const next = vi.fn().mockResolvedValue(okResponse);
+    const ctx = makeCtx(engine);
+    // e.g. a detector added later that only knows the generic flag
+    ctx.meta.needsApproval = true;
+    const pending = hitlGateMiddleware()(ctx, next);
+    await vi.waitFor(() => expect(engine.getPending()).toHaveLength(1));
+    expect(engine.getPending()[0].escalated).toBe(true);
+    expect(next).not.toHaveBeenCalled();
+    engine.deny(engine.getPending()[0].id);
+    await pending;
   });
 
   it('async mode returns pending at once, dedupes retries, and runs the retry after approval', async () => {
@@ -857,6 +889,27 @@ describe('review regressions', () => {
         expiresAt: new Date(Date.now() + 60_000).toISOString(),
       });
       expect(b.consume(subject())).toBeDefined();
+    });
+
+    it('re-reads the table on a miss at most once a second', () => {
+      let now = Date.now();
+      const a = new GrantStore(loggerA);
+      const b = new GrantStore(loggerB, { now: () => now });
+      const getActiveGrants = vi.spyOn(loggerB, 'getActiveGrants');
+      expect(b.consume(subject())).toBeUndefined();
+      expect(b.consume(subject())).toBeUndefined();
+      expect(getActiveGrants).toHaveBeenCalledTimes(1);
+
+      a.create({
+        agentId: 'agent1',
+        scope: { kind: 'tool', tool: 'gmail/read_email' },
+        source: 'operator',
+        expiresAt: new Date(now + 60_000).toISOString(),
+      });
+      expect(b.consume(subject())).toBeUndefined();
+      now += 1000;
+      expect(b.consume(subject())).toBeDefined();
+      expect(getActiveGrants).toHaveBeenCalledTimes(2);
     });
   });
 

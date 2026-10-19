@@ -100,10 +100,7 @@ export function commandPolicyMiddleware(): Middleware {
       }
     }
 
-    if (needsApproval) {
-      ctx.meta.needsApproval = true;
-      ctx.meta.approvalEscalated = true;
-    }
+    if (needsApproval) ctx.meta.needsApproval = true;
 
     return next();
   };

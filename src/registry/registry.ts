@@ -7,6 +7,8 @@ import { sanitizeToolDescription, sanitizeInstructions } from './sanitizer.js';
 import { addAskPolicyGuidance } from './airlock-policy.js';
 import { childLogger } from '../util/logger.js';
 import { tierFromAnnotations, type ToolTier } from '../hitl/grants.js';
+import { stableStringify } from '../util/stable-json.js';
+import { providerIdForTool } from '../util/tool-name.js';
 
 const log = childLogger('registry');
 
@@ -291,25 +293,10 @@ function summarizeCatalog(tools: Tool[]): Record<string, ProviderCatalogSummary>
   return summary;
 }
 
-/** JSON.stringify with object keys sorted at every depth, so key order can't perturb the hash. */
-function stableStringify(value: unknown): string {
-  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
-  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
-  const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) =>
-    a.localeCompare(b)
-  );
-  return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${stableStringify(v)}`).join(',')}}`;
-}
-
 /** The provider id an adapter's tools are namespaced under, or null if it owns no namespace. */
 function providerIdForAdapter(adapter: BackendAdapter): string | null {
   const prefix = getAdapterPrefix(adapter);
   return prefix ? prefix.slice(0, -1) : null;
-}
-
-function providerIdForTool(toolName: string): string {
-  const separatorIndex = toolName.indexOf('/');
-  return separatorIndex > 0 ? toolName.slice(0, separatorIndex) : toolName;
 }
 
 /** Map adapter ID conventions to the tool name prefix they own. */

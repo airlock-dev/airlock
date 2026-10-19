@@ -279,11 +279,17 @@ describe('buildMiddlewareChain', () => {
     };
     const chain = buildMiddlewareChain(config, deps);
 
-    (deps.hitlEngine as any).create = vi.fn().mockReturnValue({
+    let created: any;
+    (deps.hitlEngine as any).create = vi.fn().mockImplementation((params: any) => {
+      created = params;
+      return { id: 'id', code: 'CODE', result: Promise.resolve('approved') };
+    });
+    (deps.hitlEngine as any).buildNotification = vi.fn(() => ({
+      ...created,
       id: 'id',
       code: 'CODE',
-      result: Promise.resolve('approved'),
-    });
+      timeoutMs: 5000,
+    }));
 
     const ctx = makeCtx(deps, config, {
       args: { _airlock: { reason: 'Need to verify sandbox context is included.' } },

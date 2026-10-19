@@ -41,7 +41,10 @@ export function allowlistMiddleware(): Middleware {
           `Tool ${ctx.toolName} requires human approval. Retry with _airlock.reason explaining why you are requesting this action now.`
         );
       }
-      ctx.meta.needsApproval = true;
+      // Recorded separately from `needsApproval`: a plain policy ask is the only kind of approval a
+      // broad grant may cover. Anything that sets `needsApproval` (a detector, command or exec
+      // policy, or any future middleware) is treated as escalated, so new checks fail closed.
+      ctx.meta.policyAsk = true;
     }
 
     return next();

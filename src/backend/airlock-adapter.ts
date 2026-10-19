@@ -20,6 +20,7 @@ import {
 } from '../airlock/tools.js';
 import { extractAirlockContext } from '../airlock/context.js';
 import { fingerprintCall } from '../hitl/grants.js';
+import { sanitizeToolName } from '../util/tool-name.js';
 import type { PlanEntry } from '../hitl/engine.js';
 import { bestSpecificity, matches, specificity } from '../allowlist/pattern.js';
 
@@ -236,15 +237,8 @@ export class AirlockBackendAdapter implements BackendAdapter {
       args,
       kind: 'question',
     });
-    hitlBatcher.add({
-      ...hitlEngine.buildNotification(ticket.id),
-      id: ticket.id,
-      code: ticket.code,
-      agentId: toolCall.agentId,
-      tool: AIRLOCK_ASK_USER_TOOL,
-      args,
-      timeoutMs: hitlEngine.timeoutMs,
-    });
+    const notification = hitlEngine.buildNotification(ticket.id);
+    if (notification) hitlBatcher.add(notification);
 
     const result = await ticket.result;
     return {
@@ -524,11 +518,6 @@ export class AirlockBackendAdapter implements BackendAdapter {
 
     return Array.from(buckets.values()).sort((a, b) => a.id.localeCompare(b.id));
   }
-}
-
-/** MCP-safe tool name, matching the agent server's sanitization ("provider/tool" → "provider_tool"). */
-function sanitizeToolName(name: string): string {
-  return name.replace(/\//g, '_');
 }
 
 function awaitMessage(kind: string, status: string): string {

@@ -293,7 +293,6 @@ private struct ApprovalNotificationContext {
 
         if let batch = Self.dictionary(from: airlock?["batch"]) {
             let items = Self.argumentDictionaries(from: batch["items"]) ?? []
-            let approvalIds = batch["approvalIds"] as? [String] ?? userInfo["approval_ids"] as? [String] ?? []
             agentId = userInfo["agent_id"] as? String ?? Self.agentId(from: content.title)
             tool = userInfo["tool"] as? String ?? "Approvals"
             args = items.compactMap { item in
@@ -301,7 +300,8 @@ private struct ApprovalNotificationContext {
                 let summary = Self.trimmed(item["summary"] as? String) ?? (item["code"] as? String ?? "")
                 return ApprovalArgument(key: tool, value: summary, rawKey: true)
             }
-            batchCount = max(approvalIds.count, items.count)
+            // Only the first few members are itemized (APNs caps payloads at 4KB); `size` is the total.
+            batchCount = max((batch["size"] as? NSNumber)?.intValue ?? 0, items.count)
             flaggedCount = (batch["flagged"] as? NSNumber)?.intValue ?? 0
             expiresAt = nil
             return

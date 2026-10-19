@@ -160,7 +160,7 @@ These options work with all providers:
 | Option            | Description                                                                              | Default               |
 | ----------------- | ---------------------------------------------------------------------------------------- | --------------------- |
 | `timeout_ms`      | How long to wait for approval before auto-denying                                        | `300000` (5 min)      |
-| `batch_window_ms` | Group requests within this window into one notification with approve all                 | `500`                 |
+| `batch_window_ms` | Group requests within this window into one notification with approve all                 | `250`                 |
 | `mode`            | `sync` holds the call open; `async` returns "pending" and the agent retries              | `sync`                |
 | `grants.*`        | Grant durations: `default_duration_ms`, `max_duration_ms`, `plan_ttl_ms`, `async_ttl_ms` | 15m / 24h / 30m / 30m |
 

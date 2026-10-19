@@ -1,6 +1,7 @@
 import { createHash } from 'crypto';
 import type { ApprovalGrantEntry } from '../audit/db.js';
 import { generateId } from '../util/id.js';
+import { stableStringify } from '../util/stable-json.js';
 import { childLogger } from '../util/logger.js';
 
 const log = childLogger('hitl-grants');
@@ -115,23 +116,8 @@ export interface GrantStoreOptions {
   now?: () => number;
 }
 
-/** Stable JSON: object keys sorted recursively so equal args always hash equal. */
-export function canonicalJson(value: unknown): string {
-  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
-  const entries = Object.entries(value as Record<string, unknown>)
-    .filter(([, v]) => v !== undefined)
-    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-  return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`).join(',')}}`;
-}
-
 export function fingerprintCall(tool: string, args: Record<string, unknown>): string {
-  return createHash('sha256').update(tool).update('\0').update(canonicalJson(args)).digest('hex');
-}
-
-export function providerOf(tool: string): string {
-  const i = tool.indexOf('/');
-  return i > 0 ? tool.slice(0, i) : tool;
+  return createHash('sha256').update(tool).update('\0').update(stableStringify(args)).digest('hex');
 }
 
 /** Most specific scope first: an exact call grant is consumed before a broad one. */
@@ -143,9 +129,13 @@ const SCOPE_PRIORITY: Record<GrantScope['kind'], number> = {
   profile: 4,
 };
 
+/** How often a miss may re-read the database for grants created by another process. */
+const RELOAD_INTERVAL_MS = 1000;
+
 export class GrantStore {
   private grants = new Map<string, Grant>();
   private now: () => number;
+  private lastLoadAt = Number.NEGATIVE_INFINITY;
 
   constructor(
     private persistence: GrantPersistence | undefined,
@@ -160,6 +150,7 @@ export class GrantStore {
 
   /** Load still-active grants persisted by a previous run (or by another process). */
   load(): void {
+    this.lastLoadAt = this.now();
     const rows = this.persistence?.getActiveGrants?.() ?? [];
     for (const row of rows) {
       if (this.grants.has(row.id)) continue;
@@ -257,7 +248,9 @@ export class GrantStore {
         if (this.spendUse(grant)) return grant;
         grant = this.find(subject, onlyIds);
       }
-      if (attempt === 0 && !onlyIds && this.persistence?.getActiveGrants) this.load();
+      // Most gated calls have no grant; re-read the table at most once a second, not on every miss.
+      const reloadDue = this.now() - this.lastLoadAt >= RELOAD_INTERVAL_MS;
+      if (attempt === 0 && !onlyIds && reloadDue && this.persistence?.getActiveGrants) this.load();
       else break;
     }
     return undefined;

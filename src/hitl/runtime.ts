@@ -56,7 +56,11 @@ export function wireBatcher(
   engine: HitlEngine,
   provider: HitlProvider
 ): void {
-  batcher.onBatchReady((_agentId, requests) => {
+  batcher.onBatchReady((_agentId, collected) => {
+    // A request can be resolved while it waits in the window (e.g. auto-approved by a new grant);
+    // notifying it would push an approval that can no longer be acted on.
+    const requests = collected.filter((request) => engine.hasPending(request.id));
+    if (requests.length === 0) return;
     const batch = engine.registerBatch(requests.map((request) => request.id));
     const badgeCount = engine.getPending().length;
     void provider

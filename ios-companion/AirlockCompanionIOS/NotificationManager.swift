@@ -413,6 +413,7 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         let active = approvals.filter { !$0.isExpired() }
         let activeIds = Set(active.map(\.id))
         let activeCodes = Set(active.map(\.code))
+        let activeBatchIds = Set(active.compactMap(\.batchId))
         let center = UNUserNotificationCenter.current()
         let notifications = await center.deliveredNotifications()
         let identifiers = notifications.compactMap { notification -> String? in
@@ -420,7 +421,9 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
             guard notification.date <= fetchedAfter else { return nil }
             let userInfo = notification.request.content.userInfo
             if notification.request.content.categoryIdentifier == "AIRLOCK_APPROVAL_BATCH" {
-                // Keep a batch push while any of its members is still pending.
+                // Keep a batch push while any of its members is still pending. The push itemizes only
+                // the first few members, so match on the batch id too.
+                if let batchId = userInfo["batch_id"] as? String, activeBatchIds.contains(batchId) { return nil }
                 guard let memberIds = userInfo["approval_ids"] as? [String], !memberIds.isEmpty else { return nil }
                 return memberIds.contains(where: activeIds.contains) ? nil : notification.request.identifier
             }

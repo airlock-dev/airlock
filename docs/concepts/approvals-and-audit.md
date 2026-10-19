@@ -142,7 +142,7 @@ needing approval.
 ### Burst batching: approve all
 
 Some agents issue several tool calls in parallel. Requests from one agent that arrive within
-`batch_window_ms` (default 500ms) are sent as one notification with an "approve all / deny all"
+`batch_window_ms` (default 250ms) are sent as one notification with an "approve all / deny all"
 option:
 
 - **Chat channels:** `approve all K7Q2XZ8M` (the batch code is in the message header).

@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { allowlistMiddleware } from '../../src/middleware/core/allowlist.js';
 import { execPolicyMiddleware } from '../../src/middleware/core/exec-policy.js';
 import { hitlGateMiddleware } from '../../src/middleware/core/hitl-gate.js';
+import { HitlEngine } from '../../src/hitl/engine.js';
 import {
   rateLimiterMiddleware,
   resetRateLimiterState,
@@ -55,12 +56,13 @@ describe('allowlistMiddleware', () => {
     await expect(mw(ctx, okNext)).rejects.toThrow('Tool not available');
   });
 
-  it('sets needsApproval for ask decision', async () => {
+  it('records a policy ask for an ask decision', async () => {
     const mw = allowlistMiddleware();
     const ctx = makeCtx({ args: { _airlock: { reason: 'Need to test approval gating.' } } });
     (ctx.deps.allowlist.evaluate as any).mockReturnValue('ask');
     await mw(ctx, okNext);
-    expect(ctx.meta.needsApproval).toBe(true);
+    expect(ctx.meta.policyAsk).toBe(true);
+    expect(ctx.meta.needsApproval).toBeUndefined();
     expect(ctx.meta.airlockContext).toEqual({ reason: 'Need to test approval gating.' });
     expect(ctx.args).toEqual({});
   });
@@ -164,40 +166,31 @@ describe('hitlGateMiddleware', () => {
     expect(result.text).toBe('ok');
   });
 
-  it('redacts approval args before creating and batching HITL requests', async () => {
+  it('redacts approval args before they are stored and batched, leaving the call args intact', async () => {
     const mw = hitlGateMiddleware();
+    const auditLogger = {
+      log: vi.fn(),
+      insertHitl: vi.fn(),
+      updateHitlStatus: vi.fn(),
+      redactArgs: vi.fn().mockReturnValue({ token: '[REDACTED]', command: 'deploy' }),
+    } as any;
+    const provider = { init: vi.fn(), notify: vi.fn(), stop: vi.fn() } as any;
+    const hitlEngine = new HitlEngine(auditLogger, provider, 5000);
+    const hitlBatcher = { add: vi.fn() } as any;
     const ctx = makeCtx({
       args: { token: 'secret-token', command: 'deploy' },
-      meta: { needsApproval: true },
-      deps: {
-        ...makeCtx().deps,
-        hitlEngine: {
-          create: vi
-            .fn()
-            .mockReturnValue({ id: 'id', code: 'CODE', result: Promise.resolve('approved') }),
-          consumeGrant: vi.fn(),
-          buildNotification: vi.fn(),
-          timeoutMs: 5000,
-          defaultMode: 'sync',
-        } as any,
-        hitlBatcher: { add: vi.fn() } as any,
-        auditLogger: {
-          log: vi.fn(),
-          redactArgs: vi.fn().mockReturnValue({ token: '[REDACTED]', command: 'deploy' }),
-        } as any,
-      },
+      meta: { policyAsk: true },
+      deps: { ...makeCtx().deps, registry: {} as any, hitlEngine, hitlBatcher, auditLogger },
     });
 
-    await mw(ctx, okNext);
-
-    expect((ctx.deps.hitlEngine.create as any).mock.calls[0][0].args).toEqual({
-      token: '[REDACTED]',
-      command: 'deploy',
-    });
-    expect((ctx.deps.hitlBatcher.add as any).mock.calls[0][0].args).toEqual({
-      token: '[REDACTED]',
-      command: 'deploy',
-    });
+    const pending = mw(ctx, okNext);
+    await vi.waitFor(() => expect(hitlEngine.getPending()).toHaveLength(1));
+    const redacted = { token: '[REDACTED]', command: 'deploy' };
+    expect(hitlEngine.getPending()[0].args).toEqual(redacted);
+    expect(JSON.parse(auditLogger.insertHitl.mock.calls[0][0].args)).toEqual(redacted);
+    expect(hitlBatcher.add.mock.calls[0][0].args).toEqual(redacted);
+    hitlEngine.approve(hitlEngine.getPending()[0].id);
+    await pending;
     expect(ctx.args).toEqual({ token: 'secret-token', command: 'deploy' });
   });
 });
