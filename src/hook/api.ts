@@ -123,7 +123,8 @@ export async function hookApiPlugin(app: FastifyInstance, opts: HookApiOpts): Pr
         decision: 'deny',
         tool: normalized.name,
         reason:
-          `Approval pending in Airlock (code ${pending.code}). Nothing was executed. ` +
+          // No approval code: the model reads this, and the code is what approves it in chat.
+          'Approval pending in Airlock. Nothing was executed. ' +
           'Wait for the user to approve, then retry this exact call with identical input.',
       });
     }

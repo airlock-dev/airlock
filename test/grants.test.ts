@@ -523,6 +523,9 @@ describe('hitl gate with grants and async mode', () => {
     expect(first.text).toMatch(/^Approval pending/);
     expect(next).not.toHaveBeenCalled();
     expect(engine.getPending()).toHaveLength(1);
+    // The agent gets the opaque id to wait on, never the code the operator types to approve.
+    expect(first.text).toContain(engine.getPending()[0].id);
+    expect(first.text).not.toContain(engine.getPending()[0].code);
 
     const retry = await hitlGateMiddleware()(makeCtx(engine), next);
     expect(retry.text).toMatch(/^Approval pending/);
@@ -644,6 +647,8 @@ describe('airlock approval tools', () => {
     });
     const { id, status } = requested.data as { id: string; status: string };
     expect(status).toBe('pending');
+    expect(requested.data).not.toHaveProperty('code');
+    expect(JSON.stringify(requested.data)).not.toContain(engine.getPending()[0].code);
 
     const waiting = await adapter.call({
       tool: 'airlock/await_approval',

@@ -37,9 +37,14 @@ export function approvalSubjectFor(ctx: ToolCallContext): ApprovalSubject {
   };
 }
 
-function pendingResponse(tool: string, ticket: { id: string; code: string }): ToolCallResponse {
+/**
+ * What an agent learns about a pending approval. Never the approval code: that is what the operator
+ * types to approve ("approve ABC123"), and an agent that can post into the approval chat would be
+ * able to approve itself. The opaque id is only good for airlock_await_approval.
+ */
+function pendingResponse(tool: string, ticket: { id: string }): ToolCallResponse {
   const text =
-    `Approval pending: Airlock asked the user to approve ${tool} (approval id ${ticket.id}, code ${ticket.code}). ` +
+    `Approval pending: Airlock asked the user to approve ${tool} (approval id ${ticket.id}). ` +
     'Nothing was executed. Once the user approves, retry this exact call with identical arguments. ' +
     'To wait for the decision, call airlock_await_approval with {"id": "' +
     ticket.id +
@@ -50,14 +55,15 @@ function pendingResponse(tool: string, ticket: { id: string; code: string }): To
 const PROGRESS_INTERVAL_MS = 15_000;
 
 /** Keep a held-open call alive for clients that reset their timeout on progress notifications. */
-function startProgressKeepalive(ctx: ToolCallContext, code: string): () => void {
+function startProgressKeepalive(ctx: ToolCallContext): () => void {
   const send = ctx.sendProgress;
   if (!send) return () => {};
   let ticks = 0;
   const timer = setInterval(() => {
     ticks += 1;
     try {
-      send(ticks, `Waiting for human approval (code ${code})`);
+      // No approval code here either: progress messages reach the agent's client.
+      send(ticks, 'Waiting for human approval');
     } catch {
       /* best effort */
     }
@@ -135,7 +141,7 @@ export function hitlGateMiddleware(): Middleware {
       return pendingResponse(ctx.toolName, ticket);
     }
 
-    const stopKeepalive = startProgressKeepalive(ctx, ticket.code);
+    const stopKeepalive = startProgressKeepalive(ctx);
 
     // If the transport provides an abort signal, race the HITL promise against it
     // so we don't execute a tool on a dead session.
