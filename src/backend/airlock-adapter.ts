@@ -334,8 +334,8 @@ export class AirlockBackendAdapter implements BackendAdapter {
         success: true,
         data: {
           status: 'pending',
+          // Never the approval code: it is what the operator types to approve.
           id: ticket.id,
-          code: ticket.code,
           message: `Approval requested for ${plan.length} call(s). Call ${sanitizeToolName(AIRLOCK_AWAIT_APPROVAL_TOOL)} with this id to wait for the decision.`,
           ...(notRequired.length > 0 ? { notRequired } : {}),
         },
