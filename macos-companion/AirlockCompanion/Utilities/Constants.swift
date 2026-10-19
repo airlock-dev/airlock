@@ -6,8 +6,19 @@ enum Constants {
     static let healthPath = "/health"
     static let pendingPath = "/mobile/approvals"
 
+    static let bulkDecisionPath = "/mobile/approvals/decisions"
+    static let grantsPath = "/mobile/grants"
+
     static func approvalDecisionPath(id: String) -> String {
         "/mobile/approvals/\(id)/decision"
+    }
+
+    static func batchDecisionPath(batch: String) -> String {
+        "/mobile/batches/\(batch)/decision"
+    }
+
+    static func grantPath(id: String) -> String {
+        "/mobile/grants/\(id)"
     }
 
     enum UserDefaultsKeys {
@@ -30,6 +41,8 @@ enum Constants {
 
     enum NotificationCategory {
         static let approvalRequest = "APPROVAL_REQUEST"
+        /// Approve/Deny only: escalated requests, plans and questions get no "allow" shortcuts.
+        static let approvalRequestPlain = "APPROVAL_REQUEST_PLAIN"
         static let approveAction = "APPROVE_ACTION"
         static let allowOneHourAction = "ALLOW_ONE_HOUR_ACTION"
         static let alwaysAllowAction = "ALWAYS_ALLOW_ACTION"

@@ -139,6 +139,7 @@ final class NotificationViewController: UIViewController, UNNotificationContentE
         metaLabel.text = context.displayMeta
         timeoutLabel.text = context.timeoutText
         timeoutLabel.textColor = context.timeoutColor
+        sectionLabel.text = context.sectionTitle
 
         argsStack.arrangedSubviews.forEach { view in
             argsStack.removeArrangedSubview(view)
@@ -147,6 +148,9 @@ final class NotificationViewController: UIViewController, UNNotificationContentE
 
         let visibleArguments = context.visibleArguments
         let displayedArguments = Array(visibleArguments.prefix(5))
+        if let flaggedText = context.flaggedText {
+            argsStack.addArrangedSubview(flaggedLabel(flaggedText))
+        }
         if displayedArguments.isEmpty {
             argsStack.addArrangedSubview(emptyLabel("No arguments"))
         } else {
@@ -161,7 +165,8 @@ final class NotificationViewController: UIViewController, UNNotificationContentE
         let rowHeight = displayedArguments.reduce(CGFloat(0)) { partial, argument in
             partial + estimatedRowHeight(for: argument)
         }
-        let overflowHeight: CGFloat = visibleArguments.count > displayedArguments.count ? 22 : 0
+        let overflowHeight: CGFloat = (visibleArguments.count > displayedArguments.count ? 22 : 0)
+            + (context.flaggedText == nil ? 0 : 22)
         let contentHeight = max(168, min(360, 108 + rowHeight + overflowHeight))
         preferredContentSize = CGSize(width: view.bounds.width, height: contentHeight)
     }
@@ -202,6 +207,15 @@ final class NotificationViewController: UIViewController, UNNotificationContentE
         }
     }
 
+    private func flaggedLabel(_ value: String) -> UILabel {
+        let label = UILabel()
+        label.text = value
+        label.font = .preferredFont(forTextStyle: .caption1)
+        label.textColor = .systemRed
+        label.numberOfLines = 1
+        return label
+    }
+
     private func emptyLabel(_ value: String) -> UILabel {
         let label = UILabel()
         label.text = value
@@ -219,8 +233,15 @@ private struct ApprovalNotificationContext {
     var note: String?
     var args: [ApprovalArgument]
     var expiresAt: Date?
+    var batchCount: Int?
+    var flaggedCount = 0
+    var escalated = false
+    var tier: String?
 
     var displayTitle: String {
+        if let batchCount {
+            return "\(batchCount) approvals"
+        }
         if isUserQuestion, let questionText {
             return questionText
         }
@@ -228,7 +249,21 @@ private struct ApprovalNotificationContext {
     }
 
     var displayMeta: String {
-        isUserQuestion ? "\(agentId) · user question" : agentId
+        if isUserQuestion { return "\(agentId) · user question" }
+        if let tier { return "\(agentId) · \(tier)" }
+        return agentId
+    }
+
+    var sectionTitle: String {
+        batchCount == nil ? "Arguments" : "Requests"
+    }
+
+    /// Escalated requests are never covered by "Approve All"; say so before the user acts.
+    var flaggedText: String? {
+        if batchCount != nil, flaggedCount > 0 {
+            return "\(flaggedCount) flagged · skipped by Approve All"
+        }
+        return escalated ? "Flagged by a security check" : nil
     }
 
     static let loading = ApprovalNotificationContext(
@@ -256,6 +291,22 @@ private struct ApprovalNotificationContext {
         let approval = Self.dictionary(from: airlock?["approval"])
         let rawArgs = Self.argumentDictionaries(from: approval?["args"])
 
+        if let batch = Self.dictionary(from: airlock?["batch"]) {
+            let items = Self.argumentDictionaries(from: batch["items"]) ?? []
+            let approvalIds = batch["approvalIds"] as? [String] ?? userInfo["approval_ids"] as? [String] ?? []
+            agentId = userInfo["agent_id"] as? String ?? Self.agentId(from: content.title)
+            tool = userInfo["tool"] as? String ?? "Approvals"
+            args = items.compactMap { item in
+                guard let tool = item["tool"] as? String else { return nil }
+                let summary = Self.trimmed(item["summary"] as? String) ?? (item["code"] as? String ?? "")
+                return ApprovalArgument(key: tool, value: summary, rawKey: true)
+            }
+            batchCount = max(approvalIds.count, items.count)
+            flaggedCount = (batch["flagged"] as? NSNumber)?.intValue ?? 0
+            expiresAt = nil
+            return
+        }
+
         agentId = approval?["agentId"] as? String
             ?? approval?["agent_id"] as? String
             ?? userInfo["agent_id"] as? String
@@ -267,6 +318,8 @@ private struct ApprovalNotificationContext {
         note = Self.trimmed(approval?["note"] as? String)
         args = rawArgs?.compactMap(ApprovalArgument.init(rawValue:)) ?? Self.args(from: content.body)
         expiresAt = Self.parseDate(approval?["expiresAt"] as? String ?? approval?["expires_at"] as? String)
+        escalated = (approval?["escalated"] as? NSNumber)?.boolValue ?? false
+        tier = Self.trimmed(approval?["tier"] as? String)
     }
 
     var visibleArguments: [ApprovalArgument] {
@@ -274,6 +327,8 @@ private struct ApprovalNotificationContext {
             reason.map { ApprovalArgument(key: "request_reason", value: $0) },
             note.map { ApprovalArgument(key: "request_note", value: $0) }
         ].compactMap { $0 }
+        // Batch items keep their server order.
+        if batchCount != nil { return args }
         let argumentArgs = args.filter { $0.key != "code" && $0.key != "reason" && $0.key != "note" }
             .sorted { $0.key < $1.key }
         return contextArgs + argumentArgs
@@ -291,6 +346,7 @@ private struct ApprovalNotificationContext {
     }
 
     var timeoutText: String {
+        if batchCount != nil { return "" }
         guard let expiresAt else { return "No timeout" }
         let remaining = expiresAt.timeIntervalSinceNow
         if remaining <= 0 { return "Expired" }
@@ -379,8 +435,10 @@ private struct ApprovalNotificationContext {
 private struct ApprovalArgument {
     let key: String
     let value: String
+    var rawKey = false
 
     var displayKey: String {
+        if rawKey { return key }
         switch key {
         case "command_preview":
             return "Command"
@@ -396,9 +454,10 @@ private struct ApprovalArgument {
         }
     }
 
-    init(key: String, value: String) {
+    init(key: String, value: String, rawKey: Bool = false) {
         self.key = key
         self.value = value
+        self.rawKey = rawKey
     }
 
     init?(rawValue: [String: Any]) {

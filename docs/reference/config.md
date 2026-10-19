@@ -446,8 +446,18 @@ approvals:
     bot_token: '${TELEGRAM_BOT_TOKEN}'
     chat_id: '${TELEGRAM_CHAT_ID}'
   timeout_ms: 300000
-  batch_window_ms: 10000
+  batch_window_ms: 500 # group parallel calls into one notification (0 = off)
+  mode: sync # or async: answer "pending" at once; the agent retries once approved
+  grants:
+    default_duration_ms: 900000 # "approve & allow…" grants default to 15 minutes
+    max_duration_ms: 86400000 # hard cap for any grant
+    plan_ttl_ms: 1800000 # how long an approved airlock_request_approval plan is redeemable
+    async_ttl_ms: 1800000 # how long an approved async call is redeemable by the retry
 ```
+
+Agents can override the mode with `approval_mode: sync | async`, and `tool_overrides.<tool>.tier`
+(`read` / `write` / `destructive`) sets the safety tier used by tier-scoped grants. See
+[Reducing approval fatigue](/concepts/approvals-and-audit#reducing-approval-fatigue).
 
 `provider` may also be a list when you want multiple approval surfaces. For
 example, a self-hosted VPS can keep the dashboard enabled while also sending

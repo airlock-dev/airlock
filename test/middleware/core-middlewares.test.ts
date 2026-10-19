@@ -172,8 +172,13 @@ describe('hitlGateMiddleware', () => {
       deps: {
         ...makeCtx().deps,
         hitlEngine: {
-          create: vi.fn().mockReturnValue({ id: 'id', code: 'CODE', result: Promise.resolve('approved') }),
+          create: vi
+            .fn()
+            .mockReturnValue({ id: 'id', code: 'CODE', result: Promise.resolve('approved') }),
+          consumeGrant: vi.fn(),
+          buildNotification: vi.fn(),
           timeoutMs: 5000,
+          defaultMode: 'sync',
         } as any,
         hitlBatcher: { add: vi.fn() } as any,
         auditLogger: {

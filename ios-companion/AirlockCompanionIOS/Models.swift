@@ -107,10 +107,24 @@ struct ApprovalRequest: Codable, Identifiable, Equatable, Sendable {
     let timeoutMs: Int?
     let expiresAt: Date?
     let resolvedAt: Date?
+    var kind: String? = nil
+    var mode: String? = nil
+    var tier: String? = nil
+    var provider: String? = nil
+    var escalated: Bool? = nil
+    var plan: [PlanEntry]? = nil
+    var batchId: String? = nil
+    var batchCode: String? = nil
+    var grantOptions: [GrantOption]? = nil
 
     var argsPreview: String {
         if isUserQuestion {
             return questionContext ?? "User response requested"
+        }
+        if isPlan, let plan {
+            let tools = plan.prefix(3).map(\.tool).joined(separator: ", ")
+            let remaining = plan.count > 3 ? ", +\(plan.count - 3) more" : ""
+            return "\(plan.count) planned calls: " + tools + remaining
         }
         if let requestReason {
             return requestReason
@@ -144,7 +158,24 @@ struct ApprovalRequest: Codable, Identifiable, Equatable, Sendable {
     }
 
     var isUserQuestion: Bool {
-        tool == "airlock/ask_user"
+        kind == "question" || tool == "airlock/ask_user"
+    }
+
+    var isPlan: Bool {
+        kind == "plan" && !(plan ?? []).isEmpty
+    }
+
+    /// Flagged by a security check: reviewed one at a time, never bulk-approved or widened into a grant.
+    var isBulkApprovable: Bool {
+        !isEscalated && !isPlan && !isUserQuestion
+    }
+
+    var isEscalated: Bool {
+        escalated == true
+    }
+
+    var availableGrantOptions: [GrantOption] {
+        isEscalated || isUserQuestion ? [] : (grantOptions ?? [])
     }
 
     var questionText: String {
@@ -171,11 +202,16 @@ struct ApprovalRequest: Codable, Identifiable, Equatable, Sendable {
     }
 
     var displayTitle: String {
-        isUserQuestion ? questionText : tool
+        if isUserQuestion { return questionText }
+        if isPlan { return "Plan: \(plan?.count ?? 0) calls" }
+        return tool
     }
 
     var displaySubtitle: String {
-        isUserQuestion ? "\(agentId) · user question" : agentId
+        if isUserQuestion { return "\(agentId) · user question" }
+        if isPlan { return "\(agentId) · plan" }
+        if let tier { return "\(agentId) · \(tier)" }
+        return agentId
     }
 
     var approveLabel: String {
@@ -183,8 +219,110 @@ struct ApprovalRequest: Codable, Identifiable, Equatable, Sendable {
     }
 }
 
+struct PlanEntry: Codable, Equatable, Sendable {
+    let tool: String
+    var args: [String: JSONValue]? = nil
+    var fingerprint: String? = nil
+
+    var compactArgs: String {
+        guard let args, !args.isEmpty else { return "No arguments" }
+        return args.sorted { $0.key < $1.key }
+            .map { "\($0.key): \($0.value.displayString)" }
+            .joined(separator: ", ")
+    }
+}
+
+struct GrantOption: Codable, Equatable, Hashable, Sendable {
+    let scope: String
+    let label: String
+    var tier: String? = nil
+    var profile: String? = nil
+}
+
 struct ApprovalListResponse: Decodable {
     let approvals: [ApprovalRequest]
+}
+
+/// A pending batch: approvals notified together that can be decided at once.
+struct ApprovalBatch: Identifiable, Equatable {
+    let id: String
+    let code: String?
+    let approvals: [ApprovalRequest]
+
+    /// Matches the server's bulk-approve rule: routine tool calls only. Flagged calls, plans and
+    /// questions each need their own decision.
+    var approvableIds: [String] {
+        approvals.filter(\.isBulkApprovable).map(\.id)
+    }
+
+    var flaggedCount: Int {
+        approvals.filter(\.isEscalated).count
+    }
+
+    /// Plans and questions in the batch, which Approve All leaves for individual review.
+    var individualReviewCount: Int {
+        approvals.filter { !$0.isEscalated && !$0.isBulkApprovable }.count
+    }
+}
+
+struct GrantScopeInfo: Decodable, Equatable, Sendable {
+    let kind: String
+    var tool: String? = nil
+    var tier: String? = nil
+    var provider: String? = nil
+    var profile: String? = nil
+
+    var displayString: String {
+        switch kind {
+        case "call":
+            return "One call to \(tool ?? "tool")"
+        case "tool":
+            return "Any call to \(tool ?? "tool")"
+        case "tier":
+            let base = "\((tier ?? "read").capitalized)-tier tools"
+            return provider.map { "\(base) from \($0)" } ?? base
+        case "provider":
+            return "Any \(provider ?? "provider") tool"
+        case "profile":
+            return "Profile \(profile ?? "")"
+        default:
+            return kind
+        }
+    }
+}
+
+struct ApprovalGrant: Decodable, Identifiable, Equatable, Sendable {
+    let id: String
+    let agentId: String
+    let scope: GrantScopeInfo
+    let source: String
+    var label: String? = nil
+    let createdAt: Date
+    var expiresAt: Date? = nil
+    var usesRemaining: Int? = nil
+
+    var displayTitle: String {
+        let trimmed = label?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed?.isEmpty == false ? trimmed! : scope.displayString
+    }
+
+    func isExpired(at date: Date = Date()) -> Bool {
+        guard let expiresAt else { return false }
+        return expiresAt <= date
+    }
+}
+
+struct GrantListResponse: Decodable {
+    let grants: [ApprovalGrant]
+}
+
+/// Decision responses: `approved` may include other pending ids a new grant auto-approved.
+struct DecisionResponse: Decodable {
+    var ok: Bool? = nil
+    var approved: [String]? = nil
+    var skipped: [String]? = nil
+    var denied: [String]? = nil
+    var grant: ApprovalGrant? = nil
 }
 
 struct ActivityEvent: Codable, Identifiable, Equatable, Sendable {
@@ -224,16 +362,87 @@ enum RememberMode: String, Encodable {
     case always
 }
 
+/// Approve and also allow similar calls for a while.
+struct GrantRequest: Encodable, Equatable {
+    let scope: String
+    var tier: String? = nil
+    var profile: String? = nil
+    var durationMs: Int? = nil
+    var maxUses: Int? = nil
+    var sessionOnly: Bool? = nil
+
+    init(
+        scope: String,
+        tier: String? = nil,
+        profile: String? = nil,
+        durationMs: Int? = nil,
+        maxUses: Int? = nil,
+        sessionOnly: Bool? = nil
+    ) {
+        self.scope = scope
+        self.tier = tier
+        self.profile = profile
+        self.durationMs = durationMs
+        self.maxUses = maxUses
+        self.sessionOnly = sessionOnly
+    }
+
+    init(option: GrantOption, durationMs: Int) {
+        self.init(scope: option.scope, tier: option.tier, profile: option.profile, durationMs: durationMs)
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case scope
+        case tier
+        case profile
+        case durationMs = "duration_ms"
+        case maxUses = "max_uses"
+        case sessionOnly = "session_only"
+    }
+}
+
+enum GrantDuration: Int, CaseIterable, Identifiable {
+    case fifteenMinutes = 900_000
+    case oneHour = 3_600_000
+    case eightHours = 28_800_000
+
+    var id: Int { rawValue }
+
+    var title: String {
+        switch self {
+        case .fifteenMinutes:
+            return "15 Minutes"
+        case .oneHour:
+            return "1 Hour"
+        case .eightHours:
+            return "8 Hours"
+        }
+    }
+}
+
 struct DecisionRequest: Encodable {
     let decision: ApprovalDecision
     let remember: RememberMode?
     let durationMs: Int?
     let reason: String?
+    var grant: GrantRequest? = nil
 
     enum CodingKeys: String, CodingKey {
         case decision
         case remember
         case durationMs = "duration_ms"
         case reason
+        case grant
     }
+}
+
+struct BulkDecisionRequest: Encodable {
+    let ids: [String]
+    let decision: ApprovalDecision
+    let reason: String?
+}
+
+struct BatchDecisionRequest: Encodable {
+    let decision: ApprovalDecision
+    let reason: String?
 }

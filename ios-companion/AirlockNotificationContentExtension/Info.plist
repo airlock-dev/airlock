@@ -29,7 +29,11 @@
 		<key>NSExtensionAttributes</key>
 		<dict>
 			<key>UNNotificationExtensionCategory</key>
-			<string>AIRLOCK_APPROVAL</string>
+			<array>
+				<string>AIRLOCK_APPROVAL</string>
+				<string>AIRLOCK_APPROVAL_BATCH</string>
+				<string>AIRLOCK_APPROVAL_PLAIN</string>
+			</array>
 			<key>UNNotificationExtensionDefaultContentHidden</key>
 			<true/>
 			<key>UNNotificationExtensionInitialContentSizeRatio</key>

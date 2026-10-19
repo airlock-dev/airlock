@@ -21,6 +21,17 @@ export interface ApnsApprovalPayload {
   context?: ApnsApprovalContext;
   timeoutMs: number;
   badgeCount?: number;
+  /** Several approvals notified together: one push with "approve all" / "deny all" actions. */
+  batch?: ApnsApprovalBatch;
+}
+
+export interface ApnsApprovalBatch {
+  id: string;
+  code: string;
+  approvalIds: string[];
+  /** Number of members a security check flagged; "approve all" skips these. */
+  flagged: number;
+  items: Array<{ id: string; code: string; tool: string; summary: string }>;
 }
 
 export interface ApnsApprovalContext {
@@ -33,6 +44,12 @@ export interface ApnsApprovalContext {
   args: Array<{ key: string; value: string }>;
   timeoutMs: number;
   expiresAt?: string;
+  kind?: 'call' | 'plan' | 'question';
+  tier?: string;
+  provider?: string;
+  escalated?: boolean;
+  /** Grant scopes the companion can offer ("allow read-only gmail tools for 15m"). */
+  grantOptions?: Array<{ scope: string; label: string; tier?: string; profile?: string }>;
 }
 
 export interface ApnsApprovalStatusPayload {
@@ -40,6 +57,9 @@ export interface ApnsApprovalStatusPayload {
   code: string;
   result: 'approved' | 'denied' | 'timeout' | 'cancelled';
   badgeCount: number;
+  /** Set when the approval belonged to a notified batch; the batch push is cleared at 0 pending. */
+  batchId?: string;
+  batchPending?: number;
 }
 
 export interface ApnsActivityPayload {
@@ -130,16 +150,18 @@ export class ApnsClient {
   ): Promise<ApnsSendResult> {
     return new Promise((resolve, reject) => {
       const badgeCount = normalizeBadgeCount(approval.badgeCount);
+      const batch = approval.batch;
       const payload = JSON.stringify({
         aps: {
           alert: {
             title: approvalAlertTitle(approval),
             body: approval.body,
           },
-          category: 'AIRLOCK_APPROVAL',
+          category: approvalCategory(approval),
           sound: 'default',
           'thread-id': 'airlock-approvals',
           'summary-arg': approval.tool,
+          ...(batch ? { 'summary-arg-count': batch.approvalIds.length } : {}),
           ...(badgeCount !== undefined ? { badge: badgeCount } : {}),
           ...(this.config.interruptionLevel
             ? { 'interruption-level': this.config.interruptionLevel }
@@ -149,7 +171,16 @@ export class ApnsClient {
         code: approval.code,
         tool: approval.tool,
         agent_id: approval.agentId,
-        ...(approval.context ? { airlock: { approval: approval.context } } : {}),
+        ...(batch
+          ? {
+              batch_id: batch.id,
+              batch_code: batch.code,
+              approval_ids: batch.approvalIds,
+              airlock: { batch },
+            }
+          : approval.context
+            ? { airlock: { approval: approval.context } }
+            : {}),
       });
 
       const request = session.request({
@@ -159,7 +190,7 @@ export class ApnsClient {
         'apns-topic': this.config.bundleId,
         'apns-push-type': 'alert',
         'apns-priority': '10',
-        'apns-collapse-id': approval.id,
+        'apns-collapse-id': approval.batch?.id ?? approval.id,
         'apns-expiration': String(
           approval.timeoutMs > 0 ? Math.floor((Date.now() + approval.timeoutMs) / 1000) : 0
         ),
@@ -335,6 +366,9 @@ export class ApnsClient {
         approval_id: status.id,
         code: status.code,
         result: status.result,
+        ...(status.batchId
+          ? { batch_id: status.batchId, batch_pending: status.batchPending ?? 0 }
+          : {}),
       });
 
       const request = session.request({
@@ -412,7 +446,22 @@ function normalizeBadgeCount(value: number | undefined): number | undefined {
   return Math.max(0, Math.floor(value));
 }
 
+/**
+ * Batches get approve-all/deny-all. Plans, questions and flagged calls get approve/deny only:
+ * "Allow 1 hour" and "Always allow" remember the tool, which only makes sense for a routine call.
+ */
+function approvalCategory(approval: ApnsApprovalPayload): string {
+  if (approval.batch) return 'AIRLOCK_APPROVAL_BATCH';
+  const context = approval.context;
+  const routine =
+    approval.tool !== 'airlock/ask_user' &&
+    (context?.kind ?? 'call') === 'call' &&
+    !context?.escalated;
+  return routine ? 'AIRLOCK_APPROVAL' : 'AIRLOCK_APPROVAL_PLAIN';
+}
+
 function approvalAlertTitle(approval: ApnsApprovalPayload): string {
+  if (approval.batch) return `${approval.agentId}: ${approval.batch.approvalIds.length} approvals`;
   if (approval.tool === 'airlock/ask_user') {
     const question = approval.context?.args.find((arg) =>
       ['question', 'title', 'message'].includes(arg.key)

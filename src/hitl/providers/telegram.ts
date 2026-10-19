@@ -1,5 +1,5 @@
 import { formatBatch } from '../formatter.js';
-import { parseApprovalCommand } from '../parser.js';
+import { applyApprovalCommand, parseApprovalCommand } from '../parser.js';
 import type { HitlProvider, HitlNotification, ApprovalApi } from './types.js';
 import { childLogger } from '../../util/logger.js';
 
@@ -87,13 +87,13 @@ export class TelegramHitlProvider implements HitlProvider {
     const parsed = parseApprovalCommand(text);
     if (!parsed) return;
 
-    if (parsed.type === 'approve') {
-      log.info({ code: parsed.code }, 'Approve via Telegram');
-      this.approvalApi.approveByCode(parsed.code);
-    } else {
-      log.info({ code: parsed.code }, 'Deny via Telegram');
-      this.approvalApi.denyByCode(parsed.code, parsed.reason);
-    }
+    log.info(
+      { code: parsed.code, grant: parsed.grant },
+      parsed.type === 'approve' ? 'Approve via Telegram' : 'Deny via Telegram'
+    );
+    applyApprovalCommand(this.approvalApi, parsed, (err) =>
+      log.warn({ err, code: parsed.code }, 'Grant rejected; approved the single request only')
+    );
   }
 
   stop(): Promise<void> {

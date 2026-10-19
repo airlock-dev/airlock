@@ -1,6 +1,12 @@
 import type { FastifyInstance } from 'fastify';
 import type { AllowlistEngine } from '../allowlist/engine.js';
-import type { HitlEngine } from '../hitl/engine.js';
+import type { ApprovalMode, HitlEngine } from '../hitl/engine.js';
+import {
+  fingerprintCall,
+  providerOf,
+  type ApprovalSubject,
+  type ToolTier,
+} from '../hitl/grants.js';
 import type { HitlBatcher } from '../hitl/batcher.js';
 import type { AuditLogger } from '../audit/logger.js';
 import { normalizeTool } from './normalizer.js';
@@ -14,6 +20,10 @@ export interface HookApiOpts {
   hitlEngine: HitlEngine;
   hitlBatcher: HitlBatcher;
   auditLogger: AuditLogger;
+  /** Per-agent approval mode override (falls back to the engine default). */
+  getApprovalMode?: (agentId: string) => ApprovalMode | undefined;
+  /** Safety tier for tier-scoped grants. Unknown tools are treated as destructive. */
+  getToolTier?: (agentId: string, tool: string) => ToolTier;
   secret?: string;
   authRequired?: boolean;
   allowedOrigins?: string[];
@@ -78,21 +88,59 @@ export async function hookApiPlugin(app: FastifyInstance, opts: HookApiOpts): Pr
       });
     }
 
-    // decision === 'ask' — create HITL ticket and long-poll
-    const ticket = hitlEngine.create({
+    // decision === 'ask' — a grant may already cover it; otherwise create a HITL ticket.
+    const subject: ApprovalSubject = {
       agentId,
       tool: normalized.name,
-      args: input,
-    });
+      fingerprint: fingerprintCall(normalized.name, input),
+      provider: providerOf(normalized.name),
+      tier: opts.getToolTier?.(agentId, normalized.name) ?? 'destructive',
+      ...(session_id ? { sessionId: session_id } : {}),
+      escalated: false,
+    };
+    const grant = hitlEngine.consumeGrant(subject);
+    if (grant) {
+      auditLogger.log({
+        agent_id: agentId,
+        tool: normalized.name,
+        args: JSON.stringify({ ...input, _airlock: { grant: grant.id } }),
+        result: 'hitl_granted',
+      });
+      return reply.send({ decision: 'allow', tool: normalized.name });
+    }
 
-    hitlBatcher.add({
-      id: ticket.id,
-      code: ticket.code,
+    const mode = opts.getApprovalMode?.(agentId) ?? hitlEngine.defaultMode;
+    if (mode === 'async') {
+      // Hooks have short client-side timeouts. Answer at once: the deny reason tells the model the
+      // approval is pending, and once approved its retry of the same call is let through.
+      if (hitlEngine.wasRecentlyDenied(agentId, subject.fingerprint)) {
+        return reply.send({
+          decision: 'deny',
+          tool: normalized.name,
+          reason: 'Denied by operator',
+        });
+      }
+      const pending =
+        hitlEngine.findPendingCall(agentId, subject.fingerprint) ??
+        createTicket(hitlEngine, hitlBatcher, agentId, normalized.name, input, subject, 'async');
+      return reply.send({
+        decision: 'deny',
+        tool: normalized.name,
+        reason:
+          `Approval pending in Airlock (code ${pending.code}). Nothing was executed. ` +
+          'Wait for the user to approve, then retry this exact call with identical input.',
+      });
+    }
+
+    const ticket = createTicket(
+      hitlEngine,
+      hitlBatcher,
       agentId,
-      tool: normalized.name,
-      args: input,
-      timeoutMs: hitlEngine.timeoutMs,
-    });
+      normalized.name,
+      input,
+      subject,
+      'sync'
+    );
 
     log.info({ ticket: ticket.id, code: ticket.code }, 'Hook waiting for HITL approval');
 
@@ -105,4 +153,27 @@ export async function hookApiPlugin(app: FastifyInstance, opts: HookApiOpts): Pr
     const reason = result === 'timeout' ? 'Approval timed out' : 'Denied by operator';
     return reply.send({ decision: 'deny', tool: normalized.name, reason });
   });
+}
+
+function createTicket(
+  hitlEngine: HitlEngine,
+  hitlBatcher: HitlBatcher,
+  agentId: string,
+  tool: string,
+  args: Record<string, unknown>,
+  subject: ApprovalSubject,
+  mode: ApprovalMode
+): ReturnType<HitlEngine['create']> {
+  const ticket = hitlEngine.create({ agentId, tool, args, kind: 'call', mode, subject });
+  hitlBatcher.add(
+    hitlEngine.buildNotification(ticket.id) ?? {
+      id: ticket.id,
+      code: ticket.code,
+      agentId,
+      tool,
+      args,
+      timeoutMs: hitlEngine.timeoutMs,
+    }
+  );
+  return ticket;
 }

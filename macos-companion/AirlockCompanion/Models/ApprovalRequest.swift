@@ -108,6 +108,69 @@ enum JSONValue: Codable, Equatable, Sendable {
     }
 }
 
+// MARK: - Plans & grant options
+
+/// One call inside a `kind == "plan"` request: the agent asked to approve several calls up front.
+struct PlanEntry: Decodable, Equatable, Sendable {
+    let tool: String
+    let args: [String: JSONValue]
+    var fingerprint: String? = nil
+
+    enum CodingKeys: String, CodingKey {
+        case tool, args, fingerprint
+    }
+
+    init(tool: String, args: [String: JSONValue] = [:], fingerprint: String? = nil) {
+        self.tool = tool
+        self.args = args
+        self.fingerprint = fingerprint
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        tool = try container.decode(String.self, forKey: .tool)
+        args = (try? container.decodeIfPresent([String: JSONValue].self, forKey: .args)) ?? [:]
+        fingerprint = try? container.decodeIfPresent(String.self, forKey: .fingerprint)
+    }
+
+    /// Single-line `key: value, …` rendering for compact plan lists.
+    var compactArgs: String {
+        args.sorted(by: { $0.key < $1.key })
+            .map { "\($0.key): \($0.value.displayString)" }
+            .joined(separator: ", ")
+    }
+}
+
+/// A way the server offers to widen an approval into a grant ("Allow read-only gmail tools").
+struct GrantOption: Decodable, Equatable, Hashable, Sendable {
+    let scope: String
+    let label: String
+    var tier: String? = nil
+    var profile: String? = nil
+
+    /// The grant body for this option with a given lifetime.
+    func spec(durationMs: Int?) -> GrantSpec {
+        GrantSpec(scope: scope, tier: tier, profile: profile, durationMs: durationMs)
+    }
+}
+
+/// Body of the `grant` field on a decision request.
+struct GrantSpec: Encodable, Equatable, Sendable {
+    let scope: String
+    var tier: String? = nil
+    var profile: String? = nil
+    var durationMs: Int? = nil
+    var maxUses: Int? = nil
+    var sessionOnly: Bool? = nil
+
+    enum CodingKeys: String, CodingKey {
+        case scope, tier, profile
+        case durationMs = "duration_ms"
+        case maxUses = "max_uses"
+        case sessionOnly = "session_only"
+    }
+}
+
 // MARK: - ApprovalRequest
 
 struct ApprovalContext: Codable, Equatable, Sendable {
@@ -125,6 +188,17 @@ struct ApprovalRequest: Decodable, Identifiable, Equatable, Sendable {
     let timeoutMs: Int
     let receivedAt: Date
     let expiresAt: Date?
+    // Newer gateways only; all optional and kept as raw strings so unknown values never fail decoding.
+    var kind: String? = nil
+    var mode: String? = nil
+    var tier: String? = nil
+    var provider: String? = nil
+    var escalated: Bool = false
+    var plan: [PlanEntry]? = nil
+    var batchId: String? = nil
+    var batchCode: String? = nil
+    var batchSize: Int? = nil
+    var grantOptions: [GrantOption] = []
 
     var deadline: Date {
         expiresAt ?? receivedAt.addingTimeInterval(TimeInterval(timeoutMs) / 1000.0)
@@ -140,6 +214,7 @@ struct ApprovalRequest: Decodable, Identifiable, Equatable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case id, code, agentId, tool, args, context, timeoutMs, createdAt, expiresAt
+        case kind, mode, tier, provider, escalated, plan, batchId, batchCode, batchSize, grantOptions
     }
 
     init(id: String, code: String, agentId: String, tool: String, args: [String: JSONValue], context: ApprovalContext? = nil, timeoutMs: Int, receivedAt: Date = Date(), expiresAt: Date? = nil) {
@@ -167,9 +242,19 @@ struct ApprovalRequest: Decodable, Identifiable, Equatable, Sendable {
         let expiresAtValue = try container.decodeIfPresent(String.self, forKey: .expiresAt)
         receivedAt = Self.parseDate(createdAtValue) ?? Date()
         expiresAt = Self.parseDate(expiresAtValue)
+        kind = try? container.decodeIfPresent(String.self, forKey: .kind)
+        mode = try? container.decodeIfPresent(String.self, forKey: .mode)
+        tier = try? container.decodeIfPresent(String.self, forKey: .tier)
+        provider = try? container.decodeIfPresent(String.self, forKey: .provider)
+        escalated = ((try? container.decodeIfPresent(Bool.self, forKey: .escalated)) ?? nil) ?? false
+        plan = try? container.decodeIfPresent([PlanEntry].self, forKey: .plan)
+        batchId = try? container.decodeIfPresent(String.self, forKey: .batchId)
+        batchCode = try? container.decodeIfPresent(String.self, forKey: .batchCode)
+        batchSize = try? container.decodeIfPresent(Int.self, forKey: .batchSize)
+        grantOptions = ((try? container.decodeIfPresent([GrantOption].self, forKey: .grantOptions)) ?? nil) ?? []
     }
 
-    private static func parseDate(_ value: String?) -> Date? {
+    static func parseDate(_ value: String?) -> Date? {
         guard let value else { return nil }
         let fractional = ISO8601DateFormatter()
         fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -197,7 +282,35 @@ struct ApprovalRequest: Decodable, Identifiable, Equatable, Sendable {
     }
 
     var isUserQuestion: Bool {
-        tool == "airlock/ask_user"
+        kind == "question" || tool == "airlock/ask_user"
+    }
+
+    var isPlan: Bool {
+        kind == "plan" && !(plan ?? []).isEmpty
+    }
+
+    var planEntries: [PlanEntry] {
+        plan ?? []
+    }
+
+    /// Safety tier badge text, when the gateway classified the tool.
+    var tierLabel: String? {
+        guard let tier, !tier.isEmpty else { return nil }
+        return tier.capitalized
+    }
+
+    /// Key used to group requests for "Approve all": the notification batch when there is one,
+    /// otherwise the requesting agent.
+    var groupKey: String {
+        if let batchId, !batchId.isEmpty { return "batch:\(batchId)" }
+        return "agent:\(agentId)"
+    }
+
+    /// Escalated requests and questions must be read and decided one by one.
+    /// Matches the server's bulk-approve rule: routine tool calls only. Flagged calls, plans and
+    /// questions each need their own decision.
+    var canBulkApprove: Bool {
+        !escalated && !isUserQuestion && !isPlan
     }
 
     var questionText: String {
@@ -214,7 +327,9 @@ struct ApprovalRequest: Decodable, Identifiable, Equatable, Sendable {
     }
 
     var displayTitle: String {
-        isUserQuestion ? questionText : tool
+        if isUserQuestion { return questionText }
+        if isPlan { return "Plan: \(planEntries.count) calls" }
+        return tool
     }
 
     var displaySubtitle: String {
@@ -223,6 +338,43 @@ struct ApprovalRequest: Decodable, Identifiable, Equatable, Sendable {
 
     var approveLabel: String {
         isUserQuestion ? "Confirm" : "Approve"
+    }
+}
+
+// MARK: - ApprovalGroup
+
+/// Pending requests decided together: a notification batch, or several requests from one agent.
+struct ApprovalGroup: Identifiable, Equatable, Sendable {
+    let id: String
+    let agentId: String
+    let batchCode: String?
+    let requests: [ApprovalRequest]
+
+    var ids: [String] { requests.map(\.id) }
+
+    /// Ids "Approve all" sends: escalated requests and questions are left for individual review.
+    var approvableIds: [String] { requests.filter(\.canBulkApprove).map(\.id) }
+
+    var flaggedCount: Int { requests.filter(\.escalated).count }
+
+    var title: String {
+        if let batchCode, !batchCode.isEmpty { return "\(agentId) · batch \(batchCode)" }
+        return agentId
+    }
+
+    /// Groups of two or more, ordered by where their first request appears in `requests`.
+    static func groups(from requests: [ApprovalRequest]) -> [ApprovalGroup] {
+        var order: [String] = []
+        var members: [String: [ApprovalRequest]] = [:]
+        for request in requests {
+            let key = request.groupKey
+            if members[key] == nil { order.append(key) }
+            members[key, default: []].append(request)
+        }
+        return order.compactMap { key in
+            guard let items = members[key], items.count >= 2, let first = items.first else { return nil }
+            return ApprovalGroup(id: key, agentId: first.agentId, batchCode: first.batchCode, requests: items)
+        }
     }
 }
 

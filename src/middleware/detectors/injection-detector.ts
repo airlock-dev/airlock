@@ -100,6 +100,7 @@ export function injectionDetectorMiddleware(opts: InjectionDetectorOptions = {})
         preInjection = classifyWithRegex(argsText).isInjection;
         if (mode === 'escalate') {
           ctx.meta.needsApproval = true;
+          ctx.meta.approvalEscalated = true;
           ctx.meta.approvalReason = 'DeBERTa inference unavailable — escalating as precaution';
         }
       }
@@ -125,6 +126,7 @@ export function injectionDetectorMiddleware(opts: InjectionDetectorOptions = {})
 
       if (mode === 'escalate') {
         ctx.meta.needsApproval = true;
+        ctx.meta.approvalEscalated = true;
         ctx.meta.approvalReason = 'Prompt injection detected in tool arguments';
       }
     }
@@ -143,6 +145,7 @@ export function injectionDetectorMiddleware(opts: InjectionDetectorOptions = {})
         postInjection = classifyWithRegex(response.text).isInjection;
         if (mode === 'escalate') {
           ctx.meta.needsApproval = true;
+          ctx.meta.approvalEscalated = true;
           ctx.meta.approvalReason = 'DeBERTa inference unavailable — escalating as precaution';
         }
       }

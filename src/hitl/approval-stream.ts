@@ -45,6 +45,7 @@ export class ApprovalStreamHub implements ApprovalStreamClient, HitlProvider {
       action: status.result,
       result: status.result,
       badgeCount: status.badgeCount,
+      ...(status.batchId ? { batchId: status.batchId, batchPending: status.batchPending } : {}),
     });
     return Promise.resolve();
   }

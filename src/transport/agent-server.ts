@@ -1,6 +1,10 @@
 import { randomUUID } from 'crypto';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import {
+  ListToolsRequestSchema,
+  CallToolRequestSchema,
+  type ServerNotification,
+} from '@modelcontextprotocol/sdk/types.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import type { ToolRegistry } from '../registry/registry.js';
 import type { AllowlistEngine } from '../allowlist/engine.js';
@@ -77,7 +81,7 @@ export function createAgentServer(deps: AgentServerDeps): Server {
     return { tools: tools.map((t) => ({ ...t, name: sanitize(t.name) })) };
   });
 
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     const sanitizedName = request.params.name;
     // Reverse-map sanitized name back to the internal namespaced name so that
     // allowlist patterns ("provider/*") and the registry both work correctly.
@@ -121,6 +125,7 @@ export function createAgentServer(deps: AgentServerDeps): Server {
       },
       startedAt: Date.now(),
       signal: deps.signal,
+      ...progressSender(requestMeta, extra.sendNotification),
     };
 
     // Lifecycle audit: the request has entered the pipeline. Emitted BEFORE any middleware so even
@@ -156,6 +161,27 @@ export function createAgentServer(deps: AgentServerDeps): Server {
   });
 
   return server;
+}
+
+/**
+ * When the client asked for progress (params._meta.progressToken), give the pipeline a way to send
+ * it. The HITL gate uses this to keep a call that is parked on approval alive in clients that reset
+ * their request timeout on progress.
+ */
+function progressSender(
+  requestMeta: Record<string, unknown>,
+  sendNotification: (notification: ServerNotification) => Promise<void>
+): { sendProgress?: (progress: number, message: string) => void } {
+  const progressToken = requestMeta.progressToken;
+  if (typeof progressToken !== 'string' && typeof progressToken !== 'number') return {};
+  return {
+    sendProgress: (progress, message) => {
+      void sendNotification({
+        method: 'notifications/progress',
+        params: { progressToken, progress, message },
+      }).catch(() => {});
+    },
+  };
 }
 
 export async function connectAgentServer(server: Server, transport: Transport): Promise<void> {

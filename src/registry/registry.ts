@@ -6,6 +6,7 @@ import type { AgentConfig, ProviderInstructionsConfig, ToolOverride } from '../c
 import { sanitizeToolDescription, sanitizeInstructions } from './sanitizer.js';
 import { addAskPolicyGuidance } from './airlock-policy.js';
 import { childLogger } from '../util/logger.js';
+import { tierFromAnnotations, type ToolTier } from '../hitl/grants.js';
 
 const log = childLogger('registry');
 
@@ -217,6 +218,17 @@ export class ToolRegistry {
 
   getAllTools(): Tool[] {
     return this.cachedTools;
+  }
+
+  /** Safety tier of a tool for tier-scoped approval grants: explicit override, else annotations. */
+  toolTier(agentId: string, namespacedName: string): ToolTier {
+    const agent = this.agents[agentId];
+    const override = agent?.tool_overrides?.[namespacedName]?.tier;
+    if (override) return override;
+    const resolved = this.resolveToolName(namespacedName, agentId);
+    const baseOverride = agent?.tool_overrides?.[resolved]?.tier;
+    if (baseOverride) return baseOverride;
+    return tierFromAnnotations(this.cachedTools.find((t) => t.name === resolved)?.annotations);
   }
 
   resolveToolName(namespacedName: string, agentId: string): string {

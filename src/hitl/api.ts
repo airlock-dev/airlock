@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import type { HitlEngine } from './engine.js';
+import { approveWithGrant, parseGrantSpecInput, registerGrantRoutes } from './grant-api.js';
 import { checkRequestSecurity, type RequestSecurityOptions } from '../security/request.js';
 
 // eslint-disable-next-line @typescript-eslint/require-await
@@ -27,8 +28,13 @@ export async function hitlApiPlugin(
       reply.code(404);
       return { error: 'No pending approval found for id' };
     }
-    engine.approve(id);
-    return reply.send({ ok: true });
+    const body = request.body as { grant?: unknown } | undefined;
+    const grant = parseGrantSpecInput(body?.grant);
+    if (grant.error) {
+      reply.code(400);
+      return { error: grant.error };
+    }
+    return approveWithGrant(engine, id, grant.spec, reply);
   });
 
   app.post('/hitl/deny/:id', async (request, reply) => {
@@ -45,4 +51,6 @@ export async function hitlApiPlugin(
   app.get('/hitl/pending', async (_request, reply) => {
     return reply.send(engine.getPending());
   });
+
+  registerGrantRoutes(app, engine, '/hitl');
 }

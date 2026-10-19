@@ -455,6 +455,11 @@ export const ToolOverride = z
     sandbox_presets: SandboxPresetRef.default([]),
     sandbox: SandboxOverrideConfig.optional(),
     args: z.record(ToolArgConstraintListConfig).optional(),
+    /**
+     * Safety tier used by tier-scoped approval grants ("allow read-only gmail tools for 15m").
+     * Overrides the tier derived from the tool's MCP annotations.
+     */
+    tier: z.enum(['read', 'write', 'destructive']).optional(),
   })
   .strict();
 export type ToolOverride = z.infer<typeof ToolOverride>;
@@ -583,6 +588,9 @@ export const AgentConfig = z
     expose_tools_api: z.boolean().default(false),
     // Per-agent resource safeties; unset fields inherit from `security.limits` then defaults.
     limits: LimitsConfig.optional(),
+    // Overrides `approvals.mode` for this agent. `async` returns "approval pending" immediately
+    // instead of holding the tool call open, for clients that time out long calls.
+    approval_mode: z.enum(['sync', 'async']).optional(),
   })
   .strict();
 export type AgentConfig = z.infer<typeof AgentConfig>;
@@ -704,13 +712,49 @@ export const ApprovalPreviewConfig = z
   .strict();
 export type ApprovalPreviewConfig = z.infer<typeof ApprovalPreviewConfig>;
 
+export const ApprovalGrantsConfig = z
+  .object({
+    // Duration of an operator grant ("allow this tool…") when the approver doesn't pick one.
+    default_duration_ms: z
+      .number()
+      .int()
+      .positive()
+      .default(15 * 60_000),
+    // Hard cap on any operator grant. Permanent allows belong in config, not in a grant.
+    max_duration_ms: z
+      .number()
+      .int()
+      .positive()
+      .default(24 * 60 * 60_000),
+    // How long an approved plan (airlock/request_approval) stays redeemable.
+    plan_ttl_ms: z
+      .number()
+      .int()
+      .positive()
+      .default(30 * 60_000),
+    // How long an approved async call stays redeemable by the agent's retry.
+    async_ttl_ms: z
+      .number()
+      .int()
+      .positive()
+      .default(30 * 60_000),
+  })
+  .strict();
+export type ApprovalGrantsConfig = z.infer<typeof ApprovalGrantsConfig>;
+
 export const ApprovalsConfig = z
   .object({
     provider: z
       .union([ApprovalProviderConfig, z.array(ApprovalProviderConfig)])
       .default({ type: 'stdio' }),
     timeout_ms: z.number().int().min(0).default(300000), // 5 minutes; 0 = no timeout
-    batch_window_ms: z.number().int().min(0).default(0),
+    // Requests from one agent arriving within this window are notified together and can be
+    // approved with one "approve all". Short by default: it exists to catch parallel tool calls.
+    batch_window_ms: z.number().int().min(0).default(500),
+    // sync: hold the tool call open until decided. async: answer "pending" immediately; the agent
+    // retries (or calls airlock/await_approval) once approved. Per-agent `approval_mode` overrides.
+    mode: z.enum(['sync', 'async']).default('sync'),
+    grants: ApprovalGrantsConfig.default({}),
     previews: z.record(PreviewToolName, ApprovalPreviewConfig).default({}),
   })
   .strict();

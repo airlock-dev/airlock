@@ -9,6 +9,7 @@ struct PopoverContentView: View {
     @Environment(\.openSettings) private var openSettings
     @AppStorage(Constants.UserDefaultsKeys.displayDensity) private var densityString: String = DisplayDensity.compact.rawValue
     @State private var showRecent = true
+    @State private var showGrants = true
     @State private var detailRequest: ApprovalRequest?
     @State private var detailArgsScrollView: NSScrollView? = nil
     @FocusState private var isFocused: Bool
@@ -70,6 +71,7 @@ struct PopoverContentView: View {
                     request: request,
                     onApprove: { viewModel.approve(id: request.id) },
                     onDeny:    { viewModel.deny(id: request.id) },
+                    onApproveWithGrant: { viewModel.approve(id: request.id, grant: $0) },
                     onDismiss: { detailRequest = nil },
                     onNext:    adjacentRequest(from: request, by: +1).map { next in
                         { navigate(to: next) }
@@ -87,6 +89,15 @@ struct PopoverContentView: View {
                     }
                 } else {
                     EmptyStateView(connectionState: viewModel.connectionState)
+                }
+
+                if !viewModel.grants.isEmpty {
+                    Divider()
+                    ActiveGrantsView(
+                        grants: viewModel.grants,
+                        isExpanded: $showGrants,
+                        onRevoke: { viewModel.revokeGrant(id: $0) }
+                    )
                 }
 
                 if !viewModel.activityEvents.isEmpty || !viewModel.resolvedRequests.isEmpty {

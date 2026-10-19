@@ -235,6 +235,8 @@ describe('AirlockBackendAdapter', () => {
       'airlock/notify_user',
       'airlock/log',
       'airlock/status',
+      'airlock/request_approval',
+      'airlock/await_approval',
       'airlock/list_provider_tools',
     ]);
   });

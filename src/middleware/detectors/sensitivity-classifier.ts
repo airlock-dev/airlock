@@ -160,9 +160,13 @@ async function checkSensitivity(
       error: `score=${score}, labels=${details}`,
     });
 
-    if (mode === 'escalate' && phase === 'args' && !ctx.meta.needsApproval) {
-      ctx.meta.needsApproval = true;
-      ctx.meta.approvalReason = `High sensitivity data detected (score: ${score}, ${details})`;
+    if (mode === 'escalate' && phase === 'args') {
+      // Even when the tool already needs approval, mark it escalated so no broad grant covers it.
+      ctx.meta.approvalEscalated = true;
+      if (!ctx.meta.needsApproval) {
+        ctx.meta.needsApproval = true;
+        ctx.meta.approvalReason = `High sensitivity data detected (score: ${score}, ${details})`;
+      }
     }
   }
 }

@@ -6,6 +6,7 @@ import { ToolRegistry } from './registry/registry.js';
 import { AllowlistEngine } from './allowlist/engine.js';
 import { HitlEngine } from './hitl/engine.js';
 import { HitlBatcher } from './hitl/batcher.js';
+import { createGrantStore, engineOptionsFromConfig, wireBatcher } from './hitl/runtime.js';
 import { AuditLogger } from './audit/logger.js';
 import { hitlApiPlugin } from './hitl/api.js';
 import { auditApiPlugin } from './audit/api.js';
@@ -62,9 +63,9 @@ export async function runStdioMode(
   // eslint-disable-next-line prefer-const
   let hitlEngine!: HitlEngine;
   const approvalForwarder: ApprovalApi = {
-    approve: (id) => hitlEngine.approve(id),
+    approve: (id, options) => hitlEngine.approve(id, options),
     deny: (id, reason) => hitlEngine.deny(id, reason),
-    approveByCode: (code) => hitlEngine.approveByCode(code),
+    approveByCode: (code, options) => hitlEngine.approveByCode(code, options),
     denyByCode: (code, reason) => hitlEngine.denyByCode(code, reason),
   };
 
@@ -96,14 +97,13 @@ export async function runStdioMode(
       .catch((err) => log.error({ err }, 'Failed to send activity notification'));
   });
 
-  hitlEngine = new HitlEngine(auditLogger, hitlProvider, config.approvals.timeout_ms);
-
-  hitlBatcher.onBatchReady((_agentId, requests) => {
-    const badgeCount = hitlEngine.getPending().length;
-    void hitlProvider
-      .notify(requests.map((request) => ({ ...request, badgeCount })))
-      .catch((err) => log.error({ err }, 'Failed to send approval notification'));
+  const getConfig = () => activeConfig;
+  hitlEngine = new HitlEngine(auditLogger, hitlProvider, config.approvals.timeout_ms, {
+    grants: createGrantStore(auditLogger, getConfig),
+    ...engineOptionsFromConfig(config, getConfig),
   });
+
+  wireBatcher(hitlBatcher, hitlEngine, hitlProvider);
 
   await hitlProvider.init();
   await hitlEngine.recoverPending();
@@ -189,6 +189,8 @@ export async function runStdioMode(
         currentAgentConfig = newConfig.agents[agentId];
       }
       activeConfig = newConfig;
+      hitlEngine.setTimeoutMs(newConfig.approvals.timeout_ms);
+      hitlEngine.configure(engineOptionsFromConfig(newConfig, getConfig));
       updateManagementRequestSecurity(newConfig, managementRequestSecurity);
       const newMcpConfigs = getMcpConfigs(newConfig.providers);
       pool

@@ -9,11 +9,18 @@ import type { ProviderConnectionStatus } from '../pool/status.js';
 import type { AgentVisibleTool } from '../registry/registry.js';
 import {
   AIRLOCK_ASK_USER_TOOL,
+  AIRLOCK_AWAIT_APPROVAL_TOOL,
   AIRLOCK_LIST_PROVIDER_TOOLS_TOOL,
   AIRLOCK_LOG_TOOL,
   AIRLOCK_NOTIFY_USER_TOOL,
+  AIRLOCK_REQUEST_APPROVAL_TOOL,
   AIRLOCK_STATUS_TOOL,
+  isAirlockApprovalTool,
+  isAirlockTool,
 } from '../airlock/tools.js';
+import { extractAirlockContext } from '../airlock/context.js';
+import { fingerprintCall } from '../hitl/grants.js';
+import type { PlanEntry } from '../hitl/engine.js';
 import { bestSpecificity, matches, specificity } from '../allowlist/pattern.js';
 
 export interface AirlockBackendDeps {
@@ -27,6 +34,11 @@ export interface AirlockBackendDeps {
 }
 
 type ToolDecision = AgentVisibleTool['decision'];
+
+const MAX_PLAN_CALLS = 50;
+const DEFAULT_AWAIT_SECONDS = 30;
+// Stay well under the ~60s request timeout many MCP clients apply.
+const MAX_AWAIT_SECONDS = 50;
 
 interface ToolCounts {
   allow: number;
@@ -44,10 +56,24 @@ interface ProviderBucket {
 export class AirlockBackendAdapter implements BackendAdapter {
   readonly id = 'builtin:airlock';
 
-  constructor(private deps: AirlockBackendDeps = {}) {}
+  /**
+   * @param approvalToolsOnly Expose only the approval tools. Used when the `airlock` builtin isn't
+   *   configured: the gateway still needs request/await approval, but agents with wildcard allows
+   *   must not silently gain ask_user, notify_user and friends.
+   */
+  constructor(
+    private deps: AirlockBackendDeps = {},
+    private approvalToolsOnly = false
+  ) {}
 
   listTools(): Promise<Tool[]> {
-    return Promise.resolve([
+    return Promise.resolve(
+      this.allTools().filter((tool) => !this.approvalToolsOnly || isAirlockApprovalTool(tool.name))
+    );
+  }
+
+  private allTools(): Tool[] {
+    return [
       {
         name: AIRLOCK_ASK_USER_TOOL,
         description:
@@ -87,6 +113,56 @@ export class AirlockBackendAdapter implements BackendAdapter {
         inputSchema: optionalProviderInputSchema(),
       },
       {
+        name: AIRLOCK_REQUEST_APPROVAL_TOOL,
+        description:
+          'Ask the user to approve several tool calls at once, before making them. Use this when you already know you need multiple calls to tools that require approval (for example reading 10 emails): the user approves the whole list in one step instead of being asked once per call. After approval, make each call exactly as listed (same tool, identical arguments); they then run without further prompts. Tools that do not need approval can be left out. Approval is valid for a limited time and each listed call can be used once.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            reason: {
+              type: 'string',
+              description: 'Why you need these calls now. Shown to the user.',
+            },
+            calls: {
+              type: 'array',
+              minItems: 1,
+              maxItems: MAX_PLAN_CALLS,
+              description: 'The exact calls you intend to make.',
+              items: {
+                type: 'object',
+                properties: {
+                  tool: { type: 'string', description: 'Tool name as you would call it.' },
+                  arguments: {
+                    type: 'object',
+                    description: 'The exact arguments you will pass.',
+                  },
+                },
+                required: ['tool'],
+              },
+            },
+          },
+          required: ['reason', 'calls'],
+          additionalProperties: false,
+        },
+      },
+      {
+        name: AIRLOCK_AWAIT_APPROVAL_TOOL,
+        description:
+          'Wait for a pending Airlock approval to be decided. Use the approval id from an "Approval pending" response. Returns pending, approved, denied, timeout or cancelled. Safe to call repeatedly; each call waits at most ~50 seconds.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            id: { type: 'string', description: 'The approval id.' },
+            wait_seconds: {
+              type: 'number',
+              description: `How long to wait for a decision (default ${DEFAULT_AWAIT_SECONDS}, max ${MAX_AWAIT_SECONDS}).`,
+            },
+          },
+          required: ['id'],
+          additionalProperties: false,
+        },
+      },
+      {
         name: AIRLOCK_LIST_PROVIDER_TOOLS_TOOL,
         description:
           'List this agent’s visible provider tools grouped by provider, connection status, and Airlock policy decision. Denied tools are omitted.',
@@ -105,10 +181,13 @@ export class AirlockBackendAdapter implements BackendAdapter {
           additionalProperties: false,
         },
       },
-    ]);
+    ];
   }
 
   async call(toolCall: ToolCall): Promise<ToolResult> {
+    if (this.approvalToolsOnly && !isAirlockApprovalTool(toolCall.tool)) {
+      return { success: false, error: `Unknown Airlock tool: ${toolCall.tool}` };
+    }
     if (toolCall.tool === AIRLOCK_ASK_USER_TOOL) {
       return this.askUser(toolCall);
     }
@@ -123,6 +202,12 @@ export class AirlockBackendAdapter implements BackendAdapter {
     }
     if (toolCall.tool === AIRLOCK_LIST_PROVIDER_TOOLS_TOOL) {
       return this.listProviderTools(toolCall);
+    }
+    if (toolCall.tool === AIRLOCK_REQUEST_APPROVAL_TOOL) {
+      return this.requestApproval(toolCall);
+    }
+    if (toolCall.tool === AIRLOCK_AWAIT_APPROVAL_TOOL) {
+      return this.awaitApproval(toolCall);
     }
     return { success: false, error: `Unknown Airlock tool: ${toolCall.tool}` };
   }
@@ -149,8 +234,10 @@ export class AirlockBackendAdapter implements BackendAdapter {
       agentId: toolCall.agentId,
       tool: AIRLOCK_ASK_USER_TOOL,
       args,
+      kind: 'question',
     });
     hitlBatcher.add({
+      ...hitlEngine.buildNotification(ticket.id),
       id: ticket.id,
       code: ticket.code,
       agentId: toolCall.agentId,
@@ -165,6 +252,138 @@ export class AirlockBackendAdapter implements BackendAdapter {
       data: {
         status: result,
         approved: result === 'approved',
+      },
+    };
+  }
+
+  private async requestApproval(toolCall: ToolCall): Promise<ToolResult> {
+    const { hitlEngine, hitlBatcher } = this.deps;
+    if (!hitlEngine || !hitlBatcher) {
+      return { success: false, error: `${toolCall.tool} requires the Airlock HITL runtime` };
+    }
+    const reason = optionalStringArg(toolCall.args.reason);
+    if (!reason) return { success: false, error: `${toolCall.tool} requires a reason` };
+    const calls = toolCall.args.calls;
+    if (!Array.isArray(calls) || calls.length === 0) {
+      return { success: false, error: `${toolCall.tool} requires a non-empty calls array` };
+    }
+    if (calls.length > MAX_PLAN_CALLS) {
+      return { success: false, error: `At most ${MAX_PLAN_CALLS} calls per approval request` };
+    }
+
+    const visible = this.deps.getAgentTools?.(toolCall.agentId) ?? [];
+    const plan: PlanEntry[] = [];
+    const notRequired: string[] = [];
+    for (const [index, call] of calls.entries()) {
+      if (!call || typeof call !== 'object' || Array.isArray(call)) {
+        return { success: false, error: `calls[${index}] must be an object` };
+      }
+      const { tool, arguments: rawArgs } = call as { tool?: unknown; arguments?: unknown };
+      if (typeof tool !== 'string' || !tool.trim()) {
+        return { success: false, error: `calls[${index}].tool must be a tool name` };
+      }
+      if (
+        rawArgs !== undefined &&
+        (typeof rawArgs !== 'object' || rawArgs === null || Array.isArray(rawArgs))
+      ) {
+        return { success: false, error: `calls[${index}].arguments must be an object` };
+      }
+      const entry = visible.find(
+        (candidate) =>
+          candidate.tool.name === tool || sanitizeToolName(candidate.tool.name) === tool
+      );
+      if (!entry || isAirlockTool(entry.tool.name)) {
+        return { success: false, error: `calls[${index}]: tool not available: ${tool}` };
+      }
+      if (entry.decision === 'allow') {
+        notRequired.push(entry.tool.name);
+        continue;
+      }
+      // Fingerprint exactly what the gate will see: args with the _airlock context stripped.
+      const args = extractAirlockContext(
+        (rawArgs as Record<string, unknown> | undefined) ?? {}
+      ).args;
+      plan.push({
+        tool: entry.tool.name,
+        fingerprint: fingerprintCall(entry.tool.name, args),
+        args: hitlEngine.redact(args),
+      });
+    }
+
+    if (plan.length === 0) {
+      return {
+        success: true,
+        data: {
+          status: 'not_required',
+          message: 'None of these calls needs approval. Make them directly.',
+          notRequired,
+        },
+      };
+    }
+
+    const mode =
+      this.deps.getAgentConfig?.(toolCall.agentId)?.approval_mode ?? hitlEngine.defaultMode;
+    const ticket = hitlEngine.create({
+      agentId: toolCall.agentId,
+      tool: AIRLOCK_REQUEST_APPROVAL_TOOL,
+      args: { reason, calls: plan.map(({ tool, args }) => ({ tool, args })) },
+      context: { reason },
+      kind: 'plan',
+      mode,
+      plan,
+    });
+    const notification = hitlEngine.buildNotification(ticket.id);
+    if (notification) hitlBatcher.add(notification);
+
+    if (mode === 'async') {
+      return {
+        success: true,
+        data: {
+          status: 'pending',
+          id: ticket.id,
+          code: ticket.code,
+          message: `Approval requested for ${plan.length} call(s). Call ${sanitizeToolName(AIRLOCK_AWAIT_APPROVAL_TOOL)} with this id to wait for the decision.`,
+          ...(notRequired.length > 0 ? { notRequired } : {}),
+        },
+      };
+    }
+
+    const result = await ticket.result;
+    return {
+      success: true,
+      data: {
+        status: result,
+        approved: result === 'approved',
+        id: ticket.id,
+        calls: plan.length,
+        message: awaitMessage('plan', result),
+        ...(notRequired.length > 0 ? { notRequired } : {}),
+      },
+    };
+  }
+
+  private async awaitApproval(toolCall: ToolCall): Promise<ToolResult> {
+    const { hitlEngine } = this.deps;
+    if (!hitlEngine) {
+      return { success: false, error: `${toolCall.tool} requires the Airlock HITL runtime` };
+    }
+    const id = optionalStringArg(toolCall.args.id);
+    if (!id) return { success: false, error: `${toolCall.tool} requires an approval id` };
+    const requested =
+      typeof toolCall.args.wait_seconds === 'number'
+        ? toolCall.args.wait_seconds
+        : DEFAULT_AWAIT_SECONDS;
+    const waitMs = Math.max(0, Math.min(requested, MAX_AWAIT_SECONDS)) * 1000;
+
+    const status = await hitlEngine.waitFor(id, toolCall.agentId, waitMs);
+    if (!status) return { success: false, error: `Unknown approval id: ${id}` };
+    return {
+      success: true,
+      data: {
+        id: status.id,
+        tool: status.tool,
+        status: status.status,
+        message: awaitMessage(status.kind, status.status),
       },
     };
   }
@@ -216,6 +435,7 @@ export class AirlockBackendAdapter implements BackendAdapter {
       toolCounts: provider.toolCounts,
     }));
 
+    const grants = this.deps.hitlEngine?.listGrants(toolCall.agentId) ?? [];
     return {
       success: true,
       data: {
@@ -223,6 +443,17 @@ export class AirlockBackendAdapter implements BackendAdapter {
         agentId: toolCall.agentId,
         providers,
         summary: summarizeProviders(providers),
+        ...(grants.length > 0
+          ? {
+              approvalGrants: grants.map((grant) => ({
+                covers: grant.label ?? grant.scope.kind,
+                ...(grant.expiresAt ? { expiresAt: grant.expiresAt } : {}),
+                ...(grant.usesRemaining !== undefined
+                  ? { usesRemaining: grant.usesRemaining }
+                  : {}),
+              })),
+            }
+          : {}),
       },
     };
   }
@@ -292,6 +523,30 @@ export class AirlockBackendAdapter implements BackendAdapter {
     }
 
     return Array.from(buckets.values()).sort((a, b) => a.id.localeCompare(b.id));
+  }
+}
+
+/** MCP-safe tool name, matching the agent server's sanitization ("provider/tool" → "provider_tool"). */
+function sanitizeToolName(name: string): string {
+  return name.replace(/\//g, '_');
+}
+
+function awaitMessage(kind: string, status: string): string {
+  switch (status) {
+    case 'pending':
+      return 'Still waiting for the user. Call again to keep waiting, or continue with other work.';
+    case 'approved':
+      if (kind === 'plan') {
+        return 'Approved. Make each listed call now with exactly the same arguments; they will not prompt again.';
+      }
+      if (kind === 'question') return 'The user answered yes.';
+      return 'Approved. Retry the original call now with identical arguments.';
+    case 'denied':
+      return 'Denied by the user. Do not retry; ask the user how to proceed.';
+    case 'timeout':
+      return 'The approval expired without a decision.';
+    default:
+      return 'The approval was cancelled.';
   }
 }
 

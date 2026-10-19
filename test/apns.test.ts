@@ -95,4 +95,49 @@ describe('APNs approval notifications', () => {
       code: 'ABCD1234',
     });
   });
+
+  it('uses approve/deny-only categories for plans, questions and flagged calls, and batches', async () => {
+    const base = { code: 'ABCD1234', agentId: 'dev', body: 'b', timeoutMs: 0 };
+    const context = {
+      id: 'x',
+      code: 'ABCD1234',
+      agentId: 'dev',
+      tool: 't',
+      args: [],
+      timeoutMs: 0,
+    };
+    const sends: Array<[string, Parameters<typeof client.sendApproval>[1]]> = [
+      [
+        'AIRLOCK_APPROVAL_PLAIN',
+        {
+          ...base,
+          id: 'p',
+          tool: 'airlock/request_approval',
+          context: { ...context, kind: 'plan' },
+        },
+      ],
+      ['AIRLOCK_APPROVAL_PLAIN', { ...base, id: 'q', tool: 'airlock/ask_user' }],
+      [
+        'AIRLOCK_APPROVAL_PLAIN',
+        { ...base, id: 'f', tool: 'exec/run', context: { ...context, escalated: true } },
+      ],
+      [
+        'AIRLOCK_APPROVAL',
+        { ...base, id: 'c', tool: 'exec/run', context: { ...context, kind: 'call' } },
+      ],
+      [
+        'AIRLOCK_APPROVAL_BATCH',
+        {
+          ...base,
+          id: 'b',
+          tool: 'exec/run',
+          batch: { id: 'batch', code: 'B', approvalIds: ['1', '2'], flagged: 0, items: [] },
+        },
+      ],
+    ];
+    for (const [, payload] of sends) await client.sendApproval('device-token', payload);
+    sends.forEach(([category], index) => {
+      expect(JSON.parse(end.mock.calls[index][0]).aps.category).toBe(category);
+    });
+  });
 });

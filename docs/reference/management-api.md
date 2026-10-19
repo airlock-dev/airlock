@@ -208,6 +208,52 @@ curl -X POST http://localhost:4113/hitl/approve/550e8400-e29b-41d4-a716-44665544
   -H "Authorization: Bearer $MANAGEMENT_API_SECRET"
 ```
 
+To also allow similar calls for a while, pass a grant. Any other pending request the grant covers
+is approved too, and the response lists every approved id:
+
+```bash
+curl -X POST http://localhost:4113/hitl/approve/550e8400-e29b-41d4-a716-446655440000 \
+  -H "Authorization: Bearer $MANAGEMENT_API_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{"grant": {"scope": "tier", "tier": "read", "duration_ms": 3600000}}'
+```
+
+`scope` is `tool`, `tier` (with `tier: read|write`), `provider` or `profile` (with `profile`).
+Optional: `duration_ms`, `max_uses`, `session_only`. Requests flagged by a security check can't
+be widened into a grant; trying returns `400`.
+
+### `POST /hitl/approvals/decisions`
+
+Decide an explicit list of approvals in one call. Flagged (escalated) requests are skipped on
+approve unless you pass `"include_flagged": true`.
+
+```bash
+curl -X POST http://localhost:4113/hitl/approvals/decisions \
+  -H "Authorization: Bearer $MANAGEMENT_API_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{"ids": ["…", "…"], "decision": "approved"}'
+# → {"ok": true, "approved": ["…"], "skipped": ["…"]}
+```
+
+### `POST /hitl/batches/:batch/decision`
+
+Approve or deny a notification batch by batch id or batch code: `{"decision": "approved"}`.
+Approving covers only the batch's own (non-flagged) members.
+
+### `GET /hitl/grants` · `POST /hitl/grants` · `DELETE /hitl/grants/:id`
+
+List active grants (`?agent=` to filter), pre-approve without waiting for a request, or revoke one.
+
+```bash
+curl -X POST http://localhost:4113/hitl/grants \
+  -H "Authorization: Bearer $MANAGEMENT_API_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{"agent": "research", "scope": {"kind": "provider", "provider": "gmail"}, "duration_ms": 1800000}'
+```
+
+The same routes are available to companion devices under `/mobile/approvals/decisions`,
+`/mobile/batches/:batch/decision` and `/mobile/grants`.
+
 ### `POST /hitl/deny/:id`
 
 Deny a pending request by canonical approval ID. Short approval codes are not

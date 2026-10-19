@@ -1,7 +1,7 @@
 import * as readline from 'readline';
 import type { Readable } from 'stream';
 import { formatBatch } from '../formatter.js';
-import { parseApprovalCommand } from '../parser.js';
+import { applyApprovalCommand, parseApprovalCommand } from '../parser.js';
 import type { HitlProvider, HitlNotification, ApprovalApi } from './types.js';
 import { childLogger } from '../../util/logger.js';
 
@@ -21,13 +21,13 @@ export class StdioHitlProvider implements HitlProvider {
       const parsed = parseApprovalCommand(line);
       if (!parsed) return;
 
-      if (parsed.type === 'approve') {
-        log.info({ code: parsed.code }, 'Approve received via stdio');
-        this.approvalApi.approveByCode(parsed.code);
-      } else {
-        log.info({ code: parsed.code }, 'Deny received via stdio');
-        this.approvalApi.denyByCode(parsed.code, parsed.reason);
-      }
+      log.info(
+        { code: parsed.code, grant: parsed.grant },
+        parsed.type === 'approve' ? 'Approve received via stdio' : 'Deny received via stdio'
+      );
+      applyApprovalCommand(this.approvalApi, parsed, (err) =>
+        log.warn({ err, code: parsed.code }, 'Grant rejected; approved the single request only')
+      );
     });
     log.info('Stdio HITL provider ready. Type: approve <CODE> or deny <CODE>');
     return Promise.resolve();

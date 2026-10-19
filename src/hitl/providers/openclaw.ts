@@ -1,6 +1,6 @@
 import { WebSocket } from 'ws';
 import { formatBatch } from '../formatter.js';
-import { parseApprovalCommand } from '../parser.js';
+import { applyApprovalCommand, parseApprovalCommand } from '../parser.js';
 import { generateId } from '../../util/id.js';
 import type { HitlProvider, HitlNotification, ApprovalApi } from './types.js';
 import { childLogger } from '../../util/logger.js';
@@ -72,13 +72,13 @@ export class OpenClawHitlProvider implements HitlProvider {
     const parsed = parseApprovalCommand(text);
     if (!parsed) return;
 
-    if (parsed.type === 'approve') {
-      log.info({ code: parsed.code }, 'Approve via OpenClaw');
-      this.approvalApi.approveByCode(parsed.code);
-    } else {
-      log.info({ code: parsed.code }, 'Deny via OpenClaw');
-      this.approvalApi.denyByCode(parsed.code, parsed.reason);
-    }
+    log.info(
+      { code: parsed.code, grant: parsed.grant },
+      parsed.type === 'approve' ? 'Approve via OpenClaw' : 'Deny via OpenClaw'
+    );
+    applyApprovalCommand(this.approvalApi, parsed, (err) =>
+      log.warn({ err, code: parsed.code }, 'Grant rejected; approved the single request only')
+    );
   }
 
   notify(requests: HitlNotification[]): Promise<void> {

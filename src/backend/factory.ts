@@ -38,8 +38,13 @@ export function buildAdapters(
   if (builtins.has('http')) {
     adapters.push(new HttpBackendAdapter(config.agents, config.security));
   }
+  // The airlock/* adapter carries the approval plumbing (request_approval, await_approval), so it
+  // is present unless an `airlock` provider entry explicitly disables it. Without an `airlock`
+  // entry only those approval tools are exposed; the rest need `airlock: builtin`.
   if (builtins.has('airlock')) {
     adapters.push(new AirlockBackendAdapter(runtime.airlock));
+  } else if (!('airlock' in config.providers)) {
+    adapters.push(new AirlockBackendAdapter(runtime.airlock, true));
   }
 
   // CLI adapters — one per clis.{key} entry
