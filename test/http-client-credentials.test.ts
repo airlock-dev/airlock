@@ -11,7 +11,10 @@ import type { ClientCredentialsConfig } from '../src/config/schema.js';
 
 const transportOptions: Array<Record<string, unknown>> = [];
 
-vi.mock('@modelcontextprotocol/sdk/client/streamableHttp.js', () => ({
+// v2 exports Client and the transport from one module; keep the real exports (auth,
+// UnauthorizedError, ...) and override only the two symbols HttpMcpClient constructs.
+vi.mock('@modelcontextprotocol/client', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@modelcontextprotocol/client')>()),
   StreamableHTTPClientTransport: vi.fn().mockImplementation((_url, opts) => {
     transportOptions.push(opts ?? {});
     return {
@@ -21,9 +24,6 @@ vi.mock('@modelcontextprotocol/sdk/client/streamableHttp.js', () => ({
       terminateSession: vi.fn().mockResolvedValue(undefined),
     };
   }),
-}));
-
-vi.mock('@modelcontextprotocol/sdk/client/index.js', () => ({
   Client: vi.fn().mockImplementation(() => ({
     connect: vi.fn().mockResolvedValue(undefined),
     listTools: vi.fn().mockResolvedValue({ tools: [] }),

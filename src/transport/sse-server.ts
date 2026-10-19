@@ -1,4 +1,4 @@
-import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
+import { SSEServerTransport } from '@modelcontextprotocol/server-legacy/sse';
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { createAgentServer, connectAgentServer } from './agent-server.js';
 import type { AgentServerDeps } from './agent-server.js';
@@ -22,12 +22,12 @@ export async function sseServerPlugin(
   app: FastifyInstance,
   opts: {
     getDeps: (agentId: string) => AgentServerDeps | undefined;
-	    secret?: string;
-	    authRequired?: boolean;
-	    allowedOrigins?: string[];
-	    getRequestSecurity?: () => RequestSecurityOptions;
-	    sessionLimiter?: SessionLimiter;
-	  }
+    secret?: string;
+    authRequired?: boolean;
+    allowedOrigins?: string[];
+    getRequestSecurity?: () => RequestSecurityOptions;
+    sessionLimiter?: SessionLimiter;
+  }
 ): Promise<void> {
   const sessions = new Map<string, { transport: SSEServerTransport; profileId: string }>();
   const limiter = opts.sessionLimiter;

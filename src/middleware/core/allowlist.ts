@@ -1,4 +1,4 @@
-import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
+import { ProtocolError, ProtocolErrorCode } from '@modelcontextprotocol/server';
 import type { Middleware } from '../types.js';
 import { extractAirlockContext, requireAirlockReason } from '../../airlock/context.js';
 import { isAirlockNonAskTool } from '../../airlock/tools.js';
@@ -24,20 +24,23 @@ export function allowlistMiddleware(): Middleware {
         args: JSON.stringify(ctx.args),
         result: 'denied',
       });
-      throw new McpError(ErrorCode.InvalidRequest, `Tool not available: ${ctx.toolName}`);
+      throw new ProtocolError(
+        ProtocolErrorCode.InvalidRequest,
+        `Tool not available: ${ctx.toolName}`
+      );
     }
 
     if (decision === 'ask') {
       if (isAirlockNonAskTool(ctx.toolName)) {
-        throw new McpError(
-          ErrorCode.InvalidRequest,
+        throw new ProtocolError(
+          ProtocolErrorCode.InvalidRequest,
           `${ctx.toolName} cannot be configured with ask. Use allow or deny to avoid recursive approval.`
         );
       }
       const reason = requireAirlockReason(extracted.context);
       if (!reason) {
-        throw new McpError(
-          ErrorCode.InvalidParams,
+        throw new ProtocolError(
+          ProtocolErrorCode.InvalidParams,
           `Tool ${ctx.toolName} requires human approval. Retry with _airlock.reason explaining why you are requesting this action now.`
         );
       }

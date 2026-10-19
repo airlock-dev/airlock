@@ -1,6 +1,6 @@
 import AjvModule from 'ajv';
 import type { ValidateFunction } from 'ajv';
-import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
+import { ProtocolError, ProtocolErrorCode } from '@modelcontextprotocol/server';
 import type { Middleware } from '../types.js';
 
 /* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access */
@@ -18,7 +18,8 @@ export function schemaValidatorMiddleware(): Middleware {
       ctx.deps.registry.resolveToolName?.(ctx.toolName, ctx.agentId) ??
       ctx.agentConfig.tool_overrides?.[ctx.toolName]?.alias_of ??
       ctx.toolName;
-    const tool = tools.find((t) => t.name === ctx.toolName) ?? tools.find((t) => t.name === resolvedToolName);
+    const tool =
+      tools.find((t) => t.name === ctx.toolName) ?? tools.find((t) => t.name === resolvedToolName);
     if (!tool?.inputSchema) return next();
 
     const cacheKey = `${ctx.toolName}->${resolvedToolName}`;
@@ -34,7 +35,7 @@ export function schemaValidatorMiddleware(): Middleware {
         (validate.errors ?? [])
           .map((e) => `${e.instancePath || '/'}: ${e.message ?? 'unknown error'}`)
           .join('; ') || 'Unknown validation error';
-      throw new McpError(ErrorCode.InvalidParams, `Invalid arguments: ${errors}`);
+      throw new ProtocolError(ProtocolErrorCode.InvalidParams, `Invalid arguments: ${errors}`);
     }
 
     return next();

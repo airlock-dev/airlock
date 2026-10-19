@@ -1,20 +1,6 @@
-/**
- * Standalone echo MCP server for testing.
- *
- * Exports `createDownstreamServer()` for in-process test use, and runs as a
- * stdio MCP server when executed directly:
- *
- *   npx tsx test/echo-server.ts
- *
- * Tools:
- *   - echo: returns { message } back
- *   - add:  returns the sum of { a, b }
- */
-
-import { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
+import { Server } from '@modelcontextprotocol/server';
+import type { Tool } from '@modelcontextprotocol/server';
 
 export const DOWNSTREAM_TOOLS: Tool[] = [
   {
@@ -72,11 +58,11 @@ export function createDownstreamServer(): Server {
     { capabilities: { tools: {} } }
   );
 
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({
+  server.setRequestHandler('tools/list', async () => ({
     tools: DOWNSTREAM_TOOLS,
   }));
 
-  server.setRequestHandler(CallToolRequestSchema, async (req) => {
+  server.setRequestHandler('tools/call', async (req) => {
     const args = req.params.arguments ?? {};
     if (req.params.name === 'echo') {
       return { content: [{ type: 'text', text: String(args['message'] ?? '') }] };

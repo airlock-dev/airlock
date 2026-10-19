@@ -1,4 +1,4 @@
-import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
+import { ProtocolError, ProtocolErrorCode } from '@modelcontextprotocol/server';
 import { evaluateExecCommand } from '../../tools/exec.js';
 import type { Middleware } from '../types.js';
 import { childLogger } from '../../util/logger.js';
@@ -15,11 +15,17 @@ export function execPolicyMiddleware(): Middleware {
 
     const command = ctx.args['command'];
     if (typeof command !== 'string' || !command) {
-      throw new McpError(ErrorCode.InvalidParams, 'exec/run requires a string command');
+      throw new ProtocolError(
+        ProtocolErrorCode.InvalidParams,
+        'exec/run requires a string command'
+      );
     }
     const cwd = ctx.args['cwd'];
     if (cwd !== undefined && (typeof cwd !== 'string' || cwd.includes('\0'))) {
-      throw new McpError(ErrorCode.InvalidParams, 'exec/run cwd must be a valid string');
+      throw new ProtocolError(
+        ProtocolErrorCode.InvalidParams,
+        'exec/run cwd must be a valid string'
+      );
     }
     const timeoutMs = ctx.args['timeout_ms'];
     if (
@@ -29,8 +35,8 @@ export function execPolicyMiddleware(): Middleware {
         timeoutMs <= 0 ||
         timeoutMs > ctx.agentConfig.exec.default_timeout_ms)
     ) {
-      throw new McpError(
-        ErrorCode.InvalidParams,
+      throw new ProtocolError(
+        ProtocolErrorCode.InvalidParams,
         'exec/run timeout_ms must be positive and no greater than exec.default_timeout_ms'
       );
     }
@@ -45,7 +51,7 @@ export function execPolicyMiddleware(): Middleware {
         args: JSON.stringify(ctx.args),
         result: 'denied',
       });
-      throw new McpError(ErrorCode.InvalidRequest, 'Command denied by policy');
+      throw new ProtocolError(ProtocolErrorCode.InvalidRequest, 'Command denied by policy');
     }
     if (cmdDecision === 'ask') {
       ctx.meta.needsApproval = true;

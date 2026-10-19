@@ -74,7 +74,7 @@ export const CredentialProbeConfig = z
   .object({
     /** Provider-local tool name — unprefixed, e.g. `search_gmail_messages`. */
     tool: z.string(),
-    args: z.record(z.unknown()).default({}),
+    args: z.record(z.string(), z.unknown()).prefault({}),
     /** Healthy responses must contain this substring; otherwise the credential is auth_required. */
     expect_contains: z.string().optional(),
     /** Healthy responses must NOT contain this substring. See the caveat above. */
@@ -128,7 +128,7 @@ export const McpServerConfig = z.discriminatedUnion('type', [
       enabled: z.boolean().default(true),
       command: z.string(),
       args: z.array(z.string()).default([]),
-      env: z.record(EnvString).optional(),
+      env: z.record(z.string(), EnvString).optional(),
       ...ProviderInstructionsFields,
       ...CredentialProbeFields,
     })
@@ -138,7 +138,7 @@ export const McpServerConfig = z.discriminatedUnion('type', [
       type: z.literal('sse'),
       enabled: z.boolean().default(true),
       url: z.string().url(),
-      headers: z.record(EnvString).optional(),
+      headers: z.record(z.string(), EnvString).optional(),
       ...ProviderInstructionsFields,
       ...CredentialProbeFields,
     })
@@ -148,7 +148,7 @@ export const McpServerConfig = z.discriminatedUnion('type', [
       type: z.literal('http'),
       enabled: z.boolean().default(true),
       url: z.string().url(),
-      headers: z.record(EnvString).optional(),
+      headers: z.record(z.string(), EnvString).optional(),
       oauth: z.boolean().default(false),
       oauth_callback_port: z.number().int().min(1).max(65535).default(18432),
       oauth_callback_url: z.string().url().optional(),
@@ -283,9 +283,9 @@ export const SandboxConfig = z
   .object({
     enabled: z.boolean().default(false),
     presets: SandboxPresetRef.default([]),
-    filesystem: SandboxFilesystemConfig.default({}),
-    network: SandboxNetworkConfig.default({}),
-    overrides: z.record(SandboxOverrideConfig).default({}),
+    filesystem: SandboxFilesystemConfig.prefault({}),
+    network: SandboxNetworkConfig.prefault({}),
+    overrides: z.record(z.string(), SandboxOverrideConfig).prefault({}),
   })
   .strict();
 export type SandboxConfig = z.infer<typeof SandboxConfig>;
@@ -388,7 +388,10 @@ export const ToolArgConstraintListConfig = z
   .transform((value) => (Array.isArray(value) ? value : [value]));
 export type ToolArgConstraintListConfig = z.infer<typeof ToolArgConstraintListConfig>;
 
-export const ToolArgPolicyConfig = z.record(z.record(ToolArgConstraintListConfig));
+export const ToolArgPolicyConfig = z.record(
+  z.string(),
+  z.record(z.string(), ToolArgConstraintListConfig)
+);
 export type ToolArgPolicyConfig = z.infer<typeof ToolArgPolicyConfig>;
 
 // A command router for tools whose privilege lives inside a string argument — CLI-style dispatcher
@@ -418,11 +421,14 @@ export const CommandPolicyRuleConfig = z
 export type CommandPolicyRuleConfig = z.infer<typeof CommandPolicyRuleConfig>;
 
 // tool name → arg name → decision lists
-export const CommandPolicyConfig = z.record(z.record(CommandPolicyRuleConfig));
+export const CommandPolicyConfig = z.record(
+  z.string(),
+  z.record(z.string(), CommandPolicyRuleConfig)
+);
 export type CommandPolicyConfig = z.infer<typeof CommandPolicyConfig>;
 
 export const ArgScopeConfig = z
-  .record(z.union([z.string(), z.array(z.string()).nonempty()]))
+  .record(z.string(), z.union([z.string(), z.array(z.string()).nonempty()]))
   .transform((scope) =>
     Object.fromEntries(
       Object.entries(scope).map(([dimension, value]) => [
@@ -437,7 +443,7 @@ export const ArgDimensionConfig = z
   .object({
     match: z.enum(['in', 'glob_in', 'each_in']).default('in'),
     normalize: z.array(NormalizerName).optional(),
-    bindings: z.record(z.string()),
+    bindings: z.record(z.string(), z.string()),
   })
   .strict();
 export type ArgDimensionConfig = z.infer<typeof ArgDimensionConfig>;
@@ -454,7 +460,7 @@ export const ToolOverride = z
     alias_of: z.string().optional(),
     sandbox_presets: SandboxPresetRef.default([]),
     sandbox: SandboxOverrideConfig.optional(),
-    args: z.record(ToolArgConstraintListConfig).optional(),
+    args: z.record(z.string(), ToolArgConstraintListConfig).optional(),
     /**
      * Safety tier used by tier-scoped approval grants ("allow read-only gmail tools for 15m").
      * Overrides the tier derived from the tool's MCP annotations.
@@ -469,7 +475,7 @@ export const AgentExecConfig = z
     allow: z.array(z.string()).default([]),
     ask: z.array(z.string()).default([]),
     deny: z.array(z.string()).default([]),
-    env: z.record(z.string()).default({}),
+    env: z.record(z.string(), z.string()).prefault({}),
     default_timeout_ms: z.number().default(30000),
   })
   .strict();
@@ -539,7 +545,9 @@ export type MiddlewareItemConfig = z.infer<typeof MiddlewareItemConfig>;
 // approval wait, which happens in an earlier middleware.
 export const LimitsConfig = z
   .object({
-    // Max concurrent open MCP sessions a single agent may hold (per transport plane).
+    // The session_* / *_sessions_* / new_session_* fields below apply only to the legacy SSE plane
+    // (/agents/:id/sse). Streamable HTTP (/agents/:id/mcp) is stateless and holds no sessions.
+    // Max concurrent open MCP sessions a single agent may hold.
     max_sessions_per_agent: z.number().int().positive().optional(),
     // Absolute ceiling on open sessions across ALL agents (backstop for the whole box).
     max_sessions_global: z.number().int().positive().optional(),
@@ -574,13 +582,13 @@ export const AgentConfig = z
     remember_allow: z.array(RememberAllowRule).default([]),
     ask: z.array(z.string()).default([]),
     deny: z.array(z.string()).default([]),
-    tool_overrides: z.record(ToolOverride).default({}),
+    tool_overrides: z.record(z.string(), ToolOverride).prefault({}),
     arg_policy: ToolArgPolicyConfig.optional(),
     arg_scope: ArgScopeConfig.optional(),
     command_policy: CommandPolicyConfig.optional(),
-    exec: AgentExecConfig.default({}),
-    http: AgentHttpConfig.default({}),
-    sandbox: SandboxConfig.default({}),
+    exec: AgentExecConfig.prefault({}),
+    http: AgentHttpConfig.prefault({}),
+    sandbox: SandboxConfig.prefault({}),
     middleware: z.array(MiddlewareItemConfig).optional(),
     // Per-agent opt-in for the plain-HTTP tools API (POST /agents/:id/tools/invoke).
     // Consulted ONLY when server.expose_tools_api is 'per-agent'. Lets service consumers
@@ -603,7 +611,7 @@ export const ProfileConfig = z
     deny: z.array(z.string()).default([]),
     // Composes through `extends` alongside the permission lists, so a profile that grants a
     // provider's tools can also carry the notes an agent needs to use them correctly.
-    tool_overrides: z.record(ToolOverride).default({}),
+    tool_overrides: z.record(z.string(), ToolOverride).prefault({}),
     arg_policy: ToolArgPolicyConfig.optional(),
     arg_scope: ArgScopeConfig.optional(),
     command_policy: CommandPolicyConfig.optional(),
@@ -637,7 +645,7 @@ export const ApprovalProviderConfig = z.discriminatedUnion('type', [
     .object({
       type: z.literal('webhook'),
       url: EnvString,
-      headers: z.record(z.string()).default({}),
+      headers: z.record(z.string(), z.string()).prefault({}),
     })
     .strict(),
   z
@@ -702,8 +710,8 @@ const PreviewField = z
 export const ApprovalPreviewConfig = z
   .object({
     tool: PreviewToolName,
-    args: z.record(z.unknown()).default({}),
-    args_from: z.record(z.string().min(1)).default({}),
+    args: z.record(z.string(), z.unknown()).prefault({}),
+    args_from: z.record(z.string(), z.string().min(1)).prefault({}),
     fields: z.array(PreviewField).max(20).optional(),
     request_fields: z.array(PreviewField).max(20).optional(),
     timeout_ms: z.number().int().min(100).max(30000).default(5000),
@@ -755,8 +763,8 @@ export const ApprovalsConfig = z
     // sync: hold the tool call open until decided. async: answer "pending" immediately; the agent
     // retries (or calls airlock/await_approval) once approved. Per-agent `approval_mode` overrides.
     mode: z.enum(['sync', 'async']).default('sync'),
-    grants: ApprovalGrantsConfig.default({}),
-    previews: z.record(PreviewToolName, ApprovalPreviewConfig).default({}),
+    grants: ApprovalGrantsConfig.prefault({}),
+    previews: z.record(PreviewToolName, ApprovalPreviewConfig).prefault({}),
   })
   .strict();
 export type ApprovalsConfig = z.infer<typeof ApprovalsConfig>;
@@ -849,7 +857,7 @@ export const ServerConfig = z
     require_agent_tokens: z.boolean().default(false),
     allowed_origins: z.array(z.string()).default([]),
     expose_tools_api: ToolsApiModeConfig.default('per-agent'),
-    management_api: ManagementApiConfig.default({}),
+    management_api: ManagementApiConfig.prefault({}),
     // Deprecated compatibility aliases. Runtime code must use management_api.
     expose_management_api: z.boolean().optional(),
     expose_hook_api: z.boolean().optional(),
@@ -891,7 +899,7 @@ export type LintRuleSeverity = z.infer<typeof LintRuleSeverityConfig>;
 export const LintConfig = z
   .object({
     disable: z.array(LintRuleIdConfig).default([]),
-    severity: z.record(LintRuleIdConfig, LintRuleSeverityConfig).default({}),
+    severity: z.partialRecord(LintRuleIdConfig, LintRuleSeverityConfig).prefault({}),
   })
   .strict();
 export type LintConfig = z.infer<typeof LintConfig>;
@@ -914,7 +922,7 @@ export const CliCommandConfig = z
   .object({
     exec: z.string(),
     description: z.string().optional(),
-    params: z.record(CliParamConfig).default({}),
+    params: z.record(z.string(), CliParamConfig).prefault({}),
     cwd: PathString.optional(),
     timeout: z.number().default(30),
   })
@@ -927,7 +935,7 @@ export const CliConfig = z
     shell: PathString.optional(),
     cwd: PathString.optional(),
     max_output_bytes: z.number().default(30_000),
-    commands: z.record(CliCommandConfig).default({}),
+    commands: z.record(z.string(), CliCommandConfig).prefault({}),
   })
   .strict();
 export type CliConfig = z.infer<typeof CliConfig>;
@@ -1090,24 +1098,24 @@ function applySandboxPresetsToAgent(
 
 export const GatewayConfig = z
   .object({
-    providers: z.record(ProviderConfig).default({}),
-    value_sets: z.record(ValueSetConfig).default({}),
-    arg_dimensions: z.record(ArgDimensionConfig).default({}),
-    profiles: z.record(ProfileConfig).default({}),
+    providers: z.record(z.string(), ProviderConfig).prefault({}),
+    value_sets: z.record(z.string(), ValueSetConfig).prefault({}),
+    arg_dimensions: z.record(z.string(), ArgDimensionConfig).prefault({}),
+    profiles: z.record(z.string(), ProfileConfig).prefault({}),
     // Optional profile that every agent inherits at lowest precedence, for DRY low-risk grants
     // (e.g. self-inspection tools). Injected at the front of each agent's `extends`, so an agent
     // can still override it (deny > ask > allow), and opt out entirely via `inherit_default: false`.
     // The named profile may itself `extends` a chain, so one entry composes many.
     default_profile: z.string().optional(),
-    sandbox_presets: z.record(SandboxPresetConfig).default({}),
-    clis: z.record(CliConfig).default({}),
-    apis: z.record(ApiConfig).default({}),
-    agents: z.record(AgentConfig).default({}),
-    approvals: ApprovalsConfig.default({}),
-    security: SecurityConfig.default({}),
-    audit: AuditConfig.default({}),
-    server: ServerConfig.default({}),
-    lint: LintConfig.default({}),
+    sandbox_presets: z.record(z.string(), SandboxPresetConfig).prefault({}),
+    clis: z.record(z.string(), CliConfig).prefault({}),
+    apis: z.record(z.string(), ApiConfig).prefault({}),
+    agents: z.record(z.string(), AgentConfig).prefault({}),
+    approvals: ApprovalsConfig.prefault({}),
+    security: SecurityConfig.prefault({}),
+    audit: AuditConfig.prefault({}),
+    server: ServerConfig.prefault({}),
+    lint: LintConfig.prefault({}),
   })
   .strict()
   .transform((config) => ({

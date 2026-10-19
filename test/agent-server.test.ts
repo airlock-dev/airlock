@@ -1,14 +1,17 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { createAgentServer, connectAgentServer } from '../src/transport/agent-server.js';
+import { InMemoryTransport, Client } from '@modelcontextprotocol/client';
+import type { Tool } from '@modelcontextprotocol/client';
+import {
+  createAgentServer,
+  connectAgentServer,
+  explicitSessionId,
+} from '../src/transport/agent-server.js';
 import { AllowlistEngine } from '../src/allowlist/engine.js';
 import { HitlEngine } from '../src/hitl/engine.js';
 import { HitlBatcher } from '../src/hitl/batcher.js';
 import type { AgentServerDeps } from '../src/transport/agent-server.js';
 import type { AgentConfig } from '../src/config/schema.js';
 import type { AuditLogger } from '../src/audit/logger.js';
-import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { ToolRegistry } from '../src/registry/registry.js';
 import { ExecBackendAdapter } from '../src/backend/exec-adapter.js';
 
@@ -540,5 +543,40 @@ describe('call_tool — HITL gate', () => {
     const result = await callPromise;
     const parsed = JSON.parse((result.content[0] as { text: string }).text);
     expect(parsed).toHaveProperty('exit_code');
+  });
+});
+
+describe('explicitSessionId', () => {
+  const req = (headers: Record<string, string> = {}, query = '') =>
+    new Request(`http://gw/agents/a/mcp${query}`, { method: 'POST', headers });
+
+  it('prefers _meta over the header and query', () => {
+    expect(
+      explicitSessionId(
+        { 'dev.airlock/session': 'from-meta' },
+        req({ 'X-Airlock-Session-Id': 'from-header' }, '?session=from-query')
+      )
+    ).toBe('from-meta');
+  });
+
+  it('falls back to the header, then the query parameter', () => {
+    expect(
+      explicitSessionId({}, req({ 'X-Airlock-Session-Id': 'from-header' }, '?session=q'))
+    ).toBe('from-header');
+    expect(explicitSessionId({}, req({}, '?session=from-query'))).toBe('from-query');
+  });
+
+  it('ignores malformed ids, including an unexpanded ${VAR} placeholder', () => {
+    expect(explicitSessionId({}, req({ 'X-Airlock-Session-Id': '${AIRLOCK_SESSION_ID}' }))).toBe(
+      undefined
+    );
+    expect(explicitSessionId({ 'dev.airlock/session': 42 }, req())).toBeUndefined();
+    expect(explicitSessionId({}, req({}, `?session=${'x'.repeat(129)}`))).toBeUndefined();
+    expect(explicitSessionId({}, req({}, '?session='))).toBeUndefined();
+  });
+
+  it('works without an HTTP request (stdio, in-memory)', () => {
+    expect(explicitSessionId({ 'dev.airlock/session': 'meta-only' })).toBe('meta-only');
+    expect(explicitSessionId({})).toBeUndefined();
   });
 });

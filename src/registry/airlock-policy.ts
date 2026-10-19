@@ -1,4 +1,4 @@
-import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import type { Tool } from '@modelcontextprotocol/server';
 import { AIRLOCK_CONTEXT_KEY } from '../airlock/context.js';
 
 const ASK_POLICY_TEXT =

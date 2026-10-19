@@ -23,6 +23,7 @@ export default defineConfig({
           { text: 'Docker Deploy', link: '/guides/docker-deploy' },
           { text: 'Claude Code Setup', link: '/guides/claude-code' },
           { text: 'OpenClaw Setup', link: '/guides/openclaw' },
+          { text: 'Connecting HTTP Agents', link: '/guides/http-agents' },
         ],
       },
       {
