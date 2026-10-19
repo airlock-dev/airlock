@@ -1,7 +1,10 @@
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { auth, UnauthorizedError } from '@modelcontextprotocol/sdk/client/auth.js';
-import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import {
+  Client,
+  StreamableHTTPClientTransport,
+  auth,
+  UnauthorizedError,
+} from '@modelcontextprotocol/client';
+import type { Tool } from '@modelcontextprotocol/client';
 import { FileOAuthProvider } from './oauth-provider.js';
 import { ClientCredentialsTokenSource } from './client-credentials.js';
 import type { ClientCredentialsConfig } from '../config/schema.js';
@@ -151,7 +154,12 @@ export class HttpMcpClient {
 
     this.transport = new StreamableHTTPClientTransport(new URL(this.url), transportOpts);
 
-    this.client = new Client({ name: 'airlock', version: VERSION });
+    // Probe with server/discover and speak 2026-07-28 (stateless) to upstreams that support it;
+    // anything else falls back to the 2025 initialize handshake, unchanged from before.
+    this.client = new Client(
+      { name: 'airlock', version: VERSION },
+      { versionNegotiation: { mode: 'auto' } }
+    );
     this.connecting = true;
 
     this.transport.onclose = () => {
@@ -443,7 +451,7 @@ export class HttpMcpClient {
       const request = requestMeta
         ? { name, arguments: args, _meta: requestMeta }
         : { name, arguments: args };
-      return this.client.callTool(request, undefined, { timeout: this.requestTimeoutMs });
+      return this.client.callTool(request, { timeout: this.requestTimeoutMs });
     });
   }
 

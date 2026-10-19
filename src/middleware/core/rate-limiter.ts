@@ -1,4 +1,4 @@
-import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
+import { ProtocolError, ProtocolErrorCode } from '@modelcontextprotocol/server';
 import type { Middleware } from '../types.js';
 
 export interface RateLimiterOptions {
@@ -30,8 +30,8 @@ export function rateLimiterMiddleware(opts: RateLimiterOptions): Middleware {
 
     if (timestamps.length >= max_requests) {
       const retryAfterMs = timestamps[0] + window_ms - now;
-      throw new McpError(
-        ErrorCode.InvalidRequest,
+      throw new ProtocolError(
+        ProtocolErrorCode.InvalidRequest,
         `Rate limit exceeded (${max_requests}/${window_ms}ms). Retry after ${Math.ceil(retryAfterMs)}ms.`
       );
     }

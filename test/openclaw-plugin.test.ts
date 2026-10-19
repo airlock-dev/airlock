@@ -19,7 +19,7 @@ import { HitlBatcher } from '../src/hitl/batcher.js';
 import type { AgentConfig } from '../src/config/schema.js';
 import type { AuditLogger } from '../src/audit/logger.js';
 import type { AgentServerDeps } from '../src/transport/agent-server.js';
-import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import type { Tool } from '@modelcontextprotocol/server';
 import register from '../extensions/openclaw/index.js';
 
 // ─── Airlock server helpers ──────────────────────────────────────────────────

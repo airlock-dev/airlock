@@ -1,11 +1,5 @@
-import { randomUUID } from 'crypto';
-import { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import {
-  ListToolsRequestSchema,
-  CallToolRequestSchema,
-  type ServerNotification,
-} from '@modelcontextprotocol/sdk/types.js';
-import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
+import { Server } from '@modelcontextprotocol/server';
+import type { ContentBlock, Notification, Transport } from '@modelcontextprotocol/server';
 import type { ToolRegistry } from '../registry/registry.js';
 import type { AllowlistEngine } from '../allowlist/engine.js';
 import type { HitlEngine } from '../hitl/engine.js';
@@ -38,8 +32,45 @@ export interface AgentServerDeps {
   downstreamSessionId?: string;
   /** Dynamic variant for transports whose session id is assigned during initialization. */
   getDownstreamSessionId?: () => string | undefined;
+  /**
+   * Maps an agent-supplied session id (see {@link explicitSessionId}) to the opaque downstream
+   * session id. Lets several agents sharing one profile keep session-scoped grants apart over a
+   * stateless transport, where there is no MCP session to key on.
+   */
+  resolveSessionId?: (explicitSessionId: string) => string;
   /** Signals that the transport/session has been closed. */
   signal?: AbortSignal;
+}
+
+/** Per-request `_meta` key an agent can set to identify its session to Airlock. */
+export const SESSION_META_KEY = 'dev.airlock/session';
+/** Header equivalent of {@link SESSION_META_KEY}, shared with the HTTP tools API. */
+export const SESSION_HEADER = 'x-airlock-session-id';
+const SESSION_ID_PATTERN = /^[A-Za-z0-9._:@-]{1,128}$/;
+
+/**
+ * The agent-supplied session id for one tool call: `_meta["dev.airlock/session"]`, then the
+ * `X-Airlock-Session-Id` header, then a `?session=` query parameter. The header/query forms exist
+ * for clients (Codex, Hermes, Claude Code) that can set static per-server headers or URLs but not
+ * per-request `_meta`. Malformed values are ignored rather than trusted.
+ */
+export function explicitSessionId(
+  requestMeta: Record<string, unknown>,
+  httpRequest?: Request
+): string | undefined {
+  const candidates: unknown[] = [requestMeta[SESSION_META_KEY]];
+  if (httpRequest) {
+    candidates.push(httpRequest.headers.get(SESSION_HEADER));
+    try {
+      candidates.push(new URL(httpRequest.url).searchParams.get('session'));
+    } catch {
+      // Relative or unparsable URL — no query to read.
+    }
+  }
+  for (const value of candidates) {
+    if (typeof value === 'string' && SESSION_ID_PATTERN.test(value)) return value;
+  }
+  return undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -49,7 +80,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export function createAgentServer(deps: AgentServerDeps): Server {
   const { agentId, registry, allowlist, hitlEngine, hitlBatcher, auditLogger } = deps;
   const getConfig = deps.getAgentConfig ?? (() => deps.agentConfig);
-  const fallbackDownstreamSessionId = randomUUID();
 
   const staticChain = deps.chain;
 
@@ -70,12 +100,12 @@ export function createAgentServer(deps: AgentServerDeps): Server {
     { capabilities: { tools: {} }, ...(instructions ? { instructions } : {}) }
   );
 
-  server.setRequestHandler(ListToolsRequestSchema, () => {
+  server.setRequestHandler('tools/list', () => {
     const tools = registry.getFiltered(agentId);
     return { tools: tools.map((t) => ({ ...t, name: sanitizeToolName(t.name) })) };
   });
 
-  server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
+  server.setRequestHandler('tools/call', async (request, reqCtx) => {
     const sanitizedName = request.params.name;
     // Reverse-map sanitized name back to the internal namespaced name so that
     // allowlist patterns ("provider/*") and the registry both work correctly.
@@ -84,8 +114,16 @@ export function createAgentServer(deps: AgentServerDeps): Server {
     const toolName = match?.name ?? sanitizedName;
     const args = request.params.arguments ?? {};
     const requestMeta = isRecord(request.params._meta) ? request.params._meta : {};
+    // No fallback id: over a stateless transport a per-instance random id would change on every
+    // request, and a session-only grant bound to it would silently never match again. Without an
+    // id the HITL engine refuses session-only grants instead.
+    const explicit = deps.resolveSessionId
+      ? explicitSessionId(requestMeta, reqCtx.http?.req)
+      : undefined;
     const downstreamSessionId =
-      deps.getDownstreamSessionId?.() ?? deps.downstreamSessionId ?? fallbackDownstreamSessionId;
+      (explicit !== undefined ? deps.resolveSessionId?.(explicit) : undefined) ??
+      deps.getDownstreamSessionId?.() ??
+      deps.downstreamSessionId;
 
     const agentConfig = getConfig();
     const chain =
@@ -107,7 +145,7 @@ export function createAgentServer(deps: AgentServerDeps): Server {
       args,
       meta: {
         mcpRequestMeta: requestMeta,
-        downstreamSessionId,
+        ...(downstreamSessionId !== undefined ? { downstreamSessionId } : {}),
       },
       deps: {
         registry,
@@ -118,8 +156,8 @@ export function createAgentServer(deps: AgentServerDeps): Server {
         securityConfig: deps.securityConfig ?? { blocked_hosts: [], allowed_local: [] },
       },
       startedAt: Date.now(),
-      signal: deps.signal,
-      ...progressSender(requestMeta, extra.sendNotification),
+      signal: anySignal(deps.signal, reqCtx.mcpReq.signal),
+      ...progressSender(requestMeta, reqCtx.mcpReq.notify),
     };
 
     // Lifecycle audit: the request has entered the pipeline. Emitted BEFORE any middleware so even
@@ -141,9 +179,9 @@ export function createAgentServer(deps: AgentServerDeps): Server {
     const result = response.result as Record<string, unknown> | undefined;
     if (result && Array.isArray(result.content)) {
       return {
-        content: result.content as Array<{ type: string; text: string }>,
+        content: result.content as ContentBlock[],
         ...(result.structuredContent !== undefined
-          ? { structuredContent: result.structuredContent }
+          ? { structuredContent: result.structuredContent as Record<string, unknown> }
           : {}),
         ...(result.isError ? { isError: true } : {}),
       };
@@ -164,7 +202,7 @@ export function createAgentServer(deps: AgentServerDeps): Server {
  */
 function progressSender(
   requestMeta: Record<string, unknown>,
-  sendNotification: (notification: ServerNotification) => Promise<void>
+  sendNotification: (notification: Notification) => Promise<void>
 ): { sendProgress?: (progress: number, message: string) => void } {
   const progressToken = requestMeta.progressToken;
   if (typeof progressToken !== 'string' && typeof progressToken !== 'number') return {};
@@ -176,6 +214,17 @@ function progressSender(
       }).catch(() => {});
     },
   };
+}
+
+/**
+ * Combine the session/transport signal with the per-request one. Over a stateless transport the
+ * request signal is the only disconnect signal: it aborts when the client cancels or drops the
+ * connection, which is what lets a call parked on HITL approval be cancelled.
+ */
+function anySignal(...signals: Array<AbortSignal | undefined>): AbortSignal | undefined {
+  const present = signals.filter((s): s is AbortSignal => s !== undefined);
+  if (present.length <= 1) return present[0];
+  return AbortSignal.any(present);
 }
 
 export async function connectAgentServer(server: Server, transport: Transport): Promise<void> {

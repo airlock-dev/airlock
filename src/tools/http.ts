@@ -1,7 +1,7 @@
 import { assertHostNotBlocked } from '../security/blocked-hosts.js';
 import { isDomainAllowed } from '../security/domain-allowlist.js';
 import type { AgentConfig, SecurityConfig } from '../config/schema.js';
-import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import type { Tool } from '@modelcontextprotocol/server';
 
 const MAX_RESPONSE_BYTES = 1_048_576; // 1MB default
 

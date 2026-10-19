@@ -1,4 +1,4 @@
-import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
+import { ProtocolError, ProtocolErrorCode } from '@modelcontextprotocol/server';
 import type { AirlockCallContext } from '../../airlock/context.js';
 import type { Middleware, ToolCallResponse } from '../types.js';
 import { resolveLimits } from '../../transport/session-limiter.js';
@@ -41,8 +41,8 @@ export function executeMiddleware(): Middleware {
         error: 'execution concurrency cap exceeded',
         duration_ms: Date.now() - ctx.startedAt,
       });
-      throw new McpError(
-        ErrorCode.InvalidRequest,
+      throw new ProtocolError(
+        ProtocolErrorCode.InvalidRequest,
         `Execution concurrency cap reached for agent (${limits.maxConcurrentCallsPerAgent} concurrent calls). Retry shortly.`
       );
     }
@@ -93,8 +93,8 @@ export function executeMiddleware(): Middleware {
         duration_ms: duration,
       });
       // Preserve an already-typed McpError (e.g. the execution timeout) instead of masking it.
-      if (err instanceof McpError) throw err;
-      throw new McpError(ErrorCode.InternalError, error);
+      if (err instanceof ProtocolError) throw err;
+      throw new ProtocolError(ProtocolErrorCode.InternalError, error);
     } finally {
       const n = (executing.get(ctx.agentId) ?? 1) - 1;
       if (n <= 0) executing.delete(ctx.agentId);
@@ -110,13 +110,17 @@ export function executeMiddleware(): Middleware {
  * timeoutMs === 0 disables the deadline entirely (the default, so genuinely long downstream calls
  * are never severed).
  */
-function withExecutionTimeout<T>(promise: Promise<T>, timeoutMs: number, toolName: string): Promise<T> {
+function withExecutionTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  toolName: string
+): Promise<T> {
   if (!timeoutMs || timeoutMs <= 0) return promise;
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => {
       reject(
-        new McpError(
-          ErrorCode.InternalError,
+        new ProtocolError(
+          ProtocolErrorCode.InternalError,
           `Tool execution for "${toolName}" exceeded ${timeoutMs}ms and was aborted.`
         )
       );

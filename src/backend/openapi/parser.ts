@@ -1,6 +1,6 @@
 import SwaggerParser from '@apidevtools/swagger-parser';
 import type { OpenAPI, OpenAPIV3 } from 'openapi-types';
-import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import type { Tool } from '@modelcontextprotocol/server';
 
 export interface ParsedOperation {
   name: string;
@@ -160,7 +160,7 @@ export async function parseOpenApiSpec(
         description: operation.summary ?? operation.description,
         inputSchema: {
           type: 'object' as const,
-          properties,
+          properties: properties as NonNullable<Tool['inputSchema']['properties']>,
           ...(required.length > 0 ? { required } : {}),
         },
         pathParams,

@@ -1,4 +1,4 @@
-import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import type { Tool } from '@modelcontextprotocol/server';
 import type { BackendAdapter } from './types.js';
 import type { ToolCall, ToolResult } from '../types.js';
 import { buildExecTool, executeExec } from '../tools/exec.js';

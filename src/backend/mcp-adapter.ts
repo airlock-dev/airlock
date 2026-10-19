@@ -1,6 +1,6 @@
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
+import { Client } from '@modelcontextprotocol/client';
+import type { Tool } from '@modelcontextprotocol/client';
 import type { BackendAdapter } from './types.js';
 import type { ToolCall, ToolResult } from '../types.js';
 import type { ClientPool } from '../pool/pool.js';

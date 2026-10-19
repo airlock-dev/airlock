@@ -173,7 +173,7 @@ export class Gateway {
     const getDataPlaneRequestSecurity = () => this.dataPlaneRequestSecurity;
     const getManagementRequestSecurity = () => this.managementRequestSecurity;
 
-    // Shared per-agent session bulkheads across every transport plane. getLimits reads live
+    // Per-agent session bulkheads for the legacy SSE plane — the only plane that still holds sessions. getLimits reads live
     // config so hot-reloaded limit changes take effect without a restart.
     this.sessionLimiter = new SessionLimiter({
       getLimits: (profileId) =>
@@ -186,10 +186,14 @@ export class Gateway {
       getRequestSecurity: getDataPlaneRequestSecurity,
       sessionLimiter: this.sessionLimiter,
     });
+    // Stateless streamable HTTP: no sessions, so no session limiter. Agent-supplied session ids use
+    // the same `${agentId}:${id}` key as the tools API, so a session-scoped grant made over one
+    // plane covers the same agent session on the other.
     await this.app.register(httpServerPlugin, {
       getDeps: (agentId: string) => this.buildAgentDeps(agentId),
+      resolveSessionId: (agentId: string, sessionId: string) =>
+        this.downstreamSessionIdFor(`${agentId}:${sessionId}`),
       getRequestSecurity: getDataPlaneRequestSecurity,
-      sessionLimiter: this.sessionLimiter,
     });
     // Mount the HTTP tools API unless it's globally off ('none'). Registration depends ONLY on
     // the server mode, which is restart-guarded (assertReloadCompatible), so a hot-reload of

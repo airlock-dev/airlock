@@ -3,12 +3,12 @@ import { join } from 'path';
 import { execFile } from 'child_process';
 import { createHash } from 'crypto';
 import { createServer, type Server as HttpServer } from 'http';
-import type { OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.js';
 import type {
+  OAuthClientProvider,
   OAuthClientMetadata,
   OAuthClientInformationFull,
   OAuthTokens,
-} from '@modelcontextprotocol/sdk/shared/auth.js';
+} from '@modelcontextprotocol/client';
 import { childLogger } from '../util/logger.js';
 import { atomicWritePrivateFile } from '../util/atomic-file.js';
 import { adaptiveExpiryBuffer } from './oauth-timing.js';

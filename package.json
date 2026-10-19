@@ -60,7 +60,11 @@
   "dependencies": {
     "@anthropic-ai/sandbox-runtime": "^0.0.42",
     "@apidevtools/swagger-parser": "^12.1.0",
-    "@modelcontextprotocol/sdk": "^1.27.1",
+    "@modelcontextprotocol/client": "^2.3.1",
+    "@modelcontextprotocol/node": "^2.1.1",
+    "@modelcontextprotocol/server": "^2.3.1",
+    "@modelcontextprotocol/server-legacy": "^2.3.1",
+    "@sinclair/typebox": "^0.34.48",
     "ai": "^6.0.116",
     "ajv": "^8.18.0",
     "better-sqlite3": "^13.0.3",
@@ -68,9 +72,8 @@
     "fastify": "^5.0.0",
     "pino": "^9.0.0",
     "ws": "^8.19.0",
-    "@sinclair/typebox": "^0.34.48",
     "yaml": "^2.4.0",
-    "zod": "^3.22.0"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
@@ -88,7 +91,6 @@
     "typescript": "^5.4.0",
     "typescript-eslint": "^8.57.0",
     "vitepress": "^1.6.4",
-    "vitest": "^3.0.0",
-    "zod-to-json-schema": "^3.25.1"
+    "vitest": "^3.0.0"
   }
 }

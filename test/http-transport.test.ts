@@ -3,13 +3,14 @@
  *
  * Starts a real Fastify server with the httpServerPlugin on a random port,
  * connects via the MCP SDK's StreamableHTTPClientTransport, and exercises the
- * full pipeline end-to-end.  No mocking except for AuditLogger (vi.fn stubs)
+ * full pipeline end-to-end. The plane is stateless: 2025-era clients go through the SDK's
+ * stateless legacy fallback (no Mcp-Session-Id), 2026-07-28 clients send the per-request envelope.  No mocking except for AuditLogger (vi.fn stubs)
  * and the HITL provider (which has no real implementation in tests).
  *
  *   Test MCP Client
  *     ↕ StreamableHTTPClientTransport (real HTTP)
  *   httpServerPlugin (Fastify, real port)
- *     ↕ StreamableHTTPServerTransport (MCP SDK)
+ *     ↕ createMcpHandler (MCP SDK, one server instance per request)
  *   AgentServer (real — allowlist, HITL gate, registry)
  *     ↓
  *   ToolRegistry (real)
@@ -20,11 +21,13 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { StreamableHTTPError } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import {
+  Client,
+  StreamableHTTPClientTransport,
+  InMemoryTransport,
+  SdkHttpError,
+} from '@modelcontextprotocol/client';
+import type { Tool } from '@modelcontextprotocol/client';
 import Fastify from 'fastify';
 import type { AddressInfo } from 'net';
 
@@ -39,7 +42,6 @@ import type { AuditLogger } from '../src/audit/logger.js';
 import type { BackendAdapter } from '../src/backend/types.js';
 import type { ToolCall, ToolResult } from '../src/types.js';
 import type { AgentServerDeps } from '../src/transport/agent-server.js';
-import { DEFAULT_LIMITS, SessionLimiter } from '../src/transport/session-limiter.js';
 
 // ─── FakeAdapter (same pattern as e2e-stack.test.ts) ─────────────────────────
 
@@ -139,8 +141,8 @@ interface BuildServerOpts {
   allowedOrigins?: string[];
   /** Additional named agents beyond 'test' */
   extraAgents?: Record<string, AgentConfig>;
-  /** Optional shared transport limiter */
-  sessionLimiter?: SessionLimiter;
+  /** Captures agent-supplied session ids resolved by the plugin */
+  resolveSessionId?: (agentId: string, sessionId: string) => string;
 }
 
 async function buildServer(opts: BuildServerOpts = {}): Promise<ServerFixture> {
@@ -189,7 +191,7 @@ async function buildServer(opts: BuildServerOpts = {}): Promise<ServerFixture> {
     secret: opts.secret,
     authRequired: opts.authRequired,
     allowedOrigins: opts.allowedOrigins,
-    sessionLimiter: opts.sessionLimiter,
+    resolveSessionId: opts.resolveSessionId,
   });
   await app.listen({ port: 0, host: '127.0.0.1' });
   const port = (app.server.address() as AddressInfo).port;
@@ -215,14 +217,25 @@ const NO_RECONNECT = {
   reconnectionDelayGrowFactor: 1,
 };
 
+interface ConnectOpts {
+  token?: string;
+  headers?: Record<string, string>;
+  /** Speak 2026-07-28 (stateless envelope) instead of the 2025 initialize handshake. */
+  modern?: boolean;
+}
+
 function makeClientTransport(
   port: number,
   agentId = 'test',
-  opts: { token?: string } = {}
+  opts: ConnectOpts = {}
 ): StreamableHTTPClientTransport {
   const url = new URL(`http://127.0.0.1:${port}/agents/${agentId}/mcp`);
+  const headers = {
+    ...(opts.token ? { Authorization: `Bearer ${opts.token}` } : {}),
+    ...opts.headers,
+  };
   return new StreamableHTTPClientTransport(url, {
-    requestInit: opts.token ? { headers: { Authorization: `Bearer ${opts.token}` } } : undefined,
+    requestInit: Object.keys(headers).length > 0 ? { headers } : undefined,
     reconnectionOptions: NO_RECONNECT,
   });
 }
@@ -230,12 +243,20 @@ function makeClientTransport(
 async function connect(
   port: number,
   agentId = 'test',
-  opts: { token?: string } = {}
+  opts: ConnectOpts = {}
 ): Promise<{ client: Client; transport: StreamableHTTPClientTransport }> {
   const transport = makeClientTransport(port, agentId, opts);
-  const client = new Client({ name: 'test-client', version: '0.0.0' });
+  const client = new Client(
+    { name: 'test-client', version: '0.0.0' },
+    opts.modern ? { versionNegotiation: { mode: { pin: '2026-07-28' } } } : undefined
+  );
   await client.connect(transport);
   return { client, transport };
+}
+
+async function expectUsable(client: Client): Promise<void> {
+  const { tools } = await client.listTools();
+  expect(tools.length).toBeGreaterThan(0);
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -252,19 +273,19 @@ describe('http-transport: basic MCP protocol', () => {
     vi.restoreAllMocks();
   });
 
-  it('connects and completes MCP initialize handshake', async () => {
+  it('serves a 2025-era client statelessly: initialize succeeds, no session id is issued', async () => {
     const { client, transport } = await connect(srv.port);
-    // If connect() resolves without throwing, the handshake succeeded.
-    expect(transport.sessionId).toBeTruthy();
+    expect(transport.sessionId).toBeUndefined();
+    await expectUsable(client);
     await client.close();
   });
 
-  it('each connection gets a unique session ID', async () => {
-    const a = await connect(srv.port);
-    const b = await connect(srv.port);
-    expect(a.transport.sessionId).not.toBe(b.transport.sessionId);
-    await a.client.close();
-    await b.client.close();
+  it('serves a 2026-07-28 client over the per-request envelope', async () => {
+    const { client, transport } = await connect(srv.port, 'test', { modern: true });
+    expect(transport.sessionId).toBeUndefined();
+    const result = await client.callTool({ name: 'tools_echo', arguments: { message: 'modern' } });
+    expect((result.content as { type: string; text: string }[])[0].text).toBe('modern');
+    await client.close();
   });
 
   it('lists downstream tools namespaced as tools_<name>', async () => {
@@ -378,8 +399,8 @@ describe('http-transport: auth — global secret', () => {
   });
 
   it('allows connection with the correct secret', async () => {
-    const { client, transport } = await connect(srv.port, 'test', { token: 'correct-secret' });
-    expect(transport.sessionId).toBeTruthy();
+    const { client } = await connect(srv.port, 'test', { token: 'correct-secret' });
+    await expectUsable(client);
     await client.close();
   });
 
@@ -412,8 +433,8 @@ describe('http-transport: auth — per-agent token', () => {
   });
 
   it('allows connection with the correct agent token', async () => {
-    const { client, transport } = await connect(srv.port, 'test', { token: 'agent-token-abc' });
-    expect(transport.sessionId).toBeTruthy();
+    const { client } = await connect(srv.port, 'test', { token: 'agent-token-abc' });
+    await expectUsable(client);
     await client.close();
   });
 
@@ -466,8 +487,8 @@ describe('http-transport: auth — no secret configured', () => {
   });
 
   it('allows connection without any auth header', async () => {
-    const { client, transport } = await connect(srv.port);
-    expect(transport.sessionId).toBeTruthy();
+    const { client } = await connect(srv.port);
+    await expectUsable(client);
     await client.close();
   });
 });
@@ -509,8 +530,8 @@ describe('http-transport: exposure hardening', () => {
   it('allows requests with no Origin header for non-browser MCP clients', async () => {
     const srv = await buildServer({ allowedOrigins: ['https://airlock.internal'] });
     try {
-      const { client, transport } = await connect(srv.port);
-      expect(transport.sessionId).toBeTruthy();
+      const { client } = await connect(srv.port);
+      await expectUsable(client);
       await client.close();
     } finally {
       await srv.teardown();
@@ -562,9 +583,9 @@ describe('http-transport: routing', () => {
   });
 });
 
-// ─── Session management ───────────────────────────────────────────────────────
+// ─── Stateless semantics ──────────────────────────────────────────────────────
 
-describe('http-transport: session management', () => {
+describe('http-transport: stateless serving', () => {
   let srv: ServerFixture;
 
   beforeEach(async () => {
@@ -575,9 +596,8 @@ describe('http-transport: session management', () => {
     await srv.teardown();
   });
 
-  it('accepts requests with a valid session ID across multiple calls', async () => {
+  it('serves consecutive calls from one client without a session', async () => {
     const { client } = await connect(srv.port);
-    // Two separate tool calls on the same session
     const r1 = await client.callTool({ name: 'tools_echo', arguments: { message: 'first' } });
     const r2 = await client.callTool({ name: 'tools_echo', arguments: { message: 'second' } });
     expect((r1.content as { type: string; text: string }[])[0].text).toBe('first');
@@ -585,104 +605,107 @@ describe('http-transport: session management', () => {
     await client.close();
   });
 
-  it('rejects POST with an unknown session ID', async () => {
-    // Send a raw POST with a bogus Mcp-Session-Id — server should 404.
+  it('ignores a stale Mcp-Session-Id instead of answering 404', async () => {
+    // A client that cached a session id across a gateway restart must keep working — this is the
+    // wedge the old session table produced.
     const res = await fetch(`http://127.0.0.1:${srv.port}/agents/test/mcp`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        Accept: 'application/json, text/event-stream',
         'Mcp-Session-Id': 'does-not-exist',
       },
       body: JSON.stringify({
         jsonrpc: '2.0',
         id: 1,
-        method: 'tools/list',
-        params: {},
+        method: 'initialize',
+        params: {
+          protocolVersion: '2025-06-18',
+          capabilities: {},
+          clientInfo: { name: 'raw', version: '0' },
+        },
       }),
     });
-    expect(res.status).toBe(404);
+    expect(res.status).toBe(200);
   });
 
-  it('terminates session via DELETE', async () => {
-    const { client, transport } = await connect(srv.port);
-    const sessionId = transport.sessionId!;
-    expect(sessionId).toBeTruthy();
-
-    await transport.terminateSession();
-
-    // After termination a new POST with the old session ID should 404.
+  it.each(['GET', 'DELETE'])('answers %s with 405 (no session operations)', async (method) => {
     const res = await fetch(`http://127.0.0.1:${srv.port}/agents/test/mcp`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Mcp-Session-Id': sessionId,
-      },
-      body: JSON.stringify({
-        jsonrpc: '2.0',
-        id: 1,
-        method: 'tools/list',
-        params: {},
-      }),
+      method,
+      headers: { Accept: 'application/json, text/event-stream' },
     });
-    expect(res.status).toBe(404);
-
-    await client.close();
+    expect(res.status).toBe(405);
   });
 
-  it('multiple concurrent sessions are independent', async () => {
-    const a = await connect(srv.port);
-    const b = await connect(srv.port);
-
-    expect(a.transport.sessionId).not.toBe(b.transport.sessionId);
-
-    const [r1, r2] = await Promise.all([
-      a.client.callTool({ name: 'tools_echo', arguments: { message: 'from-a' } }),
-      b.client.callTool({ name: 'tools_echo', arguments: { message: 'from-b' } }),
-    ]);
-
-    expect((r1.content as { type: string; text: string }[])[0].text).toBe('from-a');
-    expect((r2.content as { type: string; text: string }[])[0].text).toBe('from-b');
-
-    await a.client.close();
-    await b.client.close();
+  it('serves many concurrent clients with no session cap', async () => {
+    // The old plane capped concurrent sessions per agent (16 by default); nothing is held now.
+    const clients = await Promise.all(Array.from({ length: 40 }, () => connect(srv.port)));
+    const results = await Promise.all(
+      clients.map(({ client }, i) =>
+        client.callTool({ name: 'tools_echo', arguments: { message: `c${i}` } })
+      )
+    );
+    results.forEach((r, i) =>
+      expect((r.content as { type: string; text: string }[])[0].text).toBe(`c${i}`)
+    );
+    await Promise.all(clients.map(({ client }) => client.close()));
   });
 });
 
-describe('http-transport: idle session reaping', () => {
-  it('removes a reaped session so stale requests receive 404', async () => {
-    const clock = { now: 0 };
-    const sessionLimiter = new SessionLimiter({
-      getLimits: () => ({
-        ...DEFAULT_LIMITS,
-        sessionIdleMs: 100,
-        sessionMaxLifetimeMs: 0,
-      }),
-      now: () => clock.now,
+describe('http-transport: agent-supplied session id', () => {
+  it.each([
+    ['X-Airlock-Session-Id header', { headers: { 'X-Airlock-Session-Id': 'codex-run-1' } }, ''],
+    ['?session= query parameter', {}, '?session=codex-run-1'],
+  ])('resolves the %s for the calling agent', async (_label, connectOpts, query) => {
+    const resolveSessionId = vi.fn((agentId: string, id: string) => `${agentId}:${id}:opaque`);
+    const srv = await buildServer({
+      agentConfig: { allow: [], ask: ['tools/*'], deny: [] },
+      resolveSessionId,
     });
-    const srv = await buildServer({ sessionLimiter });
-
     try {
-      const { client, transport } = await connect(srv.port);
-      const sessionId = transport.sessionId!;
-      expect(sessionId).toBeTruthy();
-
-      clock.now = 101;
-      sessionLimiter.sweep();
-
-      const res = await fetch(`http://127.0.0.1:${srv.port}/agents/test/mcp`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Mcp-Session-Id': sessionId,
-        },
-        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'ping' }),
+      const transport = new StreamableHTTPClientTransport(
+        new URL(`http://127.0.0.1:${srv.port}/agents/test/mcp${query}`),
+        { requestInit: { headers: { ...connectOpts.headers } }, reconnectionOptions: NO_RECONNECT }
+      );
+      const client = new Client({ name: 'test-client', version: '0.0.0' });
+      await client.connect(transport);
+      const call = client.callTool({ name: 'tools_echo', arguments: withReason({ message: 'x' }) });
+      await vi.waitFor(() => expect(srv.hitlEngine.getPending().length).toBe(1), { timeout: 5000 });
+      expect(resolveSessionId).toHaveBeenCalledWith('test', 'codex-run-1');
+      // A session-only grant binds to this agent's session, not to every agent on the profile.
+      const outcome = srv.hitlEngine.approveByCode(srv.hitlEngine.getPending()[0].code, {
+        grant: { scope: 'tool', sessionOnly: true },
       });
-      expect(res.status).toBe(404);
-      expect(await res.json()).toEqual({ error: `Session not found: ${sessionId}` });
-
-      await client.close().catch(() => {});
+      expect(outcome?.grant?.sessionId).toBe('test:codex-run-1:opaque');
+      await call;
+      await client.close();
     } finally {
-      sessionLimiter.stop();
+      await srv.teardown();
+    }
+  });
+
+  it('leaves the call without a session when the agent sends none', async () => {
+    const resolveSessionId = vi.fn((agentId: string, id: string) => `${agentId}:${id}`);
+    const srv = await buildServer({
+      agentConfig: { allow: [], ask: ['tools/*'], deny: [] },
+      resolveSessionId,
+    });
+    try {
+      const { client } = await connect(srv.port);
+      const call = client.callTool({ name: 'tools_echo', arguments: withReason({ message: 'x' }) });
+      await vi.waitFor(() => expect(srv.hitlEngine.getPending().length).toBe(1), { timeout: 5000 });
+      expect(resolveSessionId).not.toHaveBeenCalled();
+      const { code } = srv.hitlEngine.getPending()[0];
+      // Never silently widened to the whole profile: a session-only grant is refused...
+      expect(() =>
+        srv.hitlEngine.approveByCode(code, { grant: { scope: 'tool', sessionOnly: true } })
+      ).toThrow(/no session/);
+      // ...while a profile-wide, time-limited grant still works.
+      const outcome = srv.hitlEngine.approveByCode(code, { grant: { scope: 'tool' } });
+      expect(outcome?.grant?.sessionId).toBeUndefined();
+      await call;
+      await client.close();
+    } finally {
       await srv.teardown();
     }
   });
@@ -763,7 +786,7 @@ describe('http-transport: HITL approval gate', () => {
     await client.close();
   });
 
-  it('handles concurrent HITL requests from different sessions independently', async () => {
+  it('handles concurrent HITL requests from different clients independently', async () => {
     const a = await connect(srv.port);
     const b = await connect(srv.port);
 
@@ -794,6 +817,38 @@ describe('http-transport: HITL approval gate', () => {
     } finally {
       await a.client.close();
       await b.client.close();
+    }
+  });
+});
+
+describe('http-transport: client disconnect', () => {
+  it('cancels a call parked on approval when the client drops the request', async () => {
+    // Without a session, the request's own connection is the only disconnect signal.
+    const srv = await buildServer({ agentConfig: { allow: [], ask: ['tools/*'], deny: [] } });
+    try {
+      const ac = new AbortController();
+      const req = fetch(`http://127.0.0.1:${srv.port}/agents/test/mcp`, {
+        method: 'POST',
+        signal: ac.signal,
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json, text/event-stream',
+          'MCP-Protocol-Version': '2025-06-18',
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'tools/call',
+          params: { name: 'tools_echo', arguments: withReason({ message: 'abandoned' }) },
+        }),
+      }).catch(() => undefined);
+
+      await vi.waitFor(() => expect(srv.hitlEngine.getPending().length).toBe(1), { timeout: 5000 });
+      ac.abort();
+      await req;
+      await vi.waitFor(() => expect(srv.hitlEngine.getPending().length).toBe(0), { timeout: 5000 });
+    } finally {
+      await srv.teardown();
     }
   });
 });
@@ -876,7 +931,9 @@ describe('http-transport: audit request lifecycle', () => {
       const received = rows.find((r) => r.result === 'received');
       expect(received?.request_id).toBeTruthy();
 
-      const forCall = rows.filter((r) => r.request_id === received!.request_id).map((r) => r.result);
+      const forCall = rows
+        .filter((r) => r.request_id === received!.request_id)
+        .map((r) => r.result);
       expect(forCall).toContain('received');
       expect(forCall).toContain('dispatched');
       expect(forCall).toContain('success');
@@ -900,7 +957,9 @@ describe('http-transport: audit request lifecycle', () => {
       const received = rows.find((r) => r.result === 'received');
       expect(received?.request_id).toBeTruthy();
 
-      const forCall = rows.filter((r) => r.request_id === received!.request_id).map((r) => r.result);
+      const forCall = rows
+        .filter((r) => r.request_id === received!.request_id)
+        .map((r) => r.result);
       expect(forCall).toContain('received');
       expect(forCall).toContain('denied');
       expect(forCall).not.toContain('dispatched');

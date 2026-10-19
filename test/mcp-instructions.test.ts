@@ -6,7 +6,7 @@ import { GatewayConfig, getProviderInstructions } from '../src/config/schema.js'
 import { applyProfiles } from '../src/config/profiles.js';
 import type { BackendAdapter } from '../src/backend/types.js';
 import type { AgentConfig } from '../src/config/schema.js';
-import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import type { Tool } from '@modelcontextprotocol/server';
 
 // ─── sanitizeToolDescription — append ────────────────────────────────────────
 

@@ -2,7 +2,7 @@ import { spawn } from 'child_process';
 import { readFileSync } from 'fs';
 import { parse as parseYaml } from 'yaml';
 import { z } from 'zod';
-import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import type { Tool } from '@modelcontextprotocol/server';
 import type { BackendAdapter } from '../types.js';
 import type { ToolCall, ToolResult } from '../../types.js';
 import { CliCommandConfig, type CliConfig } from '../../config/schema.js';
@@ -41,7 +41,7 @@ export class CliBackendAdapter implements BackendAdapter {
         const parsed: unknown = parseYaml(raw);
         const obj = parsed as Record<string, unknown> | null;
         if (obj?.commands && typeof obj.commands === 'object') {
-          const validated = z.record(CliCommandConfig).safeParse(obj.commands);
+          const validated = z.record(z.string(), CliCommandConfig).safeParse(obj.commands);
           if (validated.success) {
             this.commands = { ...validated.data, ...this.commands };
           } else {
@@ -201,7 +201,7 @@ export class CliBackendAdapter implements BackendAdapter {
 
     return {
       type: 'object' as const,
-      properties,
+      properties: properties as NonNullable<Tool['inputSchema']['properties']>,
       ...(required.length > 0 ? { required } : {}),
     };
   }

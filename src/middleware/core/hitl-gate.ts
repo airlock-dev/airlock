@@ -1,4 +1,4 @@
-import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
+import { ProtocolError, ProtocolErrorCode } from '@modelcontextprotocol/server';
 import type { AirlockCallContext } from '../../airlock/context.js';
 import type { SandboxDisplayInfo } from '../../sandbox/index.js';
 import type { Middleware, ToolCallContext, ToolCallResponse } from '../types.js';
@@ -175,7 +175,10 @@ export function hitlGateMiddleware(): Middleware {
         args: JSON.stringify(ctx.args),
         result: 'hitl_disconnected',
       });
-      throw new McpError(ErrorCode.InvalidRequest, 'Session disconnected while awaiting approval');
+      throw new ProtocolError(
+        ProtocolErrorCode.InvalidRequest,
+        'Session disconnected while awaiting approval'
+      );
     }
 
     if (result === 'denied') {
