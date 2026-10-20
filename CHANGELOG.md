@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.3.2](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.3.1...airlock-bot-v0.3.2) (2026-10-20)
+
+
+### Features
+
+* batched approvals, grants, plans and async approval mode ([#180](https://github.com/airlock-dev/airlock/issues/180)) ([72002e1](https://github.com/airlock-dev/airlock/commit/72002e19d4ad93b34f899f21a73d4201054df903))
+
+
+### Bug Fixes
+
+* **mcp:** preserve responsive sessions and reclaim abandoned streams ([f5dc417](https://github.com/airlock-dev/airlock/commit/f5dc4175bef27bb8fea066da02b4cfad10922956))
+* **mcp:** schedule heartbeats within each agent idle budget ([bf7450a](https://github.com/airlock-dev/airlock/commit/bf7450a2eb6899b411adc96fb21d7227fff0b3cd))
+* **security:** never show the approval code to the agent ([#182](https://github.com/airlock-dev/airlock/issues/182)) ([35379e9](https://github.com/airlock-dev/airlock/commit/35379e9e557279f51c10ab1664f55ff915db6c98))
+
 ## [0.3.1](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.3.0...airlock-bot-v0.3.1) (2026-10-03)
 
 
