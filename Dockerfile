@@ -10,6 +10,7 @@ RUN apt-get update \
 
 COPY package.json package-lock.json tsconfig.json ./
 COPY src ./src
+COPY web ./web
 
 RUN npm ci
 RUN npm run build

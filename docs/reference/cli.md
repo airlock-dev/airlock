@@ -40,6 +40,10 @@ Options:
 | `--insecure-remote-bind` | Allow binding the unauthenticated dashboard beyond loopback                                  |
 | `--gateway-url`          | Gateway management API URL (default: `http://127.0.0.1:4113`)                                |
 | `--gateway-secret`       | Gateway admin bearer token (defaults to `AIRLOCK_GATEWAY_SECRET`, then `AIRLOCK_API_SECRET`) |
+| `--public-url`           | Gateway URL agents connect to, used in setup snippets (defaults to `AIRLOCK_PUBLIC_URL`)     |
+
+The optional policy assistant reads `AIRLOCK_ASSISTANT_BASE_URL`, `AIRLOCK_ASSISTANT_MODEL`
+and `AIRLOCK_ASSISTANT_API_KEY`. See [Dashboard](/guides/dashboard#policy-assistant).
 
 ## Open the command center
 

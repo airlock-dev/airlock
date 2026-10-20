@@ -36,7 +36,11 @@ import {
 import { buildAdapters } from './backend/factory.js';
 import { ActivityStream } from './activity/stream.js';
 import { childLogger } from './util/logger.js';
-import { checkRequestSecurity, type RequestSecurityOptions } from './security/request.js';
+import {
+  checkRequestSecurity,
+  hasAgentCredential,
+  type RequestSecurityOptions,
+} from './security/request.js';
 
 const log = childLogger('gateway');
 
@@ -341,7 +345,7 @@ export class Gateway {
     }
 
     const tokenlessAgents = Object.entries(config.agents)
-      .filter(([, agent]) => !agent.token)
+      .filter(([, agent]) => !hasAgentCredential(agent))
       .map(([agentId]) => agentId);
     if (tokenlessAgents.length > 0) {
       throw new Error(
