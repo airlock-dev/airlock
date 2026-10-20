@@ -2,6 +2,18 @@ import XCTest
 @testable import AirlockCompanion
 
 final class DashboardConnectionTests: XCTestCase {
+    func testStructuredPreviewFieldsAndLegacyFallbackDecode() throws {
+        let structured = Data(#"{"status":"ready","tool":"messages/read","text":"fallback","truncated":false,"fields":[{"label":"To","value":"Maya","primary":false},{"label":"Body","value":"<b>literal</b>","primary":true}],"requestedFields":[{"label":"Message to send","value":"Reply","primary":true}]}"#.utf8)
+        let preview = try JSONDecoder().decode(ApprovalPreview.self, from: structured)
+        XCTAssertEqual(preview.fields?.count, 2)
+        XCTAssertEqual(preview.fields?.last?.value, "<b>literal</b>")
+        XCTAssertEqual(preview.fields?.last?.primary, true)
+        XCTAssertEqual(preview.requestedFields?.first?.value, "Reply")
+        let legacy = try JSONDecoder().decode(ApprovalPreview.self, from: Data(#"{"status":"ready","text":"plain"}"#.utf8))
+        XCTAssertNil(legacy.fields)
+        XCTAssertEqual(legacy.text, "plain")
+    }
+
     override func tearDown() {
         StubURLProtocol.requestHandler = nil
         super.tearDown()
@@ -65,6 +77,26 @@ final class DashboardConnectionTests: XCTestCase {
         XCTAssertEqual(request.httpMethod, "GET")
         XCTAssertEqual(request.url?.absoluteString, "http://127.0.0.1:4113/mobile/approvals")
         XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer admin-token")
+    }
+
+    func testPreviewRequestUsesAuthenticatedCompanionEndpointWithoutBody() throws {
+        let client = AirlockAPIClient(baseURL: "http://127.0.0.1:4113", bearerToken: "device-token")
+        let request = try client.makePreviewRequest(id: "550e8400-e29b-41d4-a716-446655440000")
+        XCTAssertEqual(request.httpMethod, "POST")
+        XCTAssertEqual(request.url?.path, "/mobile/approvals/550e8400-e29b-41d4-a716-446655440000/preview")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer device-token")
+        XCTAssertNil(request.httpBody)
+    }
+
+    func testPreviewDecodesReadyUnavailableAndFailureResponses() throws {
+        let ready = try JSONDecoder().decode(ApprovalPreview.self, from: Data(#"{"status":"ready","tool":"records/read","text":"<b>Plain text</b>","truncated":true}"#.utf8))
+        XCTAssertEqual(ready.text, "<b>Plain text</b>")
+        XCTAssertEqual(ready.tool, "records/read")
+        XCTAssertEqual(ready.truncated, true)
+        let unavailable = try JSONDecoder().decode(ApprovalPreview.self, from: Data(#"{"status":"unavailable"}"#.utf8))
+        XCTAssertNil(unavailable.text)
+        let failure = try JSONDecoder().decode(ApprovalPreview.self, from: Data(#"{"status":"error","message":"Preview read failed."}"#.utf8))
+        XCTAssertEqual(failure.message, "Preview read failed.")
     }
 
     func testManagementValidationUsesAuthenticatedMobileAPI() async throws {

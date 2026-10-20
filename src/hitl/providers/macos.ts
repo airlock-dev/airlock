@@ -28,7 +28,77 @@ export class MacosHitlProvider implements HitlProvider {
   }
 
   async notify(requests: HitlNotification[]): Promise<void> {
+    const batchCode = requests[0]?.batchCode;
+    if (requests.length > 1 && batchCode) {
+      const choice = await this.showBatchDialog(requests, batchCode);
+      if (choice === 'denied' || choice === 'gave-up') return;
+      if (choice === 'approved') {
+        // Approve all skipped flagged calls, plans and questions: each still needs its own dialog.
+        const skipped = requests.filter((req) => req.escalated || (req.kind ?? 'call') !== 'call');
+        await Promise.all(skipped.map((req) => this.showDialog(req)));
+        return;
+      }
+    }
     await Promise.all(requests.map((req) => this.showDialog(req)));
+  }
+
+  /** One dialog for a burst: approve all, deny all, or fall through to one dialog each. */
+  private showBatchDialog(
+    requests: HitlNotification[],
+    batchCode: string
+  ): Promise<'approved' | 'denied' | 'review' | 'gave-up'> {
+    const flagged = requests.filter((req) => req.escalated).length;
+    const lines = [
+      `Agent: ${requests[0].agentId}`,
+      '',
+      ...requests
+        .slice(0, 15)
+        .map(
+          (req) => `• ${req.tool.replace(/^[^/]+\//, '')}${req.escalated ? '  ⚠️ flagged' : ''}`
+        ),
+      ...(requests.length > 15 ? [`+${requests.length - 15} more`] : []),
+      ...(flagged > 0 ? ['', `Approve all skips the ${flagged} flagged call(s).`] : []),
+      ...(requests.some((req) => (req.kind ?? 'call') !== 'call')
+        ? ['', 'Plans and questions are shown separately after Approve all.']
+        : []),
+    ];
+    const escaped = escapeAppleScript(lines.join('\n'));
+    const title = escapeAppleScript(`Airlock — ${requests.length} approvals`);
+    const giveUp = giveUpClause(requests[0].timeoutMs);
+    const scriptLines: string[] = [];
+    if (this.sound) {
+      scriptLines.push(`do shell script "afplay /System/Library/Sounds/${this.sound}.aiff &"`);
+    }
+    scriptLines.push(
+      `set msg to "${escaped}"`,
+      `display dialog msg with title "${title}" buttons {"Deny all", "Review each", "Approve all"} default button "Approve all" with icon caution${giveUp}`
+    );
+
+    return new Promise((resolve) => {
+      execFile('osascript', ['-e', scriptLines.join('\n')], (err, stdout) => {
+        const output = stdout?.trim() ?? '';
+        if (output.includes('gave up:true')) {
+          resolve('gave-up');
+          return;
+        }
+        if (err) {
+          // Dialog failed or was dismissed: fall back to one dialog per request.
+          resolve('review');
+          return;
+        }
+        if (output.includes('Approve all')) {
+          log.info({ batchCode }, 'Batch approved via macOS dialog');
+          this.approvalApi.approveByCode(batchCode);
+          resolve('approved');
+        } else if (output.includes('Deny all')) {
+          log.info({ batchCode }, 'Batch denied via macOS dialog');
+          this.approvalApi.denyByCode(batchCode, 'Denied via dialog');
+          resolve('denied');
+        } else {
+          resolve('review');
+        }
+      });
+    });
   }
 
   private showDialog(req: HitlNotification): Promise<void> {
@@ -50,7 +120,7 @@ export class MacosHitlProvider implements HitlProvider {
         .join('\n')}`;
     });
 
-    const timeoutSec = Math.ceil(req.timeoutMs / 1000);
+    const giveUp = giveUpClause(req.timeoutMs);
     const tool = req.tool.replace(/^[^/]+\//, '');
     const contextLines = [
       req.context?.reason ? `Request reason: ${req.context.reason}` : undefined,
@@ -67,9 +137,12 @@ export class MacosHitlProvider implements HitlProvider {
     if (this.sound) {
       scriptLines.push(`do shell script "afplay /System/Library/Sounds/${this.sound}.aiff &"`);
     }
+    // A third button widens the approval into a 15-minute grant for this tool.
+    const canGrant = req.grantOptions?.some((option) => option.scope === 'tool') ?? false;
+    const buttons = canGrant ? '{"Deny", "Allow 15m", "Approve"}' : '{"Deny", "Approve"}';
     scriptLines.push(
       `set msg to "${escaped}"`,
-      `display dialog msg with title "${title}" buttons {"Deny", "Approve"} default button "Approve" with icon caution giving up after ${timeoutSec}`
+      `display dialog msg with title "${title}" buttons ${buttons} default button "Approve" with icon caution${giveUp}`
     );
     const script = scriptLines.join('\n');
 
@@ -92,7 +165,17 @@ export class MacosHitlProvider implements HitlProvider {
           return;
         }
 
-        if (output.includes('Approve')) {
+        if (output.includes('Allow 15m')) {
+          log.info({ code: req.code }, 'Approved with a 15m tool grant via macOS dialog');
+          try {
+            this.approvalApi.approveByCode(req.code, {
+              grant: { scope: 'tool', durationMs: 15 * 60_000 },
+            });
+          } catch (grantErr) {
+            log.warn({ err: grantErr, code: req.code }, 'Grant rejected; approved once');
+            this.approvalApi.approveByCode(req.code);
+          }
+        } else if (output.includes('Approve')) {
           log.info({ code: req.code }, 'Approved via macOS dialog');
           this.approvalApi.approveByCode(req.code);
         } else {
@@ -103,6 +186,11 @@ export class MacosHitlProvider implements HitlProvider {
       });
     });
   }
+}
+
+/** No timeout (0) means the dialog waits; otherwise it closes when the approval expires. */
+function giveUpClause(timeoutMs: number): string {
+  return timeoutMs > 0 ? ` giving up after ${Math.ceil(timeoutMs / 1000)}` : '';
 }
 
 /** Escape a string for use inside AppleScript double-quoted literals. */

@@ -43,12 +43,13 @@ struct AirlockAPIClient: Sendable {
         )
     }
 
-    func pendingApprovals() async throws -> [ApprovalRequest] {
+    func pendingApprovals(timeoutInterval: TimeInterval = 60) async throws -> [ApprovalRequest] {
         let response = try await request(
             path: "/mobile/approvals",
             method: "GET",
             body: Optional<EmptyBody>.none,
-            response: ApprovalListResponse.self
+            response: ApprovalListResponse.self,
+            timeoutInterval: timeoutInterval
         )
         return response.approvals
     }
@@ -63,6 +64,19 @@ struct AirlockAPIClient: Sendable {
         return response.approvals
     }
 
+    func approvalPreview(id: String) async throws -> ApprovalPreview {
+        do {
+            return try await request(
+                path: "/mobile/approvals/\(id)/preview",
+                method: "POST",
+                body: Optional<EmptyBody>.none,
+                response: ApprovalPreview.self
+            )
+        } catch AirlockAPIError.unsupportedPreview {
+            return ApprovalPreview(status: "unavailable")
+        }
+    }
+
     func activityEvents() async throws -> [ActivityEvent] {
         let response = try await request(
             path: "/mobile/activity",
@@ -73,38 +87,94 @@ struct AirlockAPIClient: Sendable {
         return response.events
     }
 
+    @discardableResult
     func decide(
         id: String,
         decision: ApprovalDecision,
         remember: RememberMode? = nil,
         durationMs: Int? = nil,
-        reason: String? = nil
-    ) async throws {
+        reason: String? = nil,
+        grant: GrantRequest? = nil
+    ) async throws -> DecisionResponse {
         let body = DecisionRequest(
             decision: decision,
             remember: remember,
             durationMs: durationMs,
-            reason: reason
+            reason: reason,
+            grant: grant
         )
-        let _: EmptyResponse = try await request(
+        return try await request(
             path: "/mobile/approvals/\(id)/decision",
             method: "POST",
             body: body,
+            response: DecisionResponse.self
+        )
+    }
+
+    /// Approve one request and also allow similar calls for a while.
+    @discardableResult
+    func approve(id: String, grant: GrantRequest?) async throws -> DecisionResponse {
+        try await decide(id: id, decision: .approved, grant: grant)
+    }
+
+    /// Decide an explicit list of approvals. Escalated requests are skipped on approve.
+    @discardableResult
+    func decideMany(ids: [String], decision: ApprovalDecision, reason: String? = nil) async throws -> DecisionResponse {
+        try await request(
+            path: "/mobile/approvals/decisions",
+            method: "POST",
+            body: BulkDecisionRequest(ids: ids, decision: decision, reason: reason),
+            response: DecisionResponse.self
+        )
+    }
+
+    /// Decide a notification batch by batch id or code. Throws `batchNotFound` once it is gone.
+    @discardableResult
+    func decideBatch(_ batchIdOrCode: String, decision: ApprovalDecision, reason: String? = nil) async throws -> DecisionResponse {
+        try await request(
+            path: "/mobile/batches/\(pathComponent(batchIdOrCode))/decision",
+            method: "POST",
+            body: BatchDecisionRequest(decision: decision, reason: reason),
+            response: DecisionResponse.self
+        )
+    }
+
+    func grants() async throws -> [ApprovalGrant] {
+        let response = try await request(
+            path: "/mobile/grants",
+            method: "GET",
+            body: Optional<EmptyBody>.none,
+            response: GrantListResponse.self
+        )
+        return response.grants
+    }
+
+    func revokeGrant(id: String) async throws {
+        let _: EmptyResponse = try await request(
+            path: "/mobile/grants/\(pathComponent(id))",
+            method: "DELETE",
+            body: Optional<EmptyBody>.none,
             response: EmptyResponse.self
         )
+    }
+
+    private func pathComponent(_ value: String) -> String {
+        value.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed.subtracting(CharacterSet(charactersIn: "/"))) ?? value
     }
 
     private func request<Body: Encodable, Response: Decodable>(
         path: String,
         method: String,
         body: Body?,
-        response: Response.Type
+        response: Response.Type,
+        timeoutInterval: TimeInterval = 60
     ) async throws -> Response {
         guard let url = URL(string: path, relativeTo: baseURL) else {
             throw URLError(.badURL)
         }
 
         var request = URLRequest(url: url)
+        request.timeoutInterval = timeoutInterval
         request.httpMethod = method
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         if let bearerToken {
@@ -120,6 +190,19 @@ struct AirlockAPIClient: Sendable {
             throw URLError(.badServerResponse)
         }
         guard (200...299).contains(httpResponse.statusCode) else {
+            let serverError = try? JSONDecoder().decode(ServerErrorResponse.self, from: data)
+            if httpResponse.statusCode == 409, serverError?.code == "approval_resolved" {
+                throw AirlockAPIError.alreadyResolved
+            }
+            if httpResponse.statusCode == 404 && path.hasPrefix("/mobile/batches/") {
+                throw AirlockAPIError.batchNotFound
+            }
+            if let message = serverError?.error {
+                throw AirlockAPIError.server(message)
+            }
+            if httpResponse.statusCode == 404 && path.hasSuffix("/preview") {
+                throw AirlockAPIError.unsupportedPreview
+            }
             let message = String(data: data, encoding: .utf8) ?? "HTTP \(httpResponse.statusCode)"
             throw AirlockAPIError.server(message)
         }
@@ -131,14 +214,28 @@ struct AirlockAPIClient: Sendable {
 }
 
 enum AirlockAPIError: Error, LocalizedError {
+    case alreadyResolved
+    case batchNotFound
     case server(String)
+    case unsupportedPreview
 
     var errorDescription: String? {
         switch self {
+        case .alreadyResolved:
+            return "Approval already resolved."
+        case .batchNotFound:
+            return "Batch already resolved."
         case .server(let message):
             return message
+        case .unsupportedPreview:
+            return "Approval previews are not supported by this gateway."
         }
     }
+}
+
+private struct ServerErrorResponse: Decodable {
+    let error: String
+    let code: String?
 }
 
 private struct EmptyBody: Encodable {}

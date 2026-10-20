@@ -1,0 +1,167 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { generateKeyPairSync } from 'crypto';
+import { EventEmitter } from 'events';
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { connect, constants } from 'http2';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import { ApnsClient, APNS_MAX_PAYLOAD_BYTES, approvalPayloadJson } from '../src/mobile/apns.js';
+
+vi.mock('http2', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('http2')>()),
+  connect: vi.fn(),
+}));
+
+describe('APNs approval notifications', () => {
+  let dir: string;
+  let client: ApnsClient;
+  let request: ReturnType<typeof vi.fn>;
+  let end: ReturnType<typeof vi.fn>;
+  let close: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'airlock-apns-'));
+    const keyPath = join(dir, 'key.p8');
+    const { privateKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+    writeFileSync(keyPath, privateKey.export({ type: 'pkcs8', format: 'pem' }));
+    client = new ApnsClient({
+      keyPath,
+      teamId: 'TEAM',
+      keyId: 'KEY',
+      bundleId: 'bot.airlock.companion',
+      production: false,
+    });
+    const stream = new EventEmitter();
+    end = vi.fn(() => {
+      stream.emit('response', { [constants.HTTP2_HEADER_STATUS]: 200 });
+      stream.emit('end');
+    });
+    request = vi.fn(() => Object.assign(stream, { setEncoding: vi.fn(), end }));
+    close = vi.fn();
+    vi.mocked(connect).mockReturnValue({ request, close } as unknown as ReturnType<typeof connect>);
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+    rmSync(dir, { recursive: true });
+  });
+
+  it.each(['approved', 'denied', 'cancelled', 'timeout'] as const)(
+    'sends %s as a silent background update with the approval identity',
+    async (result) => {
+      await expect(
+        client.sendApprovalStatus('device-token', {
+          id: 'approval-id',
+          code: 'ABCD1234',
+          result,
+          badgeCount: 2,
+        })
+      ).resolves.toEqual({ ok: true, status: 200 });
+      expect(request).toHaveBeenCalledWith(
+        expect.objectContaining({
+          ':path': '/3/device/device-token',
+          'apns-topic': 'bot.airlock.companion',
+          'apns-push-type': 'background',
+          'apns-priority': '5',
+        })
+      );
+      expect(JSON.parse(end.mock.calls[0][0])).toEqual({
+        aps: { 'content-available': 1 },
+        event: 'approval_resolved',
+        approval_id: 'approval-id',
+        code: 'ABCD1234',
+        result,
+      });
+      expect(close).toHaveBeenCalledOnce();
+    }
+  );
+
+  it('keeps approval alerts identifiable and badged', async () => {
+    await client.sendApproval('device-token', {
+      id: 'approval-id',
+      code: 'ABCD1234',
+      agentId: 'dev',
+      tool: 'exec/run',
+      body: 'Read the working tree',
+      timeoutMs: 300000,
+      badgeCount: 2,
+    });
+    expect(request).toHaveBeenCalledWith(
+      expect.objectContaining({ 'apns-push-type': 'alert', 'apns-priority': '10' })
+    );
+    expect(JSON.parse(end.mock.calls[0][0])).toMatchObject({
+      aps: { category: 'AIRLOCK_APPROVAL', badge: 2 },
+      approval_id: 'approval-id',
+      code: 'ABCD1234',
+    });
+  });
+
+  it('uses approve/deny-only categories for plans, questions and flagged calls, and batches', async () => {
+    const base = { code: 'ABCD1234', agentId: 'dev', body: 'b', timeoutMs: 0 };
+    const context = {
+      id: 'x',
+      code: 'ABCD1234',
+      agentId: 'dev',
+      tool: 't',
+      args: [],
+      timeoutMs: 0,
+    };
+    const sends: Array<[string, Parameters<typeof client.sendApproval>[1]]> = [
+      [
+        'AIRLOCK_APPROVAL_PLAIN',
+        {
+          ...base,
+          id: 'p',
+          tool: 'airlock/request_approval',
+          context: { ...context, kind: 'plan' },
+        },
+      ],
+      ['AIRLOCK_APPROVAL_PLAIN', { ...base, id: 'q', tool: 'airlock/ask_user' }],
+      [
+        'AIRLOCK_APPROVAL_PLAIN',
+        { ...base, id: 'f', tool: 'exec/run', context: { ...context, escalated: true } },
+      ],
+      [
+        'AIRLOCK_APPROVAL',
+        { ...base, id: 'c', tool: 'exec/run', context: { ...context, kind: 'call' } },
+      ],
+      [
+        'AIRLOCK_APPROVAL_BATCH',
+        {
+          ...base,
+          id: 'b',
+          tool: 'exec/run',
+          batch: { id: 'batch', code: 'B', size: 2, flagged: 0, items: [] },
+        },
+      ],
+    ];
+    for (const [, payload] of sends) await client.sendApproval('device-token', payload);
+    sends.forEach(([category], index) => {
+      expect(JSON.parse(end.mock.calls[index][0]).aps.category).toBe(category);
+    });
+  });
+
+  it('keeps a large batch push under the APNs payload limit', () => {
+    const items = Array.from({ length: 60 }, (_, i) => ({
+      id: `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`,
+      code: `CODE${String(i).padStart(4, '0')}`,
+      tool: 'gmail/read_email',
+      summary: `message_id: ${'x'.repeat(48)}`,
+    }));
+    const json = approvalPayloadJson({
+      id: items[0].id,
+      code: items[0].code,
+      agentId: 'dev',
+      tool: 'gmail/read_email',
+      body: 'b'.repeat(900),
+      timeoutMs: 0,
+      batch: { id: 'batch', code: 'BATCHCOD', size: 60, flagged: 0, items },
+    });
+    expect(Buffer.byteLength(json)).toBeLessThanOrEqual(APNS_MAX_PAYLOAD_BYTES);
+    const payload = JSON.parse(json);
+    expect(payload.aps.alert.title).toBe('dev: 60 approvals');
+    expect(payload.airlock.batch.size).toBe(60);
+    expect(payload.approval_ids.length).toBe(payload.airlock.batch.items.length);
+    expect(payload.approval_ids.length).toBeGreaterThan(0);
+  });
+});

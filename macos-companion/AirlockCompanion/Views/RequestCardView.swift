@@ -8,6 +8,7 @@ struct RequestCardView: View {
     let onShowDetails: () -> Void
     let onApprove: () -> Void
     let onDeny: () -> Void
+    var onApproveWithGrant: ((GrantSpec) -> Void)? = nil
 
     @State private var isExpanded = false
     @State private var acted = false
@@ -30,6 +31,12 @@ struct RequestCardView: View {
         }
 
         return items
+    }
+
+    private var borderColor: Color {
+        if isSelected { return .accentColor }
+        if request.escalated { return .orange.opacity(0.7) }
+        return Color(nsColor: .separatorColor)
     }
 
     private var isEffectivelyExpanded: Bool {
@@ -58,6 +65,9 @@ struct RequestCardView: View {
                     Text(request.displaySubtitle)
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
+
+                    RequestBadgesView(request: request)
+                        .padding(.top, 2)
                 }
 
                 Spacer()
@@ -102,8 +112,13 @@ struct RequestCardView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 6))
             }
 
-            // Args section - keep cards cheap; rich highlighting lives in detail.
-            if !request.args.isEmpty {
+            if request.isPlan {
+                PlanEntriesView(entries: request.planEntries, maxVisible: isEffectivelyExpanded ? 12 : 4)
+                    .padding(8)
+                    .background(.quaternary.opacity(0.5))
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+            } else if !request.args.isEmpty {
+                // Args section - keep cards cheap; rich highlighting lives in detail.
                 let preview = argsPreview
                 let lineCount = preview.components(separatedBy: "\n").count
 
@@ -146,7 +161,11 @@ struct RequestCardView: View {
             ApproveRejectButtons(
                 onApprove: { acted = true; onApprove() },
                 onDeny:    { acted = true; onDeny() },
-                approveLabel: request.approveLabel
+                approveLabel: request.approveLabel,
+                grantOptions: request.escalated ? [] : request.grantOptions,
+                onApproveWithGrant: onApproveWithGrant.map { approve in
+                    { spec in acted = true; approve(spec) }
+                }
             )
         }
         .padding(12)
@@ -154,8 +173,7 @@ struct RequestCardView: View {
         .clipShape(RoundedRectangle(cornerRadius: 10))
         .overlay(
             RoundedRectangle(cornerRadius: 10)
-                .stroke(isSelected ? Color.accentColor : Color(nsColor: .separatorColor),
-                        lineWidth: isSelected ? 2 : 0.5)
+                .stroke(borderColor, lineWidth: isSelected || request.escalated ? 2 : 0.5)
         )
     }
 }

@@ -745,3 +745,35 @@ describe('hookApiPlugin', () => {
     });
   });
 });
+
+describe('hookApiPlugin async mode', () => {
+  it('answers pending without the approval code, then allows the retry once approved', async () => {
+    const hitlEngine = new HitlEngine(makeMockAuditLogger(), makeMockProvider(), 5000);
+    const app = Fastify({ logger: false });
+    await app.register(hookApiPlugin, {
+      allowlist: new AllowlistEngine({ 'claude-code': DEFAULT_AGENT }),
+      hitlEngine,
+      hitlBatcher: new HitlBatcher(0),
+      auditLogger: makeMockAuditLogger(),
+      getApprovalMode: () => 'async',
+    });
+    await app.ready();
+    const call = () =>
+      app.inject({
+        method: 'POST',
+        url: '/hook',
+        payload: { client: 'claude-code', tool: 'Bash', input: { command: 'gh pr create' } },
+      });
+
+    const first = (await call()).json<{ decision: string; reason: string }>();
+    expect(first.decision).toBe('deny');
+    expect(first.reason).toMatch(/Approval pending/);
+    const [pending] = hitlEngine.getPending();
+    // The code is what the operator types to approve; the model must never see it.
+    expect(first.reason).not.toContain(pending.code);
+
+    hitlEngine.approve(pending.id);
+    expect((await call()).json<{ decision: string }>().decision).toBe('allow');
+    await app.close();
+  });
+});

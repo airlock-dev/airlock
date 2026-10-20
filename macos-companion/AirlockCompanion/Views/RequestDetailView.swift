@@ -5,10 +5,15 @@ struct RequestDetailView: View {
     let request: ApprovalRequest
     let onApprove: () -> Void
     let onDeny: () -> Void
+    var onApproveWithGrant: ((GrantSpec) -> Void)? = nil
     let onDismiss: () -> Void
     var onNext: (() -> Void)? = nil
     var onPrev: (() -> Void)? = nil
     @Binding var argsScrollView: NSScrollView?
+    var loadPreview: ((String) async throws -> ApprovalPreview)? = nil
+    @State private var preview: ApprovalPreview?
+    @State private var previewLoading = false
+    @State private var previewError: String?
 
     private var sortedArgKeys: [String] { request.args.keys.sorted() }
 
@@ -30,6 +35,7 @@ struct RequestDetailView: View {
                     Text(request.displaySubtitle)
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
+                    RequestBadgesView(request: request)
                 }
 
                 Spacer()
@@ -49,68 +55,135 @@ struct RequestDetailView: View {
                 }
             }
 
-            HStack(spacing: 12) {
-                detailPill(
-                    title: "Timeout",
-                    value: request.timeoutMs > 0 ? "\(request.timeoutMs / 1000)s" : "None"
-                )
-                detailPill(title: "Args", value: "\(request.args.count)")
-                if request.isUserQuestion {
-                    detailPill(title: "Kind", value: "Question")
-                }
-            }
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    ScrollViewProbe(captured: $argsScrollView).frame(height: 0)
 
-            if request.isUserQuestion, let context = request.questionContext {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Context")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(.secondary)
-                    Text(context)
+                    if request.escalated {
+                        Label(
+                            "Flagged by a security check. Review this request on its own; it is never part of \"Approve all\" and cannot become a grant.",
+                            systemImage: "exclamationmark.triangle.fill"
+                        )
                         .font(.system(size: 12))
-                        .textSelection(.enabled)
-                }
-                .padding(10)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(.quaternary.opacity(0.45))
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-            }
+                        .foregroundStyle(.orange)
+                        .padding(10)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color.orange.opacity(0.12))
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                    }
 
-            if let reason = request.requestReason {
-                contextBox(title: "Request reason", value: reason)
-            }
+                    if previewLoading {
+                        ProgressView("Loading fetched preview…")
+                    } else if let preview, preview.status == "ready" {
+                        VStack(alignment: .leading, spacing: 8) {
+                            if let fields = preview.fields, !fields.isEmpty {
+                                ApprovalPreviewFieldsView(fields: fields)
+                            } else {
+                              Text(verbatim: preview.text ?? "")
+                                .font(.system(size: 13))
+                                .textSelection(.enabled)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            Text(verbatim: "Fetched via \(preview.tool ?? "")\(preview.truncated == true ? " · Truncated" : "")")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        .padding(10)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(.quaternary.opacity(0.45))
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                    } else if let message = previewError ?? (preview?.status == "error" ? preview?.message : nil) {
+                        contextBox(title: "Fetched preview", value: message)
+                    }
 
-            if let note = request.requestNote {
-                contextBox(title: "Request note", value: note)
-            }
+                    if let fields = preview?.requestedFields, preview?.status == "ready", !fields.isEmpty {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Requested action").font(.caption).foregroundStyle(.secondary)
+                            ApprovalPreviewFieldsView(fields: fields)
+                        }
+                        .padding(12)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(.quaternary.opacity(0.45))
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                    }
 
-            if request.args.isEmpty {
-                Text("No arguments")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-                    .padding(.vertical, 32)
-            } else {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 14) {
-                        ScrollViewProbe(captured: $argsScrollView).frame(height: 0)
+                    HStack(spacing: 12) {
+                        detailPill(
+                            title: "Timeout",
+                            value: request.timeoutMs > 0 ? "\(request.timeoutMs / 1000)s" : "None"
+                        )
+                        if request.isPlan {
+                            detailPill(title: "Calls", value: "\(request.planEntries.count)")
+                        } else {
+                            detailPill(title: "Args", value: "\(request.args.count)")
+                        }
+                        if request.isUserQuestion {
+                            detailPill(title: "Kind", value: "Question")
+                        } else if request.isPlan {
+                            detailPill(title: "Kind", value: "Plan")
+                        }
+                        if let tier = request.tierLabel {
+                            detailPill(title: "Tier", value: tier)
+                        }
+                        if let provider = request.provider, !provider.isEmpty {
+                            detailPill(title: "Provider", value: provider)
+                        }
+                    }
 
-                        ForEach(sortedArgKeys, id: \.self) { key in
-                            if let value = request.args[key] {
-                                VStack(alignment: .leading, spacing: 6) {
-                                    Text(key)
-                                        .font(.system(size: 12, weight: .medium, design: .monospaced))
-                                        .foregroundStyle(.secondary)
+                    if request.isUserQuestion, let context = request.questionContext {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Context")
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundStyle(.secondary)
+                            Text(context)
+                                .font(.system(size: 12))
+                                .textSelection(.enabled)
+                        }
+                        .padding(10)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(.quaternary.opacity(0.45))
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                    }
 
-                                    CodeBlockView(attributedText: CodeHighlighter.highlightedString(for: value))
-                                        .frame(minHeight: 80, idealHeight: 120, maxHeight: 220)
-                                        .background(.quaternary.opacity(0.45))
-                                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                                }
+                    if let reason = request.requestReason {
+                        contextBox(title: "Request reason", value: reason)
+                    }
+
+                    if let note = request.requestNote {
+                        contextBox(title: "Request note", value: note)
+                    }
+
+                    if request.isPlan {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Planned calls")
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundStyle(.secondary)
+                            PlanEntriesView(entries: request.planEntries, fontSize: 12)
+                        }
+                        .padding(10)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(.quaternary.opacity(0.45))
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                    } else if request.args.isEmpty {
+                        Text("No arguments").font(.system(size: 12)).foregroundStyle(.secondary)
+                    }
+
+                    ForEach(request.isPlan ? [] : sortedArgKeys, id: \.self) { key in
+                        if let value = request.args[key] {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text(key)
+                                    .font(.system(size: 12, weight: .medium, design: .monospaced))
+                                    .foregroundStyle(.secondary)
+
+                                CodeBlockView(attributedText: CodeHighlighter.highlightedString(for: value))
+                                    .frame(minHeight: 80, idealHeight: 120, maxHeight: 220)
+                                    .background(.quaternary.opacity(0.45))
+                                    .clipShape(RoundedRectangle(cornerRadius: 8))
                             }
                         }
                     }
-                    .padding(.trailing, 2)
                 }
+                .padding(.trailing, 2)
             }
 
             ApproveRejectButtons(
@@ -119,11 +192,29 @@ struct RequestDetailView: View {
                 fontSize: 14,
                 verticalPadding: 9,
                 cornerRadius: 8,
-                approveLabel: request.approveLabel
+                approveLabel: request.approveLabel,
+                grantOptions: request.escalated ? [] : request.grantOptions,
+                onApproveWithGrant: onApproveWithGrant.map { approve in
+                    { spec in approve(spec); onDismiss() }
+                }
             )
         }
         .padding(20)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .task(id: request.id) {
+            preview = nil
+            previewError = nil
+            guard !request.isUserQuestion, !request.isPlan, let loadPreview else { return }
+            previewLoading = true
+            defer { previewLoading = false }
+            do {
+                let fetched = try await loadPreview(request.id)
+                try Task.checkCancellation()
+                preview = fetched
+            } catch {
+                if !Task.isCancelled { previewError = "Preview unavailable. You can still approve or deny this request." }
+            }
+        }
     }
 
     private func detailPill(title: String, value: String) -> some View {
@@ -171,5 +262,32 @@ struct ScrollViewProbe: NSViewRepresentable {
                 v = node.superview
             }
         }
+    }
+}
+
+private struct ApprovalPreviewFieldsView: View {
+    let fields: [ApprovalPreviewField]
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 10) {
+                ForEach(Array(fields.enumerated()).filter { $0.element.primary != true }, id: \.offset) { item in
+                    GridRow(alignment: .top) {
+                        Text(verbatim: item.element.label).foregroundStyle(.secondary)
+                        Text(verbatim: item.element.value).textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+            }
+            if fields.contains(where: { $0.primary == true }) && fields.contains(where: { $0.primary != true }) { Divider() }
+            ForEach(Array(fields.enumerated()).filter { $0.element.primary == true }, id: \.offset) { item in
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(verbatim: item.element.label).font(.caption).foregroundStyle(.secondary)
+                    Text(verbatim: item.element.value).textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }

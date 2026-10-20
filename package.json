@@ -1,6 +1,6 @@
 {
   "name": "airlock-bot",
-  "version": "0.2.38",
+  "version": "0.3.1",
   "description": "Permissions-aware MCP gateway with human-in-the-loop approval for AI agents",
   "license": "MIT",
   "type": "module",
@@ -17,7 +17,7 @@
     "airlock.service"
   ],
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "repository": {
     "type": "git",
@@ -66,7 +66,7 @@
     "@sinclair/typebox": "^0.34.48",
     "ai": "^6.0.116",
     "ajv": "^8.18.0",
-    "better-sqlite3": "^11.0.0",
+    "better-sqlite3": "^13.0.3",
     "chokidar": "^3.6.0",
     "fastify": "^5.0.0",
     "pino": "^9.0.0",

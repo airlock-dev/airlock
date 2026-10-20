@@ -40,9 +40,10 @@ Airlock ships with these built-in providers:
 
 - **exec** — shell command execution via `exec/run`, with per-agent command policies
 - **http** — HTTP requests via `http/get`, `http/post`, `http/put`, `http/delete`, `http/patch`, `http/head`, with domain allowlists and blocked host enforcement
-- **airlock** — notification, human prompt, and agent-visible status tools:
+- **airlock** — notification, human prompt, approval, and agent-visible status tools:
   `airlock/ask_user`, `airlock/notify_user`, `airlock/log`,
-  `airlock/status`, and `airlock/list_provider_tools`
+  `airlock/status`, `airlock/list_provider_tools`, `airlock/request_approval`
+  and `airlock/await_approval`
 
 ```yaml
 providers:
@@ -55,6 +56,12 @@ The human-attention `airlock` tools must be either allowed or denied. Airlock
 rejects configs that route `airlock/ask_user`, `airlock/notify_user`, or
 `airlock/log` through `ask`, because those tools are themselves notification
 and approval surfaces.
+`airlock/request_approval` (approve several calls up front) and
+`airlock/await_approval` (wait for an [async approval](/concepts/approvals-and-audit#async-approvals))
+are available to every agent with at least one `ask` rule, unless you deny them. They only create
+or read approvals, so they don't need an explicit allow. The `airlock` provider is on by default
+for that reason. Set `airlock: { type: builtin, enabled: false }` to remove it.
+
 `airlock/status` and `airlock/list_provider_tools` are permission-aware:
 they only show providers and tools visible to the current agent, group tools by
 `allow` and `ask`, and omit denied tools.

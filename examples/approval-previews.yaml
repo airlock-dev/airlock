@@ -1,0 +1,144 @@
+# Optional fragment: merge selected entries into your existing approvals.previews.
+# Provider/tool names, response paths, and literal prefixes must match your providers.
+# These recipes do not enable approvals, change permissions, or connect new providers.
+approvals:
+  previews:
+    # Email: primary prefix mismatch preserves the complete plaintext response.
+    gwsPersonal/get_gmail_message_content: &personal_mail
+      tool: gwsPersonal/get_gmail_message_content
+      args: { body_format: text }
+      args_from: { message_id: message_id }
+      fields:
+        - { label: From, text_prefix: 'From:' }
+        - { label: To, text_prefix: 'To:' }
+        - { label: Subject, text_prefix: 'Subject:' }
+        - { label: Body, text_prefix: 'Body:', primary: true }
+    gwsPersonal/modify_gmail_message_labels: *personal_mail
+    gwsWork/get_gmail_message_content: &work_mail
+      tool: gwsWork/get_gmail_message_content
+      args: { body_format: text }
+      args_from: { message_id: message_id }
+      fields:
+        - { label: From, text_prefix: 'From:' }
+        - { label: To, text_prefix: 'To:' }
+        - { label: Subject, text_prefix: 'Subject:' }
+        - { label: Body, text_prefix: 'Body:', primary: true }
+    gwsWork/modify_gmail_message_labels: *work_mail
+
+    # iMessage: get_chat does not mark a chat read or send a read receipt.
+    bluebubbles/send_message:
+      tool: bluebubbles/get_chat
+      args_from: { chat_guid: chat_guid }
+      fields:
+        - { label: Conversation, path: /displayName }
+        - { label: Participants, path: /participants/*/contactName }
+        - { label: Addresses, path: /participants/*/address }
+        - { label: Latest message, path: /lastMessage/text, primary: true }
+      request_fields:
+        - { label: Message to send, path: /message, primary: true }
+    # Exact target for edits, reactions, and deletion; never substitute latestMessage.
+    bluebubbles/send_reaction: &target_message
+      tool: bluebubbles/get_message
+      args_from: { message_guid: message_guid }
+      fields:
+        - { label: Sender, path: /handle/contactName }
+        - { label: Address, path: /handle/address }
+        - { label: Message, path: /text, primary: true }
+    bluebubbles/delete_message: *target_message
+    bluebubbles/unsend_message: *target_message
+    bluebubbles/edit_message:
+      tool: bluebubbles/get_message
+      args_from: { message_guid: message_guid }
+      fields:
+        - { label: Sender, path: /handle/contactName }
+        - { label: Address, path: /handle/address }
+        - { label: Original message, path: /text, primary: true }
+      request_fields:
+        - { label: Replacement text, path: /new_text, primary: true }
+
+    ticktick/complete_task: &ticktick_task
+      tool: ticktick/get_task_by_id
+      args_from: { task_id: task_id }
+      fields:
+        - { label: Task, path: /title }
+        - { label: Due, path: /dueDate }
+        - { label: Description, path: /content, primary: true }
+    ticktick/delete_task: *ticktick_task
+
+    # Selectors below illustrate common JSON response shapes. Adjust to your provider.
+    gwsWork/manage_event:
+      tool: gwsWork/get_events
+      args: { detailed: true }
+      args_from: { event_id: event_id, calendar_id: calendar_id }
+      # Google currently returns formatted text: retain its complete fallback.
+    icloud-calendar/calendar_delete_event: &icloud_event
+      tool: icloud-calendar/calendar_read_events
+      args_from: { id: id }
+    icloud-calendar/calendar_update_event: *icloud_event
+
+    asana/add_comment:
+      tool: asana/get_task
+      args: { include_comments: false, include_subtasks: false }
+      args_from: { task_id: task_id }
+      fields:
+        - { label: Task, path: /name }
+        - { label: Assignee, path: /assignee/name }
+        - { label: Due, path: /due_on }
+        - { label: Description, path: /notes, primary: true }
+      request_fields:
+        - { label: Comment to add, path: /text, primary: true }
+    asana/delete_task:
+      tool: asana/get_task
+      args: { include_comments: false, include_subtasks: false }
+      args_from: { task_id: task }
+
+    notionApi/API-patch-page:
+      tool: notionApi/API-retrieve-a-page
+      args_from: { page_id: page_id }
+      # A page read returns properties, not its body. Title property names vary.
+    notionApi/API-delete-a-block:
+      tool: notionApi/API-retrieve-a-block
+      args_from: { block_id: block_id }
+
+    github/add_issue_comment:
+      tool: github/issue_read
+      args: { method: get }
+      args_from: { owner: owner, repo: repo, issue_number: issue_number }
+      fields:
+        - { label: Issue, path: /title }
+        - { label: State, path: /state }
+        - { label: Author, path: /user/login }
+        - { label: Description, path: /body, primary: true }
+      request_fields:
+        - { label: Comment to add, path: /body, primary: true }
+    gitea/issue_write:
+      tool: gitea/issue_read
+      args: { method: get }
+      args_from: { owner: owner, repo: repo, issue_number: issue_number }
+      # Existing issues only; create has no issue_number and shows preview unavailable.
+
+    telegram/send_message:
+      tool: telegram/get_chat
+      args_from: { chat_id: chat_id }
+      fields:
+        - { label: Chat, path: /title }
+        - { label: Username, path: /username }
+        - { label: Type, path: /type }
+      request_fields:
+        - { label: Message to send, path: /message, primary: true }
+
+    knowledgebase/delete_note: &note
+      tool: knowledgebase/read_note
+      args: { output_format: json }
+      args_from: { identifier: identifier }
+      fields:
+        - { label: Note, path: /title }
+        - { label: Path, path: /file_path }
+        - { label: Content, path: /content, primary: true }
+    knowledgebase/move_note: *note
+
+    parcels/untrack_package:
+      tool: parcels/get_package
+      args: { include_history: false }
+      args_from: { package: package }
+      # Cached read only; refresh_package contacts the carrier.

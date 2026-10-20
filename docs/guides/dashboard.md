@@ -86,6 +86,46 @@ Each pending request is displayed as a card showing:
 
 Click a card to open a detail modal with full argument inspection.
 
+### Fetched approval previews
+
+Configure [`approvals.previews`](/reference/config#approval-previews) to resolve
+opaque IDs for the operator. Opening a pending approval's detail view fetches
+the configured read and shows its text or structured result immediately at the
+top of the review, before the agent's request reason, note, and opaque arguments.
+A small provenance line below the content identifies the read and any truncation.
+The returned content is shown as plain text; HTML, images, and scripts are not
+executed. No lookup runs merely because an agent submits a request.
+
+Previews work in the in-process provider, standalone remote dashboard, and
+updated iOS and macOS companions. Companions fetch them through the authenticated
+`POST /mobile/approvals/:id/preview` endpoint only when reviewing a pending
+approval. Older gateways and approvals without a configured preview show the
+existing detail view. Preview failures show an error without blocking decisions.
+
+Preview content is not included in the agent response, queue or history APIs,
+SSE events, push messages, or webhook notifications. The original call remains
+pending until the operator approves or denies it and runs separately after
+approval. Preview failures do not approve or deny the original request.
+
+Reads are coalesced and cached in memory for the pending approval. Resolving
+the approval removes access to the preview, including results arriving after
+resolution; restart clears the cache. The preview is a snapshot and may differ
+from a later read of a mutable resource. The timeout bounds the operator's wait;
+it does not guarantee cancellation of a provider's in-flight operation.
+
+The audit log records the preview tool, redacted arguments, outcome, duration,
+and approval ID as `request_id`, without the response body or upstream error
+text. Existing field redaction applies to structured preview fields. Message
+body text is intentionally visible to the operator. Preview content is not
+persisted to the approval queue or audit database.
+
+The preview endpoint lives on the management listener, never the agent tool
+listener. Use a management secret distinct from agent credentials. The dashboard
+itself is an operator surface: its local listener is unauthenticated, just like
+its approve/deny routes, so keep it behind your existing operator access boundary.
+This separates MCP agent access from operator review; it does not isolate a
+same-machine process that can already access the dashboard or management secret.
+
 ### Detail modal
 
 The modal shows:
@@ -123,3 +163,24 @@ The [macOS Companion app](https://github.com/airlock-dev/airlock/releases/latest
 In in-process mode, if port 4112 is already in use, Airlock logs a warning and
 continues running without the dashboard UI. The rest of the gateway (MCP
 proxying, HITL via other providers, audit logging) is unaffected.
+
+### Structured preview fields
+
+Preview metadata such as sender, recipient, task title, or event time appears as
+compact label/value rows. Primary fields such as an email body or targeted message
+stay visible below those rows. The companions and web view use the same field
+contract; unknown fields do not require frontend integration code.
+
+Configured request fields (for example, a proposed reply) appear separately under
+**Requested action**. They are agent-supplied arguments, not fetched facts. Preview
+content remains operator-only and is never returned as part of an agent tool call.
+Plain-text previews and older gateway/companion versions remain supported.
+
+This rendered web example uses synthetic content. Fetched fields appear before
+the requested action and raw arguments, with decisions kept at the bottom:
+
+![Structured approval preview](/images/approval-previews/web-structured.png)
+
+The same flow at a [narrow viewport](/images/approval-previews/web-narrow.png)
+keeps decisions visible. A [failed lookup](/images/approval-previews/web-failure.png)
+leaves the original approval available for review.

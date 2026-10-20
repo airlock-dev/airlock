@@ -6,11 +6,14 @@ import { ToolRegistry } from './registry/registry.js';
 import { AllowlistEngine } from './allowlist/engine.js';
 import { HitlEngine } from './hitl/engine.js';
 import { HitlBatcher } from './hitl/batcher.js';
+import { createGrantStore, engineOptionsFromConfig, wireBatcher } from './hitl/runtime.js';
 import { AuditLogger } from './audit/logger.js';
 import { hitlApiPlugin } from './hitl/api.js';
 import { auditApiPlugin } from './audit/api.js';
 import { mobileApiPlugin } from './mobile/api.js';
 import { ApprovalStreamHub } from './hitl/approval-stream.js';
+import { ApprovalDashboardRoutes } from './hitl/approval-dashboard.js';
+import { ApprovalPreviewReader } from './hitl/preview.js';
 import { createHitlProvider } from './hitl/provider-factory.js';
 import { CompositeHitlProvider } from './hitl/providers/composite.js';
 import { runStdioServer } from './transport/stdio-server.js';
@@ -60,19 +63,32 @@ export async function runStdioMode(
   // eslint-disable-next-line prefer-const
   let hitlEngine!: HitlEngine;
   const approvalForwarder: ApprovalApi = {
-    approve: (id) => hitlEngine.approve(id),
+    approve: (id, options) => hitlEngine.approve(id, options),
     deny: (id, reason) => hitlEngine.deny(id, reason),
-    approveByCode: (code) => hitlEngine.approveByCode(code),
+    approveByCode: (code, options) => hitlEngine.approveByCode(code, options),
     denyByCode: (code, reason) => hitlEngine.denyByCode(code, reason),
   };
 
   const hitlBatcher = new HitlBatcher(config.approvals.batch_window_ms);
   const activityStream = new ActivityStream();
   const approvalStream = new ApprovalStreamHub({ activityStream });
+  let activeConfig = config;
+  const registryRef: { current?: ToolRegistry } = {};
+  const approvalPreviews = new ApprovalPreviewReader({
+    getHooks: () => activeConfig.approvals.previews ?? {},
+    getRegistry: () => {
+      if (!registryRef.current) throw new Error('Tool registry unavailable');
+      return registryRef.current;
+    },
+    isPending: (id) => hitlEngine.hasPending(id),
+    getRequest: (id) => hitlEngine.getPreviewRequest(id),
+    auditLogger,
+  });
   const configuredHitlProvider = createHitlProvider(config.approvals.provider, approvalForwarder, {
     configPath,
     auditLogger,
     approvalStream,
+    approvalPreviews,
   });
   const hitlProvider = new CompositeHitlProvider([configuredHitlProvider, approvalStream]);
   const unsubscribeActivityNotifications = activityStream.subscribe((event) => {
@@ -81,14 +97,13 @@ export async function runStdioMode(
       .catch((err) => log.error({ err }, 'Failed to send activity notification'));
   });
 
-  hitlEngine = new HitlEngine(auditLogger, hitlProvider, config.approvals.timeout_ms);
-
-  hitlBatcher.onBatchReady((_agentId, requests) => {
-    const badgeCount = hitlEngine.getPending().length;
-    void hitlProvider
-      .notify(requests.map((request) => ({ ...request, badgeCount })))
-      .catch((err) => log.error({ err }, 'Failed to send approval notification'));
+  const getConfig = () => activeConfig;
+  hitlEngine = new HitlEngine(auditLogger, hitlProvider, config.approvals.timeout_ms, {
+    grants: createGrantStore(auditLogger, getConfig),
+    ...engineOptionsFromConfig(config, getConfig),
   });
+
+  wireBatcher(hitlBatcher, hitlEngine, hitlProvider);
 
   await hitlProvider.init();
   await hitlEngine.recoverPending();
@@ -96,7 +111,14 @@ export async function runStdioMode(
   // Pool — only the MCPs this profile actually needs
   const mcpConfigs = getMcpConfigs(config.providers);
   const allMcpIds = Object.keys(mcpConfigs);
-  const neededIds = requiredMcpsForAgent(agentConfig, allMcpIds);
+  const neededIds = [
+    ...new Set([
+      ...requiredMcpsForAgent(agentConfig, allMcpIds),
+      ...Object.values(config.approvals.previews ?? {})
+        .map((preview) => preview.tool.split('/')[0])
+        .filter((id) => allMcpIds.includes(id)),
+    ]),
+  ];
   const filteredMcps = Object.fromEntries(neededIds.map((id) => [id, mcpConfigs[id]]));
 
   log.info(
@@ -108,8 +130,6 @@ export async function runStdioMode(
   await pool.initialize();
 
   const allowlist = new AllowlistEngine(config.agents);
-  let activeConfig = config;
-  const registryRef: { current?: ToolRegistry } = {};
 
   const airlockDeps = () => ({
     hitlEngine,
@@ -156,6 +176,7 @@ export async function runStdioMode(
       activityStream,
       configPath,
       approvalStream,
+      approvalPreviews,
       getRequestSecurity: () => managementRequestSecurity,
     });
   }
@@ -168,6 +189,8 @@ export async function runStdioMode(
         currentAgentConfig = newConfig.agents[agentId];
       }
       activeConfig = newConfig;
+      hitlEngine.setTimeoutMs(newConfig.approvals.timeout_ms);
+      hitlEngine.configure(engineOptionsFromConfig(newConfig, getConfig));
       updateManagementRequestSecurity(newConfig, managementRequestSecurity);
       const newMcpConfigs = getMcpConfigs(newConfig.providers);
       pool
@@ -293,6 +316,7 @@ async function startManagementApi(opts: {
   activityStream: ActivityStream;
   configPath: string;
   approvalStream: ApprovalStreamHub;
+  approvalPreviews: ApprovalPreviewReader;
   getRequestSecurity: () => RequestSecurityOptions;
 }): Promise<FastifyInstance> {
   const app = Fastify({ logger: false });
@@ -320,6 +344,19 @@ async function startManagementApi(opts: {
     configPath,
     getRequestSecurity,
     approvalStream,
+    approvalPreviews: opts.approvalPreviews,
+  });
+  await app.register((previewApp, _opts, done) => {
+    previewApp.addHook('preHandler', (request, reply, hookDone) => {
+      if (!checkRequestSecurity(request, reply, getRequestSecurity())) return;
+      hookDone();
+    });
+    new ApprovalDashboardRoutes(
+      hitlEngine,
+      approvalStream,
+      opts.approvalPreviews
+    ).registerPreviewRoute(previewApp);
+    done();
   });
 
   app.get('/health', async (request, reply) => {

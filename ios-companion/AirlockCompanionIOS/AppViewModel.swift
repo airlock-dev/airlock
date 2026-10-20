@@ -17,6 +17,7 @@ final class AppViewModel: ObservableObject {
     @Published var pending: [ApprovalRequest] = []
     @Published var history: [ApprovalRequest] = []
     @Published var activityEvents: [ActivityEvent] = []
+    @Published var grants: [ApprovalGrant] = []
     @Published var isRefreshing = false
     @Published var connectionMessage = "Not connected"
     @Published var lastError: String?
@@ -69,6 +70,34 @@ final class AppViewModel: ObservableObject {
 
     var activePendingCount: Int {
         activePending.count
+    }
+
+    /// Pending approvals in queue order, with members of a shared notification batch kept together.
+    var pendingGroups: [PendingGroup] {
+        let active = activePending
+        var batchMembers: [String: [ApprovalRequest]] = [:]
+        for approval in active {
+            if let batchId = approval.batchId {
+                batchMembers[batchId, default: []].append(approval)
+            }
+        }
+
+        var seenBatches = Set<String>()
+        var groups: [PendingGroup] = []
+        for approval in active {
+            if let batchId = approval.batchId, let members = batchMembers[batchId], members.count > 1 {
+                guard seenBatches.insert(batchId).inserted else { continue }
+                groups.append(.batch(ApprovalBatch(id: batchId, code: approval.batchCode, approvals: members)))
+            } else {
+                groups.append(.single(approval))
+            }
+        }
+        return groups
+    }
+
+    var activeGrants: [ApprovalGrant] {
+        let now = Date()
+        return grants.filter { !$0.isExpired(at: now) }
     }
 
     var client: AirlockAPIClient? {
@@ -131,6 +160,37 @@ final class AppViewModel: ObservableObject {
         }
     }
 
+    func approve(_ approval: ApprovalRequest, grantOption: GrantOption, duration: GrantDuration) {
+        Task {
+            await decide(
+                approval,
+                decision: .approved,
+                grant: GrantRequest(option: grantOption, durationMs: duration.rawValue)
+            )
+        }
+    }
+
+    func approveAll(in batch: ApprovalBatch) {
+        Task { await decideMany(batch.approvableIds, decision: .approved) }
+    }
+
+    func denyAll(in batch: ApprovalBatch) {
+        Task { await decideMany(batch.approvals.map(\.id), decision: .denied) }
+    }
+
+    func revoke(_ grant: ApprovalGrant) {
+        Task { await revokeAsync(grant) }
+    }
+
+    func refreshGrants() async {
+        guard let client else { return }
+        do {
+            grants = try await client.grants()
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
     func deny(_ approval: ApprovalRequest) {
         Task {
             await decide(approval, decision: .denied)
@@ -147,30 +207,24 @@ final class AppViewModel: ObservableObject {
         isRefreshing = true
         defer { isRefreshing = false }
 
+        let startedAt = Date()
         do {
             async let pending = client.pendingApprovals()
             async let history = client.approvalHistory()
             async let activity = client.activityEvents()
             self.pending = try await pending
+            await NotificationManager.shared.reconcileApprovalNotifications(with: self.pending, fetchedAfter: startedAt)
             self.history = try await history
             self.activityEvents = try await activity
+            // Older gateways have no grants endpoint; keep the queue usable without it.
+            if let grants = try? await client.grants() {
+                self.grants = grants
+            }
             connectionMessage = "Connected"
             lastError = nil
-            await updateAppBadge()
         } catch {
             connectionMessage = "Offline"
             lastError = error.localizedDescription
-        }
-    }
-
-    private func updateAppBadge() async {
-        let badgeCount = activePendingCount
-        let activeIds = Set(activePending.map(\.id))
-        NotificationManager.shared.removeDeliveredApprovalNotifications(excluding: activeIds)
-        if #available(iOS 17.0, *) {
-            try? await UNUserNotificationCenter.current().setBadgeCount(badgeCount)
-        } else {
-            UIApplication.shared.applicationIconBadgeNumber = badgeCount
         }
     }
 
@@ -221,7 +275,11 @@ final class AppViewModel: ObservableObject {
         deviceId = ""
         deviceToken = ""
         lastNotificationActionError = ""
-        await updateAppBadge()
+        if #available(iOS 17.0, *) {
+            try? await UNUserNotificationCenter.current().setBadgeCount(activePendingCount)
+        } else {
+            UIApplication.shared.applicationIconBadgeNumber = activePendingCount
+        }
 
         if let revokeError {
             lastError = "Forgot locally. Server revoke failed: \(revokeError.localizedDescription)"
@@ -236,22 +294,69 @@ final class AppViewModel: ObservableObject {
         _ approval: ApprovalRequest,
         decision: ApprovalDecision,
         remember: RememberMode? = nil,
-        durationMs: Int? = nil
+        durationMs: Int? = nil,
+        grant: GrantRequest? = nil
     ) async {
         guard let client else { return }
         pending.removeAll { $0.id == approval.id }
         do {
-            try await client.decide(
+            let response = try await client.decide(
                 id: approval.id,
                 decision: decision,
                 remember: remember,
                 durationMs: durationMs,
+                reason: decision == .denied ? "Denied from iOS" : nil,
+                grant: grant
+            )
+            // A new grant can auto-approve other pending requests it now covers.
+            let resolved = Set(response.approved ?? [])
+            pending.removeAll { resolved.contains($0.id) }
+            await refreshAsync()
+        } catch {
+            lastError = error.localizedDescription
+            await refreshAsync()
+        }
+    }
+
+    private func decideMany(_ ids: [String], decision: ApprovalDecision) async {
+        guard let client, !ids.isEmpty else { return }
+        let requested = Set(ids)
+        pending.removeAll { requested.contains($0.id) }
+        do {
+            try await client.decideMany(
+                ids: ids,
+                decision: decision,
                 reason: decision == .denied ? "Denied from iOS" : nil
             )
             await refreshAsync()
         } catch {
             lastError = error.localizedDescription
             await refreshAsync()
+        }
+    }
+
+    private func revokeAsync(_ grant: ApprovalGrant) async {
+        guard let client else { return }
+        grants.removeAll { $0.id == grant.id }
+        do {
+            try await client.revokeGrant(id: grant.id)
+        } catch {
+            lastError = error.localizedDescription
+        }
+        await refreshGrants()
+    }
+}
+
+enum PendingGroup: Identifiable {
+    case single(ApprovalRequest)
+    case batch(ApprovalBatch)
+
+    var id: String {
+        switch self {
+        case .single(let approval):
+            return "approval-\(approval.id)"
+        case .batch(let batch):
+            return "batch-\(batch.id)"
         }
     }
 }

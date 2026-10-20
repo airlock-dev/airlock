@@ -508,6 +508,7 @@ approvals:
             agentId: 'dev',
             tool: 'exec/run',
             args: { command: 'pwd' },
+            context: { reason: 'Inspect the working directory', note: 'Agent supplied context' },
           },
         ]);
       }
@@ -533,7 +534,19 @@ approvals:
     });
     expect((await app.inject('/api/logs')).json()).toMatchObject({
       dbPath: 'gateway:http://gateway:4113',
-      pending: [expect.objectContaining({ code: 'ABC123', agent_id: 'dev' })],
+      pending: [
+        expect.objectContaining({
+          code: 'ABC123',
+          agent_id: 'dev',
+          args: JSON.stringify({
+            command: 'pwd',
+            _airlock: {
+              reason: 'Inspect the working directory',
+              note: 'Agent supplied context',
+            },
+          }),
+        }),
+      ],
     });
     expect((await app.inject('/api/tools')).json()).toMatchObject({
       tools: [expect.objectContaining({ name: 'exec/run' })],

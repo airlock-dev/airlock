@@ -8,6 +8,7 @@ import { ToolRegistry } from './registry/registry.js';
 import { AllowlistEngine } from './allowlist/engine.js';
 import { HitlEngine } from './hitl/engine.js';
 import { HitlBatcher } from './hitl/batcher.js';
+import { createGrantStore, engineOptionsFromConfig, wireBatcher } from './hitl/runtime.js';
 import { AuditLogger } from './audit/logger.js';
 import { hitlApiPlugin } from './hitl/api.js';
 import { auditApiPlugin } from './audit/api.js';
@@ -16,6 +17,7 @@ import { hookApiPlugin } from './hook/api.js';
 import { toolsApiPlugin } from './tools/api.js';
 import { ApprovalDashboardRoutes } from './hitl/approval-dashboard.js';
 import { ApprovalStreamHub } from './hitl/approval-stream.js';
+import { ApprovalPreviewReader } from './hitl/preview.js';
 import { CompositeHitlProvider } from './hitl/providers/composite.js';
 import { sseServerPlugin } from './transport/sse-server.js';
 import { httpServerPlugin } from './transport/http-server.js';
@@ -53,6 +55,7 @@ export class Gateway {
   private hitlProvider!: HitlProvider;
   private approvalRoutes!: ApprovalDashboardRoutes;
   private approvalStream!: ApprovalStreamHub;
+  private approvalPreviews!: ApprovalPreviewReader;
   private auditLogger!: AuditLogger;
   private app!: FastifyInstance;
   private managementApp?: FastifyInstance;
@@ -84,13 +87,24 @@ export class Gateway {
     this.approvalStream = new ApprovalStreamHub({ activityStream: this.activityStream });
 
     const approvalForwarder: ApprovalApi = {
-      approve: (id) => this.hitlEngine.approve(id),
+      approve: (id, options) => this.hitlEngine.approve(id, options),
       deny: (id, reason) => this.hitlEngine.deny(id, reason),
-      approveByCode: (code) => this.hitlEngine.approveByCode(code),
+      approveByCode: (code, options) => this.hitlEngine.approveByCode(code, options),
       denyByCode: (code, reason) => this.hitlEngine.denyByCode(code, reason),
     };
 
-    this.approvalRoutes = new ApprovalDashboardRoutes(approvalForwarder, this.approvalStream);
+    this.approvalPreviews = new ApprovalPreviewReader({
+      getHooks: () => this.config.approvals.previews,
+      getRegistry: () => this.registry,
+      isPending: (id) => this.hitlEngine.hasPending(id),
+      getRequest: (id) => this.hitlEngine.getPreviewRequest(id),
+      auditLogger: this.auditLogger,
+    });
+    this.approvalRoutes = new ApprovalDashboardRoutes(
+      approvalForwarder,
+      this.approvalStream,
+      this.approvalPreviews
+    );
     this.hitlProvider = this.buildHitlProvider(approvalForwarder);
     this.unsubscribeActivityNotifications = this.activityStream.subscribe((event) => {
       void this.hitlProvider
@@ -98,19 +112,18 @@ export class Gateway {
         .catch((err) => log.error({ err }, 'Failed to send activity notification'));
     });
 
+    const getConfig = () => this.config;
     this.hitlEngine = new HitlEngine(
       this.auditLogger,
       this.hitlProvider,
-      this.config.approvals.timeout_ms
+      this.config.approvals.timeout_ms,
+      {
+        grants: createGrantStore(this.auditLogger, getConfig),
+        ...engineOptionsFromConfig(this.config, getConfig),
+      }
     );
 
-    // Wire batcher → provider
-    this.hitlBatcher.onBatchReady((_agentId, requests) => {
-      const badgeCount = this.hitlEngine.getPending().length;
-      void this.hitlProvider
-        .notify(requests.map((request) => ({ ...request, badgeCount })))
-        .catch((err) => log.error({ err }, 'Failed to send approval notifications'));
-    });
+    wireBatcher(this.hitlBatcher, this.hitlEngine, this.hitlProvider);
 
     await this.hitlProvider.init();
     await this.hitlEngine.recoverPending();
@@ -243,6 +256,7 @@ export class Gateway {
       configPath: this.configPath,
       getRequestSecurity,
       approvalStream: this.approvalStream,
+      approvalPreviews: this.approvalPreviews,
     });
     await this.managementApp.register((adminApp, _opts, done) => {
       adminApp.addHook('preHandler', (request, reply, hookDone) => {
@@ -267,6 +281,8 @@ export class Gateway {
         hitlEngine: this.hitlEngine,
         hitlBatcher: this.hitlBatcher,
         auditLogger: this.auditLogger,
+        getApprovalMode: (agentId) => this.config.agents[agentId]?.approval_mode,
+        getToolTier: (agentId, tool) => this.registry.toolTier(agentId, tool),
         getRequestSecurity,
       });
     }
@@ -419,6 +435,7 @@ export class Gateway {
           configPath: this.configPath,
           auditLogger: this.auditLogger,
           approvalStream: this.approvalStream,
+          approvalPreviews: this.approvalPreviews,
         })
       );
     }
@@ -490,6 +507,7 @@ export class Gateway {
     this.config = newConfig;
     this.updateRequestSecurity(newConfig);
     this.hitlEngine.setTimeoutMs(newConfig.approvals.timeout_ms);
+    this.hitlEngine.configure(engineOptionsFromConfig(newConfig, () => this.config));
     const mcpConfigs = getMcpConfigs(newConfig.providers);
     await this.pool.reload(mcpConfigs);
     this.credentialHealth.reload(getCredentialProbes(newConfig.providers));

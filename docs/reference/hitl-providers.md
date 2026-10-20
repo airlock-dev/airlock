@@ -83,6 +83,21 @@ action is tapped. For private deployments, Tailscale is a good fit: APNs deliver
 the notification, then the iOS app posts the decision back to the VPS over the
 tailnet.
 
+When an approval is approved, denied, cancelled, or times out, Airlock sends a
+silent `approval_resolved` APNs update. The iOS companion matches its approval ID
+or code against delivered notification payloads and removes the matching system
+notification identifiers. It also fetches the current pending queue to clean up
+other stale approvals and refresh the badge. Successful pending-queue syncs on
+launch, resume, and refresh perform the same reconciliation, even if history or
+activity cannot be loaded. Failed queue fetches do not clear unrelated notifications.
+
+Cleanup is best effort: [Apple may delay, throttle, or discard background pushes](https://developer.apple.com/documentation/usernotifications/pushing-background-updates-to-your-app),
+including after force quit. APNs collapse IDs do not recall delivered alerts.
+An old notification action checks the pending queue before submitting; the server
+also rejects already-resolved approvals before changing a decision or remembered
+permissions. Device validation steps are in the
+[iOS companion QA checklist](https://github.com/airlock-dev/airlock/blob/main/ios-companion/README.md#notification-cleanup-qa).
+
 ## Telegram bot
 
 Long-polls for replies. The bot sends approval requests to the configured chat and waits for `approve <code>` or `deny <code>` replies.
@@ -142,10 +157,14 @@ approvals:
 
 These options work with all providers:
 
-| Option            | Description                                               | Default          |
-| ----------------- | --------------------------------------------------------- | ---------------- |
-| `timeout_ms`      | How long to wait for approval before auto-denying         | `300000` (5 min) |
-| `batch_window_ms` | Collect requests within this window into one notification | `0` (disabled)   |
+| Option            | Description                                                                              | Default               |
+| ----------------- | ---------------------------------------------------------------------------------------- | --------------------- |
+| `timeout_ms`      | How long to wait for approval before auto-denying                                        | `300000` (5 min)      |
+| `batch_window_ms` | Group requests within this window into one notification with approve all                 | `250`                 |
+| `mode`            | `sync` holds the call open; `async` returns "pending" and the agent retries              | `sync`                |
+| `grants.*`        | Grant durations: `default_duration_ms`, `max_duration_ms`, `plan_ttl_ms`, `async_ttl_ms` | 15m / 24h / 30m / 30m |
+
+See [Reducing approval fatigue](/concepts/approvals-and-audit#reducing-approval-fatigue).
 
 ## Recommendation
 

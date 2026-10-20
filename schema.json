@@ -651,6 +651,14 @@
                           }
                         ]
                       }
+                    },
+                    "tier": {
+                      "type": "string",
+                      "enum": [
+                        "read",
+                        "write",
+                        "destructive"
+                      ]
                     }
                   },
                   "additionalProperties": false
@@ -1383,6 +1391,14 @@
                           }
                         ]
                       }
+                    },
+                    "tier": {
+                      "type": "string",
+                      "enum": [
+                        "read",
+                        "write",
+                        "destructive"
+                      ]
                     }
                   },
                   "additionalProperties": false
@@ -1927,6 +1943,13 @@
                   }
                 },
                 "additionalProperties": false
+              },
+              "approval_mode": {
+                "type": "string",
+                "enum": [
+                  "sync",
+                  "async"
+                ]
               }
             },
             "additionalProperties": false
@@ -2348,7 +2371,151 @@
             "batch_window_ms": {
               "type": "integer",
               "minimum": 0,
-              "default": 0
+              "default": 250
+            },
+            "mode": {
+              "type": "string",
+              "enum": [
+                "sync",
+                "async"
+              ],
+              "default": "sync"
+            },
+            "grants": {
+              "type": "object",
+              "properties": {
+                "default_duration_ms": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "default": 900000
+                },
+                "max_duration_ms": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "default": 86400000
+                },
+                "plan_ttl_ms": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "default": 1800000
+                },
+                "async_ttl_ms": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "default": 1800000
+                }
+              },
+              "additionalProperties": false,
+              "default": {}
+            },
+            "previews": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "object",
+                "properties": {
+                  "tool": {
+                    "type": "string",
+                    "pattern": "^[^/*\\s]+\\/[^/*\\s]+$"
+                  },
+                  "args": {
+                    "type": "object",
+                    "additionalProperties": {},
+                    "default": {}
+                  },
+                  "args_from": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "default": {}
+                  },
+                  "fields": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "label": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 100
+                        },
+                        "path": {
+                          "type": "string",
+                          "maxLength": 500,
+                          "pattern": "^(?:\\/(?:[^~]|~[01])*)?$"
+                        },
+                        "text_prefix": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 100
+                        },
+                        "primary": {
+                          "type": "boolean",
+                          "default": false
+                        }
+                      },
+                      "required": [
+                        "label"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "maxItems": 20
+                  },
+                  "request_fields": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "label": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 100
+                        },
+                        "path": {
+                          "type": "string",
+                          "maxLength": 500,
+                          "pattern": "^(?:\\/(?:[^~]|~[01])*)?$"
+                        },
+                        "text_prefix": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 100
+                        },
+                        "primary": {
+                          "type": "boolean",
+                          "default": false
+                        }
+                      },
+                      "required": [
+                        "label"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "maxItems": 20
+                  },
+                  "timeout_ms": {
+                    "type": "integer",
+                    "minimum": 100,
+                    "maximum": 30000,
+                    "default": 5000
+                  },
+                  "max_chars": {
+                    "type": "integer",
+                    "minimum": 100,
+                    "maximum": 50000,
+                    "default": 12000
+                  }
+                },
+                "required": [
+                  "tool"
+                ],
+                "additionalProperties": false
+              },
+              "propertyNames": {
+                "pattern": "^[^/*\\s]+\\/[^/*\\s]+$"
+              },
+              "default": {}
             }
           },
           "additionalProperties": false,

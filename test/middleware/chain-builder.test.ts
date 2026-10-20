@@ -14,7 +14,13 @@ function makeDeps(): MiddlewareDeps {
       getAllTools: vi.fn().mockReturnValue([]),
     } as any,
     allowlist: { evaluate: vi.fn().mockReturnValue('allow') } as any,
-    hitlEngine: { create: vi.fn(), timeoutMs: 5000 } as any,
+    hitlEngine: {
+      create: vi.fn(),
+      consumeGrant: vi.fn(),
+      buildNotification: vi.fn(),
+      timeoutMs: 5000,
+      defaultMode: 'sync',
+    } as any,
     hitlBatcher: { add: vi.fn() } as any,
     auditLogger: { log: vi.fn() } as any,
     securityConfig: { blocked_hosts: [], allowed_local: [] },
@@ -273,11 +279,17 @@ describe('buildMiddlewareChain', () => {
     };
     const chain = buildMiddlewareChain(config, deps);
 
-    (deps.hitlEngine as any).create = vi.fn().mockReturnValue({
+    let created: any;
+    (deps.hitlEngine as any).create = vi.fn().mockImplementation((params: any) => {
+      created = params;
+      return { id: 'id', code: 'CODE', result: Promise.resolve('approved') };
+    });
+    (deps.hitlEngine as any).buildNotification = vi.fn(() => ({
+      ...created,
       id: 'id',
       code: 'CODE',
-      result: Promise.resolve('approved'),
-    });
+      timeoutMs: 5000,
+    }));
 
     const ctx = makeCtx(deps, config, {
       args: { _airlock: { reason: 'Need to verify sandbox context is included.' } },

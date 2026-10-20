@@ -208,6 +208,52 @@ curl -X POST http://localhost:4113/hitl/approve/550e8400-e29b-41d4-a716-44665544
   -H "Authorization: Bearer $MANAGEMENT_API_SECRET"
 ```
 
+To also allow similar calls for a while, pass a grant. Any other pending request the grant covers
+is approved too, and the response lists every approved id:
+
+```bash
+curl -X POST http://localhost:4113/hitl/approve/550e8400-e29b-41d4-a716-446655440000 \
+  -H "Authorization: Bearer $MANAGEMENT_API_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{"grant": {"scope": "tier", "tier": "read", "duration_ms": 3600000}}'
+```
+
+`scope` is `tool`, `tier` (with `tier: read|write`), `provider` or `profile` (with `profile`).
+Optional: `duration_ms`, `max_uses`, `session_only`. Requests flagged by a security check can't
+be widened into a grant; trying returns `400`.
+
+### `POST /hitl/approvals/decisions`
+
+Decide an explicit list of approvals in one call. Flagged (escalated) requests are skipped on
+approve unless you pass `"include_flagged": true`.
+
+```bash
+curl -X POST http://localhost:4113/hitl/approvals/decisions \
+  -H "Authorization: Bearer $MANAGEMENT_API_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{"ids": ["…", "…"], "decision": "approved"}'
+# → {"ok": true, "approved": ["…"], "skipped": ["…"]}
+```
+
+### `POST /hitl/batches/:batch/decision`
+
+Approve or deny a notification batch by batch id or batch code: `{"decision": "approved"}`.
+Approving covers only the batch's own (non-flagged) members.
+
+### `GET /hitl/grants` · `POST /hitl/grants` · `DELETE /hitl/grants/:id`
+
+List active grants (`?agent=` to filter), pre-approve without waiting for a request, or revoke one.
+
+```bash
+curl -X POST http://localhost:4113/hitl/grants \
+  -H "Authorization: Bearer $MANAGEMENT_API_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{"agent": "research", "scope": {"kind": "provider", "provider": "gmail"}, "duration_ms": 1800000}'
+```
+
+The same routes are available to companion devices under `/mobile/approvals/decisions`,
+`/mobile/batches/:batch/decision` and `/mobile/grants`.
+
 ### `POST /hitl/deny/:id`
 
 Deny a pending request by canonical approval ID. Short approval codes are not
@@ -296,11 +342,50 @@ curl -X POST \
   "http://localhost:4113/deny?code=ABC123"
 ```
 
+### `POST /approval-preview/:id`
+
+Read configured operator context for a pending approval by canonical ID. This
+route is available only on the management listener and operator dashboard, not
+the agent tool listener. The request body cannot select the tool or arguments;
+those come from `approvals.previews` and the pending request.
+
+The response is one of:
+
+```json
+{
+  "status": "ready",
+  "tool": "provider/read",
+  "text": "Subject: Replacement approved",
+  "truncated": false,
+  "fields": [{ "label": "Subject", "value": "Replacement approved", "primary": false }],
+  "requestedFields": [{ "label": "Message to send", "value": "Thank you.", "primary": true }]
+}
+```
+
+```json
+{ "status": "unavailable" }
+```
+
+```json
+{ "status": "error", "message": "Preview read failed." }
+```
+
+`fields` and `requestedFields` are optional ordered lists. `fields` come from the
+configured provider read; `requestedFields` come from selected request arguments
+and are displayed separately as the requested action. `text` remains the readable
+fallback for clients without field rendering.
+
+Unknown or resolved approvals return HTTP 409. Responses use
+`Cache-Control: no-store`. Reads leave the approval pending and never return
+their content to the requesting agent. See
+[approval previews](/reference/config#approval-previews) and
+[dashboard access boundaries](/guides/dashboard#fetched-approval-previews).
+
 ## Mobile companion API
 
 The mobile endpoints are exposed with the management API. Registering or
 revoking devices requires the management bearer token. Queue, history, push
-token update, and decision calls may use either the management token or the
+token update, preview, and decision calls may use either the management token or the
 per-device token returned during registration.
 
 ### `POST /mobile/devices/register`
@@ -368,10 +453,30 @@ List recently resolved approvals from the persisted HITL queue.
 
 List recent activity events in the mobile app shape.
 
+### `POST /mobile/approvals/:id/preview`
+
+Fetch operator-only context for a pending approval using a management or active
+per-device bearer token. This uses the same configured lookup, pending-only
+access, in-memory cache, response shapes, and no-store behavior as
+[`POST /approval-preview/:id`](#post-approval-preview-id). Caller-supplied bodies
+cannot change the lookup. It works before notification delivery; unknown or
+resolved IDs return HTTP 409. Revoked device tokens return HTTP 401.
+
+The updated iOS and macOS companions call this route when opening a pending
+approval's detail view. Preview content is not added to queue, history, streams,
+or push payloads. Gateways without this route return HTTP 404, which companions
+treat as an unavailable preview.
+
 ### `POST /mobile/approvals/:id/decision`
 
 Approve or deny a pending approval by canonical approval ID. Short approval
 codes are not accepted here.
+
+An already-resolved approval returns HTTP `409` with
+`{"error":"Approval already resolved","code":"approval_resolved"}`. The original
+decision and remembered permissions remain unchanged. An unknown ID returns
+`404`; a pending database row with no active engine request returns `409` with
+`{"error":"Pending approval is not active in the approval engine"}`.
 
 ```bash
 curl -X POST http://localhost:4113/mobile/approvals/550e8400-e29b-41d4-a716-446655440000/decision \

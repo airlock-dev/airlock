@@ -16,6 +16,8 @@ export interface ToolCallContext {
   startedAt: number;
   /** Signals that the transport/session has been closed. */
   signal?: AbortSignal;
+  /** Sends an MCP progress notification, when the client asked for progress on this call. */
+  sendProgress?: (progress: number, message: string) => void;
 }
 
 export interface ToolCallResponse {

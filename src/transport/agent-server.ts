@@ -1,6 +1,10 @@
 import { randomUUID } from 'crypto';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import {
+  ListToolsRequestSchema,
+  CallToolRequestSchema,
+  type ServerNotification,
+} from '@modelcontextprotocol/sdk/types.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import type { ToolRegistry } from '../registry/registry.js';
 import type { AllowlistEngine } from '../allowlist/engine.js';
@@ -12,6 +16,7 @@ import type { AgentConfig, SecurityConfig } from '../config/schema.js';
 import type { Middleware, ToolCallContext } from '../middleware/types.js';
 import { buildMiddlewareChain } from '../middleware/chain-builder.js';
 import { generateId } from '../util/id.js';
+import { sanitizeToolName } from '../util/tool-name.js';
 import { childLogger } from '../util/logger.js';
 import { VERSION } from '../version.js';
 
@@ -53,24 +58,21 @@ export function createAgentToolHandlers(deps: AgentServerDeps) {
   const fallbackDownstreamSessionId = randomUUID();
   const staticChain = deps.chain;
 
-  // MCP tool name pattern: ^[a-zA-Z0-9_-]{1,64}$
-  // Airlock namespaces tools as "provider/toolName" which contains '/'.
-  // Replace '/' with '_' at the protocol boundary so all clients accept the names.
-  function sanitize(name: string): string {
-    return name.replace(/\//g, '_');
-  }
-
   const listTools = () => {
     const tools = registry.getFiltered(agentId);
-    return { tools: tools.map((tool) => ({ ...tool, name: sanitize(tool.name) })) };
+    return { tools: tools.map((tool) => ({ ...tool, name: sanitizeToolName(tool.name) })) };
   };
 
-  const callTool = async (params: AgentCallToolParams, signal = deps.signal) => {
+  const callTool = async (
+    params: AgentCallToolParams,
+    signal = deps.signal,
+    sendNotification?: (notification: ServerNotification) => Promise<void>
+  ) => {
     const sanitizedName = params.name;
     // Reverse-map sanitized name back to the internal namespaced name so that
     // allowlist patterns ("provider/*") and the registry both work correctly.
     const allTools = registry.getFiltered(agentId);
-    const match = allTools.find((t) => sanitize(t.name) === sanitizedName);
+    const match = allTools.find((t) => sanitizeToolName(t.name) === sanitizedName);
     const toolName = match?.name ?? sanitizedName;
     const args = params.arguments ?? {};
     const requestMeta = isRecord(params._meta) ? params._meta : {};
@@ -109,6 +111,7 @@ export function createAgentToolHandlers(deps: AgentServerDeps) {
       },
       startedAt: Date.now(),
       signal,
+      ...(sendNotification ? progressSender(requestMeta, sendNotification) : {}),
     };
 
     // Lifecycle audit: the request has entered the pipeline. Emitted BEFORE any middleware so even
@@ -166,9 +169,32 @@ export function createAgentServer(deps: AgentServerDeps): Server {
   const handlers = createAgentToolHandlers(deps);
 
   server.setRequestHandler(ListToolsRequestSchema, handlers.listTools);
-  server.setRequestHandler(CallToolRequestSchema, (request) => handlers.callTool(request.params));
+  server.setRequestHandler(CallToolRequestSchema, (request, extra) =>
+    handlers.callTool(request.params, deps.signal, extra.sendNotification)
+  );
 
   return server;
+}
+
+/**
+ * When the client asked for progress (params._meta.progressToken), give the pipeline a way to send
+ * it. The HITL gate uses this to keep a call that is parked on approval alive in clients that reset
+ * their request timeout on progress.
+ */
+function progressSender(
+  requestMeta: Record<string, unknown>,
+  sendNotification: (notification: ServerNotification) => Promise<void>
+): { sendProgress?: (progress: number, message: string) => void } {
+  const progressToken = requestMeta.progressToken;
+  if (typeof progressToken !== 'string' && typeof progressToken !== 'number') return {};
+  return {
+    sendProgress: (progress, message) => {
+      void sendNotification({
+        method: 'notifications/progress',
+        params: { progressToken, progress, message },
+      }).catch(() => {});
+    },
+  };
 }
 
 export async function connectAgentServer(server: Server, transport: Transport): Promise<void> {

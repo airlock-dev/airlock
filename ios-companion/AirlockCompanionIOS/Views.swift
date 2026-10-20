@@ -5,37 +5,39 @@ struct QueueView: View {
     @ObservedObject var viewModel: AppViewModel
 
     var body: some View {
+        let groups = viewModel.pendingGroups
+        let singles = groups.compactMap { group -> ApprovalRequest? in
+            if case .single(let approval) = group { return approval }
+            return nil
+        }
+        let batches = groups.compactMap { group -> ApprovalBatch? in
+            if case .batch(let batch) = group { return batch }
+            return nil
+        }
+
         List {
             if !viewModel.activePending.isEmpty {
                 Section {
-                    ForEach(viewModel.activePending) { approval in
-                        NavigationLink {
-                            QueueApprovalDetailView(
-                                viewModel: viewModel,
-                                approvalId: approval.id
-                            )
-                        } label: {
-                            ApprovalRow(approval: approval, isPending: true)
-                        }
-                        .swipeActions(edge: .leading) {
-                            Button {
-                                viewModel.approve(approval)
-                            } label: {
-                                Label(approval.approveLabel, systemImage: "checkmark")
-                            }
-                            .tint(.green)
-                        }
-                        .swipeActions(edge: .trailing) {
-                            Button(role: .destructive) {
-                                viewModel.deny(approval)
-                            } label: {
-                                Label("Deny", systemImage: "xmark")
-                            }
-                            .tint(.red)
-                        }
+                    ForEach(singles) { approval in
+                        pendingRow(approval)
                     }
                 } header: {
                     StatusHeader(viewModel: viewModel)
+                }
+            }
+
+            ForEach(batches) { batch in
+                Section {
+                    BatchActionsRow(
+                        batch: batch,
+                        onApproveAll: { viewModel.approveAll(in: batch) },
+                        onDenyAll: { viewModel.denyAll(in: batch) }
+                    )
+                    ForEach(batch.approvals) { approval in
+                        pendingRow(approval)
+                    }
+                } header: {
+                    Text(batchTitle(batch))
                 }
             }
         }
@@ -54,6 +56,184 @@ struct QueueView: View {
         }
         .navigationTitle("Airlock")
         .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private func pendingRow(_ approval: ApprovalRequest) -> some View {
+        NavigationLink {
+            QueueApprovalDetailView(
+                viewModel: viewModel,
+                approvalId: approval.id
+            )
+        } label: {
+            ApprovalRow(approval: approval, isPending: true)
+        }
+        .swipeActions(edge: .leading) {
+            Button {
+                viewModel.approve(approval)
+            } label: {
+                Label(approval.approveLabel, systemImage: "checkmark")
+            }
+            .tint(.green)
+        }
+        .swipeActions(edge: .trailing) {
+            Button(role: .destructive) {
+                viewModel.deny(approval)
+            } label: {
+                Label("Deny", systemImage: "xmark")
+            }
+            .tint(.red)
+        }
+    }
+
+    private func batchTitle(_ batch: ApprovalBatch) -> String {
+        let agents = Set(batch.approvals.map(\.agentId))
+        let agent = agents.count == 1 ? agents.first.map { "\($0) · " } ?? "" : ""
+        let code = batch.code.map { " · \($0)" } ?? ""
+        return "\(agent)\(batch.approvals.count) approvals\(code)"
+    }
+}
+
+private struct BatchActionsRow: View {
+    let batch: ApprovalBatch
+    let onApproveAll: () -> Void
+    let onDenyAll: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Button {
+                    onApproveAll()
+                } label: {
+                    Label("Approve All (\(batch.approvableIds.count))", systemImage: "checkmark")
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.green)
+                .disabled(batch.approvableIds.isEmpty)
+
+                Button(role: .destructive) {
+                    onDenyAll()
+                } label: {
+                    Label("Deny All", systemImage: "xmark")
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.red)
+            }
+            if batch.flaggedCount > 0 {
+                Label(
+                    "\(batch.flaggedCount) flagged \(batch.flaggedCount == 1 ? "request needs" : "requests need") individual review",
+                    systemImage: "exclamationmark.shield.fill"
+                )
+                .font(.caption)
+                .foregroundStyle(.red)
+            }
+            if batch.individualReviewCount > 0 {
+                Label(
+                    "\(batch.individualReviewCount) \(batch.individualReviewCount == 1 ? "plan or question needs" : "plans or questions need") its own decision",
+                    systemImage: "list.bullet.rectangle"
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.vertical, 4)
+    }
+}
+
+struct GrantsView: View {
+    @ObservedObject var viewModel: AppViewModel
+
+    var body: some View {
+        List {
+            if !viewModel.activeGrants.isEmpty {
+                Section {
+                    ForEach(viewModel.activeGrants) { grant in
+                        GrantRow(grant: grant)
+                            .swipeActions(edge: .trailing) {
+                                Button(role: .destructive) {
+                                    viewModel.revoke(grant)
+                                } label: {
+                                    Label("Revoke", systemImage: "xmark.circle")
+                                }
+                            }
+                    }
+                } footer: {
+                    Text("Grants let agents repeat similar calls without asking. Swipe to revoke.")
+                }
+            }
+        }
+        .listStyle(.insetGrouped)
+        .overlay {
+            if viewModel.activeGrants.isEmpty {
+                ContentUnavailableView(
+                    "No Active Grants",
+                    systemImage: "key.horizontal",
+                    description: Text("Use Approve & Allow on a request to let similar calls through for a while.")
+                )
+            }
+        }
+        .refreshable {
+            await viewModel.refreshGrants()
+        }
+        .task {
+            await viewModel.refreshGrants()
+        }
+        .navigationTitle("Grants")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+private struct GrantRow: View {
+    let grant: ApprovalGrant
+
+    var body: some View {
+        HStack(spacing: 12) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(Color.accentColor.opacity(0.16))
+                    .frame(width: 42, height: 42)
+                Image(systemName: "key.horizontal.fill")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(Color.accentColor)
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(grant.displayTitle)
+                    .font(.headline)
+                    .lineLimit(2)
+                Text("\(grant.agentId) · \(grant.source)")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                TimelineView(.periodic(from: .now, by: 30)) { context in
+                    Text(limitsText(at: context.date))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+
+            Spacer()
+        }
+        .padding(.vertical, 4)
+    }
+
+    private func limitsText(at now: Date) -> String {
+        var parts: [String] = []
+        if let expiresAt = grant.expiresAt {
+            parts.append("Expires \(relativeTimeString(from: expiresAt, to: now))")
+        } else {
+            parts.append("No expiry")
+        }
+        if let usesRemaining = grant.usesRemaining {
+            parts.append("\(usesRemaining) \(usesRemaining == 1 ? "use" : "uses") left")
+        }
+        return parts.joined(separator: " · ")
     }
 }
 
@@ -82,8 +262,15 @@ private struct QueueApprovalDetailView: View {
                     onAlwaysAllow: {
                         viewModel.approve(approval, remember: .always)
                     },
+                    onApproveWithGrant: { option, duration in
+                        viewModel.approve(approval, grantOption: option, duration: duration)
+                    },
                     onAfterResolve: {
                         advancePast(approval)
+                    },
+                    loadPreview: { id in
+                        guard let client = viewModel.client else { throw URLError(.userAuthenticationRequired) }
+                        return try await client.approvalPreview(id: id)
                     }
                 )
                 .id(approval.id)
@@ -428,10 +615,15 @@ struct ApprovalRow: View {
                 Text(approval.displayTitle)
                     .font(.headline)
                     .lineLimit(1)
-                Text(approval.displaySubtitle)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                HStack(spacing: 6) {
+                    if isPending && approval.isEscalated {
+                        FlaggedBadge()
+                    }
+                    Text(approval.displaySubtitle)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
                 Text(approval.argsPreview)
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -457,6 +649,8 @@ struct ApprovalRow: View {
 
     private var iconName: String {
         if approval.isUserQuestion { return "questionmark.bubble" }
+        if isPending && approval.isEscalated { return "exclamationmark.shield" }
+        if approval.isPlan { return "list.bullet.rectangle" }
         if isPending { return "lock.open.trianglebadge.exclamationmark" }
         switch approval.status {
         case "approved":
@@ -470,14 +664,28 @@ struct ApprovalRow: View {
 
     private var iconBackground: Color {
         if approval.isUserQuestion { return .blue.opacity(0.16) }
+        if isPending && approval.isEscalated { return .red.opacity(0.16) }
         if isPending { return .orange.opacity(0.18) }
         return approval.status == "approved" ? .green.opacity(0.18) : .red.opacity(0.16)
     }
 
     private var iconForeground: Color {
         if approval.isUserQuestion { return .blue }
+        if isPending && approval.isEscalated { return .red }
         if isPending { return .orange }
         return approval.status == "approved" ? .green : .red
+    }
+}
+
+private struct FlaggedBadge: View {
+    var body: some View {
+        Label("Flagged", systemImage: "exclamationmark.shield.fill")
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(.red)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(Color.red.opacity(0.14))
+            .clipShape(Capsule())
     }
 }
 
@@ -545,9 +753,14 @@ struct ApprovalDetailView: View {
     let onDeny: () -> Void
     let onAllowOneHour: () -> Void
     let onAlwaysAllow: () -> Void
+    var onApproveWithGrant: ((GrantOption, GrantDuration) -> Void)? = nil
     var onAfterResolve: () -> Void = {}
+    var loadPreview: ((String) async throws -> ApprovalPreview)? = nil
     @Environment(\.dismiss) private var dismiss
     @State private var actionFeedback: ApprovalActionFeedback?
+    @State private var preview: ApprovalPreview?
+    @State private var previewLoading = false
+    @State private var previewError: String?
 
     var body: some View {
         ScrollView {
@@ -564,7 +777,64 @@ struct ApprovalDetailView: View {
                     }
                     .font(.caption.monospaced())
                     .foregroundStyle(.secondary)
+                    if let provider = approval.provider {
+                        Label(
+                            [provider, approval.tier].compactMap { $0 }.joined(separator: " · "),
+                            systemImage: "server.rack"
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    }
                 }
+
+                if mode == .pending && approval.isEscalated {
+                    Label(
+                        "Flagged by a security check. Review this request on its own; it is never included in Approve All.",
+                        systemImage: "exclamationmark.shield.fill"
+                    )
+                    .font(.subheadline)
+                    .foregroundStyle(.red)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(12)
+                    .background(Color.red.opacity(0.12))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                }
+
+                if mode == .pending && actionFeedback == nil {
+                    if previewLoading {
+                        ProgressView("Loading fetched preview…")
+                    } else if let preview, preview.status == "ready" {
+                        VStack(alignment: .leading, spacing: 8) {
+                            if let fields = preview.fields, !fields.isEmpty {
+                                ApprovalPreviewFieldsView(fields: fields)
+                            } else {
+                              Text(verbatim: preview.text ?? "")
+                                .font(.body)
+                                .textSelection(.enabled)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            Text(verbatim: "Fetched via \(preview.tool ?? "")\(preview.truncated == true ? " · Truncated" : "")")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        .padding(12)
+                        .background(Color(.secondarySystemGroupedBackground))
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                    } else if let message = previewError ?? (preview?.status == "error" ? preview?.message : nil) {
+                        DetailTextBlock(title: "Fetched preview", value: message)
+                    }
+                }
+
+                    if mode == .pending && actionFeedback == nil, let fields = preview?.requestedFields, preview?.status == "ready", !fields.isEmpty {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Requested action").font(.caption).foregroundStyle(.secondary)
+                            ApprovalPreviewFieldsView(fields: fields)
+                        }
+                        .padding(12)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color(.secondarySystemGroupedBackground))
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                    }
 
                 if approval.isUserQuestion, let context = approval.questionContext {
                     VStack(alignment: .leading, spacing: 8) {
@@ -593,6 +863,9 @@ struct ApprovalDetailView: View {
                         .foregroundStyle(status == "approved" ? .green : .red)
                 }
 
+                if approval.isPlan, let plan = approval.plan {
+                    PlanCallsView(plan: plan)
+                } else {
                 VStack(alignment: .leading, spacing: 10) {
                     Text("Arguments")
                         .font(.headline)
@@ -609,82 +882,123 @@ struct ApprovalDetailView: View {
                             .clipShape(RoundedRectangle(cornerRadius: 8))
                     }
                 }
-
-                if mode == .pending {
-                    TimelineView(.periodic(from: .now, by: 1)) { context in
-                        let isExpired = approval.isExpired(at: context.date)
-                        let isResolved = actionFeedback != nil
-                        VStack(spacing: 12) {
-                            if let expiresAt = approval.effectiveExpiresAt {
-                                if isExpired {
-                                    ExpiredApprovalNotice(expiredAt: expiresAt)
-                                } else if !isResolved {
-                                    TimeoutCountdownView(
-                                        createdAt: approval.createdAt,
-                                        expiresAt: expiresAt
-                                    )
-                                }
-                            }
-
-                            if let actionFeedback {
-                                DecisionFeedbackBanner(feedback: actionFeedback)
-                            }
-
-                            if !isExpired && !isResolved {
-                                VStack(spacing: 12) {
-                                    HStack {
-                                        Button {
-                                            resolve(.approved, action: onApprove)
-                                        } label: {
-                                            Label(approval.approveLabel, systemImage: "checkmark")
-                                                .frame(maxWidth: .infinity)
-                                        }
-                                        .buttonStyle(.borderedProminent)
-                                        .tint(.green)
-
-                                        Button(role: .destructive) {
-                                            resolve(.denied, action: onDeny)
-                                        } label: {
-                                            Label("Reject", systemImage: "xmark")
-                                                .frame(maxWidth: .infinity)
-                                        }
-                                        .buttonStyle(.borderedProminent)
-                                        .tint(.red)
-                                    }
-
-                                    if !approval.isUserQuestion {
-                                        HStack {
-                                            Button {
-                                                resolve(.allowOneHour, action: onAllowOneHour)
-                                            } label: {
-                                                Label("1 Hour", systemImage: "timer")
-                                                    .frame(maxWidth: .infinity)
-                                            }
-                                            .buttonStyle(.bordered)
-
-                                            Button {
-                                                resolve(.alwaysAllow, action: onAlwaysAllow)
-                                            } label: {
-                                                Label("Always", systemImage: "infinity")
-                                                    .frame(maxWidth: .infinity)
-                                            }
-                                            .buttonStyle(.bordered)
-                                        }
-                                    }
-                                }
-                                .disabled(actionFeedback != nil)
-                                .controlSize(.large)
-                                .opacity(actionFeedback == nil ? 1 : 0.55)
-                            }
-                        }
-                    }
                 }
             }
             .padding()
         }
+        .safeAreaInset(edge: .bottom) {
+            if mode == .pending {
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    let isExpired = approval.isExpired(at: context.date)
+                    let isResolved = actionFeedback != nil
+                    VStack(spacing: 12) {
+                        if let expiresAt = approval.effectiveExpiresAt {
+                            if isExpired {
+                                ExpiredApprovalNotice(expiredAt: expiresAt)
+                            } else if !isResolved {
+                                TimeoutCountdownView(
+                                    createdAt: approval.createdAt,
+                                    expiresAt: expiresAt
+                                )
+                            }
+                        }
+
+                        if let actionFeedback {
+                            DecisionFeedbackBanner(feedback: actionFeedback)
+                        }
+
+                        if !isExpired && !isResolved {
+                            VStack(spacing: 12) {
+                                HStack {
+                                    Button {
+                                        resolve(.approved, action: onApprove)
+                                    } label: {
+                                        Label(approval.approveLabel, systemImage: "checkmark")
+                                            .frame(maxWidth: .infinity)
+                                    }
+                                    .buttonStyle(.borderedProminent)
+                                    .tint(.green)
+
+                                    Button(role: .destructive) {
+                                        resolve(.denied, action: onDeny)
+                                    } label: {
+                                        Label("Reject", systemImage: "xmark")
+                                            .frame(maxWidth: .infinity)
+                                    }
+                                    .buttonStyle(.borderedProminent)
+                                    .tint(.red)
+                                }
+
+                                if let onApproveWithGrant, !approval.availableGrantOptions.isEmpty {
+                                    Menu {
+                                        ForEach(approval.availableGrantOptions, id: \.self) { option in
+                                            Section(option.label) {
+                                                ForEach(GrantDuration.allCases) { duration in
+                                                    Button(duration.title) {
+                                                        resolve(.allowedWithGrant) {
+                                                            onApproveWithGrant(option, duration)
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    } label: {
+                                        Label("Approve & Allow…", systemImage: "key.horizontal")
+                                            .frame(maxWidth: .infinity)
+                                    }
+                                    .menuOrder(.fixed)
+                                    .buttonStyle(.bordered)
+                                }
+
+                                // "1 Hour"/"Always" remember the tool itself, which only makes sense for a
+                                // plain tool call (never a plan, question or flagged call).
+                                if approval.isBulkApprovable {
+                                    HStack {
+                                        Button {
+                                            resolve(.allowOneHour, action: onAllowOneHour)
+                                        } label: {
+                                            Label("1 Hour", systemImage: "timer")
+                                                .frame(maxWidth: .infinity)
+                                        }
+                                        .buttonStyle(.bordered)
+
+                                        Button {
+                                            resolve(.alwaysAllow, action: onAlwaysAllow)
+                                        } label: {
+                                            Label("Always", systemImage: "infinity")
+                                                .frame(maxWidth: .infinity)
+                                        }
+                                        .buttonStyle(.bordered)
+                                    }
+                                }
+                            }
+                            .disabled(actionFeedback != nil)
+                            .controlSize(.large)
+                            .opacity(actionFeedback == nil ? 1 : 0.55)
+                        }
+                    }
+                }
+                .padding()
+                .background(Color(.systemGroupedBackground))
+            }
+        }
         .background(Color(.systemGroupedBackground))
         .navigationTitle(approval.isUserQuestion ? "Question" : "Approval")
         .navigationBarTitleDisplayMode(.inline)
+        .task(id: approval.id) {
+            preview = nil
+            previewError = nil
+            guard mode == .pending, !approval.isUserQuestion, let loadPreview else { return }
+            previewLoading = true
+            defer { previewLoading = false }
+            do {
+                let fetched = try await loadPreview(approval.id)
+                try Task.checkCancellation()
+                preview = fetched
+            } catch {
+                if !Task.isCancelled { previewError = "Preview unavailable. You can still approve or reject this request." }
+            }
+        }
     }
 
     private func resolve(_ feedback: ApprovalActionFeedback, action: @escaping () -> Void) {
@@ -708,6 +1022,44 @@ struct ApprovalDetailView: View {
     private func playDecisionHaptic() {
         guard hapticsEnabled else { return }
         UIImpactFeedbackGenerator(style: .soft).impactOccurred(intensity: 0.55)
+    }
+}
+
+private struct PlanCallsView: View {
+    let plan: [PlanEntry]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Planned calls (\(plan.count))")
+                .font(.headline)
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(Array(plan.enumerated()), id: \.offset) { item in
+                    if item.offset > 0 {
+                        Divider()
+                    }
+                    HStack(alignment: .firstTextBaseline, spacing: 10) {
+                        Text("\(item.offset + 1)")
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(verbatim: item.element.tool)
+                                .font(.subheadline.weight(.semibold))
+                            Text(verbatim: item.element.compactArgs)
+                                .font(.system(.caption, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(4)
+                                .textSelection(.enabled)
+                        }
+                    }
+                    .padding(.vertical, 8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 4)
+            .background(Color(.secondarySystemGroupedBackground))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+        }
     }
 }
 
@@ -735,6 +1087,7 @@ private enum ApprovalActionFeedback {
     case denied
     case allowOneHour
     case alwaysAllow
+    case allowedWithGrant
 
     var title: String {
         switch self {
@@ -746,12 +1099,14 @@ private enum ApprovalActionFeedback {
             return "Allowed for 1 Hour"
         case .alwaysAllow:
             return "Always Allowed"
+        case .allowedWithGrant:
+            return "Approved & Allowed"
         }
     }
 
     var icon: String {
         switch self {
-        case .approved, .allowOneHour, .alwaysAllow:
+        case .approved, .allowOneHour, .alwaysAllow, .allowedWithGrant:
             return "checkmark.circle.fill"
         case .denied:
             return "xmark.circle.fill"
@@ -760,7 +1115,7 @@ private enum ApprovalActionFeedback {
 
     var color: Color {
         switch self {
-        case .approved, .allowOneHour, .alwaysAllow:
+        case .approved, .allowOneHour, .alwaysAllow, .allowedWithGrant:
             return .green
         case .denied:
             return .red
@@ -873,5 +1228,32 @@ struct TimeoutCountdownView: View {
     private func format(_ interval: TimeInterval) -> String {
         let seconds = Int(interval.rounded(.down))
         return "\(seconds / 60):\(String(format: "%02d", seconds % 60))"
+    }
+}
+
+private struct ApprovalPreviewFieldsView: View {
+    let fields: [ApprovalPreviewField]
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 10) {
+                ForEach(Array(fields.enumerated()).filter { $0.element.primary != true }, id: \.offset) { item in
+                    GridRow(alignment: .top) {
+                        Text(verbatim: item.element.label).foregroundStyle(.secondary)
+                        Text(verbatim: item.element.value).textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+            }
+            if fields.contains(where: { $0.primary == true }) && fields.contains(where: { $0.primary != true }) { Divider() }
+            ForEach(Array(fields.enumerated()).filter { $0.element.primary == true }, id: \.offset) { item in
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(verbatim: item.element.label).font(.caption).foregroundStyle(.secondary)
+                    Text(verbatim: item.element.value).textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }

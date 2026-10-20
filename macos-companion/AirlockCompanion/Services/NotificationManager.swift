@@ -78,7 +78,14 @@ final class NotificationManager: NSObject, ObservableObject, UNUserNotificationC
             options: []
         )
 
-        center.setNotificationCategories([category])
+        let plainCategory = UNNotificationCategory(
+            identifier: Constants.NotificationCategory.approvalRequestPlain,
+            actions: [approveAction, denyAction],
+            intentIdentifiers: [],
+            options: []
+        )
+
+        center.setNotificationCategories([category, plainCategory])
     }
 
     func showNotification(for request: ApprovalRequest, soundEnabled: Bool = true) {
@@ -90,12 +97,19 @@ final class NotificationManager: NSObject, ObservableObject, UNUserNotificationC
         let lines = [
             request.requestReason.map { "Request reason: \($0)" },
             request.requestNote.map { "Request note: \($0)" },
-            request.argsDisplayString.isEmpty ? nil : request.argsDisplayString
+            request.isPlan
+                ? request.planEntries.map(\.tool).joined(separator: ", ")
+                : (request.argsDisplayString.isEmpty ? nil : request.argsDisplayString)
         ].compactMap { $0 }
+        if request.escalated {
+            content.title = "Flagged: \(content.title)"
+        }
         if !lines.isEmpty {
             content.body = lines.joined(separator: "\n")
         }
-        content.categoryIdentifier = Constants.NotificationCategory.approvalRequest
+        content.categoryIdentifier = request.escalated || request.isPlan || request.isUserQuestion
+            ? Constants.NotificationCategory.approvalRequestPlain
+            : Constants.NotificationCategory.approvalRequest
         content.userInfo = [
             "approval_id": request.id,
             "code": request.code
