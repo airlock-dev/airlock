@@ -50,9 +50,7 @@ export function resolveLimits(agent?: LimitsConfig, global?: LimitsConfig): Reso
       global?.max_sessions_per_agent ??
       DEFAULT_LIMITS.maxSessionsPerAgent,
     maxSessionsGlobal:
-      agent?.max_sessions_global ??
-      global?.max_sessions_global ??
-      DEFAULT_LIMITS.maxSessionsGlobal,
+      agent?.max_sessions_global ?? global?.max_sessions_global ?? DEFAULT_LIMITS.maxSessionsGlobal,
     sessionIdleMs:
       agent?.session_idle_ms ?? global?.session_idle_ms ?? DEFAULT_LIMITS.sessionIdleMs,
     sessionMaxLifetimeMs:
@@ -185,6 +183,11 @@ export class SessionLimiter {
     const now = this.now();
     this.sessions.set(sessionId, { profileId, openedAt: now, lastSeen: now, inFlight: 0, abort });
     this.perAgentCount.set(profileId, (this.perAgentCount.get(profileId) ?? 0) + 1);
+  }
+
+  /** Effective idle budget for transport liveness probes, including per-agent overrides. */
+  getSessionIdleMs(profileId: string): number {
+    return this.getLimits(profileId).sessionIdleMs;
   }
 
   /** Mark activity (bumps idle clock). */

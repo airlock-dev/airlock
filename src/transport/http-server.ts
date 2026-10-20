@@ -1,10 +1,16 @@
 import { randomUUID } from 'crypto';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { EmptyResultSchema } from '@modelcontextprotocol/sdk/types.js';
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { createAgentServer, connectAgentServer } from './agent-server.js';
 import type { AgentServerDeps } from './agent-server.js';
 import { childLogger } from '../util/logger.js';
-import { checkBearerAuth, checkOrigin, currentRequestSecurity, type RequestSecurityOptions } from '../security/request.js';
+import {
+  checkBearerAuth,
+  checkOrigin,
+  currentRequestSecurity,
+  type RequestSecurityOptions,
+} from '../security/request.js';
 import type { SessionLimiter } from './session-limiter.js';
 
 const log = childLogger('http-server');
@@ -14,17 +20,71 @@ export async function httpServerPlugin(
   app: FastifyInstance,
   opts: {
     getDeps: (agentId: string) => AgentServerDeps | undefined;
-	    secret?: string;
-	    authRequired?: boolean;
-	    allowedOrigins?: string[];
-	    getRequestSecurity?: () => RequestSecurityOptions;
-	    sessionLimiter?: SessionLimiter;
-	  }
+    secret?: string;
+    authRequired?: boolean;
+    allowedOrigins?: string[];
+    getRequestSecurity?: () => RequestSecurityOptions;
+    sessionLimiter?: SessionLimiter;
+    /** Probe idle clients over MCP, including through proxies. Injectable for integration tests. */
+    heartbeatIntervalMs?: number;
+  }
 ): Promise<void> {
   const sessions = new Map<
     string,
-    { transport: StreamableHTTPServerTransport; ac: AbortController; profileId: string }
+    {
+      transport: StreamableHTTPServerTransport;
+      server: ReturnType<typeof createAgentServer>;
+      ac: AbortController;
+      profileId: string;
+      probing: boolean;
+      eventStreams: number;
+      heartbeat?: ReturnType<typeof setTimeout>;
+    }
   >();
+
+  // An open event stream is not proof that the client is alive (a proxy may keep its
+  // connection open), but a successful MCP ping round trip is. Keep responsive clients
+  // alive during long coding/thinking pauses without pinning abandoned sessions forever.
+  function scheduleHeartbeat(id: string): void {
+    const session = sessions.get(id);
+    const limiter = opts.sessionLimiter;
+    if (
+      !session ||
+      !limiter ||
+      session.ac.signal.aborted ||
+      session.eventStreams === 0 ||
+      session.probing ||
+      session.heartbeat
+    )
+      return;
+    // Leave time for both the probe and its response before the effective per-agent idle limit.
+    // Re-read limits each round so configuration reloads also affect subsequent probes.
+    const idleMs = limiter.getSessionIdleMs(session.profileId);
+    const budgetMs = idleMs > 0 ? Math.max(1, Math.floor(idleMs / 3)) : Infinity;
+    const intervalMs = Math.min(opts.heartbeatIntervalMs ?? 60_000, budgetMs);
+    session.heartbeat = setTimeout(() => {
+      session.heartbeat = undefined;
+      session.probing = true;
+      void session.server
+        .request({ method: 'ping' }, EmptyResultSchema, {
+          timeout: Math.min(5000, budgetMs),
+          signal: session.ac.signal,
+        })
+        .then(() => limiter.touch(id))
+        .catch(() => {
+          // A missing/half-dead event stream must not refresh the idle clock.
+        })
+        .finally(() => {
+          session.probing = false;
+          scheduleHeartbeat(id);
+        });
+    }, intervalMs);
+    session.heartbeat.unref();
+  }
+
+  app.addHook('onClose', () => {
+    for (const session of sessions.values()) session.ac.abort();
+  });
 
   // Don't parse request bodies — handleRequest reads the raw stream.
   app.removeAllContentTypeParsers();
@@ -98,7 +158,15 @@ export async function httpServerPlugin(
       transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => randomUUID(),
         onsessioninitialized: (id) => {
-          sessions.set(id, { transport, ac, profileId });
+          sessions.set(id, { transport, server, ac, profileId, probing: false, eventStreams: 0 });
+          const session = sessions.get(id)!;
+          ac.signal.addEventListener(
+            'abort',
+            () => {
+              clearTimeout(session.heartbeat);
+            },
+            { once: true }
+          );
           limiter?.register(id, profileId, () => {
             // A reaped transport must stop being addressable immediately. Aborting only the
             // agent signal leaves the MCP session in `sessions`, so a stale client can keep using
@@ -151,12 +219,20 @@ export async function httpServerPlugin(
     const startedAt = Date.now();
     log.info(reqLog, 'MCP transport: request in');
 
-    // Track in-flight so the idle reaper never severs a session that is actively serving a
-    // request — including a tool call parked for minutes/hours awaiting HITL approval, whose
-    // response stream stays open the entire time. Only meaningful for existing sessions (a new
-    // session has no id yet during its initialize handshake, which is short-lived anyway).
+    // Track request/response work so the idle reaper never severs a tool call that is actively
+    // executing or parked for HITL approval. A streamable-HTTP GET is only the event channel: it
+    // may sit open indefinitely after a half-dead client disappears, so counting it as work would
+    // pin a leaked session forever. MCP heartbeats above refresh responsive clients; a dead GET
+    // cannot answer a ping and becomes idle-reapable. Only meaningful for existing sessions
+    // (a new session has no id yet during its initialize handshake, which is short-lived anyway).
+    const eventSession =
+      request.method === 'GET' && sessionId ? sessions.get(sessionId) : undefined;
+    if (eventSession && sessionId) {
+      eventSession.eventStreams += 1;
+      scheduleHeartbeat(sessionId);
+    }
     try {
-      if (sessionId && limiter) {
+      if (sessionId && limiter && request.method !== 'GET') {
         limiter.beginRequest(sessionId);
         try {
           await transport.handleRequest(request.raw, reply.raw);
@@ -167,6 +243,13 @@ export async function httpServerPlugin(
         await transport.handleRequest(request.raw, reply.raw);
       }
     } finally {
+      if (eventSession) {
+        eventSession.eventStreams -= 1;
+        if (eventSession.eventStreams === 0) {
+          clearTimeout(eventSession.heartbeat);
+          eventSession.heartbeat = undefined;
+        }
+      }
       log.info({ ...reqLog, ms: Date.now() - startedAt }, 'MCP transport: request done');
     }
   }
