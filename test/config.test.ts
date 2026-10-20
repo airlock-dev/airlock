@@ -14,6 +14,7 @@ describe('GatewayConfig schema', () => {
     expect(result.success).toBe(true);
     if (!result.success) return;
     expect(result.data.server.port).toBe(4111);
+    expect(result.data.server.mcp_http_mode).toBe('sessionful');
     expect(result.data.server.expose_tools_api).toBe('per-agent');
     expect(result.data.server.management_api).toMatchObject({
       enabled: false,
@@ -24,6 +25,13 @@ describe('GatewayConfig schema', () => {
     expect(result.data.approvals.timeout_ms).toBe(300000);
     expect(result.data.security.blocked_hosts).toContain('localhost');
     expect(result.data.audit.retention_days).toBe(90);
+  });
+
+  it('accepts an explicit stateless MCP HTTP edge mode', () => {
+    const result = GatewayConfig.safeParse({ server: { mcp_http_mode: 'stateless' } });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.server.mcp_http_mode).toBe('stateless');
   });
 
   it('maps deprecated management exposure aliases into the management_api block', () => {

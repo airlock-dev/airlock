@@ -37,33 +37,21 @@ export interface AgentServerDeps {
   signal?: AbortSignal;
 }
 
+export interface AgentCallToolParams {
+  name: string;
+  arguments?: Record<string, unknown>;
+  _meta?: unknown;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-export function createAgentServer(deps: AgentServerDeps): Server {
+export function createAgentToolHandlers(deps: AgentServerDeps) {
   const { agentId, registry, allowlist, hitlEngine, hitlBatcher, auditLogger } = deps;
   const getConfig = deps.getAgentConfig ?? (() => deps.agentConfig);
   const fallbackDownstreamSessionId = randomUUID();
-
   const staticChain = deps.chain;
-
-  // Server-level instructions are fixed at construction, which is fine: a server instance is created
-  // per agent session, so each session picks up the current registry state for that agent.
-  //
-  // Best-effort: instructions are advisory context, so a failure to build them must never stop an
-  // agent from getting a session.
-  let instructions: string | undefined;
-  try {
-    instructions = registry.getInstructionsFor(agentId);
-  } catch (err) {
-    log.debug({ agentId, err }, 'Failed to build server instructions');
-  }
-
-  const server = new Server(
-    { name: 'airlock', version: VERSION },
-    { capabilities: { tools: {} }, ...(instructions ? { instructions } : {}) }
-  );
 
   // MCP tool name pattern: ^[a-zA-Z0-9_-]{1,64}$
   // Airlock namespaces tools as "provider/toolName" which contains '/'.
@@ -72,20 +60,20 @@ export function createAgentServer(deps: AgentServerDeps): Server {
     return name.replace(/\//g, '_');
   }
 
-  server.setRequestHandler(ListToolsRequestSchema, () => {
+  const listTools = () => {
     const tools = registry.getFiltered(agentId);
-    return { tools: tools.map((t) => ({ ...t, name: sanitize(t.name) })) };
-  });
+    return { tools: tools.map((tool) => ({ ...tool, name: sanitize(tool.name) })) };
+  };
 
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
-    const sanitizedName = request.params.name;
+  const callTool = async (params: AgentCallToolParams, signal = deps.signal) => {
+    const sanitizedName = params.name;
     // Reverse-map sanitized name back to the internal namespaced name so that
     // allowlist patterns ("provider/*") and the registry both work correctly.
     const allTools = registry.getFiltered(agentId);
     const match = allTools.find((t) => sanitize(t.name) === sanitizedName);
     const toolName = match?.name ?? sanitizedName;
-    const args = request.params.arguments ?? {};
-    const requestMeta = isRecord(request.params._meta) ? request.params._meta : {};
+    const args = params.arguments ?? {};
+    const requestMeta = isRecord(params._meta) ? params._meta : {};
     const downstreamSessionId =
       deps.getDownstreamSessionId?.() ?? deps.downstreamSessionId ?? fallbackDownstreamSessionId;
 
@@ -120,7 +108,7 @@ export function createAgentServer(deps: AgentServerDeps): Server {
         securityConfig: deps.securityConfig ?? { blocked_hosts: [], allowed_local: [] },
       },
       startedAt: Date.now(),
-      signal: deps.signal,
+      signal,
     };
 
     // Lifecycle audit: the request has entered the pipeline. Emitted BEFORE any middleware so even
@@ -153,7 +141,32 @@ export function createAgentServer(deps: AgentServerDeps): Server {
     return {
       content: [{ type: 'text', text: response.text }],
     };
-  });
+  };
+
+  return { listTools, callTool };
+}
+
+export function createAgentServer(deps: AgentServerDeps): Server {
+  // Server-level instructions are fixed at construction, which is fine: a server instance is created
+  // per agent session, so each session picks up the current registry state for that agent.
+  //
+  // Best-effort: instructions are advisory context, so a failure to build them must never stop an
+  // agent from getting a session.
+  let instructions: string | undefined;
+  try {
+    instructions = deps.registry.getInstructionsFor(deps.agentId);
+  } catch (err) {
+    log.debug({ agentId: deps.agentId, err }, 'Failed to build server instructions');
+  }
+
+  const server = new Server(
+    { name: 'airlock', version: VERSION },
+    { capabilities: { tools: {} }, ...(instructions ? { instructions } : {}) }
+  );
+  const handlers = createAgentToolHandlers(deps);
+
+  server.setRequestHandler(ListToolsRequestSchema, handlers.listTools);
+  server.setRequestHandler(CallToolRequestSchema, (request) => handlers.callTool(request.params));
 
   return server;
 }

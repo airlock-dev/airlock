@@ -1,4 +1,5 @@
 import AjvModule from 'ajv';
+import Ajv2020Module from 'ajv/dist/2020.js';
 import type { ValidateFunction } from 'ajv';
 import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
 import type { Middleware } from '../types.js';
@@ -7,8 +8,12 @@ import type { Middleware } from '../types.js';
 // Handle both ESM default and CJS exports — Ajv uses CJS which can appear as { default: Ajv } in ESM
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const Ajv = (AjvModule as any).default ?? AjvModule;
+const Ajv2020 = (Ajv2020Module as any).default ?? Ajv2020Module;
 const ajv = new Ajv({ allErrors: true, strict: false });
-const validatorCache = new Map<string, ValidateFunction>();
+const ajv2020 = new Ajv2020({ allErrors: true, strict: false });
+// Cache by the actual catalog schema, so a provider reconnect that changes its contract cannot
+// keep validating new calls against an older schema for the same tool name.
+const validatorCache = new WeakMap<object, ValidateFunction>();
 /* eslint-enable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access */
 
 export function schemaValidatorMiddleware(): Middleware {
@@ -21,12 +26,14 @@ export function schemaValidatorMiddleware(): Middleware {
     const tool = tools.find((t) => t.name === ctx.toolName) ?? tools.find((t) => t.name === resolvedToolName);
     if (!tool?.inputSchema) return next();
 
-    const cacheKey = `${ctx.toolName}->${resolvedToolName}`;
-    let validate = validatorCache.get(cacheKey);
+    const schema = tool.inputSchema;
+    let validate = validatorCache.get(schema);
     if (!validate) {
       // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
-      validate = ajv.compile(tool.inputSchema) as ValidateFunction;
-      validatorCache.set(cacheKey, validate);
+      validate = (schema.$schema === 'https://json-schema.org/draft/2020-12/schema'
+        ? ajv2020
+        : ajv).compile(schema) as ValidateFunction;
+      validatorCache.set(schema, validate);
     }
 
     if (!validate(ctx.args)) {

@@ -17,6 +17,7 @@ const CFG = {
   token_url: 'https://issuer.example/oauth/token',
   client_id: 'cid',
   client_secret: 'csecret',
+  auth_method: 'client_secret_basic' as const,
   scope: 'read,write',
 };
 
@@ -53,6 +54,24 @@ describe('ClientCredentialsTokenSource', () => {
     const headers = init.headers as Record<string, string>;
     expect(headers.Authorization).toBe(`Basic ${Buffer.from('cid:csecret').toString('base64')}`);
     expect(String(init.body)).toBe('grant_type=client_credentials&scope=read%2Cwrite');
+  });
+
+  it('supports token endpoints that require client_secret_post', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ access_token: 'tok-post', expires_in: 3600 }));
+
+    const source = new ClientCredentialsTokenSource(
+      'trek',
+      { ...CFG, auth_method: 'client_secret_post' as const },
+      storeDir
+    );
+    expect(await source.getToken()).toBe('tok-post');
+
+    const [, init] = fetchMock.mock.calls[0];
+    const headers = init.headers as Record<string, string>;
+    expect(headers.Authorization).toBeUndefined();
+    expect(String(init.body)).toBe(
+      'grant_type=client_credentials&scope=read%2Cwrite&client_id=cid&client_secret=csecret'
+    );
   });
 
   it('reuses a cached token instead of minting again', async () => {

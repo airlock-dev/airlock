@@ -23,6 +23,10 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { StreamableHTTPError } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import {
+  Client as V2Client,
+  StreamableHTTPClientTransport as V2StreamableHTTPClientTransport,
+} from '@modelcontextprotocol/client';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import Fastify from 'fastify';
@@ -30,6 +34,7 @@ import type { AddressInfo } from 'net';
 
 import { createDownstreamServer } from './echo-server.js';
 import { httpServerPlugin } from '../src/transport/http-server.js';
+import { statelessHttpServerPlugin } from '../src/transport/stateless-http-server.js';
 import { ToolRegistry } from '../src/registry/registry.js';
 import { AllowlistEngine } from '../src/allowlist/engine.js';
 import { HitlEngine } from '../src/hitl/engine.js';
@@ -125,6 +130,7 @@ interface ServerFixture {
   port: number;
   hitlEngine: HitlEngine;
   auditLogger: AuditLogger;
+  restart: () => Promise<void>;
   teardown: () => Promise<void>;
 }
 
@@ -141,6 +147,8 @@ interface BuildServerOpts {
   extraAgents?: Record<string, AgentConfig>;
   /** Optional shared transport limiter */
   sessionLimiter?: SessionLimiter;
+  /** Use the SDK v2 per-request edge instead of the existing sessionful v1 edge. */
+  stateless?: boolean;
 }
 
 async function buildServer(opts: BuildServerOpts = {}): Promise<ServerFixture> {
@@ -183,26 +191,61 @@ async function buildServer(opts: BuildServerOpts = {}): Promise<ServerFixture> {
   // 4. Fastify + plugin
   // forceCloseConnections ensures app.close() doesn't hang if a test client
   // leaves an open SSE connection (e.g. after an unexpected failure).
-  const app = Fastify({ logger: false, forceCloseConnections: true });
-  await app.register(httpServerPlugin, {
-    getDeps,
-    secret: opts.secret,
-    authRequired: opts.authRequired,
-    allowedOrigins: opts.allowedOrigins,
-    sessionLimiter: opts.sessionLimiter,
-  });
-  await app.listen({ port: 0, host: '127.0.0.1' });
-  const port = (app.server.address() as AddressInfo).port;
+  let app: ReturnType<typeof Fastify>;
+  let port = 0;
+
+  async function startApp(listenPort: number): Promise<void> {
+    app = Fastify({ logger: false, forceCloseConnections: true });
+    if (opts.stateless) {
+      await app.register(statelessHttpServerPlugin, {
+        getDeps,
+        secret: opts.secret,
+        authRequired: opts.authRequired,
+        allowedOrigins: opts.allowedOrigins,
+      });
+    } else {
+      await app.register(httpServerPlugin, {
+        getDeps,
+        secret: opts.secret,
+        authRequired: opts.authRequired,
+        allowedOrigins: opts.allowedOrigins,
+        sessionLimiter: opts.sessionLimiter,
+      });
+    }
+    await app.listen({ port: listenPort, host: '127.0.0.1' });
+    port = (app.server.address() as AddressInfo).port;
+  }
+
+  await startApp(0);
 
   return {
     port,
     hitlEngine,
     auditLogger,
+    restart: async () => {
+      await app.close();
+      await startApp(port);
+    },
     teardown: async () => {
       await poolClient.close();
       await app.close();
     },
   };
+}
+
+async function connectModern(port: number): Promise<{
+  client: V2Client;
+  transport: V2StreamableHTTPClientTransport;
+}> {
+  const transport = new V2StreamableHTTPClientTransport(
+    new URL(`http://127.0.0.1:${port}/agents/test/mcp`)
+  );
+  const client = new V2Client(
+    { name: 'modern-test-client', version: '0.0.0' },
+    { versionNegotiation: { mode: { pin: '2026-07-28' } } }
+  );
+  await client.connect(transport);
+  return { client, transport };
 }
 
 // ─── Client helpers ───────────────────────────────────────────────────────────
@@ -317,6 +360,109 @@ describe('http-transport: basic MCP protocol', () => {
     });
     expect((result.content as { type: string; text: string }[]).length).toBeGreaterThanOrEqual(2);
     await client.close();
+  });
+});
+
+// ─── Stateless MCP 2026-07-28 edge ──────────────────────────────────────────
+
+describe('http-transport: stateless MCP v2 compatibility', () => {
+  let srv: ServerFixture;
+
+  beforeEach(async () => {
+    srv = await buildServer({ stateless: true });
+  });
+
+  afterEach(async () => {
+    await srv.teardown();
+    vi.restoreAllMocks();
+  });
+
+  it('serves modern MCP without allocating an edge session', async () => {
+    const { client, transport } = await connectModern(srv.port);
+
+    expect(transport.protocolVersion).toBe('2026-07-28');
+    expect(transport.sessionId).toBeUndefined();
+    await expect(client.listTools()).resolves.toMatchObject({
+      tools: expect.arrayContaining([expect.objectContaining({ name: 'tools_echo' })]),
+    });
+
+    await client.close();
+  });
+
+  it('keeps 2025-era Streamable HTTP clients working, also without a session id', async () => {
+    const { client, transport } = await connect(srv.port);
+
+    expect(transport.sessionId).toBeUndefined();
+    const result = await client.callTool({
+      name: 'tools_echo',
+      arguments: { message: 'legacy-stateless' },
+    });
+    expect((result.content as { type: string; text: string }[])[0].text).toBe('legacy-stateless');
+
+    await client.close();
+  });
+
+  it('survives an Airlock process restart without reconnecting the modern client', async () => {
+    const { client, transport } = await connectModern(srv.port);
+    await expect(client.listTools()).resolves.toBeDefined();
+
+    await srv.restart();
+
+    const result = await Promise.race([
+      client.callTool({ name: 'tools_echo', arguments: { message: 'after-restart' } }),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('stateless request hung after restart')), 2_000)
+      ),
+    ]);
+    expect((result.content as { type: string; text: string }[])[0].text).toBe('after-restart');
+    expect(transport.sessionId).toBeUndefined();
+
+    await client.close();
+  });
+
+  it('answers a stale session header immediately instead of looking up dead process state', async () => {
+    const response = await fetch(`http://127.0.0.1:${srv.port}/agents/test/mcp`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+        'mcp-session-id': 'session-from-a-dead-airlock-process',
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
+      signal: AbortSignal.timeout(2_000),
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain('"tools"');
+  });
+
+  it('preserves agent-token and browser-origin checks before protocol dispatch', async () => {
+    await srv.teardown();
+    srv = await buildServer({
+      stateless: true,
+      agentConfig: { token: 'agent-secret' },
+      allowedOrigins: ['https://allowed.example'],
+    });
+    const url = `http://127.0.0.1:${srv.port}/agents/test/mcp`;
+    const payload = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} });
+
+    const wrongToken = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: 'Bearer wrong' },
+      body: payload,
+    });
+    expect(wrongToken.status).toBe(401);
+
+    const wrongOrigin = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: 'Bearer agent-secret',
+        origin: 'https://denied.example',
+      },
+      body: payload,
+    });
+    expect(wrongOrigin.status).toBe(403);
   });
 });
 
@@ -876,7 +1022,9 @@ describe('http-transport: audit request lifecycle', () => {
       const received = rows.find((r) => r.result === 'received');
       expect(received?.request_id).toBeTruthy();
 
-      const forCall = rows.filter((r) => r.request_id === received!.request_id).map((r) => r.result);
+      const forCall = rows
+        .filter((r) => r.request_id === received!.request_id)
+        .map((r) => r.result);
       expect(forCall).toContain('received');
       expect(forCall).toContain('dispatched');
       expect(forCall).toContain('success');
@@ -900,7 +1048,9 @@ describe('http-transport: audit request lifecycle', () => {
       const received = rows.find((r) => r.result === 'received');
       expect(received?.request_id).toBeTruthy();
 
-      const forCall = rows.filter((r) => r.request_id === received!.request_id).map((r) => r.result);
+      const forCall = rows
+        .filter((r) => r.request_id === received!.request_id)
+        .map((r) => r.result);
       expect(forCall).toContain('received');
       expect(forCall).toContain('denied');
       expect(forCall).not.toContain('dispatched');

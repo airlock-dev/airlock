@@ -50,6 +50,7 @@ const CC: ClientCredentialsConfig = {
   token_url: 'https://issuer.example/oauth/token',
   client_id: 'cid',
   client_secret: 'csecret',
+  auth_method: 'client_secret_basic',
   scope: 'read,write',
 };
 

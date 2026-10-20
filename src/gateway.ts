@@ -19,6 +19,7 @@ import { ApprovalStreamHub } from './hitl/approval-stream.js';
 import { CompositeHitlProvider } from './hitl/providers/composite.js';
 import { sseServerPlugin } from './transport/sse-server.js';
 import { httpServerPlugin } from './transport/http-server.js';
+import { statelessHttpServerPlugin } from './transport/stateless-http-server.js';
 import { SessionLimiter, resolveLimits } from './transport/session-limiter.js';
 import { enableTcpKeepAlive } from './transport/keepalive.js';
 import type { AgentServerDeps } from './transport/agent-server.js';
@@ -173,11 +174,18 @@ export class Gateway {
       getRequestSecurity: getDataPlaneRequestSecurity,
       sessionLimiter: this.sessionLimiter,
     });
-    await this.app.register(httpServerPlugin, {
-      getDeps: (agentId: string) => this.buildAgentDeps(agentId),
-      getRequestSecurity: getDataPlaneRequestSecurity,
-      sessionLimiter: this.sessionLimiter,
-    });
+    if (this.config.server.mcp_http_mode === 'stateless') {
+      await this.app.register(statelessHttpServerPlugin, {
+        getDeps: (agentId: string) => this.buildAgentDeps(agentId),
+        getRequestSecurity: getDataPlaneRequestSecurity,
+      });
+    } else {
+      await this.app.register(httpServerPlugin, {
+        getDeps: (agentId: string) => this.buildAgentDeps(agentId),
+        getRequestSecurity: getDataPlaneRequestSecurity,
+        sessionLimiter: this.sessionLimiter,
+      });
+    }
     // Mount the HTTP tools API unless it's globally off ('none'). Registration depends ONLY on
     // the server mode, which is restart-guarded (assertReloadCompatible), so a hot-reload of
     // per-agent opt-ins can never leave the routes out of sync. Per-request gating is enforced
@@ -360,6 +368,7 @@ export class Gateway {
     const restartFields: Array<[string, unknown, unknown]> = [
       ['server.host', oldServer.host, newServer.host],
       ['server.port', oldServer.port, newServer.port],
+      ['server.mcp_http_mode', oldServer.mcp_http_mode, newServer.mcp_http_mode],
       ['server.expose_tools_api', oldServer.expose_tools_api, newServer.expose_tools_api],
       [
         'server.management_api.enabled',

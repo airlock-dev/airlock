@@ -88,6 +88,7 @@ providers:
       token_url: https://api.example.com/oauth/token
       client_id: ${BOT_CLIENT_ID}
       client_secret: ${BOT_CLIENT_SECRET}
+      auth_method: client_secret_post # optional; default is client_secret_basic
       scope: read,write # verbatim — separator is the issuer's to define
 ```
 
@@ -96,6 +97,7 @@ providers:
 | `token_url`     | The issuer's token endpoint                                           |
 | `client_id`     | App client id (`${ENV}` supported)                                    |
 | `client_secret` | App client secret (`${ENV}` supported)                                |
+| `auth_method`   | Optional: `client_secret_basic` (default) or `client_secret_post`      |
 | `scope`         | Optional; passed through untouched, so use the issuer's own separator |
 
 Tokens are minted on demand, cached under `~/.airlock/oauth/<provider>.client-credentials.json` at
@@ -291,6 +293,20 @@ At config load, Airlock expands `arg_scope` into concrete `arg_policy`
 constraints. Unknown dimensions, unknown value sets, empty dimensions, and
 declared argument controls that resolve to no effective runtime constraints are
 reported by `airlock config check`.
+
+Direct `arg_policy` constraints may include `retry_hint` to replace the generic
+retry sentence in a denial with a specific safe recovery path. The constraint
+and allowed value are still reported automatically:
+
+```yaml
+arg_policy:
+  gwsPersonal/get_gmail_messages_content_batch:
+    format:
+      equals: metadata
+      retry_hint: >-
+        Retry with format metadata. For bodies, call get_gmail_message_content
+        once per message_id with body_format text.
+```
 
 ## `sandbox_presets`
 
@@ -536,6 +552,7 @@ server:
   api_secret: '${AIRLOCK_API_SECRET}'
   auth_required: true
   require_agent_tokens: true
+  mcp_http_mode: sessionful
   expose_tools_api: true
   allowed_origins:
     - https://airlock.example.com
@@ -570,6 +587,18 @@ and, when `expose_tools_api` enables it, the REST agent tool API
   for tokenless profiles.
 - `allowed_origins` is an exact allowlist for browser `Origin` headers. Requests
   without `Origin` are allowed so non-browser MCP clients keep working.
+- `mcp_http_mode` selects the `/agents/:agentId/mcp` edge. `sessionful` is the
+  default and preserves the existing SDK v1 transport. `stateless` enables MCP
+  2026-07-28 through the SDK v2 per-request transport and also serves 2025-era
+  Streamable HTTP clients through its stateless compatibility path. In
+  `stateless` mode Airlock never issues or looks up `Mcp-Session-Id`, so a
+  restart cannot leave a client pointing at process-local session state that no
+  longer exists. The SSE endpoints and Airlock's downstream provider
+  connections are unchanged. Changing this setting requires an Airlock
+  restart; enable it only after verifying the MCP clients for that profile.
+  Session count, lifetime, idle, and new-session rate limits do not apply to
+  stateless HTTP requests; tool-call concurrency and execution deadlines still
+  apply in the shared middleware pipeline.
 - `expose_tools_api` controls the REST agent tool API on the data-plane
   listener (an agent-facing execution API using the same per-agent auth model as
   MCP routes). It is a mode: `all` exposes it for every agent, `none` is a hard

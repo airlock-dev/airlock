@@ -151,12 +151,14 @@ export async function httpServerPlugin(
     const startedAt = Date.now();
     log.info(reqLog, 'MCP transport: request in');
 
-    // Track in-flight so the idle reaper never severs a session that is actively serving a
-    // request — including a tool call parked for minutes/hours awaiting HITL approval, whose
-    // response stream stays open the entire time. Only meaningful for existing sessions (a new
-    // session has no id yet during its initialize handshake, which is short-lived anyway).
+    // Track request/response work so the idle reaper never severs a tool call that is actively
+    // executing or parked for HITL approval. A streamable-HTTP GET is only the event channel: it
+    // may sit open indefinitely after a half-dead client disappears, so counting it as work would
+    // pin a leaked session forever. Healthy clients renew/touch their GET regularly; a dead GET
+    // stops touching lastSeen and becomes idle-reapable. Only meaningful for existing sessions
+    // (a new session has no id yet during its initialize handshake, which is short-lived anyway).
     try {
-      if (sessionId && limiter) {
+      if (sessionId && limiter && request.method !== 'GET') {
         limiter.beginRequest(sessionId);
         try {
           await transport.handleRequest(request.raw, reply.raw);

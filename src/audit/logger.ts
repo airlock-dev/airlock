@@ -75,6 +75,7 @@ export class AuditLogger {
   }
 
   startDailyCleanup(): void {
+    if (this.retentionDays === 0 || this.cleanupTimer) return;
     this.cleanupTimer = setInterval(() => {
       this.db.cleanup(this.retentionDays);
     }, 86400_000);

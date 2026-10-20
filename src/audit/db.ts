@@ -293,6 +293,11 @@ export class AuditDb {
   }
 
   cleanup(retentionDays: number): void {
+    // Zero means permanent retention, including when called outside AuditLogger.
+    if (retentionDays === 0) return;
+    if (!Number.isSafeInteger(retentionDays) || retentionDays < 0) {
+      throw new RangeError('retentionDays must be a non-negative integer');
+    }
     const cutoff = new Date(Date.now() - retentionDays * 86400_000).toISOString();
     this.stmts.cleanupAudit.run(cutoff);
     this.stmts.cleanupHitl.run(cutoff);

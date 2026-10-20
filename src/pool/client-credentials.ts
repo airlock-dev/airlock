@@ -111,19 +111,25 @@ export class ClientCredentialsTokenSource {
     const body = new URLSearchParams({ grant_type: 'client_credentials' });
     if (this.cfg.scope) body.set('scope', this.cfg.scope);
 
-    // HTTP Basic (`client_secret_basic`) is the OAuth2-recommended client authentication method and
-    // the one every issuer supports; the secret stays out of the body.
-    const basic = Buffer.from(`${this.cfg.client_id}:${this.cfg.client_secret}`).toString('base64');
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      Accept: 'application/json',
+    };
+    if (this.cfg.auth_method === 'client_secret_post') {
+      body.set('client_id', this.cfg.client_id);
+      body.set('client_secret', this.cfg.client_secret);
+    } else {
+      // HTTP Basic (`client_secret_basic`) is the preferred OAuth2 client authentication method;
+      // the secret stays out of the form body.
+      const basic = Buffer.from(`${this.cfg.client_id}:${this.cfg.client_secret}`).toString('base64');
+      headers.Authorization = `Basic ${basic}`;
+    }
 
     let res: Response;
     try {
       res = await fetch(this.cfg.token_url, {
         method: 'POST',
-        headers: {
-          Authorization: `Basic ${basic}`,
-          'Content-Type': 'application/x-www-form-urlencoded',
-          Accept: 'application/json',
-        },
+        headers,
         body,
       });
     } catch (err) {

@@ -77,6 +77,7 @@ export class HttpMcpClient {
   private ready = false;
   private reconnectTimer?: NodeJS.Timeout;
   private refreshTimer?: NodeJS.Timeout;
+  private refreshAttempt = 0;
   private readyListeners = new Set<() => void>();
 
   private awaitingAuth = false;
@@ -398,21 +399,27 @@ export class HttpMcpClient {
    */
   private async proactiveRefresh(): Promise<void> {
     if (this.stopped || this.awaitingAuth || !this.oauthProvider) return;
+    const attempt = ++this.refreshAttempt;
+    const startedAt = Date.now();
+    log.info({ id: this.id, attempt }, 'Starting proactive OAuth token refresh');
     try {
       const result = await auth(this.oauthProvider, { serverUrl: this.url });
       if (result === 'AUTHORIZED') {
-        log.info({ id: this.id }, 'Proactively refreshed OAuth token before expiry');
+        log.info(
+          { id: this.id, attempt, elapsedMs: Date.now() - startedAt },
+          'Proactively refreshed OAuth token before expiry'
+        );
         await this.scheduleProactiveRefresh();
       } else {
         log.warn(
-          { id: this.id },
+          { id: this.id, attempt, elapsedMs: Date.now() - startedAt },
           'Proactive token refresh needs interactive re-authorization (refresh token invalid)'
         );
         this.startOAuthFlow(true);
       }
     } catch (err) {
       log.warn(
-        { id: this.id, reason: friendlyError(err) },
+        { id: this.id, attempt, elapsedMs: Date.now() - startedAt, reason: friendlyError(err) },
         'Proactive token refresh failed; retrying'
       );
       if (!this.stopped) {

@@ -243,6 +243,14 @@
                           "client_secret": {
                             "type": "string"
                           },
+                          "auth_method": {
+                            "type": "string",
+                            "enum": [
+                              "client_secret_basic",
+                              "client_secret_post"
+                            ],
+                            "default": "client_secret_basic"
+                          },
                           "scope": {
                             "type": "string"
                           }
@@ -566,6 +574,11 @@
                               },
                               "expose_values": {
                                 "type": "boolean"
+                              },
+                              "retry_hint": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 1000
                               }
                             },
                             "additionalProperties": false
@@ -625,6 +638,11 @@
                                 },
                                 "expose_values": {
                                   "type": "boolean"
+                                },
+                                "retry_hint": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 1000
                                 }
                               },
                               "additionalProperties": false
@@ -698,6 +716,11 @@
                           },
                           "expose_values": {
                             "type": "boolean"
+                          },
+                          "retry_hint": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 1000
                           }
                         },
                         "additionalProperties": false
@@ -757,6 +780,11 @@
                             },
                             "expose_values": {
                               "type": "boolean"
+                            },
+                            "retry_hint": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 1000
                             }
                           },
                           "additionalProperties": false
@@ -1278,6 +1306,11 @@
                               },
                               "expose_values": {
                                 "type": "boolean"
+                              },
+                              "retry_hint": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 1000
                               }
                             },
                             "additionalProperties": false
@@ -1337,6 +1370,11 @@
                                 },
                                 "expose_values": {
                                   "type": "boolean"
+                                },
+                                "retry_hint": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 1000
                                 }
                               },
                               "additionalProperties": false
@@ -1410,6 +1448,11 @@
                           },
                           "expose_values": {
                             "type": "boolean"
+                          },
+                          "retry_hint": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 1000
                           }
                         },
                         "additionalProperties": false
@@ -1469,6 +1512,11 @@
                             },
                             "expose_values": {
                               "type": "boolean"
+                            },
+                            "retry_hint": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 1000
                             }
                           },
                           "additionalProperties": false
@@ -2402,8 +2450,9 @@
               "default": "./audit.db"
             },
             "retention_days": {
-              "type": "number",
-              "default": 90
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
             },
             "redact_fields": {
               "type": "array",
@@ -2452,6 +2501,14 @@
                 "type": "string"
               },
               "default": []
+            },
+            "mcp_http_mode": {
+              "type": "string",
+              "enum": [
+                "sessionful",
+                "stateless"
+              ],
+              "default": "sessionful"
             },
             "expose_tools_api": {
               "type": "string",

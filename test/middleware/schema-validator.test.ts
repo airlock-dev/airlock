@@ -129,4 +129,36 @@ describe('schemaValidatorMiddleware', () => {
     await mw(ctx2, okNext);
     // No error = cached validator works
   });
+
+  it('accepts Sentry-style draft 2020-12 input schemas', async () => {
+    const mw = schemaValidatorMiddleware();
+    const ctx = makeCtx({ toolName: 'sentry/find_organizations', args: {} });
+    (ctx.deps.registry.getAllTools as any).mockReturnValue([{
+      name: 'sentry/find_organizations',
+      inputSchema: {
+        $schema: 'https://json-schema.org/draft/2020-12/schema',
+        type: 'object',
+        properties: { query: { anyOf: [{ type: 'string' }, { type: 'null' }] } },
+      },
+    }]);
+
+    await expect(mw(ctx, okNext)).resolves.toEqual(okResponse);
+  });
+
+  it('recompiles when a provider changes the schema for the same tool', async () => {
+    const mw = schemaValidatorMiddleware();
+    const ctx = makeCtx({ toolName: 'changing/tool', args: { value: 'text' } });
+    const registry = ctx.deps.registry.getAllTools as any;
+    registry.mockReturnValue([{
+      name: 'changing/tool',
+      inputSchema: { type: 'object', properties: { value: { type: 'string' } } },
+    }]);
+    await expect(mw(ctx, okNext)).resolves.toEqual(okResponse);
+
+    registry.mockReturnValue([{
+      name: 'changing/tool',
+      inputSchema: { type: 'object', properties: { value: { type: 'number' } } },
+    }]);
+    await expect(mw(ctx, okNext)).rejects.toThrow('Invalid arguments');
+  });
 });

@@ -110,6 +110,9 @@ export const ClientCredentialsConfig = z
     token_url: z.string().url(),
     client_id: EnvString,
     client_secret: EnvString,
+    /** How the client authenticates to the token endpoint. Basic is the OAuth default; some
+     *  servers (including TREK) accept credentials only in the form body. */
+    auth_method: z.enum(['client_secret_basic', 'client_secret_post']).default('client_secret_basic'),
     /**
      * Scopes to request, verbatim — the separator is the issuer's to define (Linear uses commas,
      * the OAuth2 spec says spaces), so the string is passed through untouched. Omit to accept the
@@ -321,6 +324,8 @@ export const ToolArgConstraintConfig = z
     label: z.string().optional(),
     value_set: z.string().optional(),
     expose_values: z.boolean().optional(),
+    // Optional operator-authored recovery guidance appended to argument-policy denials.
+    retry_hint: z.string().trim().min(1).max(1000).optional(),
   })
   .strict()
   .superRefine((value, ctx) => {
@@ -730,7 +735,7 @@ export type SecurityConfig = z.infer<typeof SecurityConfig>;
 export const AuditConfig = z
   .object({
     db_path: PathString.default('./audit.db'),
-    retention_days: z.number().default(90),
+    retention_days: z.number().int().min(0).default(0),
     redact_fields: z
       .array(z.string())
       .default(['password', 'token', 'secret', 'key', 'authorization']),
@@ -762,6 +767,13 @@ const ToolsApiModeConfig = z.preprocess(
   ToolsApiMode
 );
 
+// Agent-facing MCP Streamable HTTP edge:
+//   'sessionful' — existing SDK v1 transport with process-local Mcp-Session-Id state.
+//   'stateless'  — SDK v2 per-request transport for MCP 2026-07-28, with stateless fallback for
+//                  2025-era clients. No edge session id survives or needs to survive a restart.
+export const McpHttpMode = z.enum(['sessionful', 'stateless']);
+export type McpHttpMode = z.infer<typeof McpHttpMode>;
+
 export const ServerConfig = z
   .object({
     port: z.number().int().min(1).max(65535).default(4111),
@@ -770,6 +782,7 @@ export const ServerConfig = z
     auth_required: z.boolean().default(false),
     require_agent_tokens: z.boolean().default(false),
     allowed_origins: z.array(z.string()).default([]),
+    mcp_http_mode: McpHttpMode.default('sessionful'),
     expose_tools_api: ToolsApiModeConfig.default('per-agent'),
     management_api: ManagementApiConfig.default({}),
     // Deprecated compatibility aliases. Runtime code must use management_api.

@@ -117,6 +117,12 @@ export class FileOAuthProvider implements OAuthClientProvider {
     // A fresh provider instance must load the persisted refresh token before handling a refresh
     // response that may omit it.
     await this.load();
+    const previous = this.data.tokens;
+    const previousObtainedAt = this.data.obtainedAt;
+    const refreshTokenReturned = Boolean(tokens.refresh_token);
+    const refreshTokenRotated = Boolean(
+      tokens.refresh_token && previous?.refresh_token && tokens.refresh_token !== previous.refresh_token
+    );
     // Preserve an existing refresh_token when a refresh response omits one.
     // Many OAuth providers return refresh_token only on the initial authorization
     // (or rotate it and expect the client to retain the prior value until it is
@@ -131,12 +137,35 @@ export class FileOAuthProvider implements OAuthClientProvider {
     this.persistenceDirty = true;
     try {
       await this.save();
+      // Record the refresh chain without logging token values or token-derived fingerprints.
+      // In particular, distinguish an issuer that omitted the successor refresh token from one
+      // that rotated it, and make the next invalid_grant attributable to a specific saved grant.
+      log.info(
+        {
+          serverId: this.serverId,
+          refreshTokenReturned,
+          refreshTokenRotated,
+          refreshTokenPresent: Boolean(tokens.refresh_token),
+          accessExpiresInSec: tokens.expires_in,
+          previousTokenAgeSec: previousObtainedAt
+            ? Math.floor((this.data.obtainedAt - previousObtainedAt) / 1000)
+            : undefined,
+          persisted: true,
+        },
+        'OAuth tokens saved'
+      );
     } catch (err) {
       // The freshly rotated token still works in this process. Do not make the SDK retry the token
       // endpoint: that can invalidate this token too. Hold it in memory and retry only the disk
       // commit until storage recovers.
       log.warn(
-        { serverId: this.serverId, reason: err instanceof Error ? err.message : String(err) },
+        {
+          serverId: this.serverId,
+          refreshTokenReturned,
+          refreshTokenRotated,
+          accessExpiresInSec: tokens.expires_in,
+          reason: err instanceof Error ? err.message : String(err),
+        },
         'Could not persist OAuth tokens; holding them in memory and retrying storage'
       );
       this.schedulePersistenceRetry();
@@ -192,7 +221,18 @@ export class FileOAuthProvider implements OAuthClientProvider {
   }
 
   async invalidateCredentials(scope: 'all' | 'tokens'): Promise<void> {
-    log.info({ serverId: this.serverId, scope }, 'Invalidating OAuth credentials');
+    await this.load();
+    log.warn(
+      {
+        serverId: this.serverId,
+        scope,
+        refreshTokenPresent: Boolean(this.data.tokens?.refresh_token),
+        tokenAgeSec: this.data.obtainedAt
+          ? Math.floor((Date.now() - this.data.obtainedAt) / 1000)
+          : undefined,
+      },
+      'OAuth issuer rejected the cached grant; invalidating credentials'
+    );
     if (scope === 'all') {
       this.data = {};
     } else {

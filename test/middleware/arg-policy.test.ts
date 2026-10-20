@@ -92,6 +92,32 @@ describe('argPolicyMiddleware', () => {
     );
   });
 
+  it('uses an operator-authored retry hint when a constrained argument is denied', async () => {
+    okNext.mockClear();
+    const mw = argPolicyMiddleware();
+    const retryHint =
+      'Retry with format metadata. For bodies, call get_gmail_message_content once per message_id.';
+    const ctx = makeCtx({
+      toolName: 'gwsPersonal/get_gmail_messages_content_batch',
+      args: { message_ids: ['message-1'], format: 'full', body_format: 'text' },
+      agentConfig: makeAgentConfig({
+        arg_policy: {
+          'gwsPersonal/get_gmail_messages_content_batch': {
+            format: [{ equals: 'metadata', retry_hint: retryHint }],
+          },
+        },
+      }),
+    });
+
+    const result = await mw(ctx, okNext);
+    expect(result.text).toContain('format "full" is not permitted');
+    expect(result.text).toContain('Allowed format: "metadata"');
+    expect(result.text).toContain(retryHint);
+    expect(result.text).not.toContain('Retry with that value.');
+    expect((result.result as { isError?: boolean }).isError).toBe(true);
+    expect(okNext).not.toHaveBeenCalled();
+  });
+
   it('denies when a constrained arg is missing', async () => {
     okNext.mockClear();
     const mw = argPolicyMiddleware();
