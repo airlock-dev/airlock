@@ -1088,6 +1088,10 @@
               "token": {
                 "type": "string"
               },
+              "token_sha256": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
               "extends": {
                 "type": "array",
                 "items": {

@@ -1,6 +1,7 @@
 import { readFileSync } from 'fs';
 import { isIP } from 'net';
 import { parse as parseYaml } from 'yaml';
+import { hasAgentCredential } from '../security/request.js';
 import { GatewayConfig, getBuiltinProviders, withEnvVarResolution } from './schema.js';
 import { applyProfiles } from './profiles.js';
 import { matches } from '../allowlist/pattern.js';
@@ -154,10 +155,21 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
   const managementApiEnabled = config.server.management_api.enabled;
   const managementApiSecret = config.server.management_api.api_secret;
   const agentsWithoutTokens = Object.entries(config.agents)
-    .filter(([, agent]) => !agent.token)
+    .filter(([, agent]) => !hasAgentCredential(agent))
     .map(([agentId]) => agentId);
   const requireAgentTokens =
     config.server.require_agent_tokens || !isLoopback || managementApiEnabled;
+
+  for (const [agentId, agent] of Object.entries(config.agents)) {
+    if (agent.token && agent.token_sha256) {
+      diagnostics.push({
+        level: 'error',
+        agent: agentId,
+        message: 'Agent sets both token and token_sha256.',
+        suggestion: 'Remove one: use token_sha256 to store only the hash of the bearer token.',
+      });
+    }
+  }
 
   if (config.server.expose_management_api !== undefined) {
     diagnostics.push({

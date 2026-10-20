@@ -1,9 +1,10 @@
-import { randomBytes } from 'crypto';
-import { existsSync, readFileSync, writeFileSync, copyFileSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, copyFileSync, statSync } from 'fs';
 import { isIP } from 'net';
+import { dirname, extname, join, normalize, sep } from 'path';
+import { fileURLToPath } from 'url';
 import { parseArgs } from 'util';
 import Fastify, { type FastifyInstance, type FastifyReply } from 'fastify';
-import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
+import { parse as parseYaml } from 'yaml';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { AuditDb, type AuditEntry, type HitlQueueEntry } from '../audit/db.js';
 import { buildAdapters } from '../backend/factory.js';
@@ -22,6 +23,22 @@ import { ClientPool } from '../pool/pool.js';
 import { checkSuspiciousPatterns } from '../registry/sanitizer.js';
 import { bestSpecificity } from '../allowlist/pattern.js';
 import { VERSION } from '../version.js';
+import { stringifyPreservingComments } from '../config/yaml-merge.js';
+import {
+  ChangeConflictError,
+  ChangeValidationError,
+  applyChanges,
+  createAgentKey,
+  hashAgentKey,
+  parseChangeSet,
+  previewChanges,
+} from './changes.js';
+import {
+  assistantOptionsFromEnv,
+  runAssistantTurn,
+  type AssistantOptions,
+  type AssistantToolEntry,
+} from './assistant.js';
 
 type PermissionKind = 'agent' | 'profile';
 type RecommendedDecision = 'allow' | 'ask' | 'deny';
@@ -35,6 +52,7 @@ interface WebState {
   providers: Record<string, EditableProvider>;
   agents: Record<string, EditableAgent>;
   profiles: Record<string, EditableProfile>;
+  defaultProfile?: string;
   diagnostics: ConfigDiagnostic[];
 }
 
@@ -53,6 +71,10 @@ interface EditableAgent {
   ask: string[];
   deny: string[];
   hasToken: boolean;
+  inheritDefault: boolean;
+  approvalMode?: 'sync' | 'async';
+  exec: { allow: string[]; ask: string[]; deny: string[] };
+  http: { domainAllowlist: string[] };
 }
 
 interface EditableProfile {
@@ -164,6 +186,10 @@ export interface ConfigureWebOptions {
     registerRoutes(app: FastifyInstance, configPath?: string): void;
   };
   remoteGateway?: RemoteGatewayOptions;
+  /** OpenAI-compatible model for the policy assistant. Unset disables the assistant. */
+  assistant?: AssistantOptions;
+  /** Public base URL agents use to reach the gateway, for connection snippets. */
+  publicGatewayUrl?: string;
 }
 
 export interface RemoteGatewayOptions {
@@ -183,7 +209,12 @@ Options:
       --host <host>     Bind host (default: 127.0.0.1)
       --insecure-remote-bind
                          Allow binding the unauthenticated UI beyond loopback
+      --public-url <url>  Gateway URL agents connect to, used in setup snippets
+                         (default: AIRLOCK_PUBLIC_URL)
   -h, --help            Show this help
+
+Policy assistant (optional): set AIRLOCK_ASSISTANT_BASE_URL, AIRLOCK_ASSISTANT_MODEL and
+AIRLOCK_ASSISTANT_API_KEY to an OpenAI-compatible chat completions endpoint.
 `;
 
 const RUN_HELP = `
@@ -198,7 +229,12 @@ Options:
       --host <host>     Bind host (default: 127.0.0.1)
       --insecure-remote-bind
                          Allow binding the unauthenticated UI beyond loopback
+      --public-url <url>  Gateway URL agents connect to, used in setup snippets
+                         (default: AIRLOCK_PUBLIC_URL)
   -h, --help            Show this help
+
+Policy assistant (optional): set AIRLOCK_ASSISTANT_BASE_URL, AIRLOCK_ASSISTANT_MODEL and
+AIRLOCK_ASSISTANT_API_KEY to an OpenAI-compatible chat completions endpoint.
 `;
 
 const DASHBOARD_HELP = `
@@ -214,7 +250,12 @@ Options:
       --insecure-remote-bind      Allow binding the unauthenticated dashboard beyond loopback
       --gateway-url <url>         Gateway management API URL (default: http://127.0.0.1:4113)
       --gateway-secret <secret>   Gateway admin bearer token (default: AIRLOCK_GATEWAY_SECRET or AIRLOCK_API_SECRET)
+      --public-url <url>          Gateway URL agents connect to, used in setup snippets
+                                  (default: AIRLOCK_PUBLIC_URL)
   -h, --help                      Show this help
+
+Policy assistant (optional): set AIRLOCK_ASSISTANT_BASE_URL, AIRLOCK_ASSISTANT_MODEL and
+AIRLOCK_ASSISTANT_API_KEY to an OpenAI-compatible chat completions endpoint.
 `;
 
 export async function runCommandCenter(argv: string[]): Promise<void> {
@@ -231,6 +272,7 @@ export async function runDashboard(argv: string[]): Promise<void> {
       'gateway-url': { type: 'string', default: 'http://127.0.0.1:4113' },
       'gateway-secret': { type: 'string' },
       'insecure-remote-bind': { type: 'boolean', default: false },
+      'public-url': { type: 'string' },
       help: { type: 'boolean', short: 'h', default: false },
     },
     allowPositionals: false,
@@ -257,6 +299,8 @@ export async function runDashboard(argv: string[]): Promise<void> {
 
   const app = createConfigureWebApp(configPath, {
     remoteGateway: { url: gatewayUrl, secret: gatewaySecret },
+    assistant: assistantOptionsFromEnv(),
+    publicGatewayUrl: values['public-url'] ?? process.env['AIRLOCK_PUBLIC_URL'],
   });
   await app.listen({ host, port });
   console.log(`Airlock dashboard running at http://${host}:${port}`);
@@ -275,6 +319,7 @@ export async function runConfigureWeb(
       port: { type: 'string', short: 'p', default: '4177' },
       host: { type: 'string', default: '127.0.0.1' },
       'insecure-remote-bind': { type: 'boolean', default: false },
+      'public-url': { type: 'string' },
       help: { type: 'boolean', short: 'h', default: false },
     },
     allowPositionals: false,
@@ -294,7 +339,10 @@ export async function runConfigureWeb(
   }
   assertSafeWebBindHost(host, values['insecure-remote-bind'] === true);
 
-  const app = createConfigureWebApp(configPath);
+  const app = createConfigureWebApp(configPath, {
+    assistant: assistantOptionsFromEnv(),
+    publicGatewayUrl: values['public-url'] ?? process.env['AIRLOCK_PUBLIC_URL'],
+  });
   await app.listen({ host, port });
   console.log(`Airlock command center running at http://${host}:${port}`);
   console.log(`Editing ${configPath}`);
@@ -319,11 +367,123 @@ function isLoopbackBindHost(host: string): boolean {
 export function createConfigureWebApp(configPath: string, options: ConfigureWebOptions = {}) {
   const app = Fastify({ logger: false });
 
+  const webRoot = findWebRoot();
+  const assistant = options.assistant;
+  let toolCache: { tools: ToolEntry[]; fetchedAt: number } | null = null;
+
+  const loadTools = async (): Promise<{ tools: ToolEntry[]; errors?: string[] }> => {
+    const result = options.remoteGateway
+      ? await remoteGatewayJson<{ tools: ToolEntry[]; errors?: string[] }>(
+          options.remoteGateway,
+          '/admin/tools'
+        )
+      : await discoverTools(configPath);
+    toolCache = { tools: result.tools ?? [], fetchedAt: Date.now() };
+    return result;
+  };
+
   app.get('/', async (_request, reply) => {
-    reply.type('text/html; charset=utf-8').send(INDEX_HTML);
+    const index = webRoot ? join(webRoot, 'index.html') : undefined;
+    if (!index || !existsSync(index)) {
+      reply.type('text/html; charset=utf-8').send(CLASSIC_HTML);
+      return;
+    }
+    reply
+      .type('text/html; charset=utf-8')
+      .header('cache-control', 'no-cache')
+      .send(readFileSync(index));
+  });
+
+  app.get('/classic', async (_request, reply) => {
+    reply.type('text/html; charset=utf-8').send(CLASSIC_HTML);
+  });
+
+  app.get('/assets/*', async (request, reply) => {
+    const file = webRoot
+      ? resolveWebAsset(webRoot, (request.params as { '*': string })['*'])
+      : undefined;
+    if (!file) {
+      reply.code(404);
+      return { error: 'Not found' };
+    }
+    reply
+      .type(contentTypeFor(file))
+      .header('cache-control', 'public, max-age=31536000, immutable')
+      .send(readFileSync(file));
   });
 
   app.get('/api/state', () => readState(configPath));
+
+  app.get('/api/meta', () => ({
+    version: VERSION,
+    publicGatewayUrl: options.publicGatewayUrl ?? null,
+    remoteGateway: Boolean(options.remoteGateway),
+    assistant: assistant ? { enabled: true, model: assistant.model } : { enabled: false },
+  }));
+
+  app.post('/api/changes/preview', async (request, reply) => {
+    try {
+      return previewChanges(configPath, parseChangeSet(request.body));
+    } catch (err) {
+      reply.code(400);
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
+  app.post('/api/changes/apply', async (request, reply) => {
+    try {
+      const body = (request.body ?? {}) as { ops?: unknown; version?: unknown };
+      const result = applyChanges(
+        configPath,
+        parseChangeSet({ ops: body.ops }),
+        typeof body.version === 'string' ? body.version : undefined
+      );
+      reply.header('cache-control', 'no-store');
+      return { ...result, state: readState(configPath) };
+    } catch (err) {
+      if (err instanceof ChangeConflictError) reply.code(409);
+      else reply.code(400);
+      return {
+        error: err instanceof Error ? err.message : String(err),
+        ...(err instanceof ChangeValidationError ? { diagnostics: err.diagnostics } : {}),
+      };
+    }
+  });
+
+  app.post('/api/assistant/chat', async (request, reply) => {
+    if (!assistant) {
+      reply.code(404);
+      return {
+        error:
+          'The assistant is not configured. Set AIRLOCK_ASSISTANT_BASE_URL and AIRLOCK_ASSISTANT_MODEL.',
+      };
+    }
+    try {
+      const body = (request.body ?? {}) as { messages?: unknown };
+      return await runAssistantTurn(
+        assistant,
+        {
+          configView: () => assistantConfigView(configPath),
+          listTools: async (): Promise<AssistantToolEntry[]> => {
+            const fresh = toolCache && Date.now() - toolCache.fetchedAt < 120_000;
+            const tools = fresh ? toolCache!.tools : (await loadTools()).tools;
+            return tools.map((tool) => ({
+              name: tool.name,
+              provider: tool.provider,
+              description: tool.description,
+              tags: tool.tags,
+              recommended: tool.recommended,
+            }));
+          },
+          preview: (ops) => previewChanges(configPath, ops),
+        },
+        body.messages as never
+      );
+    } catch (err) {
+      reply.code(502);
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  });
 
   app.get('/api/status', async (_request, reply) => {
     try {
@@ -368,10 +528,7 @@ export function createConfigureWebApp(configPath: string, options: ConfigureWebO
 
   app.get('/api/tools', async (_request, reply) => {
     try {
-      if (options.remoteGateway) {
-        return await remoteGatewayJson(options.remoteGateway, '/admin/tools');
-      }
-      return await discoverTools(configPath);
+      return await loadTools();
     } catch (err) {
       reply.code(500);
       return { error: err instanceof Error ? err.message : String(err), tools: [] };
@@ -437,6 +594,75 @@ export function createConfigureWebApp(configPath: string, options: ConfigureWebO
   return app;
 }
 
+// Assets ship next to the compiled server (dist/web). Running from source with tsx, fall back to the
+// repo's dist/web so `npm run build:web` once is enough to try the UI.
+function findWebRoot(): string | undefined {
+  const here = dirname(fileURLToPath(import.meta.url));
+  for (const candidate of [join(here, '../web'), join(here, '../../dist/web')]) {
+    if (existsSync(join(candidate, 'index.html'))) return candidate;
+  }
+  return undefined;
+}
+
+function resolveWebAsset(webRoot: string, relative: string): string | undefined {
+  const assets = join(webRoot, 'assets');
+  const file = normalize(join(assets, relative));
+  if (!file.startsWith(assets + sep)) return undefined;
+  try {
+    return statSync(file).isFile() ? file : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+const CONTENT_TYPES: Record<string, string> = {
+  '.js': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.woff2': 'font/woff2',
+  '.woff': 'font/woff',
+  '.png': 'image/png',
+  '.json': 'application/json',
+};
+
+function contentTypeFor(file: string): string {
+  return CONTENT_TYPES[extname(file)] ?? 'application/octet-stream';
+}
+
+// What the assistant may read: permission rules only. Keys, provider commands, URLs and env are
+// left out because the model talks to a third-party endpoint.
+export function assistantConfigView(configPath: string): unknown {
+  const state = readState(configPath);
+  const raw = readConfigObject(configPath);
+  return {
+    default_profile: typeof raw.default_profile === 'string' ? raw.default_profile : undefined,
+    providers: Object.fromEntries(
+      Object.entries(state.providers).map(([id, provider]) => [
+        id,
+        { type: provider.type, enabled: provider.enabled },
+      ])
+    ),
+    profiles: state.profiles,
+    agents: Object.fromEntries(
+      Object.entries(state.agents).map(([id, agent]) => [
+        id,
+        {
+          extends: agent.extends,
+          allow: agent.allow,
+          ask: agent.ask,
+          deny: agent.deny,
+          inherit_default: agent.inheritDefault,
+          approval_mode: agent.approvalMode,
+          exec: agent.exec,
+          http: { domain_allowlist: agent.http.domainAllowlist },
+          has_key: agent.hasToken,
+        },
+      ])
+    ),
+    diagnostics: state.diagnostics,
+  };
+}
+
 export function readState(configPath: string): WebState {
   const parsed = readConfigObject(configPath);
   const validation = parseGatewayConfig(parsed);
@@ -447,6 +673,7 @@ export function readState(configPath: string): WebState {
     providers: toEditableProviders(asRecord(parsed.providers)),
     agents: toEditableAgents(asRecord(parsed.agents)),
     profiles: toEditableProfiles(asRecord(parsed.profiles)),
+    defaultProfile: typeof parsed.default_profile === 'string' ? parsed.default_profile : undefined,
     diagnostics: config ? validateConfig(config) : validation.diagnostics,
   };
 }
@@ -905,17 +1132,18 @@ export function createEntity(configPath: string, body: EntityBody): WebState {
 
   const baseId = parseOptionalId(body.baseId);
   const base = baseId && section[baseId] ? structuredClone(section[baseId]) : undefined;
-  const createdToken = kind === 'agent' ? createAgentToken() : undefined;
+  const createdToken = kind === 'agent' ? createAgentKey() : undefined;
 
   if (kind === 'agent') {
     const agent = asMutableRecord(base);
     const profileIds = parseOptionalStringArray(body.profileIds, 'profileIds');
     delete agent.token;
+    delete agent.token_sha256;
     agent.extends = profileIds ?? stringArray(agent.extends);
     agent.allow = stringArray(agent.allow);
     agent.ask = stringArray(agent.ask);
     agent.deny = stringArray(agent.deny);
-    agent.token = createdToken;
+    agent.token_sha256 = hashAgentKey(createdToken!);
     section[id] = agent;
   } else if (base) {
     section[id] = structuredClone(base);
@@ -1218,7 +1446,7 @@ function writeValidatedConfig(configPath: string, doc: Record<string, unknown>):
 
   const backupPath = configPath.replace(/\.ya?ml$/i, '') + '.bak';
   copyFileSync(configPath, backupPath);
-  writeFileSync(configPath, stringifyYaml(doc));
+  writeFileSync(configPath, stringifyPreservingComments(readFileSync(configPath, 'utf8'), doc));
 }
 
 function parseGatewayConfig(doc: Record<string, unknown>): {
@@ -1257,7 +1485,20 @@ function toEditableAgents(input: Record<string, unknown>): Record<string, Editab
           allow: stringArray(agent.allow),
           ask: stringArray(agent.ask),
           deny: stringArray(agent.deny),
-          hasToken: typeof agent.token === 'string' && agent.token.trim().length > 0,
+          hasToken:
+            (typeof agent.token === 'string' && agent.token.trim().length > 0) ||
+            (typeof agent.token_sha256 === 'string' && agent.token_sha256.length > 0),
+          inheritDefault: agent.inherit_default !== false,
+          approvalMode:
+            agent.approval_mode === 'sync' || agent.approval_mode === 'async'
+              ? agent.approval_mode
+              : undefined,
+          exec: {
+            allow: stringArray(asRecord(agent.exec).allow),
+            ask: stringArray(asRecord(agent.exec).ask),
+            deny: stringArray(asRecord(agent.exec).deny),
+          },
+          http: { domainAllowlist: stringArray(asRecord(agent.http).domain_allowlist) },
         },
       ];
     })
@@ -1329,10 +1570,6 @@ function parseOptionalId(value: unknown): string | undefined {
   return parseId(value);
 }
 
-function createAgentToken(): string {
-  return `airlock_agent_${randomBytes(32).toString('base64url')}`;
-}
-
 function parseBoolean(value: unknown): boolean {
   if (typeof value === 'boolean') return value;
   throw new Error('enabled must be a boolean');
@@ -1391,7 +1628,7 @@ function removeUndefined(value: Record<string, unknown>): Record<string, unknown
   return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined));
 }
 
-const INDEX_HTML = `<!doctype html>
+export const CLASSIC_HTML = `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">

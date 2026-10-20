@@ -26,6 +26,7 @@ import { StreamableHTTPError } from '@modelcontextprotocol/sdk/client/streamable
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import Fastify from 'fastify';
+import { createHash } from 'crypto';
 import type { AddressInfo } from 'net';
 
 import { createDownstreamServer } from './echo-server.js';
@@ -449,6 +450,42 @@ describe('http-transport: auth — per-agent token', () => {
     } finally {
       await mixedSrv.teardown();
     }
+  });
+});
+
+// ─── Auth: per-agent token_sha256 ─────────────────────────────────────────────
+
+describe('http-transport: auth — per-agent token_sha256', () => {
+  const agentToken = 'agent-token-abc';
+  let srv: ServerFixture;
+
+  beforeEach(async () => {
+    srv = await buildServer({
+      secret: 'global-secret',
+      agentConfig: makeAgentConfig({
+        token_sha256: createHash('sha256').update(agentToken).digest('hex'),
+      }),
+    });
+  });
+
+  afterEach(async () => {
+    await srv.teardown();
+  });
+
+  it('allows connection with the plaintext token matching the stored hash', async () => {
+    const { client, transport } = await connect(srv.port, 'test', { token: agentToken });
+    expect(transport.sessionId).toBeTruthy();
+    await client.close();
+  });
+
+  it.each([
+    ['the wrong token', { token: 'wrong-token' }],
+    ['the global secret', { token: 'global-secret' }],
+    ['no token', {}],
+  ])('rejects connection with %s', async (_label, clientOpts) => {
+    const transport = makeClientTransport(srv.port, 'test', clientOpts);
+    const client = new Client({ name: 'test', version: '0.0.0' });
+    await expect(client.connect(transport)).rejects.toThrow();
   });
 });
 
@@ -876,7 +913,9 @@ describe('http-transport: audit request lifecycle', () => {
       const received = rows.find((r) => r.result === 'received');
       expect(received?.request_id).toBeTruthy();
 
-      const forCall = rows.filter((r) => r.request_id === received!.request_id).map((r) => r.result);
+      const forCall = rows
+        .filter((r) => r.request_id === received!.request_id)
+        .map((r) => r.result);
       expect(forCall).toContain('received');
       expect(forCall).toContain('dispatched');
       expect(forCall).toContain('success');
@@ -900,7 +939,9 @@ describe('http-transport: audit request lifecycle', () => {
       const received = rows.find((r) => r.result === 'received');
       expect(received?.request_id).toBeTruthy();
 
-      const forCall = rows.filter((r) => r.request_id === received!.request_id).map((r) => r.result);
+      const forCall = rows
+        .filter((r) => r.request_id === received!.request_id)
+        .map((r) => r.result);
       expect(forCall).toContain('received');
       expect(forCall).toContain('denied');
       expect(forCall).not.toContain('dispatched');

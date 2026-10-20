@@ -62,6 +62,72 @@ change the port. Binding the dashboard beyond loopback requires
 `--insecure-remote-bind`; only use it when the listener is protected by an
 authenticated reverse proxy, private network, or tunnel.
 
+## Creating agents and profiles
+
+Choose **New agent** (or press <kbd>N</kbd> on the Agents list). The composer
+puts everything on one page:
+
+- **Name**, which also sets the agent's endpoint, `/agents/<name>/mcp`.
+- **Copy rules from** an existing agent, or start empty.
+- **Builds on**: the profiles to inherit.
+- **Tools**: an allow, ask or deny switch for every tool, grouped by provider.
+  A dashed outline shows what a tool inherits from a profile or wildcard;
+  a solid fill is a rule set on this agent. Use **Use recommended** to apply
+  the defaults derived from each tool's MCP annotations.
+- **Shell commands**, **Web requests** and **While you decide** (approval mode)
+  for agents.
+
+The side panel shows how many tools run right away, ask first, or are
+blocked, and the exact YAML that will be written. <kbd>⌘</kbd> <kbd>Enter</kbd>
+creates.
+
+### Agent keys are shown once
+
+Creating an agent mints a 256-bit key and stores only its SHA-256 hash as
+`token_sha256` in the config. The plaintext key is shown once, with
+ready-to-paste setup for Claude Code, Codex, OpenClaw, MCP JSON clients, and a
+`curl` check. Set `--public-url` (or `AIRLOCK_PUBLIC_URL`) on the dashboard so
+those snippets point at the gateway address your agents use.
+
+If a key is lost, open the agent and choose **Rotate key**. The old key stops
+working as soon as the gateway reloads the config. Agents with a plaintext
+`token` keep working; rotating one replaces it with a hash.
+
+### Reviewed changes
+
+Edits to an existing agent or profile collect in a save bar. **Review and
+save** shows a diff of the YAML before anything is written. Writes keep the
+comments and layout of the rest of your config, write a backup to
+`airlock.bak`, and are refused if the file changed on disk since the diff was
+shown.
+
+The previous single-page interface remains available at `/classic`.
+
+## Policy assistant
+
+The dashboard can connect to any OpenAI-compatible chat completions endpoint
+to draft agents and profiles from a description such as "an agent for Codex
+that reads GitHub and asks before writing".
+
+```bash
+AIRLOCK_ASSISTANT_BASE_URL=https://openrouter.ai/api/v1
+AIRLOCK_ASSISTANT_MODEL=your-model-id
+AIRLOCK_ASSISTANT_API_KEY=your-api-key
+```
+
+Open it from **Assistant** in the sidebar. The assistant:
+
+- reads agent and profile rules, provider names, and the tool list with
+  descriptions and annotations;
+- never sees agent keys, provider commands, URLs, or environment variables;
+- cannot call any provider tool or reach any agent endpoint;
+- can only propose a change set. Each proposal is shown as a diff, and nothing
+  is written until you choose **Apply**. Keys for agents it proposes are
+  minted when you apply and shown to you, not to the model.
+
+Tool descriptions come from third-party MCP servers and may contain prompt
+injection. Review proposals the way you would review any other change.
+
 ## Features
 
 ### Provider status

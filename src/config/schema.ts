@@ -565,6 +565,16 @@ export type LimitsConfig = z.infer<typeof LimitsConfig>;
 export const AgentConfig = z
   .object({
     token: EnvString.optional(),
+    // Hex SHA-256 of the bearer token, so the plaintext is never stored in config (the dashboard
+    // writes this for generated keys). Mutually exclusive with `token` (enforced in validateConfig).
+    // Generated tokens are 256-bit random, so a fast unsalted hash is sufficient.
+    token_sha256: z
+      .string()
+      .regex(
+        /^[a-f0-9]{64}$/,
+        'token_sha256 must be a lowercase hex SHA-256 digest (64 hex characters)'
+      )
+      .optional(),
     extends: z.array(z.string()).default([]),
     // Opt out of the top-level `default_profile` (which every agent otherwise inherits).
     // Set false for a locked-down agent that must get nothing implicitly. No effect when

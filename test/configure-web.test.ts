@@ -20,6 +20,7 @@ import {
   upsertProvider,
 } from '../src/configure-web/cli.js';
 import { AuditDb } from '../src/audit/db.js';
+import { sha256Hex } from '../src/security/request.js';
 import { ApprovalDashboardRoutes } from '../src/hitl/approval-dashboard.js';
 import { ApprovalStreamHub } from '../src/hitl/approval-stream.js';
 
@@ -110,7 +111,7 @@ approvals:
     expect(state.profiles.release).toEqual({ extends: [], allow: [], ask: [], deny: [] });
   });
 
-  it('creates agents with a secure bearer token', () => {
+  it('creates agents with a secure bearer token stored only as a hash', () => {
     const state = createEntity(configPath, {
       kind: 'agent',
       id: 'codex',
@@ -124,7 +125,9 @@ approvals:
 
     expect(state.createdToken?.agentId).toBe('codex');
     expect(state.createdToken?.token).toMatch(/^airlock_agent_[A-Za-z0-9_-]{43}$/);
-    expect(agents.codex.token).toBe(state.createdToken?.token);
+    expect(agents.codex.token).toBeUndefined();
+    expect(agents.codex.token_sha256).toBe(sha256Hex(state.createdToken!.token));
+    expect(readFileSync(configPath, 'utf8')).not.toContain(state.createdToken!.token);
     expect(agents.codex.extends).toEqual(['readonly']);
     expect(state.agents.codex.hasToken).toBe(true);
   });
@@ -144,7 +147,8 @@ approvals:
 
     expect(second.createdToken?.token).toMatch(/^airlock_agent_[A-Za-z0-9_-]{43}$/);
     expect(second.createdToken?.token).not.toBe(first.createdToken?.token);
-    expect(agents.cursor.token).toBe(second.createdToken?.token);
+    expect(agents.cursor.token_sha256).toBe(sha256Hex(second.createdToken!.token));
+    expect(agents.cursor.token_sha256).not.toBe(agents.codex.token_sha256);
   });
 
   it('saves profile inheritance and deny rules', () => {
@@ -447,7 +451,7 @@ approvals:
     const app = createConfigureWebApp(configPath, { approvals });
     await app.ready();
 
-    const pageRes = await app.inject('/');
+    const pageRes = await app.inject('/classic');
     expect(pageRes.statusCode).toBe(200);
     expect(pageRes.body).toContain('Airlock Command Center');
     expect(pageRes.body).toContain('id="providerIssues"');
