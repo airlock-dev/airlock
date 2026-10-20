@@ -38,17 +38,19 @@ describe('schemaValidatorMiddleware', () => {
   it('passes valid args', async () => {
     const mw = schemaValidatorMiddleware();
     const ctx = makeCtx({ args: { name: 'test', count: 5 } });
-    (ctx.deps.registry.getAllTools as any).mockReturnValue([{
-      name: 'test/tool',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          name: { type: 'string' },
-          count: { type: 'number' },
+    (ctx.deps.registry.getAllTools as any).mockReturnValue([
+      {
+        name: 'test/tool',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            name: { type: 'string' },
+            count: { type: 'number' },
+          },
+          required: ['name'],
         },
-        required: ['name'],
       },
-    }]);
+    ]);
     const result = await mw(ctx, okNext);
     expect(result.text).toBe('ok');
   });
@@ -56,28 +58,32 @@ describe('schemaValidatorMiddleware', () => {
   it('rejects missing required field', async () => {
     const mw = schemaValidatorMiddleware();
     const ctx = makeCtx({ args: {} });
-    (ctx.deps.registry.getAllTools as any).mockReturnValue([{
-      name: 'test/tool',
-      inputSchema: {
-        type: 'object',
-        properties: { name: { type: 'string' } },
-        required: ['name'],
+    (ctx.deps.registry.getAllTools as any).mockReturnValue([
+      {
+        name: 'test/tool',
+        inputSchema: {
+          type: 'object',
+          properties: { name: { type: 'string' } },
+          required: ['name'],
+        },
       },
-    }]);
+    ]);
     await expect(mw(ctx, okNext)).rejects.toThrow('Invalid arguments');
   });
 
   it('rejects wrong type', async () => {
     const mw = schemaValidatorMiddleware();
     const ctx = makeCtx({ args: { name: 123 } });
-    (ctx.deps.registry.getAllTools as any).mockReturnValue([{
-      name: 'test/tool',
-      inputSchema: {
-        type: 'object',
-        properties: { name: { type: 'string' } },
-        required: ['name'],
+    (ctx.deps.registry.getAllTools as any).mockReturnValue([
+      {
+        name: 'test/tool',
+        inputSchema: {
+          type: 'object',
+          properties: { name: { type: 'string' } },
+          required: ['name'],
+        },
       },
-    }]);
+    ]);
     await expect(mw(ctx, okNext)).rejects.toThrow('Invalid arguments');
   });
 
@@ -99,14 +105,16 @@ describe('schemaValidatorMiddleware', () => {
         },
       } as any,
     });
-    (ctx.deps.registry.getAllTools as any).mockReturnValue([{
-      name: 'exec/run',
-      inputSchema: {
-        type: 'object',
-        properties: { command: { type: 'string' } },
-        required: ['command'],
+    (ctx.deps.registry.getAllTools as any).mockReturnValue([
+      {
+        name: 'exec/run',
+        inputSchema: {
+          type: 'object',
+          properties: { command: { type: 'string' } },
+          required: ['command'],
+        },
       },
-    }]);
+    ]);
 
     await expect(mw(ctx, okNext)).rejects.toThrow('Invalid arguments');
   });
@@ -133,14 +141,16 @@ describe('schemaValidatorMiddleware', () => {
   it('accepts Sentry-style draft 2020-12 input schemas', async () => {
     const mw = schemaValidatorMiddleware();
     const ctx = makeCtx({ toolName: 'sentry/find_organizations', args: {} });
-    (ctx.deps.registry.getAllTools as any).mockReturnValue([{
-      name: 'sentry/find_organizations',
-      inputSchema: {
-        $schema: 'https://json-schema.org/draft/2020-12/schema',
-        type: 'object',
-        properties: { query: { anyOf: [{ type: 'string' }, { type: 'null' }] } },
+    (ctx.deps.registry.getAllTools as any).mockReturnValue([
+      {
+        name: 'sentry/find_organizations',
+        inputSchema: {
+          $schema: 'https://json-schema.org/draft/2020-12/schema',
+          type: 'object',
+          properties: { query: { anyOf: [{ type: 'string' }, { type: 'null' }] } },
+        },
       },
-    }]);
+    ]);
 
     await expect(mw(ctx, okNext)).resolves.toEqual(okResponse);
   });
@@ -149,16 +159,58 @@ describe('schemaValidatorMiddleware', () => {
     const mw = schemaValidatorMiddleware();
     const ctx = makeCtx({ toolName: 'changing/tool', args: { value: 'text' } });
     const registry = ctx.deps.registry.getAllTools as any;
-    registry.mockReturnValue([{
-      name: 'changing/tool',
-      inputSchema: { type: 'object', properties: { value: { type: 'string' } } },
-    }]);
+    registry.mockReturnValue([
+      {
+        name: 'changing/tool',
+        inputSchema: { type: 'object', properties: { value: { type: 'string' } } },
+      },
+    ]);
     await expect(mw(ctx, okNext)).resolves.toEqual(okResponse);
 
-    registry.mockReturnValue([{
-      name: 'changing/tool',
-      inputSchema: { type: 'object', properties: { value: { type: 'number' } } },
-    }]);
+    registry.mockReturnValue([
+      {
+        name: 'changing/tool',
+        inputSchema: { type: 'object', properties: { value: { type: 'number' } } },
+      },
+    ]);
     await expect(mw(ctx, okNext)).rejects.toThrow('Invalid arguments');
   });
 });
+
+describe.each([undefined, 'https://json-schema.org/draft/2020-12/schema'])(
+  'catalog refresh (%s)',
+  ($schema) => {
+    it('accepts repeated IDs and validates changed contracts after reconnect', async () => {
+      const mw = schemaValidatorMiddleware();
+      const ctx = makeCtx({ args: { value: 'before' } });
+      const schema = {
+        ...($schema ? { $schema } : {}),
+        $id: 'https://example.org/tool.schema.json',
+        type: 'object',
+        properties: { value: { $ref: '#/$defs/value' } },
+        required: ['value'],
+        $defs: { value: { type: 'string' } },
+      };
+      const catalog = (inputSchema: object) => {
+        vi.mocked(ctx.deps.registry.getAllTools).mockReturnValue([
+          { name: 'test/tool', inputSchema } as any,
+        ]);
+      };
+      catalog(schema);
+      await expect(mw(ctx, okNext)).resolves.toEqual(okResponse);
+      catalog(structuredClone(schema));
+      await expect(mw(ctx, okNext)).resolves.toEqual(okResponse);
+      catalog({ ...schema, $defs: { value: { type: 'number' } } });
+      await expect(mw(ctx, okNext)).rejects.toThrow('Invalid arguments');
+      ctx.args = { value: 42 };
+      await expect(mw(ctx, okNext)).resolves.toEqual(okResponse);
+      // Two providers may legitimately advertise the same schema ID with different contracts.
+      ctx.toolName = 'other/tool';
+      vi.mocked(ctx.deps.registry.getAllTools).mockReturnValue([
+        { name: 'other/tool', inputSchema: structuredClone(schema) } as any,
+      ]);
+      ctx.args = { value: 'other provider' };
+      await expect(mw(ctx, okNext)).resolves.toEqual(okResponse);
+    });
+  }
+);
