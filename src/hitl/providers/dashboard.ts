@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import type { AirlockActivityEvent } from '../../activity/stream.js';
 import { createConfigureWebApp } from '../../configure-web/cli.js';
+import { assistantOptionsFromEnv } from '../../configure-web/assistant.js';
 import { childLogger } from '../../util/logger.js';
 import { ApprovalDashboardRoutes } from '../approval-dashboard.js';
 import type { ApprovalStreamHub } from '../approval-stream.js';
@@ -37,7 +38,11 @@ export class DashboardHitlProvider implements HitlProvider {
       this.approvalStream,
       this.previews
     );
-    this.app = createConfigureWebApp(this.config.config_path, { approvals: this.approvalRoutes });
+    this.app = createConfigureWebApp(this.config.config_path, {
+      approvals: this.approvalRoutes,
+      assistant: assistantOptionsFromEnv(),
+      publicGatewayUrl: process.env['AIRLOCK_PUBLIC_URL'],
+    });
 
     try {
       await this.app.listen({ port: this.config.port, host: this.config.host });

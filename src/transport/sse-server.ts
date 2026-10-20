@@ -4,10 +4,12 @@ import { createAgentServer, connectAgentServer } from './agent-server.js';
 import type { AgentServerDeps } from './agent-server.js';
 import { childLogger } from '../util/logger.js';
 import {
+  checkAgentBearerAuth,
   checkBearerAuth,
   checkOrigin,
   checkRequestSecurity,
   currentRequestSecurity,
+  hasAgentCredential,
   type RequestSecurityOptions,
 } from '../security/request.js';
 import type { SessionLimiter } from './session-limiter.js';
@@ -50,9 +52,8 @@ export async function sseServerPlugin(
     const requestSecurity = currentRequestSecurity(opts);
     if (!checkOrigin(request, reply, requestSecurity.allowedOrigins)) return false;
 
-    const token = deps.agentConfig.token;
-    if (token) {
-      return checkBearerAuth(request, reply, { secret: token, authRequired: true });
+    if (hasAgentCredential(deps.agentConfig)) {
+      return checkAgentBearerAuth(request, reply, deps.agentConfig);
     }
     // No per-agent token — fall back to global api_secret
     return checkBearerAuth(request, reply, {

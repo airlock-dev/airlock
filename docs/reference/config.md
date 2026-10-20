@@ -352,6 +352,20 @@ apis:
 
 Per-agent policy configuration.
 
+An agent authenticates with `token` (plaintext, usually `${ENV_VAR}`) or with
+`token_sha256`, the lowercase hex SHA-256 of the bearer token, so the plaintext
+never has to be stored in config. Set only one of the two; setting both is a
+config error. Compute the hash with `printf %s "$TOKEN" | shasum -a 256`. The
+dashboard writes `token_sha256` automatically when it generates an agent key and
+shows the key only once. Either field counts as a per-agent credential for
+`require_agent_tokens` and the management API.
+
+```yaml
+agents:
+  codex:
+    token_sha256: 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
+```
+
 ```yaml
 agents:
   claude-code:
