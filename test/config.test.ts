@@ -24,7 +24,7 @@ describe('GatewayConfig schema', () => {
     });
     expect(result.data.approvals.timeout_ms).toBe(300000);
     expect(result.data.security.blocked_hosts).toContain('localhost');
-    expect(result.data.audit.retention_days).toBe(90);
+    expect(result.data.audit.retention_days).toBe(0);
   });
 
   it('accepts an explicit stateless MCP HTTP edge mode', () => {

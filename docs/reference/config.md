@@ -4,6 +4,12 @@ Airlock config is YAML. Everything lives in a single file (typically `airlock.ya
 
 ## Top-level sections
 
+The homelab build preserves all history by default. `audit.retention_days: 0`
+disables both scheduled cleanup and direct database cleanup, including audit rows,
+completed approvals, and expired/revoked grant records. Grant expiry still prevents
+authorization; it does not delete historical records. A positive integer enables
+finite retention and must not be used in the Europa deployment.
+
 ```yaml
 providers: # MCP servers and built-ins
 value_sets: # Reusable argument value lists
