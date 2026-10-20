@@ -24,7 +24,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { StreamableHTTPError } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import { PingRequestSchema, type Tool } from '@modelcontextprotocol/sdk/types.js';
 import Fastify from 'fastify';
 import type { AddressInfo } from 'net';
 
@@ -141,6 +141,7 @@ interface BuildServerOpts {
   extraAgents?: Record<string, AgentConfig>;
   /** Optional shared transport limiter */
   sessionLimiter?: SessionLimiter;
+  heartbeatIntervalMs?: number;
 }
 
 async function buildServer(opts: BuildServerOpts = {}): Promise<ServerFixture> {
@@ -190,6 +191,7 @@ async function buildServer(opts: BuildServerOpts = {}): Promise<ServerFixture> {
     authRequired: opts.authRequired,
     allowedOrigins: opts.allowedOrigins,
     sessionLimiter: opts.sessionLimiter,
+    heartbeatIntervalMs: opts.heartbeatIntervalMs,
   });
   await app.listen({ port: 0, host: '127.0.0.1' });
   const port = (app.server.address() as AddressInfo).port;
@@ -649,6 +651,73 @@ describe('http-transport: session management', () => {
 });
 
 describe('http-transport: idle session reaping', () => {
+  it('does not keep an unresponsive open event stream alive', async () => {
+    const clock = { now: 0 };
+    const sessionLimiter = new SessionLimiter({
+      getLimits: () => ({ ...DEFAULT_LIMITS, sessionIdleMs: 100 }),
+      now: () => clock.now,
+    });
+    const srv = await buildServer({ sessionLimiter, heartbeatIntervalMs: 20 });
+    let client: Client | undefined;
+    try {
+      ({ client } = await connect(srv.port));
+      let pings = 0;
+      client.setRequestHandler(PingRequestSchema, (_request, extra) => {
+        pings += 1;
+        return new Promise<Record<string, never>>((resolve) => {
+          extra.signal.addEventListener('abort', () => resolve({}), { once: true });
+        });
+      });
+      await vi.waitFor(() => expect(pings).toBeGreaterThan(0));
+      clock.now = 101;
+      sessionLimiter.sweep();
+      expect(sessionLimiter.snapshot().total).toBe(0);
+    } finally {
+      await client?.close().catch(() => {});
+      sessionLimiter.stop();
+      await srv.teardown();
+    }
+  });
+
+  it('keeps a responsive idle client alive but reaps it after disconnection', async () => {
+    const clock = { now: 0 };
+    const sessionLimiter = new SessionLimiter({
+      getLimits: () => ({ ...DEFAULT_LIMITS, sessionIdleMs: 100 }),
+      now: () => clock.now,
+    });
+    const srv = await buildServer({ sessionLimiter, heartbeatIntervalMs: 20 });
+    const touches = vi.spyOn(sessionLimiter, 'touch');
+    let client: Client | undefined;
+    try {
+      ({ client } = await connect(srv.port));
+      let pings = 0;
+      client.setRequestHandler(PingRequestSchema, () => {
+        pings += 1;
+        return {};
+      });
+      // Wait for notifications/initialized and the event-channel GET to reach the server.
+      await vi.waitFor(() => expect(touches.mock.calls.length).toBeGreaterThanOrEqual(2));
+      clock.now = 75;
+      // Leave the event stream open without making any application/tool requests.
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      clock.now = 150;
+      sessionLimiter.sweep();
+      expect(sessionLimiter.snapshot().total).toBe(1);
+      expect(pings).toBeGreaterThan(0);
+      expect((await client.listTools()).tools.length).toBeGreaterThan(0);
+
+      await client.close();
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      clock.now = 301;
+      sessionLimiter.sweep();
+      expect(sessionLimiter.snapshot().total).toBe(0);
+    } finally {
+      await client?.close().catch(() => {});
+      sessionLimiter.stop();
+      await srv.teardown();
+    }
+  });
+
   it('removes a reaped session so stale requests receive 404', async () => {
     const clock = { now: 0 };
     const sessionLimiter = new SessionLimiter({
@@ -876,7 +945,9 @@ describe('http-transport: audit request lifecycle', () => {
       const received = rows.find((r) => r.result === 'received');
       expect(received?.request_id).toBeTruthy();
 
-      const forCall = rows.filter((r) => r.request_id === received!.request_id).map((r) => r.result);
+      const forCall = rows
+        .filter((r) => r.request_id === received!.request_id)
+        .map((r) => r.result);
       expect(forCall).toContain('received');
       expect(forCall).toContain('dispatched');
       expect(forCall).toContain('success');
@@ -900,7 +971,9 @@ describe('http-transport: audit request lifecycle', () => {
       const received = rows.find((r) => r.result === 'received');
       expect(received?.request_id).toBeTruthy();
 
-      const forCall = rows.filter((r) => r.request_id === received!.request_id).map((r) => r.result);
+      const forCall = rows
+        .filter((r) => r.request_id === received!.request_id)
+        .map((r) => r.result);
       expect(forCall).toContain('received');
       expect(forCall).toContain('denied');
       expect(forCall).not.toContain('dispatched');
