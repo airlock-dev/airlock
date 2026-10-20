@@ -1,32 +1,87 @@
 import { randomUUID } from 'crypto';
-import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { createMcpHandler, type McpHttpHandler } from '@modelcontextprotocol/server';
+import { toNodeHandler, type NodeMcpRequestHandler } from '@modelcontextprotocol/node';
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
-import { createAgentServer, connectAgentServer } from './agent-server.js';
+import { createAgentServer } from './agent-server.js';
 import type { AgentServerDeps } from './agent-server.js';
 import { childLogger } from '../util/logger.js';
-import { checkBearerAuth, checkOrigin, currentRequestSecurity, type RequestSecurityOptions } from '../security/request.js';
-import type { SessionLimiter } from './session-limiter.js';
+import {
+  checkBearerAuth,
+  checkOrigin,
+  currentRequestSecurity,
+  type RequestSecurityOptions,
+} from '../security/request.js';
 
 const log = childLogger('http-server');
 
+/**
+ * Streamable HTTP data plane, served statelessly.
+ *
+ * Every request gets a fresh agent server from the factory and nothing survives between requests:
+ * 2026-07-28 clients send the per-request `_meta` envelope, and 2025-era clients are answered by the
+ * SDK's stateless legacy fallback (no `Mcp-Session-Id` is ever issued; GET/DELETE answer 405). There
+ * is therefore no session table to exhaust, reap, or lose across a restart — the failure mode the
+ * old per-agent session cap existed to contain.
+ *
+ * What a session used to give us is now per-request:
+ * - disconnect detection: the request's own abort signal (see `anySignal` in agent-server), which
+ *   fires when the client cancels or drops the connection a parked HITL call is waiting on;
+ * - session-scoped grants: an agent-supplied session id (`_meta["dev.airlock/session"]`, the
+ *   `X-Airlock-Session-Id` header, or `?session=`), resolved through `resolveSessionId`.
+ */
 // eslint-disable-next-line @typescript-eslint/require-await
 export async function httpServerPlugin(
   app: FastifyInstance,
   opts: {
     getDeps: (agentId: string) => AgentServerDeps | undefined;
-	    secret?: string;
-	    authRequired?: boolean;
-	    allowedOrigins?: string[];
-	    getRequestSecurity?: () => RequestSecurityOptions;
-	    sessionLimiter?: SessionLimiter;
-	  }
+    /** Map an agent-supplied session id to the opaque downstream session id for that agent. */
+    resolveSessionId?: (agentId: string, explicitSessionId: string) => string;
+    secret?: string;
+    authRequired?: boolean;
+    allowedOrigins?: string[];
+    getRequestSecurity?: () => RequestSecurityOptions;
+  }
 ): Promise<void> {
-  const sessions = new Map<
-    string,
-    { transport: StreamableHTTPServerTransport; ac: AbortController; profileId: string }
-  >();
+  // One SDK handler per agent profile, created on first use. The handler holds no per-client state
+  // (only the subscriptions/listen bus), so caching it is safe across config reloads: the factory
+  // reads live deps on every request.
+  const handlers = new Map<string, { handler: McpHttpHandler; node: NodeMcpRequestHandler }>();
 
-  // Don't parse request bodies — handleRequest reads the raw stream.
+  function handlerFor(profileId: string): NodeMcpRequestHandler {
+    const existing = handlers.get(profileId);
+    if (existing) return existing.node;
+
+    const handler = createMcpHandler(
+      () => {
+        const deps = opts.getDeps(profileId);
+        // The route checked the profile before dispatching; it can only vanish in a reload race.
+        if (!deps) throw new Error(`Unknown agent profile: ${profileId}`);
+        const { resolveSessionId } = opts;
+        return createAgentServer({
+          ...deps,
+          ...(resolveSessionId
+            ? { resolveSessionId: (id: string) => resolveSessionId(profileId, id) }
+            : {}),
+        });
+      },
+      {
+        legacy: 'stateless',
+        onerror: (err) => log.warn({ profileId, err }, 'MCP handler error'),
+      }
+    );
+    const node = toNodeHandler(handler, {
+      onerror: (err) => log.error({ profileId, err }, 'MCP node adapter error'),
+    });
+    handlers.set(profileId, { handler, node });
+    return node;
+  }
+
+  app.addHook('onClose', async () => {
+    await Promise.allSettled([...handlers.values()].map(({ handler }) => handler.close()));
+    handlers.clear();
+  });
+
+  // Don't parse request bodies — the SDK handler reads the raw stream.
   app.removeAllContentTypeParsers();
   app.addContentTypeParser(
     '*',
@@ -63,109 +118,27 @@ export async function httpServerPlugin(
 
     if (!checkAgentAuth(request, reply, deps)) return;
 
-    const sessionId = request.headers['mcp-session-id'] as string | undefined;
-    const limiter = opts.sessionLimiter;
-
-    let transport: StreamableHTTPServerTransport;
-
-    if (sessionId) {
-      const session = sessions.get(sessionId);
-      if (!session) {
-        // The client is using a session id airlock no longer has — reaped/expired server-side, or
-        // lost across a gateway restart — while the client kept using it. Every request then 404s;
-        // a client that doesn't re-initialize on 404 appears to hang until it's restarted. Logged
-        // at WARN because a run of these is the signature of that wedge (correlate by sessionId).
-        log.warn(
-          { profileId, sessionId, httpMethod: request.method },
-          'MCP request for unknown/expired session (404) — client using a stale session id'
-        );
-        return reply.status(404).send({ error: `Session not found: ${sessionId}` });
-      }
-      if (session.profileId !== profileId) {
-        return reply.status(403).send({ error: 'Session does not belong to this agent' });
-      }
-      transport = session.transport;
-      limiter?.touch(sessionId);
-    } else {
-      // New session — enforce per-agent bulkheads BEFORE allocating a transport or upstream server,
-      // so a flooding/looping client is rejected at the door instead of piling up resources.
-      const admit = limiter?.tryOpen(profileId);
-      if (admit && !admit.ok) {
-        return reply.status(admit.status).send({ error: admit.message });
-      }
-
-      const ac = new AbortController();
-      transport = new StreamableHTTPServerTransport({
-        sessionIdGenerator: () => randomUUID(),
-        onsessioninitialized: (id) => {
-          sessions.set(id, { transport, ac, profileId });
-          limiter?.register(id, profileId, () => {
-            // A reaped transport must stop being addressable immediately. Aborting only the
-            // agent signal leaves the MCP session in `sessions`, so a stale client can keep using
-            // it: reads work, while every HITL call sees the permanently-aborted signal and is
-            // cancelled as soon as its approval is created.
-            sessions.delete(id);
-            ac.abort();
-            void transport.close().catch((err: unknown) => {
-              log.warn({ profileId, sessionId: id, err }, 'Failed to close reaped MCP transport');
-            });
-          });
-          log.info({ profileId, sessionId: id }, 'HTTP session initialized');
-        },
-        onsessionclosed: (id) => {
-          sessions.delete(id);
-          limiter?.close(id);
-          ac.abort();
-          log.info({ profileId, sessionId: id }, 'HTTP session closed');
-        },
-      });
-
-      const server = createAgentServer({
-        ...deps,
-        getDownstreamSessionId: () => transport.sessionId,
-        signal: ac.signal,
-      });
-      await connectAgentServer(server, transport);
-
-      transport.onclose = () => {
-        const id = transport.sessionId;
-        if (id) {
-          sessions.delete(id);
-          limiter?.close(id);
-        }
-        ac.abort();
-      };
-    }
+    const node = handlerFor(profileId);
 
     // Hand off raw Node.js req/res — Fastify must not touch the response after this.
     reply.hijack();
 
     // Transport-level request log, one layer BELOW the tool pipeline's audit trail. A 'request in'
-    // with no matching 'request done' (same reqId) is a handleRequest that never returned — the
-    // session is wedged at the transport and the tool call never reaches the pipeline (no 'received'
-    // audit row), which is exactly what a client that has to be restarted looks like. Two near
-    // simultaneous sessionId:'init' entries reveal a client that double-initializes (paired-session
-    // churn). Cheap at this traffic; grep by reqId/sessionId during an incident.
+    // with no matching 'request done' (same reqId) is a request that never returned — the tool call
+    // never reached the pipeline (no 'received' audit row). The MCP method comes from the
+    // 2026-07-28 `Mcp-Method` routing header when the client sends it.
     const reqId = randomUUID().slice(0, 8);
-    const reqLog = { profileId, reqId, httpMethod: request.method, sessionId: sessionId ?? 'init' };
+    const mcpMethod = request.headers['mcp-method'];
+    const reqLog = {
+      profileId,
+      reqId,
+      httpMethod: request.method,
+      ...(typeof mcpMethod === 'string' ? { mcpMethod } : {}),
+    };
     const startedAt = Date.now();
     log.info(reqLog, 'MCP transport: request in');
-
-    // Track in-flight so the idle reaper never severs a session that is actively serving a
-    // request — including a tool call parked for minutes/hours awaiting HITL approval, whose
-    // response stream stays open the entire time. Only meaningful for existing sessions (a new
-    // session has no id yet during its initialize handshake, which is short-lived anyway).
     try {
-      if (sessionId && limiter) {
-        limiter.beginRequest(sessionId);
-        try {
-          await transport.handleRequest(request.raw, reply.raw);
-        } finally {
-          limiter.endRequest(sessionId);
-        }
-      } else {
-        await transport.handleRequest(request.raw, reply.raw);
-      }
+      await node(request.raw, reply.raw);
     } finally {
       log.info({ ...reqLog, ms: Date.now() - startedAt }, 'MCP transport: request done');
     }

@@ -1,5 +1,5 @@
 import { createHash } from 'crypto';
-import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import type { Tool } from '@modelcontextprotocol/server';
 import type { BackendAdapter } from '../backend/types.js';
 import type { AllowlistEngine, Decision } from '../allowlist/engine.js';
 import type { AgentConfig, ProviderInstructionsConfig, ToolOverride } from '../config/schema.js';

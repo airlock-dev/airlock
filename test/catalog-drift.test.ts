@@ -8,7 +8,7 @@
  * what a provider offers and what policy names, and nothing was looking at that gap.
  */
 import { describe, it, expect } from 'vitest';
-import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import type { Tool } from '@modelcontextprotocol/server';
 import { ToolRegistry } from '../src/registry/registry.js';
 import { AllowlistEngine } from '../src/allowlist/engine.js';
 import { lintCatalog, type LiveCatalog } from '../src/introspect/cli.js';
@@ -37,7 +37,10 @@ async function fingerprintFor(providerId: string, tools: Tool[]): Promise<string
 describe('provider catalog fingerprint', () => {
   it('reports a count and a sha256 fingerprint per provider', async () => {
     const registry = new ToolRegistry(
-      [adapter('clique', [tool('clique/a'), tool('clique/b')]), adapter('linear', [tool('linear/x')])],
+      [
+        adapter('clique', [tool('clique/a'), tool('clique/b')]),
+        adapter('linear', [tool('linear/x')]),
+      ],
       new AllowlistEngine({}),
       {}
     );

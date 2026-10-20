@@ -1,6 +1,5 @@
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
-import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import { Client, SSEClientTransport } from '@modelcontextprotocol/client';
+import type { Tool } from '@modelcontextprotocol/client';
 import type { ProviderConnectionStatus } from './status.js';
 import { childLogger } from '../util/logger.js';
 import { VERSION } from '../version.js';

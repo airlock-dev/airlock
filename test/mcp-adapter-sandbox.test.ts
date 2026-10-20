@@ -17,14 +17,14 @@ const mockConnect = vi.fn().mockResolvedValue(undefined);
 const mockCallTool = vi.fn().mockResolvedValue({ content: [{ type: 'text', text: 'result' }] });
 const mockTransportClose = vi.fn().mockResolvedValue(undefined);
 
-vi.mock('@modelcontextprotocol/sdk/client/index.js', () => ({
+vi.mock('@modelcontextprotocol/client', () => ({
   Client: vi.fn().mockImplementation(() => ({
     connect: mockConnect,
     callTool: mockCallTool,
   })),
 }));
 
-vi.mock('@modelcontextprotocol/sdk/client/stdio.js', () => ({
+vi.mock('@modelcontextprotocol/client/stdio', () => ({
   StdioClientTransport: vi.fn().mockImplementation(() => ({
     close: mockTransportClose,
   })),
@@ -127,7 +127,7 @@ describe('McpBackendAdapter sandbox', () => {
 
   it('spawns ephemeral sandboxed instance for stdio with sandbox config', async () => {
     const { McpBackendAdapter } = await import('../src/backend/mcp-adapter.js');
-    const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/stdio.js');
+    const { StdioClientTransport } = await import('@modelcontextprotocol/client/stdio');
 
     const pool = makePool();
     const adapter = new McpBackendAdapter('github', pool, stdioConfig);
@@ -312,7 +312,7 @@ describe('McpBackendAdapter sandbox', () => {
 
   it('includes env from server config in ephemeral transport', async () => {
     const { McpBackendAdapter } = await import('../src/backend/mcp-adapter.js');
-    const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/stdio.js');
+    const { StdioClientTransport } = await import('@modelcontextprotocol/client/stdio');
 
     const configWithEnv: McpServerConfig = {
       type: 'stdio',

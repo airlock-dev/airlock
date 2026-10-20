@@ -3,7 +3,7 @@ import { SseMcpClient } from './sse-client.js';
 import { HttpMcpClient } from './http-client.js';
 import type { ProviderConnectionStatus } from './status.js';
 import type { McpServerConfig } from '../config/schema.js';
-import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import type { Tool } from '@modelcontextprotocol/server';
 import { childLogger } from '../util/logger.js';
 
 const log = childLogger('pool');

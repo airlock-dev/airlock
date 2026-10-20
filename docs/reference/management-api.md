@@ -222,6 +222,13 @@ curl -X POST http://localhost:4113/hitl/approve/550e8400-e29b-41d4-a716-44665544
 Optional: `duration_ms`, `max_uses`, `session_only`. Requests flagged by a security check can't
 be widened into a grant; trying returns `400`.
 
+`session_only` binds the grant to the agent session that made the request, so other agents sharing
+the same profile aren't covered. Over streamable HTTP the session is the id the agent sends
+(`X-Airlock-Session-Id`, `?session=`, or `_meta["dev.airlock/session"]`, see
+[Connecting HTTP Agents](/guides/http-agents)); in stdio mode it's the process. A request with no
+session id can't take a `session_only` grant (`400`), so it is never silently widened to the whole
+profile.
+
 ### `POST /hitl/approvals/decisions`
 
 Decide an explicit list of approvals in one call. Flagged (escalated) requests are skipped on

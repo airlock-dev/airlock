@@ -4,7 +4,7 @@ import { isIP } from 'net';
 import { parseArgs } from 'util';
 import Fastify, { type FastifyInstance, type FastifyReply } from 'fastify';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
-import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import type { Tool } from '@modelcontextprotocol/server';
 import { AuditDb, type AuditEntry, type HitlQueueEntry } from '../audit/db.js';
 import { buildAdapters } from '../backend/factory.js';
 import {

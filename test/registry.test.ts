@@ -7,7 +7,7 @@ import { ExecBackendAdapter } from '../src/backend/exec-adapter.js';
 import { HttpBackendAdapter } from '../src/backend/http-adapter.js';
 import type { BackendAdapter } from '../src/backend/types.js';
 import type { AgentConfig, SecurityConfig } from '../src/config/schema.js';
-import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import type { Tool } from '@modelcontextprotocol/server';
 
 // ─── sanitizeToolDescription ─────────────────────────────────────────────────
 

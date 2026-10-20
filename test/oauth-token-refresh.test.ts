@@ -3,7 +3,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { FileOAuthProvider } from '../src/pool/oauth-provider.js';
-import type { OAuthTokens } from '@modelcontextprotocol/sdk/shared/auth.js';
+import type { OAuthTokens } from '@modelcontextprotocol/server';
 
 // Prevent actual browser opens
 vi.mock('child_process', () => ({

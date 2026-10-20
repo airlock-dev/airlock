@@ -3,7 +3,7 @@ import { readFileSync, writeFileSync, copyFileSync, openSync } from 'fs';
 import { ReadStream } from 'tty';
 import { execSync } from 'child_process';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
-import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import type { Tool } from '@modelcontextprotocol/server';
 import { ClientPool } from '../pool/pool.js';
 import { getMcpConfigs, GatewayConfig } from '../config/schema.js';
 import { checkSuspiciousPatterns, SUSPICIOUS_PATTERNS } from '../registry/sanitizer.js';

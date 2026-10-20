@@ -1,6 +1,6 @@
 import { spawn } from 'child_process';
 import type { AgentConfig } from '../config/schema.js';
-import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import type { Tool } from '@modelcontextprotocol/server';
 import { matchesCommand } from '../allowlist/pattern.js';
 import { wrapCommandWithSandbox, type ResolvedSandboxConfig } from '../sandbox/index.js';
 

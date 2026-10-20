@@ -19,10 +19,8 @@ import { createServer } from 'node:http';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import type { Tool } from '@modelcontextprotocol/sdk/types.js';
-
+import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
+import type { Tool } from '@modelcontextprotocol/client';
 import { createDownstreamServer } from './echo-server.js';
 import { createAgentServer, connectAgentServer } from '../src/transport/agent-server.js';
 import { ToolRegistry } from '../src/registry/registry.js';

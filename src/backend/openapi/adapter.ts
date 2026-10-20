@@ -1,4 +1,4 @@
-import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import type { Tool } from '@modelcontextprotocol/server';
 import type { BackendAdapter } from '../types.js';
 import type { ToolCall, ToolResult } from '../../types.js';
 import type { ApiConfig, SecurityConfig } from '../../config/schema.js';

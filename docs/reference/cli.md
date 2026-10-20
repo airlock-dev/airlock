@@ -12,6 +12,11 @@ airlock --config airlock.yaml
 combined mode. The data-plane endpoints are
 `/agents/:agentId/mcp` (streamable HTTP) and `/agents/:agentId/sse` (SSE).
 
+The streamable HTTP endpoint is stateless: it speaks MCP 2026-07-28 to clients that send the
+per-request envelope and serves 2025-era clients without issuing an `Mcp-Session-Id`, so there is
+no per-agent session cap on it. The SSE endpoint is the deprecated 2024-11-05 transport and keeps
+its session limits (`security.limits`). See [Connecting HTTP Agents](/guides/http-agents).
+
 For split deployments, run only the MCP/runtime gateway and disable the
 in-process dashboard provider:
 

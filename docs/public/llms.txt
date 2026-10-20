@@ -17,6 +17,7 @@ Pages:
 - /guides/dashboard
 - /guides/docker-deploy
 - /guides/hook-endpoint
+- /guides/http-agents
 - /guides/openclaw
 - /guides/profiles
 - /guides/sandboxed-python
