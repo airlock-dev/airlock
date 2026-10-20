@@ -1,5 +1,6 @@
 import { readFileSync, writeFileSync } from 'fs';
-import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
+import { parse as parseYaml } from 'yaml';
+import { stringifyPreservingComments } from './yaml-merge.js';
 
 export type RememberAllowMode = 'always' | 'temporary';
 
@@ -84,7 +85,7 @@ export function rememberAllow(options: RememberAllowOptions): RememberAllowResul
   }
 
   doc.agents[options.agentId] = agent;
-  writeFileSync(options.configPath, stringifyYaml(doc));
+  writeFileSync(options.configPath, stringifyPreservingComments(raw, doc));
 
   return {
     agentId: options.agentId,
