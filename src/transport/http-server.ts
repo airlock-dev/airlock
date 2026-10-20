@@ -38,37 +38,51 @@ export async function httpServerPlugin(
       profileId: string;
       probing: boolean;
       eventStreams: number;
+      heartbeat?: ReturnType<typeof setTimeout>;
     }
   >();
 
   // An open event stream is not proof that the client is alive (a proxy may keep its
   // connection open), but a successful MCP ping round trip is. Keep responsive clients
   // alive during long coding/thinking pauses without pinning abandoned sessions forever.
-  const heartbeat = opts.sessionLimiter
-    ? setInterval(() => {
-        for (const [id, session] of sessions) {
-          if (session.probing || session.eventStreams === 0) continue;
-          session.probing = true;
-          void session.server
-            .request({ method: 'ping' }, EmptyResultSchema, {
-              timeout: 5000,
-              signal: session.ac.signal,
-            })
-            .then(() => {
-              opts.sessionLimiter?.touch(id);
-            })
-            .catch(() => {
-              // A missing/half-dead event stream must not refresh the idle clock.
-            })
-            .finally(() => {
-              session.probing = false;
-            });
-        }
-      }, opts.heartbeatIntervalMs ?? 60_000)
-    : undefined;
-  heartbeat?.unref();
+  function scheduleHeartbeat(id: string): void {
+    const session = sessions.get(id);
+    const limiter = opts.sessionLimiter;
+    if (
+      !session ||
+      !limiter ||
+      session.ac.signal.aborted ||
+      session.eventStreams === 0 ||
+      session.probing ||
+      session.heartbeat
+    )
+      return;
+    // Leave time for both the probe and its response before the effective per-agent idle limit.
+    // Re-read limits each round so configuration reloads also affect subsequent probes.
+    const idleMs = limiter.getSessionIdleMs(session.profileId);
+    const budgetMs = idleMs > 0 ? Math.max(1, Math.floor(idleMs / 3)) : Infinity;
+    const intervalMs = Math.min(opts.heartbeatIntervalMs ?? 60_000, budgetMs);
+    session.heartbeat = setTimeout(() => {
+      session.heartbeat = undefined;
+      session.probing = true;
+      void session.server
+        .request({ method: 'ping' }, EmptyResultSchema, {
+          timeout: Math.min(5000, budgetMs),
+          signal: session.ac.signal,
+        })
+        .then(() => limiter.touch(id))
+        .catch(() => {
+          // A missing/half-dead event stream must not refresh the idle clock.
+        })
+        .finally(() => {
+          session.probing = false;
+          scheduleHeartbeat(id);
+        });
+    }, intervalMs);
+    session.heartbeat.unref();
+  }
+
   app.addHook('onClose', () => {
-    clearInterval(heartbeat);
     for (const session of sessions.values()) session.ac.abort();
   });
 
@@ -145,6 +159,14 @@ export async function httpServerPlugin(
         sessionIdGenerator: () => randomUUID(),
         onsessioninitialized: (id) => {
           sessions.set(id, { transport, server, ac, profileId, probing: false, eventStreams: 0 });
+          const session = sessions.get(id)!;
+          ac.signal.addEventListener(
+            'abort',
+            () => {
+              clearTimeout(session.heartbeat);
+            },
+            { once: true }
+          );
           limiter?.register(id, profileId, () => {
             // A reaped transport must stop being addressable immediately. Aborting only the
             // agent signal leaves the MCP session in `sessions`, so a stale client can keep using
@@ -205,7 +227,10 @@ export async function httpServerPlugin(
     // (a new session has no id yet during its initialize handshake, which is short-lived anyway).
     const eventSession =
       request.method === 'GET' && sessionId ? sessions.get(sessionId) : undefined;
-    if (eventSession) eventSession.eventStreams += 1;
+    if (eventSession && sessionId) {
+      eventSession.eventStreams += 1;
+      scheduleHeartbeat(sessionId);
+    }
     try {
       if (sessionId && limiter && request.method !== 'GET') {
         limiter.beginRequest(sessionId);
@@ -218,7 +243,13 @@ export async function httpServerPlugin(
         await transport.handleRequest(request.raw, reply.raw);
       }
     } finally {
-      if (eventSession) eventSession.eventStreams -= 1;
+      if (eventSession) {
+        eventSession.eventStreams -= 1;
+        if (eventSession.eventStreams === 0) {
+          clearTimeout(eventSession.heartbeat);
+          eventSession.heartbeat = undefined;
+        }
+      }
       log.info({ ...reqLog, ms: Date.now() - startedAt }, 'MCP transport: request done');
     }
   }

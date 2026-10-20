@@ -651,6 +651,34 @@ describe('http-transport: session management', () => {
 });
 
 describe('http-transport: idle session reaping', () => {
+  it('keeps a responsive client alive with an idle limit shorter than the default heartbeat', async () => {
+    const sessionLimiter = new SessionLimiter({
+      getLimits: () => ({ ...DEFAULT_LIMITS, sessionIdleMs: 600 }),
+      sweepIntervalMs: 30,
+    });
+    const srv = await buildServer({ sessionLimiter });
+    let client: Client | undefined;
+    try {
+      ({ client } = await connect(srv.port));
+      let pings = 0;
+      client.setRequestHandler(PingRequestSchema, () => {
+        pings += 1;
+        return {};
+      });
+      sessionLimiter.start();
+      await new Promise((resolve) => setTimeout(resolve, 1700));
+      expect(pings).toBeGreaterThanOrEqual(3);
+      expect(sessionLimiter.snapshot().total).toBe(1);
+      expect((await client.listTools()).tools.length).toBeGreaterThan(0);
+      await client.close();
+      await vi.waitFor(() => expect(sessionLimiter.snapshot().total).toBe(0), { timeout: 1500 });
+    } finally {
+      await client?.close().catch(() => {});
+      sessionLimiter.stop();
+      await srv.teardown();
+    }
+  });
+
   it('does not keep an unresponsive open event stream alive', async () => {
     const clock = { now: 0 };
     const sessionLimiter = new SessionLimiter({
