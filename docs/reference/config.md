@@ -103,7 +103,7 @@ providers:
 | `token_url`     | The issuer's token endpoint                                           |
 | `client_id`     | App client id (`${ENV}` supported)                                    |
 | `client_secret` | App client secret (`${ENV}` supported)                                |
-| `auth_method`   | Optional: `client_secret_basic` (default) or `client_secret_post`      |
+| `auth_method`   | Optional: `client_secret_basic` (default) or `client_secret_post`     |
 | `scope`         | Optional; passed through untouched, so use the issuer's own separator |
 
 Tokens are minted on demand, cached under `~/.airlock/oauth/<provider>.client-credentials.json` at
@@ -685,7 +685,12 @@ and, when `expose_tools_api` enables it, the REST agent tool API
 - `allowed_origins` is an exact allowlist for browser `Origin` headers. Requests
   without `Origin` are allowed so non-browser MCP clients keep working.
 - `mcp_http_mode` selects the `/agents/:agentId/mcp` edge. `sessionful` is the
-  default and preserves the existing SDK v1 transport. `stateless` enables MCP
+  default: legacy initialization preserves SDK v1 sessions and heartbeats, while
+  modern discovery and requests without a session ID use the SDK v2 per-request
+  handler. Each sessionless request consumes an admission slot until completion;
+  initialization rate limits also bound these requests. Authentication, policy,
+  approvals and audit apply to both paths. Session-only grants are never shared
+  between independent sessionless requests. `stateless` enables MCP
   2026-07-28 through the SDK v2 per-request transport and also serves 2025-era
   Streamable HTTP clients through its stateless compatibility path. In
   `stateless` mode Airlock never issues or looks up `Mcp-Session-Id`, so a

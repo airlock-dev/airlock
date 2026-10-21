@@ -365,6 +365,137 @@ describe('http-transport: basic MCP protocol', () => {
   });
 });
 
+describe('http-transport: mixed sessionful and sessionless clients', () => {
+  let srv: ServerFixture;
+  afterEach(async () => {
+    await srv.teardown();
+    vi.restoreAllMocks();
+  });
+
+  function post(body: unknown, headers: Record<string, string> = {}) {
+    return fetch(`http://127.0.0.1:${srv.port}/agents/test/mcp`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+        ...headers,
+      },
+      body: JSON.stringify(body),
+    });
+  }
+
+  it('serves modern discovery and calls alongside a legacy session on the same endpoint', async () => {
+    srv = await buildServer();
+    const legacy = await connect(srv.port);
+    const modern = await connectModern(srv.port);
+    try {
+      expect(modern.transport.sessionId).toBeUndefined();
+      const result = await modern.client.callTool({
+        name: 'tools_echo',
+        arguments: { message: 'modern' },
+      });
+      expect(result.content).toEqual([{ type: 'text', text: 'modern' }]);
+      await expect(legacy.client.listTools()).resolves.toBeDefined();
+    } finally {
+      await legacy.client.close();
+      await modern.client.close();
+    }
+  });
+
+  it('executes and audits a legacy tool call without an initialize or session header', async () => {
+    srv = await buildServer();
+    const response = await post({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'tools/call',
+      params: { name: 'tools_echo', arguments: { message: 'sessionless' } },
+    });
+    expect(response.status).toBe(200);
+    expect(response.headers.get('mcp-session-id')).toBeNull();
+    expect(await response.text()).toContain('sessionless');
+    expect(srv.auditLogger.log).toHaveBeenCalledWith(
+      expect.objectContaining({ tool: 'tools/echo', result: 'success' })
+    );
+  });
+
+  it('enforces token, origin and tool policy on the sessionless path', async () => {
+    srv = await buildServer({
+      agentConfig: { token: 'agent-secret', allow: [], deny: ['tools/echo'] },
+      allowedOrigins: ['https://allowed.example'],
+    });
+    const body = {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'tools/call',
+      params: { name: 'tools_echo', arguments: { message: 'denied' } },
+    };
+    expect((await post(body)).status).toBe(401);
+    expect(
+      (await post(body, { Authorization: 'Bearer agent-secret', Origin: 'https://wrong.example' }))
+        .status
+    ).toBe(403);
+    const denied = await post(body, { Authorization: 'Bearer agent-secret' });
+    expect(await denied.text()).toMatch(/Tool not available/);
+    expect(srv.auditLogger.log).not.toHaveBeenCalledWith(
+      expect.objectContaining({ result: 'dispatched' })
+    );
+  });
+
+  it('does not share session-bound approval grants between sessionless requests', async () => {
+    srv = await buildServer({ agentConfig: { allow: [], ask: ['tools/echo'] } });
+    const consume = vi
+      .spyOn(srv.hitlEngine, 'consumeGrant')
+      .mockReturnValue({ id: 'test-grant' } as never);
+    for (let id = 1; id <= 2; id++) {
+      const response = await post({
+        jsonrpc: '2.0',
+        id,
+        method: 'tools/call',
+        params: { name: 'tools_echo', arguments: withReason({ message: 'approved' }) },
+      });
+      expect(response.status).toBe(200);
+      await response.text();
+    }
+    expect(consume).toHaveBeenCalledTimes(2);
+    expect(consume.mock.calls[0][0].sessionId).toBeTruthy();
+    expect(consume.mock.calls[0][0].sessionId).not.toBe(consume.mock.calls[1][0].sessionId);
+  });
+
+  it('waits for human approval before executing a sessionless write', async () => {
+    srv = await buildServer({ agentConfig: { allow: [], ask: ['tools/echo'] } });
+    const response = post({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'tools/call',
+      params: { name: 'tools_echo', arguments: withReason({ message: 'approved-sessionless' }) },
+    }).then((r) => r.text());
+    await vi.waitFor(() => expect(srv.hitlEngine.getPending()).toHaveLength(1));
+    expect(srv.auditLogger.log).not.toHaveBeenCalledWith(
+      expect.objectContaining({ result: 'dispatched' })
+    );
+    srv.hitlEngine.approveByCode(srv.hitlEngine.getPending()[0].code);
+    expect(await response).toContain('approved-sessionless');
+    expect(srv.auditLogger.log).toHaveBeenCalledWith(
+      expect.objectContaining({ result: 'success' })
+    );
+  });
+
+  it('applies admission limits to sessionless requests and releases their slots', async () => {
+    const limiter = new SessionLimiter({
+      getLimits: () => ({ ...DEFAULT_LIMITS, maxSessionsPerAgent: 1, newSessionMax: 2 }),
+    });
+    srv = await buildServer({ sessionLimiter: limiter });
+    const body = { jsonrpc: '2.0', id: 1, method: 'tools/list' };
+    for (let i = 0; i < 2; i++) {
+      const response = await post(body);
+      expect(response.status).toBe(200);
+      await response.text();
+    }
+    expect(limiter.snapshot().total).toBe(0);
+    expect((await post(body)).status).toBe(429);
+  });
+});
+
 // ─── Stateless MCP 2026-07-28 edge ──────────────────────────────────────────
 
 describe('http-transport: stateless MCP v2 compatibility', () => {

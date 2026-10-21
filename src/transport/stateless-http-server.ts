@@ -19,29 +19,20 @@ interface ProfileHandler {
   node: NodeMcpRequestHandler;
 }
 
-/**
- * MCP 2026-07-28 per-request HTTP transport, with the v2 SDK's legacy-stateless fallback enabled.
- * Both protocol eras use the same URL and policy pipeline; neither receives an Mcp-Session-Id.
- */
-// eslint-disable-next-line @typescript-eslint/require-await
-export async function statelessHttpServerPlugin(
-  app: FastifyInstance,
-  opts: {
-    getDeps: (agentId: string) => AgentServerDeps | undefined;
-    secret?: string;
-    authRequired?: boolean;
-    allowedOrigins?: string[];
-    getRequestSecurity?: () => RequestSecurityOptions;
-  }
-): Promise<void> {
-  const handlers = new Map<string, ProfileHandler>();
+interface StatelessHttpOptions {
+  getDeps: (agentId: string) => AgentServerDeps | undefined;
+  secret?: string;
+  authRequired?: boolean;
+  allowedOrigins?: string[];
+  getRequestSecurity?: () => RequestSecurityOptions;
+}
 
-  // toNodeHandler consumes the raw request stream. Keep Fastify from reading it first.
-  app.removeAllContentTypeParsers();
-  app.addContentTypeParser(
-    '*',
-    (_req: FastifyRequest, _payload: unknown, done: (err: null) => void) => done(null)
-  );
+/** Shared per-request edge for modern MCP and legacy requests without a session. */
+export function createStatelessHttpHandler(opts: StatelessHttpOptions): {
+  handle: (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
+  close: () => Promise<void>;
+} {
+  const handlers = new Map<string, ProfileHandler>();
 
   function checkAgentAuth(
     request: FastifyRequest,
@@ -65,14 +56,14 @@ export async function statelessHttpServerPlugin(
     const existing = handlers.get(profileId);
     if (existing) return existing;
 
-    const downstreamSessionId = randomUUID();
     const mcp = createMcpHandler(
       ({ requestInfo }) => {
         const deps = opts.getDeps(profileId);
         if (!deps) throw new Error(`Unknown agent profile: ${profileId}`);
         return createStatelessAgentServer({
           ...deps,
-          downstreamSessionId,
+          // A sessionless request must never inherit another caller's session-only approval.
+          downstreamSessionId: randomUUID(),
           signal: requestInfo?.signal,
         });
       },
@@ -107,21 +98,46 @@ export async function statelessHttpServerPlugin(
 
     reply.hijack();
     try {
-      await handlerFor(profileId).node(request.raw, reply.raw);
+      await handlerFor(profileId).node(request.raw, reply.raw, request.body);
     } finally {
       log.info(
-        { profileId, reqId, httpMethod: request.method, ms: Date.now() - startedAt },
+        {
+          profileId,
+          reqId,
+          httpMethod: request.method,
+          protocolVersion: request.headers['mcp-protocol-version'],
+          statusCode: reply.raw.statusCode,
+          ms: Date.now() - startedAt,
+        },
         'Stateless MCP request done'
       );
     }
   }
 
-  app.post('/agents/:profileId/mcp', handleMcpRequest);
-  app.get('/agents/:profileId/mcp', handleMcpRequest);
-  app.delete('/agents/:profileId/mcp', handleMcpRequest);
+  return {
+    handle: handleMcpRequest,
+    close: async () => {
+      await Promise.allSettled([...handlers.values()].map(({ mcp }) => mcp.close()));
+      handlers.clear();
+    },
+  };
+}
 
-  app.addHook('onClose', async () => {
-    await Promise.allSettled([...handlers.values()].map(({ mcp }) => mcp.close()));
-    handlers.clear();
-  });
+/** Explicit stateless mode: modern MCP and the SDK's legacy-stateless fallback. */
+// eslint-disable-next-line @typescript-eslint/require-await
+export async function statelessHttpServerPlugin(
+  app: FastifyInstance,
+  opts: StatelessHttpOptions
+): Promise<void> {
+  const handler = createStatelessHttpHandler(opts);
+  // The adapter consumes the raw request stream in explicit stateless mode.
+  app.removeAllContentTypeParsers();
+  app.addContentTypeParser(
+    '*',
+    (_req: FastifyRequest, _payload: unknown, done: (err: null) => void) => done(null)
+  );
+  app.post('/agents/:profileId/mcp', handler.handle);
+  app.get('/agents/:profileId/mcp', handler.handle);
+  app.delete('/agents/:profileId/mcp', handler.handle);
+  app.addHook('onClose', handler.close);
 }

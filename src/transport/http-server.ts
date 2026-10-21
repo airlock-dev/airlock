@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { EmptyResultSchema } from '@modelcontextprotocol/sdk/types.js';
+import { EmptyResultSchema, isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { createAgentServer, connectAgentServer } from './agent-server.js';
 import type { AgentServerDeps } from './agent-server.js';
@@ -12,6 +12,7 @@ import {
   type RequestSecurityOptions,
 } from '../security/request.js';
 import type { SessionLimiter } from './session-limiter.js';
+import { createStatelessHttpHandler } from './stateless-http-server.js';
 
 const log = childLogger('http-server');
 
@@ -29,6 +30,8 @@ export async function httpServerPlugin(
     heartbeatIntervalMs?: number;
   }
 ): Promise<void> {
+  const sessionless = createStatelessHttpHandler(opts);
+  app.addHook('onClose', sessionless.close);
   const sessions = new Map<
     string,
     {
@@ -86,8 +89,14 @@ export async function httpServerPlugin(
     for (const session of sessions.values()) session.ac.abort();
   });
 
-  // Don't parse request bodies — handleRequest reads the raw stream.
+  // Parse JSON once to distinguish legacy initialization from a sessionless request. Both SDK
+  // adapters accept the parsed body. Bound this buffering to 4 MiB.
   app.removeAllContentTypeParsers();
+  app.addContentTypeParser(
+    'application/json',
+    { parseAs: 'string', bodyLimit: 4 * 1024 * 1024 },
+    app.getDefaultJsonParser('error', 'error')
+  );
   app.addContentTypeParser(
     '*',
     (_req: FastifyRequest, _payload: unknown, done: (err: null) => void) => {
@@ -125,6 +134,22 @@ export async function httpServerPlugin(
 
     const sessionId = request.headers['mcp-session-id'] as string | undefined;
     const limiter = opts.sessionLimiter;
+
+    // Legacy initialize still creates a session with heartbeats and session-bound grants.
+    // Modern clients (including server/discover) and legacy clients that omit the session ID
+    // need a per-request server: creating an uninitialized v1 transport here wedges every call.
+    if (!sessionId && (request.method !== 'POST' || !isInitializeRequest(request.body))) {
+      const admit = limiter?.tryOpen(profileId);
+      if (admit && !admit.ok) return reply.status(admit.status).send({ error: admit.message });
+      const requestSlot = randomUUID();
+      limiter?.register(requestSlot, profileId, () => reply.raw.destroy());
+      limiter?.beginRequest(requestSlot);
+      try {
+        return await sessionless.handle(request, reply);
+      } finally {
+        limiter?.close(requestSlot);
+      }
+    }
 
     let transport: StreamableHTTPServerTransport;
 
@@ -215,7 +240,13 @@ export async function httpServerPlugin(
     // simultaneous sessionId:'init' entries reveal a client that double-initializes (paired-session
     // churn). Cheap at this traffic; grep by reqId/sessionId during an incident.
     const reqId = randomUUID().slice(0, 8);
-    const reqLog = { profileId, reqId, httpMethod: request.method, sessionId: sessionId ?? 'init' };
+    const reqLog = {
+      profileId,
+      reqId,
+      httpMethod: request.method,
+      sessionId: sessionId ?? 'init',
+      protocolVersion: request.headers['mcp-protocol-version'],
+    };
     const startedAt = Date.now();
     log.info(reqLog, 'MCP transport: request in');
 
@@ -235,12 +266,12 @@ export async function httpServerPlugin(
       if (sessionId && limiter && request.method !== 'GET') {
         limiter.beginRequest(sessionId);
         try {
-          await transport.handleRequest(request.raw, reply.raw);
+          await transport.handleRequest(request.raw, reply.raw, request.body);
         } finally {
           limiter.endRequest(sessionId);
         }
       } else {
-        await transport.handleRequest(request.raw, reply.raw);
+        await transport.handleRequest(request.raw, reply.raw, request.body);
       }
     } finally {
       if (eventSession) {
@@ -250,7 +281,10 @@ export async function httpServerPlugin(
           eventSession.heartbeat = undefined;
         }
       }
-      log.info({ ...reqLog, ms: Date.now() - startedAt }, 'MCP transport: request done');
+      log.info(
+        { ...reqLog, statusCode: reply.raw.statusCode, ms: Date.now() - startedAt },
+        'MCP transport: request done'
+      );
     }
   }
 
