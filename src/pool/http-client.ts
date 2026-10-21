@@ -8,6 +8,8 @@ import type { ClientCredentialsConfig } from '../config/schema.js';
 import type { ProviderConnectionStatus } from './status.js';
 import { childLogger } from '../util/logger.js';
 import { VERSION } from '../version.js';
+import { oauthFetch, oauthTransportFetch } from './oauth-fetch.js';
+import { TemporarilyUnavailableError } from '@modelcontextprotocol/sdk/server/auth/errors.js';
 
 const log = childLogger('http-client');
 
@@ -144,6 +146,7 @@ export class HttpMcpClient {
 
     if (this.oauthProvider) {
       transportOpts.authProvider = this.oauthProvider;
+      transportOpts.fetch = oauthTransportFetch;
     }
 
     if (this.tokenSource) {
@@ -268,7 +271,10 @@ export class HttpMcpClient {
     this.awaitingAuth = true;
     try {
       if (!authorizationPrepared) {
-        const result = await auth(this.oauthProvider!, { serverUrl: this.url });
+        const result = await auth(this.oauthProvider!, {
+          serverUrl: this.url,
+          fetchFn: oauthFetch,
+        });
         if (result === 'AUTHORIZED') {
           // The reactive 401 raced a usable refresh token. Reconnect without asking the operator
           // to complete a browser flow that is no longer necessary.
@@ -302,7 +308,10 @@ export class HttpMcpClient {
         }
 
         this.oauthProvider!.stopCallbackServer();
-        const result = await auth(this.oauthProvider!, { serverUrl: this.url });
+        const result = await auth(this.oauthProvider!, {
+          serverUrl: this.url,
+          fetchFn: oauthFetch,
+        });
         if (result === 'AUTHORIZED') {
           const oldTransport = this.transport;
           if (oldTransport) oldTransport.onclose = undefined;
@@ -315,6 +324,10 @@ export class HttpMcpClient {
       }
     } catch (err) {
       this.lastError = friendlyError(err);
+      if (err instanceof TemporarilyUnavailableError) {
+        this.authorizationRequired = false;
+        this.scheduleRefreshRetry();
+      }
       throw err;
     } finally {
       this.awaitingAuth = false;
@@ -403,13 +416,21 @@ export class HttpMcpClient {
     const startedAt = Date.now();
     log.info({ id: this.id, attempt }, 'Starting proactive OAuth token refresh');
     try {
-      const result = await auth(this.oauthProvider, { serverUrl: this.url });
+      const result = await auth(this.oauthProvider, { serverUrl: this.url, fetchFn: oauthFetch });
       if (result === 'AUTHORIZED') {
         log.info(
           { id: this.id, attempt, elapsedMs: Date.now() - startedAt },
           'Proactively refreshed OAuth token before expiry'
         );
-        await this.scheduleProactiveRefresh();
+        if (!this.ready) {
+          // A reactive auth failure may have suspended the connection before the issuer recovered.
+          const oldTransport = this.transport;
+          if (oldTransport) oldTransport.onclose = undefined;
+          await oldTransport?.close();
+          await this.connect();
+        } else {
+          await this.scheduleProactiveRefresh();
+        }
       } else {
         log.warn(
           { id: this.id, attempt, elapsedMs: Date.now() - startedAt },
@@ -422,14 +443,18 @@ export class HttpMcpClient {
         { id: this.id, attempt, elapsedMs: Date.now() - startedAt, reason: friendlyError(err) },
         'Proactive token refresh failed; retrying'
       );
-      if (!this.stopped) {
-        this.refreshTimer = setTimeout(() => {
-          this.refreshTimer = undefined;
-          void this.proactiveRefresh();
-        }, REFRESH_RETRY_MS);
-        this.refreshTimer.unref?.();
-      }
+      this.scheduleRefreshRetry();
     }
+  }
+
+  private scheduleRefreshRetry(): void {
+    if (this.stopped) return;
+    if (this.refreshTimer) clearTimeout(this.refreshTimer);
+    this.refreshTimer = setTimeout(() => {
+      this.refreshTimer = undefined;
+      void this.proactiveRefresh();
+    }, REFRESH_RETRY_MS);
+    this.refreshTimer.unref?.();
   }
 
   async listTools(): Promise<Tool[]> {

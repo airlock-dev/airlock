@@ -15,6 +15,8 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { UnauthorizedError } from '@modelcontextprotocol/sdk/client/auth.js';
+import { TemporarilyUnavailableError } from '@modelcontextprotocol/sdk/server/auth/errors.js';
+import { oauthFetch } from '../src/pool/oauth-fetch.js';
 
 // ─── Module mocks (hoisted) ──────────────────────────────────────────────────
 
@@ -398,6 +400,7 @@ describe('HttpMcpClient — stale Streamable HTTP session recovery', () => {
     });
     expect(authMock).toHaveBeenCalledWith(expect.anything(), {
       serverUrl: 'https://mcp.amoura.io/mcp',
+      fetchFn: oauthFetch,
     });
   });
 
@@ -415,6 +418,45 @@ describe('HttpMcpClient — stale Streamable HTTP session recovery', () => {
       status: 'auth_required',
       reason: 'OAuth authorization required',
     });
+  });
+
+  it('automatically retries a transient proactive refresh and remains connected', async () => {
+    vi.useFakeTimers();
+    clientConnectCallCount = 1;
+    const client = new HttpMcpClient('amoura', 'https://mcp.amoura.io/mcp', undefined, true);
+    try {
+      await client.connect();
+      authMock.mockRejectedValueOnce(new TemporarilyUnavailableError('temporary outage'));
+      await (client as unknown as { proactiveRefresh(): Promise<void> }).proactiveRefresh();
+      expect(client.isReady()).toBe(true);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(authMock).toHaveBeenCalledTimes(2);
+      expect(client.getConnectionStatus()).toEqual({ status: 'up' });
+    } finally {
+      await client.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it('reconnects automatically when reactive authorization encounters a temporary outage', async () => {
+    vi.useFakeTimers();
+    clientConnectCallCount = 1;
+    const client = new HttpMcpClient('amoura', 'https://mcp.amoura.io/mcp', undefined, true);
+    try {
+      await client.connect();
+      authMock.mockRejectedValueOnce(new TemporarilyUnavailableError('temporary outage'));
+      clientInstances[0].callTool.mockRejectedValueOnce(new Error('Unauthorized'));
+      await expect(client.callTool('health', {})).rejects.toThrow('Unauthorized');
+      await vi.advanceTimersByTimeAsync(0);
+      expect(client.getConnectionStatus().status).not.toBe('auth_required');
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(client.isReady()).toBe(true);
+      expect(transportInstances).toHaveLength(2);
+      await expect(client.callTool('health', {})).resolves.toEqual({ content: [] });
+    } finally {
+      await client.stop();
+      vi.useRealTimers();
+    }
   });
 
   it('passes the configured request timeout to listTools and callTool', async () => {
