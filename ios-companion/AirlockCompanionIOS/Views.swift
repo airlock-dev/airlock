@@ -1044,11 +1044,22 @@ private struct PlanCallsView: View {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(verbatim: item.element.tool)
                                 .font(.subheadline.weight(.semibold))
-                            Text(verbatim: item.element.compactArgs)
+                            if item.element.argRows.isEmpty {
+                                Text("No arguments")
+                                    .font(.caption)
+                                    .foregroundStyle(.tertiary)
+                            }
+                            ForEach(item.element.argRows, id: \.key) { row in
+                                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                                    Text(verbatim: row.key)
+                                        .foregroundStyle(.tertiary)
+                                    Text(verbatim: row.value)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(6)
+                                }
                                 .font(.system(.caption, design: .monospaced))
-                                .foregroundStyle(.secondary)
-                                .lineLimit(4)
                                 .textSelection(.enabled)
+                            }
                         }
                     }
                     .padding(.vertical, 8)

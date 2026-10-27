@@ -230,6 +230,12 @@ struct PlanEntry: Codable, Equatable, Sendable {
             .map { "\($0.key): \($0.value.displayString)" }
             .joined(separator: ", ")
     }
+
+    /// One `(key, value)` row per argument, strings unquoted, for the per-call plan layout.
+    var argRows: [(key: String, value: String)] {
+        (args ?? [:]).sorted { $0.key < $1.key }
+            .map { (key: $0.key, value: $0.value.plainString ?? $0.value.displayString) }
+    }
 }
 
 struct GrantOption: Codable, Equatable, Hashable, Sendable {

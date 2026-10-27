@@ -139,6 +139,12 @@ struct PlanEntry: Decodable, Equatable, Sendable {
             .map { "\($0.key): \($0.value.displayString)" }
             .joined(separator: ", ")
     }
+
+    /// One `(key, value)` row per argument, strings unquoted, for the per-call plan layout.
+    var argRows: [(key: String, value: String)] {
+        args.sorted(by: { $0.key < $1.key })
+            .map { (key: $0.key, value: $0.value.plainString ?? $0.value.displayString) }
+    }
 }
 
 /// A way the server offers to widen an approval into a grant ("Allow read-only gmail tools").
