@@ -52,7 +52,7 @@ struct RequestBadgesView: View {
     }
 }
 
-/// The calls inside a plan request, one compact line each.
+/// The calls inside a plan request: one block per call, tool on top, one row per argument.
 struct PlanEntriesView: View {
     let entries: [PlanEntry]
     var maxVisible: Int? = nil
@@ -64,25 +64,42 @@ struct PlanEntriesView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 6) {
             ForEach(Array(visible.enumerated()), id: \.offset) { index, entry in
+                if index > 0 {
+                    Divider()
+                }
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text("\(index + 1).")
+                        .font(.system(size: fontSize, design: .monospaced))
                         .foregroundStyle(.tertiary)
-                    Text(entry.tool)
-                        .fontWeight(.semibold)
-                    if !entry.args.isEmpty {
-                        Text(entry.compactArgs)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(maxVisible == nil ? 3 : 1)
-                            .truncationMode(.tail)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(entry.tool)
+                            .font(.system(size: fontSize, weight: .semibold, design: .monospaced))
+                        if entry.args.isEmpty {
+                            Text("No arguments")
+                                .font(.system(size: fontSize - 1))
+                                .foregroundStyle(.tertiary)
+                        }
+                        ForEach(entry.argRows, id: \.key) { row in
+                            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                                Text(row.key)
+                                    .foregroundStyle(.tertiary)
+                                Text(row.value)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(maxVisible == nil ? 6 : 2)
+                                    .truncationMode(.tail)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            .font(.system(size: fontSize - 1, design: .monospaced))
+                        }
                     }
                 }
-                .font(.system(size: fontSize, design: .monospaced))
                 .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
             if visible.count < entries.count {
-                Text("+ \(entries.count - visible.count) more")
+                Text("+ \(entries.count - visible.count) more — View Details for all")
                     .font(.system(size: max(fontSize - 1, 9)))
                     .foregroundStyle(.secondary)
             }
