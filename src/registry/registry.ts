@@ -49,6 +49,7 @@ export class ToolRegistry {
   private cachedInstructions = new Map<string, string>();
   /** Per-provider contract hash, recomputed on refresh() so /health never pays for hashing. */
   private cachedCatalogSummary: Record<string, ProviderCatalogSummary> = {};
+  private refreshGeneration = 0;
 
   constructor(
     private adapters: BackendAdapter[],
@@ -70,6 +71,7 @@ export class ToolRegistry {
   }
 
   async refresh(): Promise<void> {
+    const generation = ++this.refreshGeneration;
     const tools: Tool[] = [];
     const instructions = new Map<string, string>();
 
@@ -97,6 +99,10 @@ export class ToolRegistry {
         log.warn({ err, adapterId: adapter.id }, 'Failed to read instructions from adapter');
       }
     }
+
+    // Reconnects and config reloads can overlap while an adapter is slow. An older
+    // snapshot must not erase a recovered provider or restore tools removed by a newer one.
+    if (generation !== this.refreshGeneration) return;
 
     this.cachedTools = tools;
     this.cachedInstructions = instructions;
