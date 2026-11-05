@@ -29,6 +29,7 @@ import {
 } from '@modelcontextprotocol/client';
 import type { Tool } from '@modelcontextprotocol/client';
 import Fastify from 'fastify';
+import { createHash } from 'crypto';
 import type { AddressInfo } from 'net';
 
 import { createDownstreamServer } from './echo-server.js';
@@ -470,6 +471,42 @@ describe('http-transport: auth — per-agent token', () => {
     } finally {
       await mixedSrv.teardown();
     }
+  });
+});
+
+// ─── Auth: per-agent token_sha256 ─────────────────────────────────────────────
+
+describe('http-transport: auth — per-agent token_sha256', () => {
+  const agentToken = 'agent-token-abc';
+  let srv: ServerFixture;
+
+  beforeEach(async () => {
+    srv = await buildServer({
+      secret: 'global-secret',
+      agentConfig: makeAgentConfig({
+        token_sha256: createHash('sha256').update(agentToken).digest('hex'),
+      }),
+    });
+  });
+
+  afterEach(async () => {
+    await srv.teardown();
+  });
+
+  it('allows connection with the plaintext token matching the stored hash', async () => {
+    const { client } = await connect(srv.port, 'test', { token: agentToken });
+    await expectUsable(client);
+    await client.close();
+  });
+
+  it.each([
+    ['the wrong token', { token: 'wrong-token' }],
+    ['the global secret', { token: 'global-secret' }],
+    ['no token', {}],
+  ])('rejects connection with %s', async (_label, clientOpts) => {
+    const transport = makeClientTransport(srv.port, 'test', clientOpts);
+    const client = new Client({ name: 'test', version: '0.0.0' });
+    await expect(client.connect(transport)).rejects.toThrow();
   });
 });
 
