@@ -4,7 +4,7 @@ import { AllowlistEngine } from '../src/allowlist/engine.js';
 import type { BackendAdapter } from '../src/backend/types.js';
 import type { AgentConfig } from '../src/config/schema.js';
 import { GatewayConfig } from '../src/config/schema.js';
-import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import type { Tool } from '@modelcontextprotocol/server';
 import type { ToolCallContext, ToolCallResponse } from '../src/middleware/types.js';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────

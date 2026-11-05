@@ -12,9 +12,8 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
+import type { Tool } from '@modelcontextprotocol/client';
 import type { AgentConfig, SecurityConfig } from '../src/config/schema.js';
 import type { BackendAdapter } from '../src/backend/types.js';
 import type { ToolCall, ToolResult } from '../src/types.js';

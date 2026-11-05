@@ -14,7 +14,7 @@
  * let the background flow settle.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { UnauthorizedError } from '@modelcontextprotocol/sdk/client/auth.js';
+import { UnauthorizedError } from '@modelcontextprotocol/client';
 
 // ─── Module mocks (hoisted) ──────────────────────────────────────────────────
 
@@ -36,48 +36,41 @@ const clientInstances: {
 
 const authMock = vi.hoisted(() => vi.fn());
 
-vi.mock('@modelcontextprotocol/sdk/client/auth.js', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@modelcontextprotocol/sdk/client/auth.js')>()),
-  auth: authMock,
-}));
-
-vi.mock('@modelcontextprotocol/sdk/client/streamableHttp.js', () => {
-  return {
-    StreamableHTTPClientTransport: vi.fn().mockImplementation(() => {
-      const t = {
-        onclose: null as (() => void) | null,
-        finishAuth: vi.fn().mockResolvedValue(undefined),
-        close: vi.fn().mockResolvedValue(undefined),
-        terminateSession: vi.fn().mockResolvedValue(undefined),
-      };
-      transportInstances.push(t);
-      return t;
-    }),
-  };
-});
-
 // Client.connect() throws UnauthorizedError only on the very first call.
 let clientConnectCallCount = 0;
-vi.mock('@modelcontextprotocol/sdk/client/index.js', () => {
-  return {
-    Client: vi.fn().mockImplementation(() => {
-      const client = {
-        connect: vi.fn().mockImplementation(async () => {
-          clientConnectCallCount++;
-          if (clientConnectCallCount === 1) {
-            throw new UnauthorizedError('OAuth required');
-          }
-          // Subsequent connects succeed — tokens are now present
-        }),
-        listTools: vi.fn().mockResolvedValue({ tools: [] }),
-        callTool: vi.fn().mockResolvedValue({ content: [] }),
-        getServerVersion: vi.fn(),
-      };
-      clientInstances.push(client);
-      return client;
-    }),
-  };
-});
+
+// v2 ships everything (Client, transport, auth, UnauthorizedError) from one module, so a single
+// mock keeps the real exports and overrides only the three symbols HttpMcpClient drives.
+vi.mock('@modelcontextprotocol/client', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@modelcontextprotocol/client')>()),
+  auth: authMock,
+  StreamableHTTPClientTransport: vi.fn().mockImplementation(() => {
+    const t = {
+      onclose: null as (() => void) | null,
+      finishAuth: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(undefined),
+      terminateSession: vi.fn().mockResolvedValue(undefined),
+    };
+    transportInstances.push(t);
+    return t;
+  }),
+  Client: vi.fn().mockImplementation(() => {
+    const client = {
+      connect: vi.fn().mockImplementation(async () => {
+        clientConnectCallCount++;
+        if (clientConnectCallCount === 1) {
+          throw new UnauthorizedError('OAuth required');
+        }
+        // Subsequent connects succeed — tokens are now present
+      }),
+      listTools: vi.fn().mockResolvedValue({ tools: [] }),
+      callTool: vi.fn().mockResolvedValue({ content: [] }),
+      getServerVersion: vi.fn(),
+    };
+    clientInstances.push(client);
+    return client;
+  }),
+}));
 
 // FileOAuthProvider: waitForAuthCode resolves immediately; no file I/O, no browser.
 let waitForAuthCodeImpl: () => Promise<string> = () => Promise.resolve('mock-auth-code');
@@ -232,7 +225,7 @@ describe('HttpMcpClient — plain header auth (no OAuth)', () => {
 
   it('does not start OAuth flow for non-401 errors', async () => {
     // Make connect throw a generic error (not UnauthorizedError)
-    const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
+    const { Client } = await import('@modelcontextprotocol/client');
     (Client as ReturnType<typeof vi.fn>).mockImplementationOnce(() => ({
       connect: vi.fn().mockRejectedValue(new Error('Network error')),
       listTools: vi.fn(),
@@ -363,7 +356,6 @@ describe('HttpMcpClient — stale Streamable HTTP session recovery', () => {
         name: 'health_get_health_status',
         arguments: {},
       },
-      undefined,
       { timeout: 60_000 }
     );
   });
@@ -439,7 +431,6 @@ describe('HttpMcpClient — stale Streamable HTTP session recovery', () => {
     expect(clientInstances[0].listTools).toHaveBeenCalledWith(undefined, { timeout: 110_000 });
     expect(clientInstances[0].callTool).toHaveBeenCalledWith(
       { name: 'health_get_health_status', arguments: {} },
-      undefined,
       { timeout: 110_000 }
     );
   });

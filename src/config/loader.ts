@@ -895,7 +895,7 @@ function findUnknownKeyDiagnostics(parsed: unknown): ConfigDiagnostic[] {
   if (structural.success) return [];
 
   const found: Array<{ path: string[]; key: string }> = [];
-  collectUnrecognizedKeys(structural.error, found);
+  collectUnrecognizedKeys(structural.error.issues, found);
 
   const seen = new Set<string>();
   const diagnostics: ConfigDiagnostic[] = [];
@@ -915,15 +915,17 @@ function findUnknownKeyDiagnostics(parsed: unknown): ConfigDiagnostic[] {
 // Recurse into `invalid_union` errors (e.g. providers, which is a z.union): an unknown key on a
 // union member is reported inside that branch's nested error, not at the top level.
 function collectUnrecognizedKeys(
-  error: z.ZodError,
-  out: Array<{ path: string[]; key: string }>
+  issues: readonly z.core.$ZodIssue[],
+  out: Array<{ path: string[]; key: string }>,
+  prefix: string[] = []
 ): void {
-  for (const issue of error.issues) {
+  for (const issue of issues) {
+    // zod 4 reports union-branch issues relative to the union, so carry the parent path down.
+    const path = [...prefix, ...issue.path.map(String)];
     if (issue.code === 'unrecognized_keys') {
-      const path = issue.path.map(String);
       for (const key of issue.keys) out.push({ path, key });
     } else if (issue.code === 'invalid_union') {
-      for (const unionError of issue.unionErrors) collectUnrecognizedKeys(unionError, out);
+      for (const branch of issue.errors) collectUnrecognizedKeys(branch, out, path);
     }
   }
 }
