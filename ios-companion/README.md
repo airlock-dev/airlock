@@ -80,6 +80,8 @@ AIRLOCK_IOS_TESTFLIGHT_GROUPS=Your Group Name
 
 Multiple groups can be comma-separated. When this is set, the release command waits for Apple to finish processing the build, then attaches it to the group.
 
+The lane does not submit builds for external beta review. Use the existing internal groups for private releases.
+
 Release from the repo root:
 
 ```sh
@@ -87,3 +89,9 @@ just ios-testflight
 ```
 
 The lane uses Xcode automatic signing and uploads `bot.airlock.companion` to TestFlight. By default it uses a UTC timestamp as `CURRENT_PROJECT_VERSION`, so each upload gets a monotonically increasing build number without editing the Xcode project.
+
+If export fails with `Copy failed` and the distribution log reports an `rsync` extended-attributes error, put Apple's tools before Homebrew's for this command:
+
+```sh
+PATH=/usr/bin:/bin:/usr/sbin:/sbin:$PATH just ios-testflight
+```
