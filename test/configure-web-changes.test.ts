@@ -347,6 +347,42 @@ describe('policy assistant', () => {
     ).toBe(true);
   });
 
+  it('keeps entity snapshots, and the secrets in them, out of preview_changes results', async () => {
+    writeFileSync(
+      configPath,
+      CONFIG.replace(
+        '    extends: [readonly]\n',
+        '    extends: [readonly]\n    exec:\n      env:\n        GITHUB_TOKEN: literal-exec-env-secret\n'
+      )
+    );
+    const { fetchImpl, requests } = scriptedModel([
+      () => ({
+        role: 'assistant',
+        content: null,
+        tool_calls: [
+          toolCall('a', 'preview_changes', {
+            ops: [{ op: 'update_agent', id: 'legacy', agent: { ask: ['exec/run'] } }],
+          }),
+        ],
+      }),
+      () => ({ role: 'assistant', content: 'done' }),
+    ]);
+
+    await runAssistantTurn(
+      { baseUrl: 'https://llm.example/v1', model: 'm', fetchImpl },
+      context(),
+      [{ role: 'user', content: 'tighten legacy' }]
+    );
+
+    const toolResult = requests[1].messages.find((m) => m.role === 'tool')?.content ?? '';
+    expect(JSON.parse(toolResult).changes).toEqual([
+      { kind: 'agent', id: 'legacy', action: 'update' },
+    ]);
+    const sent = JSON.stringify(requests[1].messages);
+    expect(sent).not.toContain('literal-exec-env-secret');
+    expect(sent).not.toContain('legacy-plaintext-token');
+  });
+
   it('sends validation errors back to the model instead of proposing', async () => {
     const { fetchImpl, requests } = scriptedModel([
       () => ({
