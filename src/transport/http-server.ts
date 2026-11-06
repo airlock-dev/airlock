@@ -68,6 +68,10 @@ export async function httpServerPlugin(
       },
       {
         legacy: 'stateless',
+        // Open the SSE response right away so its keepalive runs while a call waits for approval.
+        // The default ('auto') sends nothing, not even headers, until the result is ready, and
+        // proxies with a first-byte timeout (nginx, ALB, Cloudflare) cut the parked call.
+        responseMode: 'sse',
         onerror: (err) => log.warn({ profileId, err }, 'MCP handler error'),
       }
     );
