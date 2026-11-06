@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.4.0](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.3.2...airlock-bot-v0.4.0) (2026-11-06)
+
+
+### ⚠ BREAKING CHANGES
+
+* the streamable HTTP endpoint no longer issues MCP sessions. HTTP agents that relied on implicit per-session grants must now send a session id (X-Airlock-Session-Id header or ?session=). The SSE endpoint is unchanged.
+
+### Features
+
+* **dashboard:** redesigned command center with agent composer, one-time keys and policy assistant ([4a8dd74](https://github.com/airlock-dev/airlock/commit/4a8dd744c938fe0881387b5efe189146424cf431))
+* **dashboard:** redesigned command center with agent composer, one-time keys and policy assistant ([0604f56](https://github.com/airlock-dev/airlock/commit/0604f5635173b5a12d59bf9405535b744bf7af1d))
+* stateless streamable HTTP on MCP 2026-07-28 (SDK v2) ([950bcb9](https://github.com/airlock-dev/airlock/commit/950bcb97ef5d8daad3d3d805f76ed53d16e46406))
+
+
+### Bug Fixes
+
+* **config:** keep YAML comments when approvals remember an allow ([6df92c8](https://github.com/airlock-dev/airlock/commit/6df92c8b88705053ec6bfa202ecb44231c2febcd))
+* **dashboard:** keep shortcuts on visible requests and secrets away from the assistant ([28f0ae0](https://github.com/airlock-dev/airlock/commit/28f0ae042ec192f6f1e62f53c8a9b60e65683360))
+* **dashboard:** keep shortcuts on visible requests and secrets away from the assistant ([a3f1cc1](https://github.com/airlock-dev/airlock/commit/a3f1cc18175f4c1245662fc4d9fb2e71d2bb046e))
+* **ios:** skip external review for internal TestFlight releases ([ec42883](https://github.com/airlock-dev/airlock/commit/ec4288347ca7db4e503020eefcba25683bc43c14))
+* **mcp:** stream responses so proxies keep parked approval calls open ([89d9e97](https://github.com/airlock-dev/airlock/commit/89d9e97a7ca15dd32bf98d236cd2a8653f779665))
+* **mcp:** stream responses so proxies keep parked approval calls open ([13c5a31](https://github.com/airlock-dev/airlock/commit/13c5a31aa48803d276de65058e465010da186662))
+* preserve the newest tool catalog during overlapping refreshes ([7eabb11](https://github.com/airlock-dev/airlock/commit/7eabb114afd062f72eb7c1a9efc7f8e102b8f702))
+* prevent stale catalog refreshes from overwriting recovery ([bba5ba0](https://github.com/airlock-dev/airlock/commit/bba5ba0166038b095c9881e55d1f196db399458e))
+
 ## [0.3.2](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.3.1...airlock-bot-v0.3.2) (2026-10-27)
 
 
