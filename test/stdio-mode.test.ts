@@ -1,6 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { requiredMcpsForAgent } from '../src/pool/required-mcps.js';
 import type { AgentConfig } from '../src/config/schema.js';
+// Static imports: loading stdio-mode pulls in most of the gateway, which can take seconds under a
+// loaded suite. A dynamic import inside a test counts against that test's 5s timeout.
+import { runStdioMode } from '../src/stdio-mode.js';
+import * as stdioServerModule from '../src/transport/stdio-server.js';
+import * as poolModule from '../src/pool/pool.js';
 
 function makeAgent(allow: string[], ask: string[] = []): AgentConfig {
   return {
@@ -19,7 +24,7 @@ describe('requiredMcpsForAgent()', () => {
   it('returns MCP ids referenced by allow list', () => {
     const agent = makeAgent(['github/*', 'filesystem/*']);
     expect(requiredMcpsForAgent(agent, AVAILABLE_MCPS)).toEqual(
-      expect.arrayContaining(['github', 'filesystem']),
+      expect.arrayContaining(['github', 'filesystem'])
     );
   });
 
@@ -46,7 +51,7 @@ describe('requiredMcpsForAgent()', () => {
   it('deduplicates MCPs referenced multiple times', () => {
     const agent = makeAgent(['github/create_pr', 'github/list_prs', 'github/*']);
     const result = requiredMcpsForAgent(agent, AVAILABLE_MCPS);
-    expect(result.filter(id => id === 'github')).toHaveLength(1);
+    expect(result.filter((id) => id === 'github')).toHaveLength(1);
   });
 
   it('returns empty array when allow list is empty', () => {
@@ -81,18 +86,22 @@ const MINIMAL_CONFIG = {
       http: { domain_allowlist: [], max_response_bytes: 1048576, timeout_ms: 5000 },
     },
   },
-  approvals: { provider: { type: 'webhook' as const, url: 'http://localhost:9999/hook', headers: {} }, timeout_ms: 300000, batch_window_ms: 10000 },
+  approvals: {
+    provider: { type: 'webhook' as const, url: 'http://localhost:9999/hook', headers: {} },
+    timeout_ms: 300000,
+    batch_window_ms: 10000,
+  },
   security: { blocked_hosts: [], allowed_local: [] },
   audit: { db_path: ':memory:', retention_days: 90, redact_fields: [] },
   server: { port: 4111, host: '127.0.0.1' },
 };
 
 describe('runStdioMode()', () => {
-  afterEach(() => { vi.restoreAllMocks(); });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
 
   it('calls runStdioServer with the correct agentId', async () => {
-    const { runStdioMode } = await import('../src/stdio-mode.js');
-    const stdioServerModule = await import('../src/transport/stdio-server.js');
     const stdioSpy = vi.spyOn(stdioServerModule, 'runStdioServer').mockResolvedValue();
 
     await runStdioMode(MINIMAL_CONFIG as never, 'claude-code', '');
@@ -102,35 +111,31 @@ describe('runStdioMode()', () => {
   });
 
   it('throws for unknown profile', async () => {
-    const { runStdioMode } = await import('../src/stdio-mode.js');
-    await expect(
-      runStdioMode(MINIMAL_CONFIG as never, 'nonexistent', ''),
-    ).rejects.toThrow(/Unknown agent profile/);
+    await expect(runStdioMode(MINIMAL_CONFIG as never, 'nonexistent', '')).rejects.toThrow(
+      /Unknown agent profile/
+    );
   });
 
   it('only includes required MCPs — slack excluded when not in allow list', async () => {
-    const { runStdioMode } = await import('../src/stdio-mode.js');
-    const stdioServerModule = await import('../src/transport/stdio-server.js');
     const stdioSpy = vi.spyOn(stdioServerModule, 'runStdioServer').mockResolvedValue();
 
-    const poolModule = await import('../src/pool/pool.js');
     vi.spyOn(poolModule.ClientPool.prototype, 'initialize').mockResolvedValue();
-    const poolInstances: typeof poolModule.ClientPool[] = [];
+    const poolInstances: (typeof poolModule.ClientPool)[] = [];
     const OrigClientPool = poolModule.ClientPool;
     vi.spyOn(poolModule, 'ClientPool' as keyof typeof poolModule).mockImplementation(
       (mcps: Record<string, unknown>) => {
         const instance = new OrigClientPool(mcps as never);
         poolInstances.push(instance as never);
         return instance;
-      },
+      }
     );
 
     const config = {
       ...MINIMAL_CONFIG,
       providers: {
-        github:     { type: 'stdio' as const, command: 'npx', args: [] },
+        github: { type: 'stdio' as const, command: 'npx', args: [] },
         filesystem: { type: 'stdio' as const, command: 'npx', args: [] },
-        slack:      { type: 'stdio' as const, command: 'npx', args: [] },
+        slack: { type: 'stdio' as const, command: 'npx', args: [] },
       },
       agents: {
         'claude-code': {

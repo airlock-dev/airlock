@@ -14,6 +14,8 @@ export class ConfigWatcher extends EventEmitter {
   }
 
   start(): void {
+    // chokidar treats '' as the working directory and recursively watches the whole tree.
+    if (!this.configPath) return;
     this.watcher = chokidar.watch(this.configPath, {
       persistent: true,
       ignoreInitial: true,
