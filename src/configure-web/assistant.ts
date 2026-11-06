@@ -307,7 +307,16 @@ async function runTool(
       }
       case 'preview_changes': {
         const preview = context.preview(parseChangeSet({ ops: args.ops }));
-        return clip(JSON.stringify(preview));
+        // The before/after snapshots are raw YAML for the operator's review and can hold literal
+        // secrets (exec env values, key hashes). The model only needs to know what would change.
+        return clip(
+          JSON.stringify({
+            ok: preview.ok,
+            changes: preview.changes.map(({ kind, id, action }) => ({ kind, id, action })),
+            diagnostics: preview.diagnostics,
+            warnings: preview.warnings,
+          })
+        );
       }
       case 'propose_changes': {
         const ops = parseChangeSet({ ops: args.ops });

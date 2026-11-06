@@ -62,13 +62,19 @@ export function Activity() {
     }
   };
 
-  // a / d act on the open request, or the oldest waiting one.
+  // Oldest first, whatever order the initial load and live events arrived in, so the top row is
+  // always the one the keyboard shortcuts act on.
+  const visiblePending = pending
+    .filter((p) => !agent || p.agentId === agent)
+    .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
+
+  // a / d act on the open request, or the oldest one shown. Never a request hidden by the filter.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       const target = e.target as HTMLElement;
       if (['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) return;
-      const subject = open ?? pending[pending.length - 1];
+      const subject = open ?? visiblePending[0];
       if (!subject) return;
       if (e.key === 'a') decide(subject, 'approve');
       if (e.key === 'd') decide(subject, 'deny');
@@ -77,7 +83,6 @@ export function Activity() {
     return () => window.removeEventListener('keydown', onKey);
   });
 
-  const visiblePending = pending.filter((p) => !agent || p.agentId === agent);
   const notes = activity.filter((e) => !agent || e.agentId === agent).slice(0, 20);
 
   return (
