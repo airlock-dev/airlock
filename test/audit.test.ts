@@ -151,7 +151,7 @@ describe('AuditDb', () => {
     expect(db.queryAudit({ limit: 3 })).toHaveLength(3);
   });
 
-  it('inserts and retrieves HITL entries by code', () => {
+  it('inserts and retrieves HITL entries by id', () => {
     db.insertHitl({
       id: 'req-1',
       code: 'ABC123',
@@ -162,7 +162,7 @@ describe('AuditDb', () => {
       created_at: new Date().toISOString(),
     });
 
-    const row = db.getHitlByCode('ABC123');
+    const row = db.getHitlById('req-1');
     expect(row).toBeDefined();
     expect(row?.agent_id).toBe('agent1');
     expect(row?.status).toBe('pending');

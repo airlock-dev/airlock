@@ -9,5 +9,4 @@ export interface ToolResult {
   success: boolean;
   data?: unknown;
   error?: string;
-  metadata?: { duration_ms?: number; truncated?: boolean };
 }

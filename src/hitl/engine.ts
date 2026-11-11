@@ -62,6 +62,8 @@ interface PendingRequest {
   plan?: PlanEntry[];
   batchId?: string;
   createdAt: string;
+  /** When the timeout timer fires; undefined when timeoutMs === 0 (no timeout). */
+  expiresAt?: string;
   result: Promise<HitlResult>;
   resolve: (result: HitlResult) => void;
   timer?: NodeJS.Timeout; // undefined when timeoutMs === 0 (no timeout)
@@ -391,6 +393,8 @@ export class HitlEngine implements ApprovalApi {
     batchId?: string;
     batchCode?: string;
     grantOptions?: GrantOption[];
+    createdAt: string;
+    expiresAt?: string;
   }> {
     return Array.from(this.pending.values()).map((r) => {
       const batch = r.batchId ? this.batches.get(r.batchId) : undefined;
@@ -411,8 +415,15 @@ export class HitlEngine implements ApprovalApi {
         ...(r.plan ? { plan: r.plan } : {}),
         ...(batch ? { batchId: batch.id, batchCode: batch.code } : {}),
         ...(grantOptions.length > 0 ? { grantOptions } : {}),
+        createdAt: r.createdAt,
+        ...(r.expiresAt ? { expiresAt: r.expiresAt } : {}),
       };
     });
+  }
+
+  /** Number of pending approvals, without building each one's display payload. */
+  pendingCount(): number {
+    return this.pending.size;
   }
 
   hasPending(id: string): boolean {
@@ -559,6 +570,7 @@ export class HitlEngine implements ApprovalApi {
       }, timeoutMs);
       timer.unref();
       req.timer = timer;
+      req.expiresAt = new Date(Date.now() + timeoutMs).toISOString();
     }
   }
 
@@ -742,8 +754,8 @@ export class HitlEngine implements ApprovalApi {
     this.byCode.delete(req.code);
     if (reason === undefined) this.auditLogger.updateHitlStatus(req.id, result);
     else this.auditLogger.updateHitlStatus(req.id, result, reason);
+    // Also releases the batch once its last member resolves.
     this.updateApprovalStatus(req, result);
-    this.releaseBatch(req.batchId);
     req.resolve(result);
   }
 
@@ -771,6 +783,8 @@ export class HitlEngine implements ApprovalApi {
       ...(req.context ? { context: req.context } : {}),
       ...(req.sandbox ? { sandbox: req.sandbox } : {}),
       timeoutMs,
+      createdAt: req.createdAt,
+      ...(req.expiresAt ? { expiresAt: req.expiresAt } : {}),
       kind: req.kind,
       ...(req.subject
         ? {
@@ -794,6 +808,9 @@ export class HitlEngine implements ApprovalApi {
     log.info({ count: rows.length }, 'Recovering pending HITL requests from DB');
 
     for (const row of rows) {
+      const meta = parseMeta(row.meta);
+      const kind = meta.kind ?? 'call';
+      const mode = meta.mode ?? 'sync';
       let args: Record<string, unknown> = {};
       try {
         args = JSON.parse(row.args) as Record<string, unknown>;
@@ -815,11 +832,19 @@ export class HitlEngine implements ApprovalApi {
         remaining = 0; // no timeout
       }
 
+      // A sync caller's held-open call died with the old process, so nothing is waiting on this
+      // decision any more. Only async requests (whose agent will retry) and plans (whose grants
+      // outlive the call) are still worth resolving; approving anything else would do nothing.
+      if (mode === 'sync' && kind !== 'plan') {
+        this.auditLogger.updateHitlStatus(row.id, 'cancelled', 'Caller disconnected on restart');
+        this.updateApprovalStatus({ id: row.id, code: row.code }, 'cancelled');
+        continue;
+      }
+
       const context = readContext(args);
       const cleanArgs = stripStoredContext(args);
-      const meta = parseMeta(row.meta);
 
-      // Re-arm without re-notifying (provider may not be ready yet)
+      // Re-arm with the time left from the original creation, then notify again below.
       let resolve!: (result: HitlResult) => void;
       const result = new Promise<HitlResult>((r) => (resolve = r));
       const req: PendingRequest = {
@@ -829,10 +854,8 @@ export class HitlEngine implements ApprovalApi {
         tool: row.tool,
         args: cleanArgs,
         ...(context ? { context } : {}),
-        kind: meta.kind ?? 'call',
-        // A sync caller's held-open call died with the old process; only async requests (whose
-        // agent will retry) and plans are still worth resolving.
-        mode: meta.mode ?? 'sync',
+        kind,
+        mode,
         ...(meta.subject ? { subject: meta.subject } : {}),
         ...(meta.plan ? { plan: meta.plan } : {}),
         createdAt: row.created_at,
@@ -854,24 +877,17 @@ export class HitlEngine implements ApprovalApi {
   ): void {
     const badgeCount = this.pending.size;
     const batchPending = this.releaseBatch(req.batchId);
-    if (this.provider.updateApprovalStatus) {
-      void this.provider
-        .updateApprovalStatus({
-          id: req.id,
-          code: req.code,
-          result,
-          badgeCount,
-          ...(req.batchId && batchPending !== undefined
-            ? { batchId: req.batchId, batchPending }
-            : {}),
-        })
-        .catch((err) => log.warn({ err }, 'Failed to update approval status'));
-      return;
-    }
-
     void this.provider
-      .updateBadge?.(badgeCount)
-      .catch((err) => log.warn({ err }, 'Failed to update approval badge count'));
+      .updateApprovalStatus?.({
+        id: req.id,
+        code: req.code,
+        result,
+        badgeCount,
+        ...(req.batchId && batchPending !== undefined
+          ? { batchId: req.batchId, batchPending }
+          : {}),
+      })
+      .catch((err) => log.warn({ err }, 'Failed to update approval status'));
   }
 }
 

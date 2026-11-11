@@ -212,11 +212,6 @@ export class GrantStore {
     return true;
   }
 
-  get(id: string): Grant | undefined {
-    const grant = this.grants.get(id);
-    return grant && this.isActive(grant) ? grant : undefined;
-  }
-
   list(agentId?: string): Grant[] {
     this.prune();
     return [...this.grants.values()].filter((g) => !agentId || g.agentId === agentId);

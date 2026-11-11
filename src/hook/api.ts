@@ -116,9 +116,9 @@ export async function hookApiPlugin(app: FastifyInstance, opts: HookApiOpts): Pr
           reason: 'Denied by operator',
         });
       }
-      const pending =
-        hitlEngine.findPendingCall(agentId, subject.fingerprint) ??
+      if (!hitlEngine.findPendingCall(agentId, subject.fingerprint)) {
         createTicket(hitlEngine, hitlBatcher, agentId, normalized.name, input, subject, 'async');
+      }
       return reply.send({
         decision: 'deny',
         tool: normalized.name,

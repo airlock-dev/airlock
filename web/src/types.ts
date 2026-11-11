@@ -75,6 +75,8 @@ export interface Meta {
   version: string;
   publicGatewayUrl: string | null;
   remoteGateway: boolean;
+  /** False for `airlock run` / `configure-web`: pending requests are listed but not decidable. */
+  approvals: boolean;
   assistant: { enabled: boolean; model?: string };
 }
 

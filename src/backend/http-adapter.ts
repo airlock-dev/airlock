@@ -33,11 +33,7 @@ export class HttpBackendAdapter implements BackendAdapter {
     }
     try {
       const data = await executeHttp(method as HttpMethod, toolCall.args, agent, this.security);
-      return {
-        success: true,
-        data,
-        metadata: { truncated: data.truncated },
-      };
+      return { success: true, data };
     } catch (err) {
       return { success: false, error: err instanceof Error ? err.message : String(err) };
     }

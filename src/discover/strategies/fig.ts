@@ -71,13 +71,25 @@ function parseFigTypeScript(source: string, toolName: string): FigSpec | null {
   }
 }
 
-export function figSpecToCommands(spec: FigSpec): Record<string, CliCommandConfig> {
+/**
+ * Same filter semantics as the help-text and completion strategies: `maxDepth` bounds how many
+ * subcommand levels are walked (default 2), `include` limits which commands are registered without
+ * stopping the walk, and `exclude` drops a command and everything beneath it.
+ */
+export function figSpecToCommands(
+  spec: FigSpec,
+  options?: { maxDepth?: number; include?: string[]; exclude?: string[] }
+): Record<string, CliCommandConfig> {
+  const maxDepth = options?.maxDepth ?? 2;
+  const include = options?.include ? new Set(options.include) : undefined;
+  const exclude = options?.exclude ? new Set(options.exclude) : undefined;
   const commands: Record<string, CliCommandConfig> = {};
 
-  function processSubcommand(sub: FigSubcommand, prefix: string): void {
+  function processSubcommand(sub: FigSubcommand, prefix: string, depth: number): void {
     const names = Array.isArray(sub.name) ? sub.name : [sub.name];
     const name = names[0];
     const fullName = prefix ? `${prefix}_${name}` : name;
+    if (exclude?.has(fullName) || exclude?.has(name)) return;
 
     const params: Record<string, CliParamConfig> = {};
 
@@ -96,20 +108,23 @@ export function figSpecToCommands(spec: FigSpec): Record<string, CliCommandConfi
       };
     }
 
-    commands[fullName] = {
-      exec: `${spec.name} ${prefix ? prefix.replace(/_/g, ' ') + ' ' : ''}${name}`,
-      description: sub.description,
-      params,
-      timeout: 30,
-    };
+    if (!include || include.has(fullName)) {
+      commands[fullName] = {
+        exec: `${spec.name} ${prefix ? prefix.replace(/_/g, ' ') + ' ' : ''}${name}`,
+        description: sub.description,
+        params,
+        timeout: 30,
+      };
+    }
 
+    if (depth >= maxDepth) return;
     for (const child of sub.subcommands ?? []) {
-      processSubcommand(child, fullName);
+      processSubcommand(child, fullName, depth + 1);
     }
   }
 
   for (const sub of spec.subcommands ?? []) {
-    processSubcommand(sub, '');
+    processSubcommand(sub, '', 1);
   }
 
   return commands;

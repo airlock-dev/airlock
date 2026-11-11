@@ -1,7 +1,7 @@
 import { execFileSync } from 'child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { isAbsolute, join, resolve } from 'path';
 import type { CliCommandConfig, CliParamConfig } from '../../config/schema.js';
 import { inferType } from './help-parser.js';
 
@@ -38,9 +38,29 @@ export interface CompletionSession {
   loadCommand(path: string[], name?: string): CliCommandConfig | null;
 }
 
+let probeDir: string | undefined;
+
+// Completion probes hand the tool arguments it may not understand (`__complete`, `completion bash`,
+// `-- tool ''`). A tool without that protocol treats them as ordinary operands — `touch` creates
+// files, `rm` deletes them — so every probe runs in an empty scratch directory, never the caller's.
+function probeCwd(): string {
+  if (!probeDir) {
+    const dir = mkdtempSync(join(tmpdir(), 'airlock-probe-'));
+    probeDir = dir;
+    process.once('exit', () => rmSync(dir, { recursive: true, force: true }));
+  }
+  return probeDir;
+}
+
+// A relative tool path ("./bin/tool") must keep pointing at the caller's file after the cwd moves.
+function probeBin(bin: string): string {
+  return bin.includes('/') && !isAbsolute(bin) ? resolve(bin) : bin;
+}
+
 function execLines(bin: string, args: string[], env?: Record<string, string>): string[] | null {
   try {
-    const out = execFileSync(bin, args, {
+    const out = execFileSync(probeBin(bin), args, {
+      cwd: probeCwd(),
       timeout: 5000,
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'pipe'],

@@ -110,12 +110,13 @@ export function discoverCli(
     const subcommands = parseSubcommands(helpText);
 
     // If this has flags, register as a command
-    if (flags.length > 0 || subcommands.length === 0) {
-      const name = prefix || command;
+    const name = prefix || command;
+    const registers = flags.length > 0 || subcommands.length === 0;
+    if (registers && exclude?.has(name)) return;
 
-      if (exclude?.has(name)) return;
-      if (include && !include.has(name)) return;
-
+    // --include narrows which commands are registered; it must not stop the walk, or the root
+    // command (never in an include list) would hide every subcommand beneath it.
+    if (registers && (!include || include.has(name))) {
       const params: Record<string, CliParamConfig> = {};
       for (const flag of flags) {
         params[flag.name] = {

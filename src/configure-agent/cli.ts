@@ -2,17 +2,19 @@ import { parseArgs } from 'util';
 import { readFileSync, writeFileSync, copyFileSync, openSync } from 'fs';
 import { ReadStream } from 'tty';
 import { execSync } from 'child_process';
-import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
+import { parse as parseYaml } from 'yaml';
 import type { Tool } from '@modelcontextprotocol/server';
 import { ClientPool } from '../pool/pool.js';
 import { getMcpConfigs, GatewayConfig } from '../config/schema.js';
 import { checkSuspiciousPatterns, SUSPICIOUS_PATTERNS } from '../registry/sanitizer.js';
+import { specificity } from '../allowlist/pattern.js';
+import { stringifyPreservingComments } from '../config/yaml-merge.js';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-type Decision = 'allow' | 'ask' | 'deny';
+export type Decision = 'allow' | 'ask' | 'deny';
 
-interface ToolEntry {
+export interface ToolEntry {
   namespacedName: string;
   description: string;
   annotations: NonNullable<Tool['annotations']>;
@@ -69,32 +71,80 @@ function decisionLabel(d: Decision): string {
   return 'deny ';
 }
 
+// ── Rule merging ─────────────────────────────────────────────────────────────
+
+export interface AgentRules {
+  allow: string[];
+  ask: string[];
+  deny: string[];
+}
+
+/**
+ * The decision an agent's own patterns give a tool, or null when none match. Mirrors the gateway:
+ * the most specific pattern wins, and ties break deny > ask > allow.
+ */
+export function resolveExistingDecision(rules: AgentRules, toolName: string): Decision | null {
+  const best = (patterns: string[]) =>
+    patterns.reduce((max, pattern) => Math.max(max, specificity(pattern, toolName)), -1);
+  const deny = best(rules.deny);
+  const ask = best(rules.ask);
+  const allow = best(rules.allow);
+  const top = Math.max(deny, ask, allow);
+  if (top < 0) return null;
+  if (deny === top) return 'deny';
+  if (ask === top) return 'ask';
+  return 'allow';
+}
+
+/**
+ * The agent's new allow/ask/deny lists. Every existing pattern that is not the exact name of a tool
+ * shown in the TUI is kept as written — wildcards, built-ins, CLI and API tools, and tools of
+ * providers that did not answer this time. Listed tools then get an exact rule, unless a kept
+ * pattern already resolves them to the chosen decision and they had no exact rule before.
+ */
+export function mergeAgentRules(existing: AgentRules, entries: ToolEntry[]): AgentRules {
+  const listed = new Set(entries.map((e) => e.namespacedName));
+  const kept: AgentRules = {
+    allow: existing.allow.filter((p) => !listed.has(p)),
+    ask: existing.ask.filter((p) => !listed.has(p)),
+    deny: existing.deny.filter((p) => !listed.has(p)),
+  };
+  const next: AgentRules = { allow: [...kept.allow], ask: [...kept.ask], deny: [...kept.deny] };
+  for (const entry of entries) {
+    const hadExact = existing[entry.decision].includes(entry.namespacedName);
+    const coveredByPattern = resolveExistingDecision(kept, entry.namespacedName) === entry.decision;
+    if (coveredByPattern && !hadExact) continue;
+    next[entry.decision].push(entry.namespacedName);
+  }
+  return next;
+}
+
 // ── YAML output ───────────────────────────────────────────────────────────────
 
-function renderYaml(agentName: string, entries: ToolEntry[]): string {
+function renderYaml(agentName: string, rules: AgentRules): string {
   const lines: string[] = [`agents:`, `  ${agentName}:`];
 
-  const renderList = (key: string, decision: Decision) => {
-    const matching = entries.filter((e) => e.decision === decision);
-    if (matching.length === 0) {
+  const renderList = (key: Decision) => {
+    const patterns = rules[key];
+    if (patterns.length === 0) {
       lines.push(`    ${key}: []`);
       return;
     }
     lines.push(`    ${key}:`);
     let lastProvider = '';
-    for (const e of matching) {
-      const p = e.namespacedName.split('/')[0];
+    for (const pattern of patterns) {
+      const p = pattern.split('/')[0];
       if (p !== lastProvider) {
         lines.push(`      # ${p}`);
         lastProvider = p;
       }
-      lines.push(`      - "${e.namespacedName}"`);
+      lines.push(`      - "${pattern}"`);
     }
   };
 
-  renderList('allow', 'allow');
-  renderList('ask', 'ask');
-  renderList('deny', 'deny');
+  renderList('allow');
+  renderList('ask');
+  renderList('deny');
 
   return lines.join('\n');
 }
@@ -542,19 +592,13 @@ export async function runConfigureAgent(argv: string[]): Promise<void> {
   // Pre-populate decisions from existing agent config
   const agentName = values.agent;
   const existingAgent = parsed.agents[agentName];
-  if (existingAgent) {
-    const allowSet = new Set(existingAgent.allow);
-    const askSet = new Set(existingAgent.ask);
-    const denySet = new Set(existingAgent.deny);
-    for (const entry of entries) {
-      if (allowSet.has(entry.namespacedName)) {
-        entry.decision = 'allow';
-      } else if (askSet.has(entry.namespacedName)) {
-        entry.decision = 'ask';
-      } else if (denySet.has(entry.namespacedName)) {
-        entry.decision = 'deny';
-      }
-    }
+  const existingRules: AgentRules = {
+    allow: existingAgent?.allow ?? [],
+    ask: existingAgent?.ask ?? [],
+    deny: existingAgent?.deny ?? [],
+  };
+  for (const entry of entries) {
+    entry.decision = resolveExistingDecision(existingRules, entry.namespacedName) ?? entry.decision;
   }
 
   process.stdout.write(`\n${BOLD}Found ${entries.length} tools.${RESET} Press any key to start…`);
@@ -692,7 +736,8 @@ export async function runConfigureAgent(argv: string[]): Promise<void> {
     process.exit(0);
   }
 
-  const yaml = renderYaml(values.agent, entries);
+  const merged = mergeAgentRules(existingRules, entries);
+  const yaml = renderYaml(values.agent, merged);
 
   // ── Action picker ───────────────────────────────────────────────────────────
   process.stdout.write(`\n${BOLD}${CYAN}What would you like to do?${RESET}\n`);
@@ -749,17 +794,13 @@ export async function runConfigureAgent(argv: string[]): Promise<void> {
     const backupPath = configPath.replace(/\.ya?ml$/i, '') + '.bak';
     copyFileSync(configPath, backupPath);
 
-    const doc = parseYaml(readFileSync(configPath, 'utf8')) as Record<string, unknown>;
+    const raw = readFileSync(configPath, 'utf8');
+    const doc = parseYaml(raw) as Record<string, unknown>;
     const agents = (doc.agents ?? {}) as Record<string, Record<string, unknown>>;
     const existing = agents[values.agent] ?? {};
-    agents[values.agent] = {
-      ...existing,
-      allow: entries.filter((e) => e.decision === 'allow').map((e) => e.namespacedName),
-      ask: entries.filter((e) => e.decision === 'ask').map((e) => e.namespacedName),
-      deny: entries.filter((e) => e.decision === 'deny').map((e) => e.namespacedName),
-    };
+    agents[values.agent] = { ...existing, ...merged };
     doc.agents = agents;
-    writeFileSync(configPath, stringifyYaml(doc));
+    writeFileSync(configPath, stringifyPreservingComments(raw, doc));
 
     console.log(`${GREEN}✓ Updated ${configPath}${RESET}`);
     console.log(`${DIM}  Original backed up to ${backupPath}${RESET}`);

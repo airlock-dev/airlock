@@ -5,7 +5,7 @@ import { hasAgentCredential } from '../security/request.js';
 import { GatewayConfig, getBuiltinProviders, withEnvVarResolution } from './schema.js';
 import { applyProfiles } from './profiles.js';
 import { matches } from '../allowlist/pattern.js';
-import { AIRLOCK_NON_ASK_TOOLS } from '../airlock/tools.js';
+import { AIRLOCK_APPROVAL_TOOLS, AIRLOCK_NON_ASK_TOOLS } from '../airlock/tools.js';
 import { childLogger } from '../util/logger.js';
 import type { z } from 'zod';
 
@@ -370,6 +370,15 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
     );
 
     for (const pattern of allPatterns) {
+      // Without an `airlock` provider entry the gateway still serves the approval tools, so a
+      // pattern naming one of them (e.g. to deny it) refers to something real.
+      if (
+        !providerNames.has('airlock') &&
+        pattern.startsWith('airlock/') &&
+        AIRLOCK_APPROVAL_TOOLS.some((tool) => matches(pattern, tool))
+      ) {
+        continue;
+      }
       const ns = pattern.split('/')[0];
       if (ns) referencedNamespaces.add(ns);
     }
@@ -386,25 +395,20 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
       }
     }
 
-    // Check for shadowed rules: allow pattern also matched by deny
+    // The engine lets the most specific matching pattern win and breaks ties deny-first, so a
+    // narrower allow/ask legitimately carves an exception out of a broader deny (and vice versa).
+    // The only pattern a deny makes unreachable is the identical one listed in allow or ask.
+    const denied = new Set(agent.deny);
     for (const allowPattern of agent.allow) {
-      for (const denyPattern of agent.deny) {
-        if (
-          matches(denyPattern, allowPattern) ||
-          matches(allowPattern, denyPattern) ||
-          patternsOverlap(allowPattern, denyPattern)
-        ) {
-          diagnostics.push({
-            level: 'warn',
-            agent: agentId,
-            message: `"${allowPattern}" in allow is shadowed by "${denyPattern}" in deny — deny always wins.`,
-            suggestion: `Remove "${allowPattern}" from allow, or narrow the deny pattern.`,
-          });
-        }
-      }
+      if (!denied.has(allowPattern)) continue;
+      diagnostics.push({
+        level: 'warn',
+        agent: agentId,
+        message: `"${allowPattern}" is listed in both allow and deny; the deny entry wins the tie, so the allow entry has no effect.`,
+        suggestion: `Remove "${allowPattern}" from allow or from deny.`,
+      });
     }
 
-    // Check for unreachable ask: ask pattern also matched by deny
     for (const askPattern of agent.ask) {
       const forbiddenAirlockTool = AIRLOCK_NON_ASK_TOOLS.find((tool) => matches(askPattern, tool));
       if (forbiddenAirlockTool) {
@@ -417,19 +421,13 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
         });
       }
 
-      for (const denyPattern of agent.deny) {
-        if (
-          matches(denyPattern, askPattern) ||
-          matches(askPattern, denyPattern) ||
-          patternsOverlap(askPattern, denyPattern)
-        ) {
-          diagnostics.push({
-            level: 'warn',
-            agent: agentId,
-            message: `"${askPattern}" in ask is shadowed by "${denyPattern}" in deny — approval will never be requested.`,
-            suggestion: `Remove "${askPattern}" from ask, or narrow the deny pattern.`,
-          });
-        }
+      if (denied.has(askPattern)) {
+        diagnostics.push({
+          level: 'warn',
+          agent: agentId,
+          message: `"${askPattern}" is listed in both ask and deny; the deny entry wins the tie, so approval will never be requested.`,
+          suggestion: `Remove "${askPattern}" from ask or from deny.`,
+        });
       }
     }
 
@@ -970,18 +968,4 @@ function isLoopbackHost(host: string): boolean {
   if (ipVersion !== 4) return false;
   const firstOctet = Number(normalized.split('.')[0]);
   return firstOctet === 127;
-}
-
-/** Check if two glob patterns could match the same tool name */
-function patternsOverlap(a: string, b: string): boolean {
-  // If either is a wildcard that covers the other's namespace
-  const nsA = a.split('/')[0];
-  const nsB = b.split('/')[0];
-  if (nsA !== nsB) return false;
-
-  // Same namespace — wildcards overlap
-  if (a.endsWith('*') || b.endsWith('*')) return true;
-
-  // Exact match
-  return a === b;
 }

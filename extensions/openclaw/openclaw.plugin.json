@@ -8,15 +8,15 @@
     "properties": {
       "url": {
         "type": "string",
-        "description": "Airlock agent data-plane base URL (overrides AIRLOCK_URL env var)"
+        "description": "Airlock agent data-plane base URL. The AIRLOCK_URL env var takes precedence when set."
       },
       "agent": {
         "type": "string",
-        "description": "Airlock agent profile to run as (overrides AIRLOCK_AGENT env var)"
+        "description": "Airlock agent to run as. The AIRLOCK_AGENT env var takes precedence when set."
       },
       "secret": {
         "type": "string",
-        "description": "Airlock agent token / Bearer token (overrides AIRLOCK_SECRET env var)"
+        "description": "Airlock agent token (Bearer). The AIRLOCK_SECRET env var takes precedence when set."
       }
     }
   },
@@ -26,7 +26,7 @@
       "placeholder": "http://localhost:4111"
     },
     "agent": {
-      "label": "Agent Profile",
+      "label": "Agent",
       "placeholder": "openclaw"
     },
     "secret": {

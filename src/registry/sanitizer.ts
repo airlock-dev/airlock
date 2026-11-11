@@ -40,7 +40,11 @@ function stripSuspicious(text: string, logContext: Record<string, unknown>): str
         { ...logContext, pattern: pattern.source },
         'Stripping suspicious pattern from upstream text (possible prompt injection)'
       );
-      cleaned = cleaned.replace(pattern, '[removed]');
+      const everyMatch = new RegExp(
+        pattern.source,
+        pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`
+      );
+      cleaned = cleaned.replace(everyMatch, '[removed]');
     }
   }
   return cleaned;
@@ -60,18 +64,26 @@ export function sanitizeToolDescription(
   override?: string,
   append?: string
 ): string {
-  let base: string;
-  if (override !== undefined) {
-    base = override;
-  } else if (!description) {
-    base = '';
-  } else {
-    base = stripSuspicious(description, { toolName });
-    if (base.length > MAX_DESCRIPTION_LENGTH) {
-      base = base.slice(0, MAX_DESCRIPTION_LENGTH) + '…';
-    }
-  }
+  if (override !== undefined) return composeToolDescription(override, undefined, append);
+  if (!description) return composeToolDescription('', undefined, append);
 
+  let base = stripSuspicious(description, { toolName });
+  if (base.length > MAX_DESCRIPTION_LENGTH) {
+    base = base.slice(0, MAX_DESCRIPTION_LENGTH) + '…';
+  }
+  return composeToolDescription(base, undefined, append);
+}
+
+/**
+ * Applies the operator's `tool_overrides` text to a description that has ALREADY been sanitized
+ * (the registry scrubs upstream text once, on refresh), so it is not scrubbed again per agent view.
+ */
+export function composeToolDescription(
+  sanitizedDescription: string,
+  override?: string,
+  append?: string
+): string {
+  const base = override ?? sanitizedDescription;
   const extra = append?.trim();
   if (!extra) return base;
   return base ? `${base}\n\n${extra}` : extra;

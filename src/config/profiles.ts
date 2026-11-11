@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from 'util';
+import { mergeSandboxOverride } from './schema.js';
 import type {
   AgentConfig,
   CommandPolicyConfig,
@@ -72,11 +73,13 @@ type PermissionSource = Pick<
  * Merges tool_overrides from one source into an accumulator, in extends order (parents first,
  * the agent last).
  *
- * Most fields are last-wins, so an agent can override what a profile said. Two exceptions, because
+ * Most fields are last-wins, so an agent can override what a profile said. Three exceptions, because
  * last-wins would silently destroy inherited config:
  *   - `description_append` accumulates, so several profiles can each contribute a note to one tool.
  *   - `sandbox_presets` unions, since it parses to `[]` by default and a plain spread would clobber
  *     an inherited preset list with an empty one.
+ *   - `sandbox` (already resolved from each source's presets at parse time) is layered, so a later
+ *     source refines the inherited sandbox instead of dropping the restrictions it carried.
  */
 function mergeToolOverrides(
   target: Record<string, ToolOverride>,
@@ -97,11 +100,16 @@ function mergeToolOverrides(
     const presets = Array.from(
       new Set([...(existing.sandbox_presets ?? []), ...(override.sandbox_presets ?? [])])
     );
+    const sandbox =
+      existing.sandbox && override.sandbox
+        ? mergeSandboxOverride(existing.sandbox, override.sandbox)
+        : (override.sandbox ?? existing.sandbox);
 
     target[toolName] = {
       ...existing,
       ...override,
       sandbox_presets: presets,
+      ...(sandbox ? { sandbox } : {}),
       ...(appended ? { description_append: appended } : {}),
     };
   }
@@ -655,9 +663,10 @@ export function applyProfiles(config: GatewayConfig): void {
     agent.tool_overrides = resolved.tool_overrides;
 
     for (const [toolName, override] of Object.entries(agent.tool_overrides)) {
+      if (!override.args) continue;
       override.args = resolveNamedSetPolicy(
         config,
-        { [toolName]: override.args ?? {} },
+        { [toolName]: override.args },
         `agents.tool_overrides.${toolName}.args`
       )?.[toolName];
     }

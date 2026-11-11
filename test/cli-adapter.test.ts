@@ -393,7 +393,7 @@ describe('output truncation', () => {
     const result = await adapter.call({ tool: 'test/big', args: {}, agentId: 'a1' });
 
     expect(result.success).toBe(true);
-    expect(result.metadata?.truncated).toBe(true);
+    expect((result.data as { truncated: boolean }).truncated).toBe(true);
     const stdout = (result.data as { stdout: string }).stdout;
     expect(stdout.length).toBeLessThanOrEqual(100);
   });
@@ -409,7 +409,7 @@ describe('output truncation', () => {
     const result = await adapter.call({ tool: 'test/small', args: {}, agentId: 'a1' });
 
     expect(result.success).toBe(true);
-    expect(result.metadata?.truncated).toBe(false);
+    expect((result.data as { truncated: boolean }).truncated).toBe(false);
     expect((result.data as { stdout: string }).stdout.trim()).toBe('hello');
   });
 });

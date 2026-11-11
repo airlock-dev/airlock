@@ -5,9 +5,10 @@
 # endpoint, and returns the decision in Claude Code's expected format.
 #
 # Environment variables:
-#   AIRLOCK_URL    — Airlock gateway URL (default: http://localhost:4111)
-#   AIRLOCK_SECRET — API secret for authentication (optional)
-#   AIRLOCK_AGENT  — Agent profile to use (optional, defaults to "claude-code")
+#   AIRLOCK_URL    — Airlock gateway URL (default: http://localhost:4113,
+#                    the management API listener — /hook is not served on the agent port)
+#   AIRLOCK_SECRET — management API secret (server.management_api.api_secret)
+#   AIRLOCK_AGENT  — Agent to run as (optional, defaults to "claude-code")
 #
 # Install in .claude/settings.json:
 # {
@@ -27,7 +28,7 @@
 
 set -euo pipefail
 
-AIRLOCK_URL="${AIRLOCK_URL:-http://localhost:4111}"
+AIRLOCK_URL="${AIRLOCK_URL:-http://localhost:4113}"
 
 INPUT=$(cat -)
 
@@ -40,7 +41,7 @@ if [ -n "${AIRLOCK_SECRET:-}" ]; then
   AUTH_HEADER="Authorization: Bearer ${AIRLOCK_SECRET}"
 fi
 
-# POST to Airlock — long-polls if HITL approval is needed
+# POST to Airlock — long-polls if approval is needed
 RESPONSE=$(curl -s --fail-with-body \
   -X POST "${AIRLOCK_URL}/hook" \
   -H "Content-Type: application/json" \

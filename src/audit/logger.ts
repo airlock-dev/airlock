@@ -46,9 +46,6 @@ export class AuditLogger {
   updateHitlStatus(id: string, status: HitlQueueEntry['status'], reason?: string): void {
     this.db.updateHitlStatus(id, status, reason);
   }
-  getHitlByCode(code: string): HitlQueueEntry | undefined {
-    return this.db.getHitlByCode(code);
-  }
   getHitlById(id: string): HitlQueueEntry | undefined {
     return this.db.getHitlById(id);
   }

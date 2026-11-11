@@ -80,37 +80,6 @@ export class IOSHitlProvider implements HitlProvider {
     }
   }
 
-  async updateBadge(badgeCount: number): Promise<void> {
-    const devices = this.auditLogger.getActiveMobileDevices();
-    if (devices.length === 0) {
-      log.debug('No iOS devices registered for APNs badge update');
-      return;
-    }
-
-    const results = await Promise.allSettled(
-      devices.map((device) => this.apns.sendBadge(device.push_token, badgeCount))
-    );
-
-    results.forEach((result, index) => {
-      const device = devices[index];
-      if (!device) return;
-      if (result.status === 'rejected') {
-        log.warn({ err: result.reason, deviceId: device.id }, 'Failed to send APNs badge update');
-        return;
-      }
-      if (!result.value.ok) {
-        log.warn(
-          {
-            deviceId: device.id,
-            status: result.value.status,
-            reason: result.value.reason,
-          },
-          'APNs rejected badge update'
-        );
-      }
-    });
-  }
-
   async updateApprovalStatus(status: {
     id: string;
     code: string;
@@ -272,9 +241,13 @@ function approvalContext(request: HitlNotification): ApnsApprovalContext {
       .slice(0, 8)
       .map(([key, value]) => ({ key, value: formatValue(value) })),
     timeoutMs: request.timeoutMs,
-    ...(request.timeoutMs > 0
-      ? { expiresAt: new Date(Date.now() + request.timeoutMs).toISOString() }
-      : {}),
+    // The engine's own expiry: computing it here would drift by the batch window, or by however
+    // long a recovered request had already waited.
+    ...(request.expiresAt
+      ? { expiresAt: request.expiresAt }
+      : request.timeoutMs > 0
+        ? { expiresAt: new Date(Date.now() + request.timeoutMs).toISOString() }
+        : {}),
     ...(request.kind ? { kind: request.kind } : {}),
     ...(request.tier ? { tier: request.tier } : {}),
     ...(request.provider ? { provider: request.provider } : {}),

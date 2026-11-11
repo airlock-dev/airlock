@@ -418,7 +418,7 @@ describe('OpenApiAdapter', () => {
     });
 
     expect(result.success).toBe(true);
-    expect(result.metadata?.truncated).toBe(true);
+    expect((result.data as { truncated: boolean }).truncated).toBe(true);
     const body = (result.data as { body: string }).body;
     expect(body.length).toBeLessThanOrEqual(10);
   });

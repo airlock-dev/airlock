@@ -10,6 +10,10 @@ export interface HitlNotification {
   tool: string;
   args: Record<string, unknown>;
   timeoutMs: number;
+  /** ISO time the request was created; survives restarts and reconnects. */
+  createdAt?: string;
+  /** ISO time the request times out; absent when approvals never time out. */
+  expiresAt?: string;
   badgeCount?: number;
   sandbox?: SandboxDisplayInfo;
   context?: AirlockCallContext;
@@ -32,7 +36,6 @@ export interface HitlNotification {
 export interface HitlProvider {
   init(): Promise<void>;
   notify(requests: HitlNotification[]): Promise<void>;
-  updateBadge?(badgeCount: number): Promise<void>;
   updateApprovalStatus?(status: {
     id: string;
     code: string;

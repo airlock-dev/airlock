@@ -266,10 +266,29 @@ export const SandboxNetworkConfig = z
   .strict();
 export type SandboxNetworkConfig = z.infer<typeof SandboxNetworkConfig>;
 
+// Overrides and presets layer on top of an agent's sandbox, so they carry no defaults: a field they
+// leave out must keep the value underneath rather than being reset (e.g. a preset that only adds
+// `deny_read` must not reset `allow_write` back to the default and widen it).
+const SandboxFilesystemOverrideConfig = z
+  .object({
+    allow_write: z.array(z.string()).optional(),
+    deny_read: z.array(z.string()).optional(),
+    deny_write: z.array(z.string()).optional(),
+    allow_read: z.array(z.string()).optional(),
+  })
+  .strict();
+
+const SandboxNetworkOverrideConfig = z
+  .object({
+    allowed_domains: z.array(z.string()).optional(),
+    denied_domains: z.array(z.string()).optional(),
+  })
+  .strict();
+
 export const SandboxOverrideConfig = z
   .object({
-    filesystem: SandboxFilesystemConfig.optional(),
-    network: SandboxNetworkConfig.optional(),
+    filesystem: SandboxFilesystemOverrideConfig.optional(),
+    network: SandboxNetworkOverrideConfig.optional(),
   })
   .strict();
 export type SandboxOverrideConfig = z.infer<typeof SandboxOverrideConfig>;
@@ -498,6 +517,19 @@ export const RememberAllowRule = z
   .strict();
 export type RememberAllowRule = z.infer<typeof RememberAllowRule>;
 
+/**
+ * `mode` and `backend` are shared keys, but each middleware only implements some of their values.
+ * Anything else used to be silently treated as the default, so it is rejected at load time instead.
+ */
+const MIDDLEWARE_OPTION_VALUES: Partial<
+  Record<string, { mode?: readonly string[]; backend?: readonly string[] }>
+> = {
+  'output-injection-detector': { mode: ['detect', 'mangle'] },
+  'canary-token-injector': { mode: ['detect', 'escalate'] },
+  'injection-detector': { mode: ['detect', 'mangle', 'escalate'], backend: ['regex', 'deberta'] },
+  'sensitivity-classifier': { mode: ['detect', 'escalate'], backend: ['heuristic', 'llm'] },
+};
+
 export const MiddlewareItemConfig = z
   .object({
     name: z.enum([
@@ -533,7 +565,20 @@ export const MiddlewareItemConfig = z
     model: z.string().optional(),
     threshold_chars: z.number().optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((item, ctx) => {
+    const supported = MIDDLEWARE_OPTION_VALUES[item.name];
+    for (const option of ['mode', 'backend'] as const) {
+      const value = item[option];
+      const allowed = supported?.[option];
+      if (value === undefined || !allowed || allowed.includes(value)) continue;
+      ctx.addIssue({
+        code: 'custom',
+        path: [option],
+        message: `${item.name} does not support ${option} "${value}" (use one of: ${allowed.join(', ')}).`,
+      });
+    }
+  });
 export type MiddlewareItemConfig = z.infer<typeof MiddlewareItemConfig>;
 
 // Per-agent resource safeties (bulkheads) so one agent cannot exhaust the gateway and
@@ -655,7 +700,7 @@ export const ApprovalProviderConfig = z.discriminatedUnion('type', [
     .object({
       type: z.literal('webhook'),
       url: EnvString,
-      headers: z.record(z.string(), z.string()).prefault({}),
+      headers: z.record(z.string(), EnvString).prefault({}),
     })
     .strict(),
   z
@@ -778,9 +823,6 @@ export const ApprovalsConfig = z
   })
   .strict();
 export type ApprovalsConfig = z.infer<typeof ApprovalsConfig>;
-
-// Keep HitlConfig as an alias for internal code
-export type HitlConfig = ApprovalsConfig;
 
 export const SecurityConfig = z
   .object({
@@ -974,51 +1016,53 @@ export type ApiConfig = z.infer<typeof ApiConfig>;
 export const SandboxPresetConfig = SandboxOverrideConfig;
 export type SandboxPresetConfig = z.infer<typeof SandboxPresetConfig>;
 
-function mergeSandboxOverride(
+type SandboxFilesystemOverride = z.infer<typeof SandboxFilesystemOverrideConfig>;
+type SandboxNetworkOverride = z.infer<typeof SandboxNetworkOverrideConfig>;
+
+// Layering rules shared by presets and overrides: a field the layer sets replaces `allow_*` and
+// appends to `deny_*`; a field it leaves out keeps the value underneath.
+function layerFilesystem<T extends SandboxFilesystemOverride>(
+  base: T,
+  layer: SandboxFilesystemOverride
+): T {
+  return {
+    ...base,
+    ...(layer.allow_write !== undefined ? { allow_write: layer.allow_write } : {}),
+    ...(layer.allow_read !== undefined ? { allow_read: layer.allow_read } : {}),
+    ...(layer.deny_read !== undefined
+      ? { deny_read: [...(base.deny_read ?? []), ...layer.deny_read] }
+      : {}),
+    ...(layer.deny_write !== undefined
+      ? { deny_write: [...(base.deny_write ?? []), ...layer.deny_write] }
+      : {}),
+  };
+}
+
+function layerNetwork<T extends SandboxNetworkOverride>(base: T, layer: SandboxNetworkOverride): T {
+  return {
+    ...base,
+    ...(layer.allowed_domains !== undefined ? { allowed_domains: layer.allowed_domains } : {}),
+    ...(layer.denied_domains !== undefined
+      ? { denied_domains: [...(base.denied_domains ?? []), ...layer.denied_domains] }
+      : {}),
+  };
+}
+
+/** Layer one sandbox override on top of another (presets, then explicit `sandbox`, …). */
+export function mergeSandboxOverride(
   base: SandboxOverrideConfig,
   override: SandboxOverrideConfig
 ): SandboxOverrideConfig {
-  const result: SandboxOverrideConfig = {
-    filesystem: base.filesystem ? { ...base.filesystem } : undefined,
-    network: base.network ? { ...base.network } : undefined,
+  const filesystem = override.filesystem
+    ? layerFilesystem(base.filesystem ?? {}, override.filesystem)
+    : base.filesystem;
+  const network = override.network
+    ? layerNetwork(base.network ?? {}, override.network)
+    : base.network;
+  return {
+    ...(filesystem ? { filesystem } : {}),
+    ...(network ? { network } : {}),
   };
-
-  if (override.filesystem) {
-    result.filesystem = {
-      ...(result.filesystem ?? {}),
-      ...override.filesystem,
-      ...(override.filesystem.deny_read !== undefined
-        ? {
-            deny_read: [...(result.filesystem?.deny_read ?? []), ...override.filesystem.deny_read],
-          }
-        : {}),
-      ...(override.filesystem.deny_write !== undefined
-        ? {
-            deny_write: [
-              ...(result.filesystem?.deny_write ?? []),
-              ...override.filesystem.deny_write,
-            ],
-          }
-        : {}),
-    };
-  }
-
-  if (override.network) {
-    result.network = {
-      ...(result.network ?? {}),
-      ...override.network,
-      ...(override.network.denied_domains !== undefined
-        ? {
-            denied_domains: [
-              ...(result.network?.denied_domains ?? []),
-              ...override.network.denied_domains,
-            ],
-          }
-        : {}),
-    };
-  }
-
-  return result;
 }
 
 function applySandboxPresetsToConfig<
@@ -1052,57 +1096,43 @@ function applySandboxPresetsToAgent(
   for (const presetName of sandbox.presets) {
     const preset = sandboxPresets[presetName];
     if (!preset) continue;
-
-    if (preset.filesystem) {
-      sandbox = {
-        ...sandbox,
-        filesystem: {
-          ...sandbox.filesystem,
-          ...preset.filesystem,
-          ...(preset.filesystem.deny_read !== undefined
-            ? {
-                deny_read: [...sandbox.filesystem.deny_read, ...preset.filesystem.deny_read],
-              }
-            : {}),
-          ...(preset.filesystem.deny_write !== undefined
-            ? {
-                deny_write: [...sandbox.filesystem.deny_write, ...preset.filesystem.deny_write],
-              }
-            : {}),
-        },
-      };
-    }
-
-    if (preset.network) {
-      sandbox = {
-        ...sandbox,
-        network: {
-          ...sandbox.network,
-          ...preset.network,
-          ...(preset.network.denied_domains !== undefined
-            ? {
-                denied_domains: [
-                  ...sandbox.network.denied_domains,
-                  ...preset.network.denied_domains,
-                ],
-              }
-            : {}),
-        },
-      };
-    }
+    sandbox = {
+      ...sandbox,
+      ...(preset.filesystem
+        ? { filesystem: layerFilesystem(sandbox.filesystem, preset.filesystem) }
+        : {}),
+      ...(preset.network ? { network: layerNetwork(sandbox.network, preset.network) } : {}),
+    };
   }
-
-  const tool_overrides = Object.fromEntries(
-    Object.entries(agent.tool_overrides).map(([key, value]) => [
-      key,
-      applySandboxPresetsToConfig(value, sandboxPresets),
-    ])
-  );
 
   return {
     ...agent,
     sandbox,
-    tool_overrides,
+    tool_overrides: applySandboxPresetsToOverrides(agent.tool_overrides, sandboxPresets),
+  };
+}
+
+function applySandboxPresetsToOverrides(
+  toolOverrides: Record<string, ToolOverride>,
+  sandboxPresets: Record<string, SandboxPresetConfig>
+): Record<string, ToolOverride> {
+  return Object.fromEntries(
+    Object.entries(toolOverrides).map(([key, value]) => [
+      key,
+      applySandboxPresetsToConfig(value, sandboxPresets),
+    ])
+  );
+}
+
+// Profiles carry tool_overrides too; their presets are resolved here, like an agent's, so the
+// `sandbox` they contribute through `extends` is already concrete when profiles are merged.
+function applySandboxPresetsToProfile(
+  profile: ProfileConfig,
+  sandboxPresets: Record<string, SandboxPresetConfig>
+): ProfileConfig {
+  return {
+    ...profile,
+    tool_overrides: applySandboxPresetsToOverrides(profile.tool_overrides, sandboxPresets),
   };
 }
 
@@ -1130,6 +1160,12 @@ export const GatewayConfig = z
   .strict()
   .transform((config) => ({
     ...config,
+    profiles: Object.fromEntries(
+      Object.entries(config.profiles).map(([key, value]) => [
+        key,
+        applySandboxPresetsToProfile(value, config.sandbox_presets),
+      ])
+    ),
     agents: Object.fromEntries(
       Object.entries(config.agents).map(([key, value]) => [
         key,

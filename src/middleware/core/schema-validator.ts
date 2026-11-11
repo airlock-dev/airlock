@@ -8,7 +8,7 @@ import type { Middleware } from '../types.js';
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const Ajv = (AjvModule as any).default ?? AjvModule;
 const ajv = new Ajv({ allErrors: true, strict: false });
-const validatorCache = new Map<string, ValidateFunction>();
+const validatorCache = new Map<string, { schema: string; validate: ValidateFunction }>();
 /* eslint-enable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access */
 
 export function schemaValidatorMiddleware(): Middleware {
@@ -23,12 +23,16 @@ export function schemaValidatorMiddleware(): Middleware {
     if (!tool?.inputSchema) return next();
 
     const cacheKey = `${ctx.toolName}->${resolvedToolName}`;
-    let validate = validatorCache.get(cacheKey);
-    if (!validate) {
+    // Keyed on the schema too: an upstream can change a tool's inputSchema on refresh, and a
+    // validator compiled from the old one would keep rejecting (or accepting) the wrong shape.
+    const schema = JSON.stringify(tool.inputSchema);
+    let cached = validatorCache.get(cacheKey);
+    if (!cached || cached.schema !== schema) {
       // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
-      validate = ajv.compile(tool.inputSchema) as ValidateFunction;
-      validatorCache.set(cacheKey, validate);
+      cached = { schema, validate: ajv.compile(tool.inputSchema) as ValidateFunction };
+      validatorCache.set(cacheKey, cached);
     }
+    const validate = cached.validate;
 
     if (!validate(ctx.args)) {
       const errors =

@@ -25,8 +25,8 @@ export function rateLimiterMiddleware(opts: RateLimiterOptions): Middleware {
   return async (ctx, next) => {
     const key = getKey(ctx.agentId, ctx.toolName, per);
     const now = Date.now();
-    let timestamps = windows.get(key) ?? [];
-    timestamps = pruneWindow(timestamps, window_ms, now);
+    const timestamps = pruneWindow(windows.get(key) ?? [], window_ms, now);
+    windows.set(key, timestamps);
 
     if (timestamps.length >= max_requests) {
       const retryAfterMs = timestamps[0] + window_ms - now;
@@ -36,10 +36,10 @@ export function rateLimiterMiddleware(opts: RateLimiterOptions): Middleware {
       );
     }
 
-    const response = await next();
+    // Count the call when it is admitted, not when it finishes: otherwise concurrent calls (or calls
+    // parked on an approval) all see an empty window, and calls that throw are never counted.
     timestamps.push(now);
-    windows.set(key, timestamps);
-    return response;
+    return next();
   };
 }
 

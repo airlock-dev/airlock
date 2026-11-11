@@ -44,6 +44,9 @@ import {
 
 const log = childLogger('gateway');
 
+/** Cap on remembered agent-supplied session ids (see downstreamSessionIdFor). */
+const MAX_DOWNSTREAM_SESSION_IDS = 10_000;
+
 export interface GatewayOptions {
   runtimeOnly?: boolean;
 }
@@ -169,9 +172,10 @@ export class Gateway {
     // Agent data-plane server. Control-plane routes are registered on a
     // separate listener below and must never be added to this app.
     this.app = Fastify({ logger: false });
-    // Detect silently-dead peers on long-lived MCP streams: half-open TCP never emits 'close',
-    // so without keep-alive a vanished client pins its session's in-flight slot forever (see
-    // enableTcpKeepAlive). Probes surface the death and the existing onclose path reclaims it.
+    // Detect silently-dead peers on long-lived MCP streams (SSE sessions, calls parked on
+    // approval): half-open TCP never emits 'close', so without keep-alive a vanished client is
+    // never cleaned up (see enableTcpKeepAlive). Probes surface the death and the existing close
+    // paths reclaim it.
     enableTcpKeepAlive(this.app.server);
 
     const getDataPlaneRequestSecurity = () => this.dataPlaneRequestSecurity;
@@ -292,7 +296,7 @@ export class Gateway {
       const dataPlane = await this.dataPlaneHealth();
       const mcpHealth = this.pool.healthCheck();
       const credentialHealth = this.credentialHealth.snapshot();
-      const pendingApprovals = this.hitlEngine.getPending().length;
+      const pendingApprovals = this.hitlEngine.pendingCount();
       const uptime = Math.floor((Date.now() - this.startTime) / 1000);
       const status = dataPlane.status === 'ok' ? 'ok' : 'degraded';
       const sessions = this.sessionLimiter.snapshot();
@@ -465,12 +469,23 @@ export class Gateway {
     };
   }
 
+  /**
+   * The opaque downstream id for an agent-supplied session key. Keys come from agents, so the map
+   * is an LRU: re-inserting on every hit keeps live sessions at the young end, and the oldest key
+   * is dropped once the cap is reached. A session evicted and seen again gets a fresh id.
+   */
   private downstreamSessionIdFor(key: string): string {
     let id = this.downstreamSessionIds.get(key);
-    if (!id) {
+    if (id) {
+      this.downstreamSessionIds.delete(key);
+    } else {
       id = randomUUID();
-      this.downstreamSessionIds.set(key, id);
+      if (this.downstreamSessionIds.size >= MAX_DOWNSTREAM_SESSION_IDS) {
+        const oldest = this.downstreamSessionIds.keys().next().value;
+        if (oldest !== undefined) this.downstreamSessionIds.delete(oldest);
+      }
     }
+    this.downstreamSessionIds.set(key, id);
     return id;
   }
 
@@ -530,6 +545,9 @@ export class Gateway {
     this.credentialHealth?.stop();
     this.pool?.disableReconnect();
     await this.pool?.stop();
+    // End the approval streams (dashboard /events, /mobile/approvals/stream) first: an open SSE
+    // response never goes idle, so the listener's close() would otherwise wait on it forever.
+    await this.approvalStream?.stop();
     await this.managementApp?.close();
     await this.app?.close();
     this.unsubscribeActivityNotifications?.();

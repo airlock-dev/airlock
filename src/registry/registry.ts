@@ -3,7 +3,11 @@ import type { Tool } from '@modelcontextprotocol/server';
 import type { BackendAdapter } from '../backend/types.js';
 import type { AllowlistEngine, Decision } from '../allowlist/engine.js';
 import type { AgentConfig, ProviderInstructionsConfig, ToolOverride } from '../config/schema.js';
-import { sanitizeToolDescription, sanitizeInstructions } from './sanitizer.js';
+import {
+  composeToolDescription,
+  sanitizeInstructions,
+  sanitizeToolDescription,
+} from './sanitizer.js';
 import { addAskPolicyGuidance } from './airlock-policy.js';
 import { childLogger } from '../util/logger.js';
 import { tierFromAnnotations, type ToolTier } from '../hitl/grants.js';
@@ -164,7 +168,7 @@ export class ToolRegistry {
         const decision = this.allowlist.evaluate(agentId, t.name);
         if (decision === 'deny') return undefined;
         return {
-          tool: this.applyAgentView(agentId, t, overrides[t.name]),
+          tool: applyAgentView(t, decision, overrides[t.name]),
           decision,
           providerId: providerIdForTool(t.name),
           resolvedName: t.name,
@@ -188,7 +192,7 @@ export class ToolRegistry {
       if (decision === 'deny') continue;
 
       filtered.push({
-        tool: this.applyAgentView(agentId, { ...baseTool, name: aliasName }, override),
+        tool: applyAgentView({ ...baseTool, name: aliasName }, decision, override),
         decision,
         providerId: providerIdForTool(aliasName),
         resolvedName: override.alias_of,
@@ -247,20 +251,26 @@ export class ToolRegistry {
   async stopAll(): Promise<void> {
     await Promise.allSettled(this.adapters.map((a) => a.stop()));
   }
+}
 
-  private applyAgentView(agentId: string, tool: Tool, override?: ToolOverride): Tool {
-    const decision = this.allowlist.evaluate(agentId, tool.name);
-    const sanitized: Tool = {
-      ...tool,
-      description: sanitizeToolDescription(
-        tool.name,
-        tool.description,
-        override?.description,
-        override?.description_append
-      ),
-    };
-    return decision === 'ask' ? addAskPolicyGuidance(sanitized) : sanitized;
-  }
+/**
+ * The tool as one agent sees it. `tool.description` was already sanitized on refresh, so only the
+ * operator's override text is applied here; `decision` is the one the caller already evaluated.
+ */
+function applyAgentView(
+  tool: Tool,
+  decision: AgentVisibleTool['decision'],
+  override?: ToolOverride
+): Tool {
+  const view: Tool = {
+    ...tool,
+    description: composeToolDescription(
+      tool.description ?? '',
+      override?.description,
+      override?.description_append
+    ),
+  };
+  return decision === 'ask' ? addAskPolicyGuidance(view) : view;
 }
 
 /**

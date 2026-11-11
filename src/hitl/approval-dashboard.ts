@@ -1,5 +1,5 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
-import { rememberAllow, type RememberAllowMode } from '../config/mutator.js';
+import { rememberAllow } from '../config/mutator.js';
 import { childLogger } from '../util/logger.js';
 import { VERSION } from '../version.js';
 import type { ApprovalStreamHub } from './approval-stream.js';
@@ -58,7 +58,11 @@ export class ApprovalDashboardRoutes {
   ): { ok: true } | { error: string } {
     const query = request.query as Record<string, unknown>;
     const code = typeof query.code === 'string' ? query.code : '';
-    if (!code) return { ok: true };
+    const unknown = this.checkCode(code);
+    if (unknown) {
+      reply.code(unknown.status);
+      return { error: unknown.error };
+    }
 
     const pendingRequest = this.stream.getPendingByCode(code);
     const remember = typeof query.remember === 'string' ? query.remember : undefined;
@@ -101,7 +105,7 @@ export class ApprovalDashboardRoutes {
     log.info({ code, grant: grant.spec }, 'Approved via dashboard');
 
     if (persistRemember) {
-      const result = this.rememberDecision(configPath, pendingRequest, remember, query.duration_ms);
+      const result = this.rememberDecision(configPath, pendingRequest);
       if (result.error) {
         reply.code(result.status);
         return { error: result.error };
@@ -110,14 +114,29 @@ export class ApprovalDashboardRoutes {
     return { ok: true };
   }
 
-  private handleDeny(request: FastifyRequest, _reply: FastifyReply): { ok: true } {
+  private handleDeny(
+    request: FastifyRequest,
+    reply: FastifyReply
+  ): { ok: true } | { error: string } {
     const query = request.query as Record<string, unknown>;
     const code = typeof query.code === 'string' ? query.code : '';
-    if (code) {
-      this.approvalApi.denyByCode(code, 'Denied via dashboard');
-      log.info({ code }, 'Denied via dashboard');
+    const unknown = this.checkCode(code);
+    if (unknown) {
+      reply.code(unknown.status);
+      return { error: unknown.error };
     }
+    this.approvalApi.denyByCode(code, 'Denied via dashboard');
+    log.info({ code }, 'Denied via dashboard');
     return { ok: true };
+  }
+
+  /** A decision needs a code the operator could have been shown: a pending request or batch. */
+  private checkCode(code: string): { status: number; error: string } | undefined {
+    if (!code) return { status: 400, error: 'code is required' };
+    if (!this.stream.hasPendingCode(code)) {
+      return { status: 404, error: 'No pending approval found for code' };
+    }
+    return undefined;
   }
 
   private async handleLatestVersion(
@@ -157,23 +176,13 @@ export class ApprovalDashboardRoutes {
     return undefined;
   }
 
+  /** Persist an "always allow" rule. Inputs were validated before the approval was made. */
   private rememberDecision(
     configPath: string | undefined,
-    pendingRequest: HitlNotification | undefined,
-    remember: string,
-    durationMsValue: unknown
+    pendingRequest: HitlNotification | undefined
   ): { status: number; error?: string } {
-    const invalid = this.validateRemember(configPath, pendingRequest, remember);
-    if (invalid || !configPath || !pendingRequest) {
-      return invalid ?? { status: 400, error: 'Config mutation is not available' };
-    }
-
-    const durationMs =
-      typeof durationMsValue === 'string' && durationMsValue.trim()
-        ? Number(durationMsValue)
-        : undefined;
-    if (durationMs !== undefined && (!Number.isFinite(durationMs) || durationMs <= 0)) {
-      return { status: 400, error: 'Invalid duration_ms' };
+    if (!configPath || !pendingRequest) {
+      return { status: 400, error: 'Config mutation is not available' };
     }
 
     try {
@@ -181,14 +190,13 @@ export class ApprovalDashboardRoutes {
         configPath,
         agentId: pendingRequest.agentId,
         tool: pendingRequest.tool,
-        mode: remember as RememberAllowMode,
-        ...(durationMs ? { durationMs } : {}),
+        mode: 'always',
       });
       log.info(result, 'Updated config from approval decision');
       return { status: 200 };
     } catch (err) {
       log.error(
-        { err, code: pendingRequest.code, remember },
+        { err, code: pendingRequest.code },
         'Failed to update config from approval decision'
       );
       return { status: 500, error: 'Failed to update config' };

@@ -38,7 +38,9 @@ describe('APNs approval notifications', () => {
     });
     request = vi.fn(() => Object.assign(stream, { setEncoding: vi.fn(), end }));
     close = vi.fn();
-    vi.mocked(connect).mockReturnValue({ request, close } as unknown as ReturnType<typeof connect>);
+    vi.mocked(connect).mockReturnValue({ request, close, on: vi.fn() } as unknown as ReturnType<
+      typeof connect
+    >);
   });
 
   afterEach(() => {
@@ -163,5 +165,20 @@ describe('APNs approval notifications', () => {
     expect(payload.airlock.batch.size).toBe(60);
     expect(payload.approval_ids.length).toBe(payload.airlock.batch.items.length);
     expect(payload.approval_ids.length).toBeGreaterThan(0);
+  });
+  it('listens for session errors so an unreachable APNs host cannot crash the gateway', async () => {
+    const on = vi.fn();
+    vi.mocked(connect).mockReturnValue({ request, close, on } as unknown as ReturnType<
+      typeof connect
+    >);
+    await client
+      .sendApprovalStatus('device-token', {
+        id: 'approval-1',
+        code: 'ABCDEFGH',
+        result: 'approved',
+        badgeCount: 0,
+      })
+      .catch(() => undefined);
+    expect(on).toHaveBeenCalledWith('error', expect.any(Function));
   });
 });

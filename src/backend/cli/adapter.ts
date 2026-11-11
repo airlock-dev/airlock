@@ -151,18 +151,14 @@ export class CliBackendAdapter implements BackendAdapter {
         clearTimeout(timer);
         const truncated = stdoutTruncated || stderrTruncated;
         if (timedOut) {
-          resolve({
-            success: false,
-            error: `Command timed out after ${timeoutMs}ms`,
-            metadata: { duration_ms: timeoutMs, truncated },
-          });
+          resolve({ success: false, error: `Command timed out after ${timeoutMs}ms` });
           return;
         }
+        // `truncated` lives in the data the agent receives, so it can tell the output was cut.
         resolve({
           success: code === 0,
-          data: { exit_code: code, stdout, stderr },
+          data: { exit_code: code, stdout, stderr, truncated },
           error: code !== 0 ? `Exit code ${code}: ${stderr.trim()}` : undefined,
-          metadata: { truncated },
         });
       });
 

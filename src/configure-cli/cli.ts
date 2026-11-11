@@ -3,6 +3,7 @@ import { writeFileSync, copyFileSync, readFileSync, openSync } from 'fs';
 import { ReadStream } from 'tty';
 import { execSync } from 'child_process';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
+import { stringifyPreservingComments } from '../config/yaml-merge.js';
 import { discoverCliCommands } from '../discover/index.js';
 import { createCompletionSession } from '../discover/strategies/completion.js';
 import type { CliCommandConfig } from '../config/schema.js';
@@ -251,6 +252,29 @@ function serializeCompact(data: Record<string, unknown>, tool: string, strategy:
   ].join('\n');
 
   return header + stringifyYaml(data, { lineWidth: 120 });
+}
+
+/**
+ * Merge the selection into `clis.<tool>` of a parsed config. The tool's other settings (shell, cwd,
+ * max_output_bytes, discovered) and commands the configurator never showed are kept; commands shown
+ * but deselected are removed, and selected ones are added or replaced.
+ */
+export function mergeCliSelection(
+  doc: Record<string, unknown>,
+  tool: string,
+  selected: Record<string, unknown>,
+  deselected: string[]
+): Record<string, unknown> {
+  const asRecord = (value: unknown): Record<string, unknown> =>
+    value && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : {};
+  const clis = asRecord(doc.clis);
+  const existing = asRecord(clis[tool]);
+  const commands = { ...asRecord(existing.commands) };
+  for (const name of deselected) delete commands[name];
+  Object.assign(commands, selected);
+  return { ...doc, clis: { ...clis, [tool]: { ...existing, commands } } };
 }
 
 // ── TUI row model ────────────────────────────────────────────────────────────
@@ -584,6 +608,7 @@ Usage:
   airlock configure-cli <tool> [options]
 
 Options:
+  -c, --config <path>    Config file the [e] action edits (default: ./airlock.yaml)
   --fig                  Try Fig autocomplete specs first
   --max-depth <n>        Max subcommand recursion depth (default: 2)
   --output, -o <path>    Write YAML to file instead of action picker
@@ -601,6 +626,7 @@ export async function runConfigureCli(argv: string[]): Promise<void> {
   const { values, positionals } = parseArgs({
     args: argv,
     options: {
+      config: { type: 'string', short: 'c', default: './airlock.yaml' },
       output: { type: 'string', short: 'o' },
       fig: { type: 'boolean', default: false },
       'max-depth': { type: 'string' },
@@ -611,10 +637,11 @@ export async function runConfigureCli(argv: string[]): Promise<void> {
 
   if (values.help || positionals.length === 0) {
     console.log(HELP);
-    process.exit(positionals.length === 0 ? 1 : 0);
+    process.exit(values.help ? 0 : 1);
   }
 
   const tool = positionals[0];
+  const configPath = values.config ?? './airlock.yaml';
   const maxDepth = values['max-depth'] ? parseInt(values['max-depth'], 10) : undefined;
 
   // ── Discovery phase ──────────────────────────────────────────────────────
@@ -623,7 +650,8 @@ export async function runConfigureCli(argv: string[]): Promise<void> {
   );
 
   let strategy: string;
-  const completionSession = !values.fig ? createCompletionSession(tool) : null;
+  // --output writes the eager discovery result, so it has no use for a lazy completion session.
+  const completionSession = !values.fig && !values.output ? createCompletionSession(tool) : null;
   let groups: CommandGroup[];
 
   if (values.output || !completionSession) {
@@ -667,7 +695,15 @@ export async function runConfigureCli(argv: string[]): Promise<void> {
       process.exit(0);
     }
 
-    await runInteractiveConfigurator(tool, strategy, groups, stripGlobal, undefined, maxDepth);
+    await runInteractiveConfigurator(
+      tool,
+      strategy,
+      groups,
+      stripGlobal,
+      configPath,
+      undefined,
+      maxDepth
+    );
     return;
   }
 
@@ -694,7 +730,15 @@ export async function runConfigureCli(argv: string[]): Promise<void> {
     `${DIM}Global flags currently based on loaded commands: ${[...initialGlobalFlags.universal].join(', ') || 'none'}${RESET}\n\n`
   );
 
-  await runInteractiveConfigurator(tool, strategy, groups, true, completionSession, maxDepth);
+  await runInteractiveConfigurator(
+    tool,
+    strategy,
+    groups,
+    true,
+    configPath,
+    completionSession,
+    maxDepth
+  );
   return;
 }
 
@@ -703,6 +747,7 @@ async function runInteractiveConfigurator(
   strategy: string,
   groups: CommandGroup[],
   initialStripGlobal: boolean,
+  configPath: string,
   completionSession?: ReturnType<typeof createCompletionSession>,
   maxDepth?: number
 ): Promise<void> {
@@ -1005,7 +1050,7 @@ async function runInteractiveConfigurator(
     `\n${BOLD}${CYAN}${enabledCount} commands selected.${RESET} What would you like to do?\n`
   );
   process.stdout.write(
-    `  ${BOLD}[e]${RESET} edit airlock.yaml directly  ${DIM}(backs up original to .bak)${RESET}\n`
+    `  ${BOLD}[e]${RESET} edit ${configPath} directly  ${DIM}(backs up original to .bak)${RESET}\n`
   );
   process.stdout.write(`  ${BOLD}[c]${RESET} copy to clipboard\n`);
   process.stdout.write(`  ${BOLD}[p]${RESET} print to stdout\n`);
@@ -1061,23 +1106,40 @@ async function runInteractiveConfigurator(
   }
 
   if (action === 'e') {
-    const configPath = './airlock.yaml';
     try {
       const raw = readFileSync(configPath, 'utf8');
+      const parsed: unknown = parseYaml(raw);
+      if (parsed !== null && (typeof parsed !== 'object' || Array.isArray(parsed))) {
+        throw new Error('the config is not a YAML mapping');
+      }
       const backupPath = configPath.replace(/\.ya?ml$/i, '') + '.bak';
       copyFileSync(configPath, backupPath);
 
-      const doc = parseYaml(raw) as Record<string, unknown>;
-      const existingClis = (doc.clis ?? {}) as Record<string, unknown>;
-      const newClis = data.clis as Record<string, unknown>;
-      doc.clis = { ...existingClis, ...newClis };
-      writeFileSync(configPath, stringifyYaml(doc));
+      const selected = (data.clis as Record<string, { commands: Record<string, unknown> }>)[tool]
+        .commands;
+      const deselected = groups.flatMap((group) =>
+        group.entries.filter((entry) => !entry.enabled).map((entry) => entry.name)
+      );
+      const next = mergeCliSelection(
+        (parsed ?? {}) as Record<string, unknown>,
+        tool,
+        selected,
+        deselected
+      );
+      writeFileSync(configPath, stringifyPreservingComments(raw, next));
 
       console.log(`${GREEN}✓ Updated ${configPath}${RESET}`);
       console.log(`${DIM}  Original backed up to ${backupPath}${RESET}`);
-    } catch {
-      console.error(`Could not find ${configPath}. Printing YAML instead:\n`);
+    } catch (err) {
+      const reason =
+        err && typeof err === 'object' && 'code' in err && err.code === 'ENOENT'
+          ? `${configPath} does not exist`
+          : err instanceof Error
+            ? err.message
+            : String(err);
+      console.error(`Could not update ${configPath}: ${reason}. Printing YAML instead:\n`);
       console.log(yaml);
+      process.exit(1);
     }
     process.exit(0);
   }

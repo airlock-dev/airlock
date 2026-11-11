@@ -23,7 +23,10 @@ function pretty(value: unknown): string {
 }
 
 export function Activity() {
-  const { state, pending, activity, refreshPending, refreshStatus, toast } = useStore();
+  const { state, meta, pending, activity, refreshPending, refreshStatus, toast } = useStore();
+  // `airlock run` and `configure-web` see pending requests in the audit DB but have no approval
+  // routes; deciding happens in the gateway's own dashboard or a companion app.
+  const canDecide = meta?.approvals === true;
   const [entries, setEntries] = useState<AuditEntry[]>([]);
   const [dbPath, setDbPath] = useState('');
   const [auditError, setAuditError] = useState<string | null>(null);
@@ -71,7 +74,7 @@ export function Activity() {
   // a / d act on the open request, or the oldest one shown. Never a request hidden by the filter.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (!canDecide || e.metaKey || e.ctrlKey || e.altKey) return;
       const target = e.target as HTMLElement;
       if (['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) return;
       const subject = open ?? visiblePending[0];
@@ -137,28 +140,39 @@ export function Activity() {
                   {p.reason && <span class="request-reason">{p.reason}</span>}
                   <span class="request-time">{relativeTime(p.createdAt)}</span>
                 </button>
-                <div class="request-actions">
-                  <Button size="sm" variant="primary" onClick={() => decide(p, 'approve')}>
-                    {isQuestion(p) ? 'Confirm' : 'Approve'}
-                  </Button>
-                  {!isQuestion(p) && (
-                    <Button size="sm" onClick={() => decide(p, 'approve', 'temporary', 3_600_000)}>
-                      Allow for 1 hour
+                {canDecide && (
+                  <div class="request-actions">
+                    <Button size="sm" variant="primary" onClick={() => decide(p, 'approve')}>
+                      {isQuestion(p) ? 'Confirm' : 'Approve'}
                     </Button>
-                  )}
-                  <Button size="sm" variant="danger" onClick={() => decide(p, 'deny')}>
-                    Deny
-                  </Button>
-                </div>
+                    {!isQuestion(p) && (
+                      <Button
+                        size="sm"
+                        onClick={() => decide(p, 'approve', 'temporary', 3_600_000)}
+                      >
+                        Allow for 1 hour
+                      </Button>
+                    )}
+                    <Button size="sm" variant="danger" onClick={() => decide(p, 'deny')}>
+                      Deny
+                    </Button>
+                  </div>
+                )}
               </li>
             ))}
           </ul>
         )}
-        {visiblePending.length > 0 && (
-          <p class="kbd-hint">
-            <kbd>A</kbd> approves and <kbd>D</kbd> denies the oldest request
-          </p>
-        )}
+        {visiblePending.length > 0 &&
+          (canDecide ? (
+            <p class="kbd-hint">
+              <kbd>A</kbd> approves and <kbd>D</kbd> denies the oldest request
+            </p>
+          ) : (
+            <p class="hint">
+              This command center can't approve or deny. Decide in the gateway's dashboard or a
+              companion app.
+            </p>
+          ))}
       </section>
 
       {notes.length > 0 && (
@@ -202,7 +216,14 @@ export function Activity() {
         )}
       </section>
 
-      {open && <ApprovalSheet request={open} onClose={() => setOpen(null)} onDecide={decide} />}
+      {open && (
+        <ApprovalSheet
+          request={open}
+          canDecide={canDecide}
+          onClose={() => setOpen(null)}
+          onDecide={decide}
+        />
+      )}
     </div>
   );
 }
@@ -244,7 +265,7 @@ function NotifyToggle() {
 
 function AuditRow({ entry }: { entry: AuditEntry }) {
   const [expanded, setExpanded] = useState(false);
-  const tone = /denied|error|timeout/.test(entry.result)
+  const tone = /denied|error|timeout|injection|canary/.test(entry.result)
     ? 'bad'
     : /hitl|ask/.test(entry.result)
       ? 'warn'
@@ -276,10 +297,12 @@ function AuditRow({ entry }: { entry: AuditEntry }) {
 
 function ApprovalSheet({
   request,
+  canDecide,
   onClose,
   onDecide,
 }: {
   request: PendingApproval;
+  canDecide: boolean;
   onClose: () => void;
   onDecide: (
     p: PendingApproval,
@@ -293,7 +316,8 @@ function ApprovalSheet({
   const question = isQuestion(request);
 
   useEffect(() => {
-    if (question) return;
+    // The preview route lives next to the approval routes.
+    if (question || !canDecide) return;
     let live = true;
     api.approvalPreview(request.id).then(
       (result) => live && setPreview(result),
@@ -318,22 +342,24 @@ function ApprovalSheet({
       onClose={onClose}
       title={question ? questionText(request) : <code>{request.tool}</code>}
       footer={
-        <>
-          <Button variant="danger" onClick={() => onDecide(request, 'deny')}>
-            Deny
-          </Button>
-          {!question && (
-            <Button onClick={() => onDecide(request, 'approve', 'always')}>Always allow</Button>
-          )}
-          {!question && (
-            <Button onClick={() => onDecide(request, 'approve', 'temporary', 3_600_000)}>
-              Allow for 1 hour
+        canDecide && (
+          <>
+            <Button variant="danger" onClick={() => onDecide(request, 'deny')}>
+              Deny
             </Button>
-          )}
-          <Button variant="primary" onClick={() => onDecide(request, 'approve')}>
-            {question ? 'Confirm' : 'Approve'}
-          </Button>
-        </>
+            {!question && (
+              <Button onClick={() => onDecide(request, 'approve', 'always')}>Always allow</Button>
+            )}
+            {!question && (
+              <Button onClick={() => onDecide(request, 'approve', 'temporary', 3_600_000)}>
+                Allow for 1 hour
+              </Button>
+            )}
+            <Button variant="primary" onClick={() => onDecide(request, 'approve')}>
+              {question ? 'Confirm' : 'Approve'}
+            </Button>
+          </>
+        )
       }
     >
       <dl class="facts">

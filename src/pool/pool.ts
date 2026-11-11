@@ -134,10 +134,17 @@ export class ClientPool {
       }
     }
 
-    // Add new MCPs
+    // Add new MCPs, and restart existing ones whose config changed (url, headers, command, auth…):
+    // a client is built from its config once, so keeping it would silently ignore the edit.
     for (const [id, cfg] of Object.entries(newMcps)) {
       if (!oldIds.has(id)) {
         log.info({ id }, 'Adding new MCP from config reload');
+        void this.connectClient(id, cfg);
+      } else if (JSON.stringify(this.mcps[id]) !== JSON.stringify(cfg)) {
+        log.info({ id }, 'Restarting MCP (config changed)');
+        const client = this.clients.get(id)!;
+        await client.stop().catch((err) => log.error({ err, id }, 'Error stopping changed MCP'));
+        this.clients.delete(id);
         void this.connectClient(id, cfg);
       }
     }

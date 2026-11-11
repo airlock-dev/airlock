@@ -1,6 +1,7 @@
 import { ProtocolError, ProtocolErrorCode } from '@modelcontextprotocol/server';
-import type { AirlockCallContext } from '../../airlock/context.js';
 import type { Middleware, ToolCallResponse } from '../types.js';
+import { serializeAuditArgs } from '../audit-args.js';
+import { resultText } from '../response.js';
 import { resolveLimits } from '../../transport/session-limiter.js';
 
 // Concurrently EXECUTING calls per agent. This middleware runs AFTER hitl-gate, so a call parked
@@ -11,16 +12,6 @@ const executing = new Map<string, number>();
 /** For testing */
 export function resetExecuteState(): void {
   executing.clear();
-}
-
-function serializeAuditArgs(args: Record<string, unknown>, meta: Record<string, unknown>): string {
-  const sandbox = meta.sandbox_info;
-  const context = meta.airlockContext as AirlockCallContext | undefined;
-  if (!sandbox && !context) return JSON.stringify(args);
-  return JSON.stringify({
-    ...args,
-    _airlock: { ...(context ?? {}), ...(sandbox ? { sandbox } : {}) },
-  });
 }
 
 export function executeMiddleware(): Middleware {
@@ -78,7 +69,7 @@ export function executeMiddleware(): Middleware {
 
       return {
         result: callResult,
-        text: JSON.stringify(callResult),
+        text: resultText(callResult),
       };
     } catch (err) {
       const duration = Date.now() - ctx.startedAt;

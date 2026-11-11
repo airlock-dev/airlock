@@ -139,12 +139,9 @@ export function injectionDetectorMiddleware(opts: InjectionDetectorOptions = {})
         const result = await classifyWithDeberta(response.text, inference_url, threshold);
         postInjection = result.isInjection;
       } catch (err) {
+        // No escalation here: the call has already executed, so approval can no longer gate it.
         log.warn({ err }, 'DeBERTa inference failed for response, falling back to regex');
         postInjection = classifyWithRegex(response.text).isInjection;
-        if (mode === 'escalate') {
-          ctx.meta.needsApproval = true;
-          ctx.meta.approvalReason = 'DeBERTa inference unavailable — escalating as precaution';
-        }
       }
     } else {
       postInjection = classifyWithRegex(response.text).isInjection;

@@ -103,9 +103,11 @@ export function StoreProvider({ children }: { children: ComponentChildren }) {
       .catch((e) => setLoadError(e.message));
   }, []);
 
-  // Live approvals. The server pushes new and resolved requests; reconnect with backoff.
+  // Live approvals. The server pushes new and resolved requests; reconnect with backoff. A command
+  // center without approval routes has no stream, so don't knock on it forever.
+  const liveApprovals = meta?.approvals === true;
   useEffect(() => {
-    if (!('EventSource' in window)) return;
+    if (!liveApprovals || !('EventSource' in window)) return;
     let source: EventSource | null = null;
     let retry = 1000;
     let timer: ReturnType<typeof setTimeout>;
@@ -136,7 +138,7 @@ export function StoreProvider({ children }: { children: ComponentChildren }) {
       clearTimeout(timer);
       source?.close();
     };
-  }, []);
+  }, [liveApprovals]);
 
   const store = useMemo<Store>(
     () => ({

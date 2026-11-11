@@ -45,7 +45,14 @@ export async function executeHttp(
   const url = args['url'] as string;
   const headers = (args['headers'] ?? {}) as Record<string, string>;
   const body = args['body'] as string | undefined;
-  const timeoutMs = (args['timeout_ms'] as number | undefined) ?? agentConfig.http.timeout_ms;
+  // The agent may ask for a shorter deadline, never a longer one than the operator configured.
+  const requestedTimeout = args['timeout_ms'];
+  const timeoutMs =
+    typeof requestedTimeout === 'number' &&
+    Number.isFinite(requestedTimeout) &&
+    requestedTimeout > 0
+      ? Math.min(requestedTimeout, agentConfig.http.timeout_ms)
+      : agentConfig.http.timeout_ms;
   const maxBytes = agentConfig.http.max_response_bytes ?? MAX_RESPONSE_BYTES;
 
   let parsedUrl: URL;
@@ -76,8 +83,6 @@ export async function executeHttp(
       signal: controller.signal,
       redirect: 'manual',
     });
-
-    clearTimeout(timer);
 
     const responseHeaders: Record<string, string> = {};
     response.headers.forEach((value, key) => {
@@ -115,10 +120,12 @@ export async function executeHttp(
 
     return { status: response.status, headers: responseHeaders, body: bodyText, truncated };
   } catch (err) {
-    clearTimeout(timer);
     if ((err as Error).name === 'AbortError') {
       throw new Error(`HTTP request timed out after ${timeoutMs}ms`, { cause: err });
     }
     throw err;
+  } finally {
+    // Cleared only here so the deadline also covers reading the body, not just the headers.
+    clearTimeout(timer);
   }
 }

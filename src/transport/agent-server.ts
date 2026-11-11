@@ -9,6 +9,7 @@ import type { AuditLogger } from '../audit/logger.js';
 import type { AgentConfig, SecurityConfig } from '../config/schema.js';
 import type { Middleware, ToolCallContext } from '../middleware/types.js';
 import { buildMiddlewareChain } from '../middleware/chain-builder.js';
+import { deliveredResult } from '../middleware/response.js';
 import { generateId } from '../util/id.js';
 import { sanitizeToolName } from '../util/tool-name.js';
 import { childLogger } from '../util/logger.js';
@@ -126,16 +127,7 @@ export function createAgentServer(deps: AgentServerDeps): Server {
       deps.downstreamSessionId;
 
     const agentConfig = getConfig();
-    const chain =
-      staticChain ??
-      buildMiddlewareChain(agentConfig, {
-        registry,
-        allowlist,
-        hitlEngine,
-        hitlBatcher,
-        auditLogger,
-        securityConfig: deps.securityConfig ?? { blocked_hosts: [], allowed_local: [] },
-      });
+    const chain = staticChain ?? buildMiddlewareChain(agentConfig);
 
     const ctx: ToolCallContext = {
       callId: generateId(),
@@ -175,8 +167,9 @@ export function createAgentServer(deps: AgentServerDeps): Server {
     });
 
     // Pass through downstream MCP response shape (content, structuredContent, isError)
-    // if the result looks like a CallToolResult. Otherwise wrap as text.
-    const result = response.result as Record<string, unknown> | undefined;
+    // if the result looks like a CallToolResult — with its text replaced when a response
+    // middleware rewrote it. Otherwise wrap as text.
+    const result = deliveredResult(response) as Record<string, unknown> | undefined;
     if (result && Array.isArray(result.content)) {
       return {
         content: result.content as ContentBlock[],

@@ -3,11 +3,11 @@
  *
  * Fetches the tool list from Airlock at startup and registers each one as a
  * native OpenClaw tool. Every tool call is forwarded to Airlock, which applies
- * the agent's allowlist, HITL gate, sandbox, and audit logging before executing.
+ * the agent's allowlist, approval gate, sandbox, and audit logging before executing.
  *
- * Configuration (plugin config or environment variable fallbacks):
+ * Configuration (plugin config or environment variables; a set environment variable wins):
  *   url    / AIRLOCK_URL     Base URL of Airlock's agent data-plane (default: http://localhost:4111)
- *   agent  / AIRLOCK_AGENT   Agent profile to run as           (default: openclaw)
+ *   agent  / AIRLOCK_AGENT   Agent to run as                   (default: openclaw)
  *   secret / AIRLOCK_SECRET  Bearer token / agent token        (default: empty = no auth)
  *
  * Install:

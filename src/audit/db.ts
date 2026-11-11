@@ -65,7 +65,6 @@ export class AuditDb {
     insertAudit: Database.Statement;
     insertHitl: Database.Statement;
     updateHitlStatus: Database.Statement;
-    getHitlByCode: Database.Statement;
     getHitlById: Database.Statement;
     getPendingHitl: Database.Statement;
     getHitlHistory: Database.Statement;
@@ -121,7 +120,6 @@ export class AuditDb {
         resolved_at TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_hitl_status ON hitl_queue(status);
-      CREATE INDEX IF NOT EXISTS idx_hitl_code   ON hitl_queue(code);
 
       CREATE TABLE IF NOT EXISTS mobile_devices (
         id              TEXT PRIMARY KEY,
@@ -175,6 +173,8 @@ export class AuditDb {
     if (!hitlCols.has('meta')) {
       this.db.exec('ALTER TABLE hitl_queue ADD COLUMN meta TEXT');
     }
+    // `code` is UNIQUE, which already indexes it; older databases also carried a duplicate index.
+    this.db.exec('DROP INDEX IF EXISTS idx_hitl_code');
   }
 
   private prepareStatements(): void {
@@ -190,7 +190,6 @@ export class AuditDb {
       updateHitlStatus: this.db.prepare(`
         UPDATE hitl_queue SET status = @status, reason = @reason, resolved_at = @resolved_at WHERE id = @id
       `),
-      getHitlByCode: this.db.prepare('SELECT * FROM hitl_queue WHERE code = ?'),
       getHitlById: this.db.prepare('SELECT * FROM hitl_queue WHERE id = ?'),
       getPendingHitl: this.db.prepare(
         "SELECT * FROM hitl_queue WHERE status = 'pending' ORDER BY created_at ASC"
@@ -305,7 +304,7 @@ export class AuditDb {
     }
 
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
-    const limit = Math.max(1, Math.min(filters.limit ?? 100, 10000));
+    const limit = clampLimit(filters.limit, 100, 10000);
     params.limit = limit;
 
     return this.db
@@ -351,10 +350,6 @@ export class AuditDb {
     });
   }
 
-  getHitlByCode(code: string): HitlQueueEntry | undefined {
-    return this.stmts.getHitlByCode.get(code) as HitlQueueEntry | undefined;
-  }
-
   getHitlById(id: string): HitlQueueEntry | undefined {
     return this.stmts.getHitlById.get(id) as HitlQueueEntry | undefined;
   }
@@ -364,7 +359,7 @@ export class AuditDb {
   }
 
   getHitlHistory(limit = 50): HitlQueueEntry[] {
-    const boundedLimit = Math.max(1, Math.min(limit, 500));
+    const boundedLimit = clampLimit(limit, 50, 500);
     return this.stmts.getHitlHistory.all(boundedLimit) as HitlQueueEntry[];
   }
 
@@ -404,4 +399,10 @@ export class AuditDb {
   close(): void {
     this.db.close();
   }
+}
+
+/** A NaN or fractional LIMIT makes SQLite throw, so query-string input is coerced here. */
+function clampLimit(value: number | undefined, fallback: number, max: number): number {
+  const limit = Number.isFinite(value) ? Math.trunc(value as number) : fallback;
+  return Math.max(1, Math.min(limit, max));
 }
