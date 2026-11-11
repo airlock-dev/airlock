@@ -112,7 +112,9 @@ export function discoverCli(
     // If this has flags, register as a command
     const name = prefix || command;
     const registers = flags.length > 0 || subcommands.length === 0;
-    if (registers && exclude?.has(name)) return;
+    // Like the fig strategy, an excluded command is dropped with everything beneath it, whether it
+    // registers itself or is only a group.
+    if (prefix && exclude?.has(name)) return;
 
     // --include narrows which commands are registered; it must not stop the walk, or the root
     // command (never in an include list) would hide every subcommand beneath it.

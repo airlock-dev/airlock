@@ -1,5 +1,5 @@
 import { ProtocolError, ProtocolErrorCode } from '@modelcontextprotocol/server';
-import type { Middleware, ToolCallResponse } from '../types.js';
+import type { Middleware, ToolCallContext, ToolCallResponse } from '../types.js';
 import { serializeAuditArgs } from '../audit-args.js';
 import { resultText } from '../response.js';
 import { resolveLimits } from '../../transport/session-limiter.js';
@@ -12,6 +12,19 @@ const executing = new Map<string, number>();
 /** For testing */
 export function resetExecuteState(): void {
   executing.clear();
+}
+
+// Calls that reached the downstream. Kept out of ctx.meta, which is forwarded to the provider.
+const dispatchedCalls = new WeakSet<ToolCallContext>();
+
+/** Record that this call got past every gate and is being handed to the downstream. */
+export function markDispatched(ctx: ToolCallContext): void {
+  dispatchedCalls.add(ctx);
+}
+
+/** Whether this call got past every gate and was handed to the downstream. */
+export function wasDispatched(ctx: ToolCallContext): boolean {
+  return dispatchedCalls.has(ctx);
 }
 
 export function executeMiddleware(): Middleware {
@@ -38,6 +51,7 @@ export function executeMiddleware(): Middleware {
       );
     }
     executing.set(ctx.agentId, inFlight + 1);
+    markDispatched(ctx);
 
     // Last checkpoint before handing off to the downstream. If the downstream hangs, THIS is the
     // final row for the request_id — a 'dispatched' with no matching terminal row means the call is

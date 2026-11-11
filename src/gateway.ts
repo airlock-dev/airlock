@@ -44,7 +44,7 @@ import {
 
 const log = childLogger('gateway');
 
-/** Cap on remembered agent-supplied session ids (see downstreamSessionIdFor). */
+/** Cap on remembered agent-supplied session ids, per agent (see downstreamSessionIdFor). */
 const MAX_DOWNSTREAM_SESSION_IDS = 10_000;
 
 export interface GatewayOptions {
@@ -65,7 +65,8 @@ export class Gateway {
   private auditLogger!: AuditLogger;
   private app!: FastifyInstance;
   private managementApp?: FastifyInstance;
-  private downstreamSessionIds = new Map<string, string>();
+  /** Per agent, so one agent churning through session ids can only evict its own sessions. */
+  private downstreamSessionIds = new Map<string, Map<string, string>>();
   private sessionLimiter!: SessionLimiter;
   private activityStream = new ActivityStream();
   private unsubscribeActivityNotifications?: () => void;
@@ -200,7 +201,7 @@ export class Gateway {
     await this.app.register(httpServerPlugin, {
       getDeps: (agentId: string) => this.buildAgentDeps(agentId),
       resolveSessionId: (agentId: string, sessionId: string) =>
-        this.downstreamSessionIdFor(`${agentId}:${sessionId}`),
+        this.downstreamSessionIdFor(agentId, `${agentId}:${sessionId}`),
       getRequestSecurity: getDataPlaneRequestSecurity,
     });
     // Mount the HTTP tools API unless it's globally off ('none'). Registration depends ONLY on
@@ -451,7 +452,7 @@ export class Gateway {
     const agentConfig = this.config.agents[agentId];
     if (!agentConfig) return undefined;
     const downstreamSessionId = downstreamSessionKey
-      ? this.downstreamSessionIdFor(downstreamSessionKey)
+      ? this.downstreamSessionIdFor(agentId, downstreamSessionKey)
       : undefined;
 
     return {
@@ -470,22 +471,28 @@ export class Gateway {
   }
 
   /**
-   * The opaque downstream id for an agent-supplied session key. Keys come from agents, so the map
-   * is an LRU: re-inserting on every hit keeps live sessions at the young end, and the oldest key
-   * is dropped once the cap is reached. A session evicted and seen again gets a fresh id.
+   * The opaque downstream id for an agent-supplied session key. Keys come from agents, so each
+   * agent's map is an LRU: re-inserting on every hit keeps live sessions at the young end, and the
+   * oldest key is dropped once the cap is reached. The maps are per agent, so another agent's churn
+   * never evicts these sessions. A session evicted and seen again gets a fresh id.
    */
-  private downstreamSessionIdFor(key: string): string {
-    let id = this.downstreamSessionIds.get(key);
+  private downstreamSessionIdFor(agentId: string, key: string): string {
+    let ids = this.downstreamSessionIds.get(agentId);
+    if (!ids) {
+      ids = new Map();
+      this.downstreamSessionIds.set(agentId, ids);
+    }
+    let id = ids.get(key);
     if (id) {
-      this.downstreamSessionIds.delete(key);
+      ids.delete(key);
     } else {
       id = randomUUID();
-      if (this.downstreamSessionIds.size >= MAX_DOWNSTREAM_SESSION_IDS) {
-        const oldest = this.downstreamSessionIds.keys().next().value;
-        if (oldest !== undefined) this.downstreamSessionIds.delete(oldest);
+      if (ids.size >= MAX_DOWNSTREAM_SESSION_IDS) {
+        const oldest = ids.keys().next().value;
+        if (oldest !== undefined) ids.delete(oldest);
       }
     }
-    this.downstreamSessionIds.set(key, id);
+    ids.set(key, id);
     return id;
   }
 

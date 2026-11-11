@@ -8,6 +8,33 @@ import { childLogger } from '../util/logger.js';
 
 const log = childLogger('pool');
 
+/** Provider fields the gateway reads elsewhere; the MCP client itself never uses them. */
+const NON_CONNECTION_FIELDS = new Set([
+  'instructions',
+  'upstream_instructions',
+  'credential_probe',
+]);
+
+/** A stable fingerprint of the settings a client is built from (key order does not matter). */
+function connectionKey(cfg: McpServerConfig | undefined): string {
+  const canonical = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(canonical);
+    if (value && typeof value === 'object') {
+      return Object.fromEntries(
+        Object.keys(value)
+          .sort()
+          .map((key) => [key, canonical((value as Record<string, unknown>)[key])])
+      );
+    }
+    return value;
+  };
+  if (!cfg) return '';
+  const connection = Object.fromEntries(
+    Object.entries(cfg).filter(([key]) => !NON_CONNECTION_FIELDS.has(key))
+  );
+  return JSON.stringify(canonical(connection));
+}
+
 type McpClient = StdioMcpClient | SseMcpClient | HttpMcpClient;
 type McpRequestMeta = Record<string, unknown>;
 export type HealthStatus = 'ok' | 'degraded' | 'down';
@@ -134,20 +161,29 @@ export class ClientPool {
       }
     }
 
-    // Add new MCPs, and restart existing ones whose config changed (url, headers, command, auth…):
-    // a client is built from its config once, so keeping it would silently ignore the edit.
+    // Add new MCPs, and restart existing ones whose connection settings changed (url, headers,
+    // command, auth…): a client is built from its config once, so keeping it would silently ignore
+    // the edit. A restart drops the provider's in-flight calls, so edits the client never reads
+    // (instructions, credential probes) or a mere reordering of keys do not trigger one.
+    const restarts: Promise<void>[] = [];
     for (const [id, cfg] of Object.entries(newMcps)) {
       if (!oldIds.has(id)) {
         log.info({ id }, 'Adding new MCP from config reload');
         void this.connectClient(id, cfg);
-      } else if (JSON.stringify(this.mcps[id]) !== JSON.stringify(cfg)) {
-        log.info({ id }, 'Restarting MCP (config changed)');
-        const client = this.clients.get(id)!;
-        await client.stop().catch((err) => log.error({ err, id }, 'Error stopping changed MCP'));
-        this.clients.delete(id);
-        void this.connectClient(id, cfg);
+      } else if (connectionKey(this.mcps[id]) !== connectionKey(cfg)) {
+        log.info({ id }, 'Restarting MCP (connection settings changed)');
+        const client = this.clients.get(id);
+        restarts.push(
+          (client?.stop() ?? Promise.resolve())
+            .catch((err) => log.error({ err, id }, 'Error stopping changed MCP'))
+            .then(() => {
+              this.clients.delete(id);
+              void this.connectClient(id, cfg);
+            })
+        );
       }
     }
+    await Promise.all(restarts);
 
     this.mcps = newMcps;
   }

@@ -3,6 +3,7 @@ import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os';
 import { basename, join } from 'path';
 import { figSpecToCommands } from '../src/discover/strategies/fig.js';
+import { discoverCli } from '../src/discover/strategies/help-parser.js';
 
 const spec = {
   name: 'docker',
@@ -46,6 +47,37 @@ describe('figSpecToCommands() filters', () => {
   it('drops an --exclude command and everything beneath it', () => {
     const commands = figSpecToCommands(spec, { exclude: ['container'] });
     expect(Object.keys(commands).sort()).toEqual(['image', 'image_ls', 'version']);
+  });
+});
+
+describe('discoverCli() --exclude', () => {
+  it('drops an excluded group without flags and everything beneath it, like the fig strategy', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'airlock-help-'));
+    const tool = join(dir, 'faketool');
+    writeFileSync(
+      tool,
+      [
+        '#!/bin/sh',
+        'case "$*" in',
+        `  "--help") printf 'Usage\\n\\nCommands:\\n  remote   Manage remotes\\n  version  Show version\\n' ;;`,
+        `  "remote --help") printf 'Manage remotes\\n\\nCommands:\\n  branch  Branches\\n  add     Add\\n' ;;`,
+        `  "remote branch --help") printf 'Branches\\n\\nCommands:\\n  list  List\\n' ;;`,
+        `  "remote branch list --help") printf 'List\\n\\n  --all  Show all\\n' ;;`,
+        `  "remote add --help") printf 'Add\\n\\n  --name <n>  Remote name\\n' ;;`,
+        `  "version --help") printf 'Version\\n' ;;`,
+        'esac',
+      ].join('\n')
+    );
+    chmodSync(tool, 0o755);
+    try {
+      const all = Object.keys(discoverCli(tool, { maxDepth: 3 })).sort();
+      expect(all).toEqual(['remote_add', 'remote_branch_list', 'version']);
+
+      const excluded = Object.keys(discoverCli(tool, { maxDepth: 3, exclude: ['remote_branch'] }));
+      expect(excluded.sort()).toEqual(['remote_add', 'version']);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

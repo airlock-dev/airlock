@@ -103,7 +103,15 @@ export function createAgentServer(deps: AgentServerDeps): Server {
 
   server.setRequestHandler('tools/list', () => {
     const tools = registry.getFiltered(agentId);
-    return { tools: tools.map((t) => ({ ...t, name: sanitizeToolName(t.name) })) };
+    // outputSchema is not advertised: when a response middleware rewrites a result, its
+    // structuredContent is dropped (see deliveredResult), and clients reject a tool that declares
+    // an outputSchema but returns no structured content.
+    return {
+      tools: tools.map(({ outputSchema: _outputSchema, ...t }) => ({
+        ...t,
+        name: sanitizeToolName(t.name),
+      })),
+    };
   });
 
   server.setRequestHandler('tools/call', async (request, reqCtx) => {

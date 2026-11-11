@@ -1,5 +1,6 @@
 import { ProtocolError, ProtocolErrorCode } from '@modelcontextprotocol/server';
 import type { Middleware } from '../types.js';
+import { wasDispatched } from './execute.js';
 
 export interface RateLimiterOptions {
   max_requests: number;
@@ -17,6 +18,13 @@ function pruneWindow(timestamps: number[], windowMs: number, now: number): numbe
   const cutoff = now - windowMs;
   const idx = timestamps.findIndex((t) => t > cutoff);
   return idx === -1 ? [] : timestamps.slice(idx);
+}
+
+/** Remove one admission timestamp (the window may have been re-pruned into a new array since). */
+function refund(key: string, timestamp: number): void {
+  const timestamps = windows.get(key);
+  const index = timestamps?.indexOf(timestamp) ?? -1;
+  if (timestamps && index !== -1) timestamps.splice(index, 1);
 }
 
 export function rateLimiterMiddleware(opts: RateLimiterOptions): Middleware {
@@ -37,9 +45,15 @@ export function rateLimiterMiddleware(opts: RateLimiterOptions): Middleware {
     }
 
     // Count the call when it is admitted, not when it finishes: otherwise concurrent calls (or calls
-    // parked on an approval) all see an empty window, and calls that throw are never counted.
+    // parked on an approval) all see an empty window. A call that never reaches the downstream
+    // (denied by policy or at approval, rejected by schema validation) is refunded once it settles,
+    // so retrying a denied tool cannot use up the budget for allowed ones.
     timestamps.push(now);
-    return next();
+    try {
+      return await next();
+    } finally {
+      if (!wasDispatched(ctx)) refund(key, now);
+    }
   };
 }
 

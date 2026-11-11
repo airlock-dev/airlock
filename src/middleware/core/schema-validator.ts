@@ -8,7 +8,9 @@ import type { Middleware } from '../types.js';
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const Ajv = (AjvModule as any).default ?? AjvModule;
 const ajv = new Ajv({ allErrors: true, strict: false });
-const validatorCache = new Map<string, { schema: string; validate: ValidateFunction }>();
+// Keyed on the inputSchema object itself: a registry refresh replaces the tool objects, so a changed
+// schema gets a fresh validator, and the old one is collected with the old schema.
+const validatorCache = new WeakMap<object, ValidateFunction>();
 /* eslint-enable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access */
 
 export function schemaValidatorMiddleware(): Middleware {
@@ -22,17 +24,12 @@ export function schemaValidatorMiddleware(): Middleware {
       tools.find((t) => t.name === ctx.toolName) ?? tools.find((t) => t.name === resolvedToolName);
     if (!tool?.inputSchema) return next();
 
-    const cacheKey = `${ctx.toolName}->${resolvedToolName}`;
-    // Keyed on the schema too: an upstream can change a tool's inputSchema on refresh, and a
-    // validator compiled from the old one would keep rejecting (or accepting) the wrong shape.
-    const schema = JSON.stringify(tool.inputSchema);
-    let cached = validatorCache.get(cacheKey);
-    if (!cached || cached.schema !== schema) {
+    let validate = validatorCache.get(tool.inputSchema);
+    if (!validate) {
       // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
-      cached = { schema, validate: ajv.compile(tool.inputSchema) as ValidateFunction };
-      validatorCache.set(cacheKey, cached);
+      validate = ajv.compile(tool.inputSchema) as ValidateFunction;
+      validatorCache.set(tool.inputSchema, validate);
     }
-    const validate = cached.validate;
 
     if (!validate(ctx.args)) {
       const errors =

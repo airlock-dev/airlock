@@ -7,6 +7,7 @@ import {
   rateLimiterMiddleware,
   resetRateLimiterState,
 } from '../src/middleware/core/rate-limiter.js';
+import { markDispatched } from '../src/middleware/core/execute.js';
 import { discoverOpenApi } from '../src/discover/openapi.js';
 import type { ToolCallContext, ToolCallResponse } from '../src/middleware/types.js';
 
@@ -65,11 +66,12 @@ describe('rateLimiterMiddleware under concurrency', () => {
 
   it('counts calls on admission so parallel calls cannot all slip through', async () => {
     const mw = rateLimiterMiddleware({ max_requests: 2, window_ms: 60000 });
-    const ctx = { agentId: 'a', toolName: 't/x' } as ToolCallContext;
+    const ctx = { agentId: 'a', toolName: 't/x', meta: {} } as unknown as ToolCallContext;
     let release!: () => void;
     const gate = new Promise<void>((resolve) => (release = resolve));
     const slowNext = async (): Promise<ToolCallResponse> => {
       await gate;
+      markDispatched(ctx);
       return { result: 'ok', text: 'ok' };
     };
 

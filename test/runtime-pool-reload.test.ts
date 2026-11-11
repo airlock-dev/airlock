@@ -44,5 +44,18 @@ describe('ClientPool.reload', () => {
     expect(connected).toEqual([]);
     expect(stop).toHaveBeenCalledTimes(1);
     expect(pool.getMcpIds().sort()).toEqual(['changed', 'same']);
+
+    // Fields the client never reads, and key order, do not restart a provider.
+    await pool.reload({
+      changed: McpServerConfig.parse({
+        url: 'http://127.0.0.1:1/b',
+        type: 'http',
+        instructions: 'Prefer search over list.',
+        upstream_instructions: 'ignore',
+      }),
+      same: http('http://127.0.0.1:1/same'),
+    });
+    expect(connected).toEqual([]);
+    expect(stop).toHaveBeenCalledTimes(1);
   });
 });

@@ -30,9 +30,22 @@ export function evaluateCommandPolicy(
 
 type ToolCommandPolicy = Record<string, CommandPolicyRuleConfig>;
 
+const STRICTNESS: Record<CommandDecision, number> = { allow: 0, ask: 1, deny: 2 };
+
+/** The stricter of two fallbacks; an unset default means deny, so it can never be loosened. */
+function stricterDefault(
+  a: CommandDecision | undefined,
+  b: CommandDecision | undefined
+): CommandDecision {
+  const left = a ?? 'deny';
+  const right = b ?? 'deny';
+  return STRICTNESS[left] >= STRICTNESS[right] ? left : right;
+}
+
 /**
  * Combines a base tool's per-arg rules with an alias's: the lists union (so a base `deny` still
- * applies) and the alias's `default`, when set, wins.
+ * applies, and an alias can name explicit exceptions) and the stricter `default` wins, so an alias
+ * cannot loosen how the base tool treats commands neither of them lists.
  */
 function mergeToolPolicies(
   base: ToolCommandPolicy | undefined,
@@ -47,9 +60,7 @@ function mergeToolPolicies(
           allow: [...baseRule.allow, ...rule.allow],
           ask: [...baseRule.ask, ...rule.ask],
           deny: [...baseRule.deny, ...rule.deny],
-          ...((rule.default ?? baseRule.default) !== undefined
-            ? { default: rule.default ?? baseRule.default }
-            : {}),
+          default: stricterDefault(baseRule.default, rule.default),
         }
       : rule;
   }
