@@ -24,11 +24,12 @@ Typecheck with: `npm run typecheck`
 ## Config
 
 Config uses YAML. Key terminology:
+
 - `providers` (not `mcps`) — declares MCP servers and builtins
 - `ask` (not `hitl`) — agent-level tool routing for human approval
 - `approvals` (not `hitl`) — top-level approval provider config
 - `profiles` — reusable permission sets that agents inherit via `extends`
-- Precedence: deny > ask > allow > default-deny
+- Precedence: most specific matching pattern wins; ties break deny > remember_allow > ask > allow; unmatched is default-deny
 
 ## CLI
 

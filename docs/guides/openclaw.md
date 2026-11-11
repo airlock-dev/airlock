@@ -24,9 +24,9 @@ The plugin fetches your agent's tool list from Airlock at startup and registers 
 agents:
   openclaw:
     token: ${OPENCLAW_AIRLOCK_TOKEN}
+    expose_tools_api: true # the bridge uses the REST tools API
     allow:
       - 'github/*'
-      - 'exec/run'
     ask:
       - 'exec/run' # shell commands require approval
 ```
@@ -37,13 +37,17 @@ Start the Airlock gateway if it isn't already running:
 airlock --config airlock.yaml
 ```
 
-The bridge uses Airlock's REST tools API on the agent data-plane. Keep
-`server.expose_tools_api` enabled:
+The bridge uses Airlock's REST tools API on the agent data-plane, which is off
+by default: `server.expose_tools_api` defaults to `per-agent`, and each agent's
+own `expose_tools_api` defaults to `false`. The agent above opts in with
+`expose_tools_api: true`. Alternatively, expose the API for every agent:
 
 ```yaml
 server:
-  expose_tools_api: true
+  expose_tools_api: all
 ```
+
+Without either, the plugin's tool fetch returns `404` and no tools are registered.
 
 ### 2. Install the plugin
 
@@ -78,7 +82,9 @@ export AIRLOCK_AGENT=openclaw
 export AIRLOCK_SECRET=your-agent-token  # matches agents.openclaw.token in airlock.yaml
 ```
 
-Alternatively, use OpenClaw's plugin config:
+Alternatively, use OpenClaw's plugin config. Environment variables take
+precedence: a set `AIRLOCK_URL`, `AIRLOCK_AGENT`, or `AIRLOCK_SECRET` overrides
+the matching plugin config value.
 
 ```sh
 openclaw config set extensions.airlock-bridge.url http://localhost:4111
@@ -104,7 +110,7 @@ The `session_key` is the OpenClaw session where approval messages appear — typ
 
 ## Troubleshooting
 
-**No tools registered** — Check that Airlock is running and `AIRLOCK_URL` points to the right host and port. The plugin logs the error on `gateway_start` if the fetch fails.
+**No tools registered** — Check that Airlock is running, `AIRLOCK_URL` points to the right host and port, and the agent has the tools API enabled (`expose_tools_api: true`). The plugin logs the error on `gateway_start` if the fetch fails.
 
 **401 Unauthorized** — `AIRLOCK_SECRET` doesn't match the configured agent token in your `airlock.yaml`.
 

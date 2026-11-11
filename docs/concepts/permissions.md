@@ -12,8 +12,15 @@ The companion dashboard may also add `remember_allow` entries. These are per-age
 Precedence is always:
 
 ```text
-deny > remember_allow > ask > allow > default-deny
+1. the most specific matching pattern wins
+   (exact tool name > provider/prefix* > provider/*; longer prefixes beat shorter ones)
+2. equally specific matches: deny > remember_allow > ask > allow
+3. no match: default-deny
 ```
+
+So `allow: [github/list_prs]` with `deny: [github/*]` still allows `github/list_prs`, because
+the exact name is more specific than the wildcard. To block a tool for certain, deny it by its
+exact name.
 
 ## Policy is per agent
 
@@ -59,8 +66,10 @@ Allow, ask, and deny lists support glob-style wildcards:
 
 - `github/*` — all tools in the github namespace
 - `github/list*` — tools starting with "list" in the github namespace
-- `*/get*` — any tool starting with "get" in any namespace
 - `exec/run` — exact match
+
+Wildcards are prefix matches only: `*` may appear only at the end of a pattern. A leading
+wildcard such as `*/get*` never matches anything.
 
 ## Profiles reduce repetition
 
@@ -86,7 +95,8 @@ agents:
       - github/create_pr
 ```
 
-Profiles merge with the same precedence. Agent-level rules apply on top. See [Composable Profiles](/guides/profiles) for the full guide.
+Profile and agent rules merge into one set of allow/ask/deny lists and resolve with the same
+precedence; an agent-level rule gets no extra priority over an inherited one of equal specificity. See [Composable Profiles](/guides/profiles) for the full guide.
 
 ## Exec policy
 
@@ -118,12 +128,14 @@ agents:
         PATH: '/usr/local/bin:/usr/bin:/bin'
 ```
 
-Exec policy uses the same glob matching and deny > ask > allow > default-deny precedence.
+Exec policy uses prefix matching (`*` only at the end), but unlike tool-level rules it is not
+specificity-based: any matching `deny` wins, then any `ask`, then any `allow`, and unmatched
+commands are denied. Commands containing shell metacharacters are always denied.
 
 ## Command policy
 
 Some MCP servers collapse their whole surface into a single dispatcher tool that takes a
-CLI-style command string — one `exec`/`run` tool where read vs. write vs. admin is a *substring*
+CLI-style command string — one `exec`/`run` tool where read vs. write vs. admin is a _substring_
 of the argument, not a distinct tool name. Tool-level allow/ask/deny can't tell those apart.
 `command_policy` is the general form of exec policy: it routes any tool's string argument through
 allow/ask/deny by glob-matching the value.

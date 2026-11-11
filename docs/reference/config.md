@@ -15,7 +15,7 @@ clis: # CLI tools exposed as MCP tools
 apis: # REST APIs exposed as MCP tools
 agents: # Per-agent policy and config
 approvals: # Global approval provider config
-security: # Host blocking, domain allowlists
+security: # Blocked hosts, local-host exceptions, resource limits
 audit: # Audit log settings
 server: # Gateway server settings
 lint: # Static hygiene rule configuration
@@ -69,6 +69,25 @@ providers:
   http: builtin
   airlock: builtin
 ```
+
+### Provider fields
+
+| Field                         | Applies to             | Default    | Effect                                                                       |
+| ----------------------------- | ---------------------- | ---------- | ---------------------------------------------------------------------------- |
+| `enabled`                     | all object forms       | `true`     | `false` keeps the entry in config but does not start or expose the provider  |
+| `command` / `args`            | `stdio`                | `args: []` | Process to spawn (used literally; no `${VAR}` substitution)                  |
+| `env`                         | `stdio`                | —          | Extra environment for the child process (`${VAR}` supported)                 |
+| `url` / `headers`             | `sse`, `http`          | —          | Endpoint and request headers (`${VAR}` supported in `headers` only)          |
+| `oauth`                       | `http`                 | `false`    | Run the browser authorization-code flow                                      |
+| `oauth_callback_port`         | `http`                 | `18432`    | Local port for the OAuth callback listener                                   |
+| `oauth_callback_url`          | `http`                 | —          | Public callback URL when the callback is relayed (remote or tunneled setups) |
+| `client_id` / `client_secret` | `http`                 | —          | Pre-registered OAuth client credentials                                      |
+| `request_timeout_ms`          | `http`                 | `60000`    | Per-request MCP deadline                                                     |
+| `instructions`                | all object forms       | —          | Operator notes added to the gateway's instructions (see below)               |
+| `upstream_instructions`       | all object forms       | `include`  | `ignore` drops the provider's own advertised instructions                    |
+| `credential_probe`            | `stdio`, `sse`, `http` | —          | Read-only call that proves the credential works (see below)                  |
+
+Built-ins can be written as the bare string `builtin` or as `{ type: builtin, enabled: false }`.
 
 ### App identity: `client_credentials`
 
@@ -191,8 +210,8 @@ Reusable permission sets. See [Composable Profiles](/guides/profiles).
 profiles:
   readonly:
     allow:
-      - '*/list*'
-      - '*/get*'
+      - github/list*
+      - github/get*
       - http/get
   developer:
     extends: [readonly]
@@ -230,9 +249,13 @@ profiles:
       - airlock/list_provider_tools
 ```
 
-It is prepended to each agent's `extends`, so it resolves at **lowest
-precedence** — an agent can still `deny` (or `ask`-gate) anything the default
-grants (`deny > ask > allow`). Because the named profile may itself `extends` a
+It is prepended to each agent's `extends`, and its rules merge into the agent's
+allow/ask/deny lists like any other profile. Normal precedence applies: the most
+specific matching pattern wins, and equally specific matches break ties
+`deny > ask > allow`. An agent can still `deny` (or `ask`-gate) anything the
+default grants by naming the tool at least as specifically as the default does —
+an agent `deny: [airlock/*]` does not override a default `allow: [airlock/status]`,
+but `deny: [airlock/status]` does. Because the named profile may itself `extends` a
 chain, one entry can compose many. A referenced profile that does not exist is a
 fatal config error. Opt a single agent out with `inherit_default: false` (see
 [`agents`](#agents)).
@@ -332,6 +355,17 @@ clis:
             default: 10
 ```
 
+| Field                     | Default | Effect                                                                                           |
+| ------------------------- | ------- | ------------------------------------------------------------------------------------------------ |
+| `discovered`              | —       | YAML file produced by `airlock discover cli`                                                     |
+| `shell`                   | —       | Shell used to run commands                                                                       |
+| `cwd`                     | —       | Default working directory for every command                                                      |
+| `max_output_bytes`        | `30000` | Output cap per call                                                                              |
+| `commands.<name>.exec`    | —       | Command template; `{param}` placeholders are filled from parameters                              |
+| `commands.<name>.cwd`     | —       | Working directory for this command (overrides the CLI-level `cwd`)                               |
+| `commands.<name>.timeout` | `30`    | Timeout in **seconds**                                                                           |
+| `commands.<name>.params`  | `{}`    | `type` (`string`/`number`/`boolean`), `flag`, `positional`, `required`, `default`, `description` |
+
 ## `apis`
 
 REST APIs exposed as MCP tools. See [API Discovery](/guides/api-discovery).
@@ -342,11 +376,14 @@ apis:
     spec: ./petstore.json
     base_url: https://petstore.example.com/v1
     auth:
-      type: bearer # or "basic"
+      type: bearer # or "header" (with name + value)
       token: ${TOKEN}
-    timeout_ms: 30000
-    max_response_bytes: 1048576
+    timeout_ms: 30000 # default
+    max_response_bytes: 1048576 # default (1 MiB)
 ```
+
+`auth` is either `{ type: bearer, token }` or `{ type: header, name, value }`.
+`include` / `exclude` take `METHOD /path` filters, as in `airlock discover api`.
 
 ## `agents`
 
@@ -449,6 +486,21 @@ agents:
 survives. Use `description_append` when the vendor's docs are fine and you only need to add a
 caveat, so you do not have to restate their text by hand and keep it in sync.
 
+Other agent fields and their defaults:
+
+| Field                            | Default         | Effect                                                                               |
+| -------------------------------- | --------------- | ------------------------------------------------------------------------------------ |
+| `exec.default_timeout_ms`        | `30000`         | Timeout for `exec/run`; a call's own `timeout_ms` may not exceed it                  |
+| `exec.env`                       | `{}`            | Environment for executed commands (used literally)                                   |
+| `http.domain_allowlist`          | `[]`            | Hosts the built-in HTTP tools may reach                                              |
+| `http.max_response_bytes`        | `1048576`       | Response size cap for built-in HTTP tools                                            |
+| `http.timeout_ms`                | `30000`         | Request timeout for built-in HTTP tools                                              |
+| `sandbox.enabled`                | `false`         | Wrap `exec/run` (and its aliases) in the OS sandbox                                  |
+| `sandbox.filesystem.allow_write` | `['.', '/tmp']` | Writable paths when the sandbox is enabled                                           |
+| `expose_tools_api`               | `false`         | Opt this agent into the REST tools API when `server.expose_tools_api` is `per-agent` |
+| `approval_mode`                  | —               | `sync` or `async`; overrides `approvals.mode` for this agent                         |
+| `limits`                         | —               | Per-agent resource limits; same fields as [`security.limits`](#security-limits)      |
+
 ## `approvals`
 
 Global approval provider config. See [HITL Providers](/reference/hitl-providers).
@@ -469,6 +521,11 @@ approvals:
     async_ttl_ms: 1800000 # how long an approved async call is redeemable by the retry
 ```
 
+If `approvals.provider` is omitted it defaults to `{ type: stdio }`. Defaults:
+`timeout_ms: 300000` (`0` = no timeout), `batch_window_ms: 250`, `mode: sync`.
+The `macos` provider also accepts an optional `sound` (a macOS sound name such as
+`Glass` or `Submarine`).
+
 Agents can override the mode with `approval_mode: sync | async`, and `tool_overrides.<tool>.tier`
 (`read` / `write` / `destructive`) sets the safety tier used by tier-scoped grants. See
 [Reducing approval fatigue](/concepts/approvals-and-audit#reducing-approval-fatigue).
@@ -487,7 +544,7 @@ approvals:
       team_id: ${APPLE_TEAM_ID}
       key_id: ${APNS_KEY_ID}
       key_path: /config/AuthKey_XXXXXXXXXX.p8
-      bundle_id: com.airlock.companion.ios
+      bundle_id: bot.airlock.companion
       production: true
       interruption_level: time-sensitive
 ```
@@ -616,12 +673,47 @@ security:
     - 'host.docker.internal'
 ```
 
+If `blocked_hosts` is omitted, the default list blocks `localhost`, `127.0.0.1`,
+`0.0.0.0`, `::1`, `::ffff:127.0.0.1`, `*.local`, `10.*`, `172.16.*`–`172.31.*`,
+`192.168.*`, `169.254.*`, `fc00:*`, `fd00:*`, and `fe80:*`. Setting the key
+replaces that list entirely.
+
+### `security.limits`
+
+Gateway-wide resource limits, so one agent cannot exhaust the gateway. An agent's
+own `limits` block overrides these field by field; unset fields fall back to the
+built-in defaults. For every `*_ms` field, `0` disables it.
+
+```yaml
+security:
+  limits:
+    max_concurrent_calls_per_agent: 8
+    call_execution_timeout_ms: 0
+```
+
+| Field                            | Default  | Effect                                                                                                        |
+| -------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------- |
+| `max_sessions_per_agent`         | `16`     | Open sessions one agent may hold                                                                              |
+| `max_sessions_global`            | `256`    | Open sessions across all agents                                                                               |
+| `session_idle_ms`                | `600000` | Intended to reap sessions with no in-flight request. **Currently has no effect**: idle reaping never triggers |
+| `session_max_lifetime_ms`        | `0`      | Hard cap on session lifetime (`0` = none, so calls parked on approval survive)                                |
+| `new_session_max`                | `30`     | New sessions one agent may open per `new_session_window_ms`                                                   |
+| `new_session_window_ms`          | `10000`  | Window for `new_session_max`                                                                                  |
+| `max_concurrent_calls_per_agent` | `8`      | Tool calls executing at once for one agent; calls waiting on approval do not count                            |
+| `call_execution_timeout_ms`      | `0`      | Deadline for one downstream execution, excluding any approval wait (`0` = none)                               |
+
+The session fields apply only to the legacy SSE endpoint (`/agents/:agentId/sse`).
+Streamable HTTP (`/agents/:agentId/mcp`) is stateless and holds no sessions; only
+`max_concurrent_calls_per_agent` and `call_execution_timeout_ms` affect it.
+
 ## `audit`
 
 Audit log settings.
 
 ```yaml
 audit:
+  db_path: ./audit.db # default; SQLite file (supports ~)
+  retention_days: 90 # default
   redact_fields:
     - password
     - token
@@ -629,6 +721,9 @@ audit:
     - authorization
     - api_key
 ```
+
+`redact_fields` defaults to `password`, `token`, `secret`, `key`, and
+`authorization`; setting it replaces that list.
 
 ## `server`
 
@@ -687,7 +782,7 @@ and, when `expose_tools_api` enables it, the REST agent tool API
   `/health`, `/hitl/*`, `/audit`, the dashboard approval bridge (`/events`,
   `/approve`, `/deny`, `/version*`), `/activity`, `/mobile/*` including
   `/mobile/approvals/stream`, `/admin/tools`, and `/hook`.
-  It is disabled by default. When enabled, every agent must set `token` so the
+  It is disabled by default. When enabled, every agent must set `token` or `token_sha256` so the
   data-plane fallback cannot become an implicit agent credential.
 - `management_api.api_secret` protects the control-plane listener. If unset,
   Airlock temporarily falls back to `server.api_secret` for backward
@@ -738,7 +833,7 @@ agents:
 
 ## Environment variable substitution
 
-Any value of the form `${VAR_NAME}` is replaced with the corresponding environment variable at config load time. This works for all string values in the config.
+Any value of the form `${VAR_NAME}` is replaced with the corresponding environment variable at config load time. Substitution applies to secret-bearing fields: provider `env` and `headers`, OAuth `client_id` / `client_secret`, agent `token`, `server.api_secret`, `management_api.api_secret`, approval-provider credentials (including generic webhook `headers`), and API `auth` values. Other strings (for example provider `url`, `command`, `args`, and `exec.env`) are used literally.
 
 ## Example configs
 

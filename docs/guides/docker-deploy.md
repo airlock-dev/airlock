@@ -8,7 +8,7 @@ tools such as `kubectl`, `gh`, or the Docker CLI.
 ## Build
 
 ```bash
-docker build -t airlock-bot .
+docker build -t airlock-bot:local .
 ```
 
 The image runs as a non-root `airlock` user, stores config under `/config`, and
@@ -35,7 +35,7 @@ docker run --rm \
   -p 127.0.0.1:4111:4111 \
   -p 127.0.0.1:4113:4113 \
   -p 127.0.0.1:4112:4112 \
-  airlock-bot
+  airlock-bot:local
 ```
 
 Put `airlock.yaml` inside `airlock-config/`. The dashboard writes config changes
@@ -130,7 +130,7 @@ approvals:
 
 ## Reverse Proxy
 
-A typical VPS deployment has two private upstreams:
+A typical VPS deployment has three private upstreams:
 
 | Upstream             | Port   | Purpose                             |
 | -------------------- | ------ | ----------------------------------- |
@@ -140,7 +140,7 @@ A typical VPS deployment has two private upstreams:
 
 Recommended edge controls:
 
-- Put TLS in front of both ports.
+- Put TLS in front of all three ports.
 - Keep the dashboard behind an authenticated proxy, private network, or platform
   access control.
 - Keep agent clients on bearer tokens even behind the proxy:

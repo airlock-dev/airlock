@@ -50,7 +50,7 @@ server:
 and `/hook`.
 `server.api_secret` remains the data-plane fallback for tokenless agents on MCP
 and REST tools routes. When the management API is enabled, every agent must also
-set its own `token`; Airlock rejects tokenless agents in split mode so the
+set its own `token` or `token_sha256`; Airlock rejects tokenless agents in split mode so the
 data-plane fallback cannot become an implicit agent credential.
 
 For backward compatibility, if `server.management_api.api_secret` is unset,
@@ -92,6 +92,32 @@ opted in via `expose_tools_api: true`), `/agents/:agentId/tools` and
 `/agents/:agentId/tools/invoke` are served by the data-plane listener alongside
 the MCP transports and use agent-scoped authentication.
 
+### REST tools API (data-plane)
+
+These two routes live on the agent data-plane listener (`server.port`, default
+`4111`), not the management listener. They authenticate with the agent's own
+bearer token (or the `server.api_secret` fallback for tokenless agents).
+
+`GET /agents/:agentId/tools` returns `{ "tools": [...] }`, the agent's filtered
+tool list.
+
+`POST /agents/:agentId/tools/invoke` runs one tool through the same policy,
+approval, and audit pipeline as an MCP call:
+
+```bash
+curl -X POST http://localhost:4111/agents/openclaw/tools/invoke \
+  -H "Authorization: Bearer $AGENT_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"tool": "github/list_prs", "args": {"repo": "airlock-dev/airlock"}, "session_id": "laptop-1"}'
+# → {"success": true, "data": {...}, "metadata": {"duration_ms": 412, "truncated": false}}
+```
+
+`session_id` (or the `X-Airlock-Session-Id` header) identifies the agent session
+for session-scoped grants, and is required when the tool is served by a
+downstream MCP provider. Failures return `{"success": false, "error": "...",
+"metadata": {"duration_ms": ...}}`. When the API is not enabled for the agent,
+both routes answer `404`.
+
 ## Endpoints
 
 ### `GET /health`
@@ -122,13 +148,19 @@ Returns gateway health status, pending HITL count, and uptime.
       "fingerprint": "sha256:9f2b…"
     }
   },
-  "uptime": 3600,
-  "pendingApprovals": 2
+  "pendingApprovals": 2,
+  "sessions": {
+    "total": 1,
+    "perAgent": { "claude-code": 1 }
+  },
+  "uptime": 3600
 }
 ```
 
 `dataPlane` is a live TCP probe of the agent MCP listener. `mcpHealth` reports
-the downstream MCP provider pool behind that listener.
+the downstream MCP provider pool behind that listener. `sessions` counts open
+sessions on the legacy SSE endpoint (`/agents/:agentId/sse`), in total and per
+agent; the stateless streamable HTTP endpoint holds no sessions.
 
 `credentialHealth` answers a different question: not "is this provider
 reachable?" but "does its credential still work?" The two are independent — a
@@ -187,16 +219,26 @@ Lists all pending approval requests.
 ```json
 [
   {
-    "id": "abc123",
+    "id": "550e8400-e29b-41d4-a716-446655440000",
     "code": "A1B2C3",
-    "agent_id": "claude-code",
+    "agentId": "claude-code",
     "tool": "exec/run",
     "args": { "command": "git push origin main" },
-    "status": "pending",
-    "created_at": "2026-04-01T12:00:00Z"
+    "kind": "call",
+    "mode": "sync",
+    "tier": "destructive",
+    "provider": "exec",
+    "escalated": false
   }
 ]
 ```
+
+`kind` is `call`, `plan`, or `question`; `mode` is `sync` or `async`. Optional
+fields appear only when they apply: `context` (the agent's stated `reason` and `note`),
+`sandbox` (resolved sandbox summary), `tier` / `provider` / `escalated` (the
+grant subject), `plan` (the calls listed in an `airlock/request_approval` plan),
+`batchId` / `batchCode` (notification batch), and `grantOptions` (grant scopes
+this request can be widened into).
 
 ### `POST /hitl/approve/:id`
 
@@ -289,22 +331,31 @@ curl -H "Authorization: Bearer $MANAGEMENT_API_SECRET" \
   "http://localhost:4113/audit?agent=claude-code&tool=exec/run&limit=50"
 ```
 
-Returns an array of audit entries:
+Returns an array of audit entries, newest first:
 
 ```json
 [
   {
-    "id": "xyz789",
+    "id": 1234,
+    "ts": "2026-04-01T12:01:00.000Z",
     "agent_id": "claude-code",
     "tool": "exec/run",
     "args": "{\"command\":\"git status\"}",
     "result": "success",
+    "error": null,
     "duration_ms": 142,
-    "hitl_outcome": null,
-    "created_at": "2026-04-01T12:01:00Z"
+    "hitl_code": null,
+    "request_id": "6f1c2a9e-…"
   }
 ]
 ```
+
+One tool call writes several rows that share a `request_id`: `received` when it
+enters the pipeline, `dispatched` when it is handed downstream, then a terminal
+`result` such as `success`, `error`, `denied`, `arg_policy_denied`,
+`hitl_approved`, `hitl_denied`, `hitl_timeout`, or `hitl_disconnected`.
+`hitl_code` is the approval code when the call went through approval. `since`
+compares against `ts`.
 
 ### `GET /events`
 

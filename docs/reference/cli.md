@@ -60,12 +60,13 @@ airlock run --config airlock.yaml
 
 Options:
 
-| Flag                     | Description                                                      |
-| ------------------------ | ---------------------------------------------------------------- |
-| `--config`, `-c`         | Path to airlock.yaml config file                                 |
-| `--port`, `-p`           | Command center port (default: 4177)                              |
-| `--host`                 | Bind host (default: `127.0.0.1`)                                 |
-| `--insecure-remote-bind` | Allow binding the unauthenticated command center beyond loopback |
+| Flag                     | Description                                                           |
+| ------------------------ | --------------------------------------------------------------------- |
+| `--config`, `-c`         | Path to airlock.yaml config file                                      |
+| `--port`, `-p`           | Command center port (default: 4177)                                   |
+| `--host`                 | Bind host (default: `127.0.0.1`)                                      |
+| `--insecure-remote-bind` | Allow binding the unauthenticated command center beyond loopback      |
+| `--public-url`           | Gateway URL used in setup snippets (defaults to `AIRLOCK_PUBLIC_URL`) |
 
 ## Run stdio mode for a specific agent
 
@@ -147,15 +148,17 @@ airlock lint --config airlock.yaml --fail-on info
 
 Rules have stable ids and default severities:
 
-| Rule               | Default | Meaning                                                      |
-| ------------------ | ------- | ------------------------------------------------------------ |
-| `dead-deny`        | `info`  | A deny pattern does not overlap any allow or ask pattern     |
-| `unused-profile`   | `info`  | A profile is registered but not inherited by any agent       |
-| `unused-value-set` | `info`  | A value set is not referenced by arg scope or arg policy     |
-| `unused-dimension` | `info`  | An argument dimension is not referenced by any arg scope     |
-| `empty-agent`      | `warn`  | An agent resolves to zero allow/ask tools                    |
-| `missing-env-ref`  | `warn`  | A `${VAR}` reference is unset; the value is not read by lint |
-| `unresolvable-ref` | `warn`  | An `extends`, `arg_scope`, or value set reference is missing |
+| Rule               | Default | Meaning                                                             |
+| ------------------ | ------- | ------------------------------------------------------------------- |
+| `dead-deny`        | `info`  | A deny pattern does not overlap any allow or ask pattern            |
+| `unused-profile`   | `info`  | A profile is registered but not inherited by any agent              |
+| `unused-value-set` | `info`  | A value set is not referenced by arg scope or arg policy            |
+| `unused-dimension` | `info`  | An argument dimension is not referenced by any arg scope            |
+| `empty-agent`      | `warn`  | An agent resolves to zero allow/ask tools                           |
+| `missing-env-ref`  | `warn`  | A `${VAR}` reference is unset; the value is not read by lint        |
+| `unresolvable-ref` | `warn`  | An `extends`, `arg_scope`, or value set reference is missing        |
+| `unallocated-tool` | `info`  | A provider serves a tool no agent can reach (`--with-catalog`)      |
+| `dead-allow`       | `warn`  | A grant names a tool the provider does not serve (`--with-catalog`) |
 
 By default, warnings are printed in full and each info rule is collapsed to one summary line:
 
@@ -170,6 +173,7 @@ Options:
 | Flag             | Description                                                                           |
 | ---------------- | ------------------------------------------------------------------------------------- |
 | `--config`, `-c` | Path to airlock.yaml config file                                                      |
+| `--with-catalog` | Connect to providers and check policy against the live tool list                      |
 | `--verbose`      | Expand info findings instead of collapsing them                                       |
 | `--quiet`        | Hide info summaries and print only warn/error findings                                |
 | `--fail-on`      | Non-zero threshold: `warn` (default), `info`, or `error`                              |
@@ -206,6 +210,7 @@ Options:
 | `--fig`          | Try Fig autocomplete specs first, fall back to --help |
 | `--max-depth`    | Maximum recursion depth for subcommand discovery      |
 | `--include`      | Only include specific commands (comma-separated)      |
+| `--exclude`      | Exclude specific commands (comma-separated)           |
 
 Airlock uses three discovery strategies in order of preference:
 
@@ -240,13 +245,22 @@ Interactive TUI for discovering and curating CLI commands:
 airlock configure-cli git
 ```
 
+Options:
+
+| Flag             | Description                                                       |
+| ---------------- | ----------------------------------------------------------------- |
+| `--config`, `-c` | Config file the edit action writes to (default: `./airlock.yaml`) |
+| `--fig`          | Try Fig autocomplete specs first                                  |
+| `--max-depth`    | Maximum subcommand recursion depth (default: 2)                   |
+| `--output`, `-o` | Write YAML to this file instead of opening the action picker      |
+
 Features:
 
 - Lazy-loads subcommand groups (doesn't crawl the entire tree up front)
 - Toggle commands and groups on/off
 - Inspect command parameters
 - Search with `/`
-- Export to YAML, edit `./airlock.yaml` directly, copy to clipboard, or write a
+- Export to YAML, edit the `--config` file directly, copy to clipboard, or write a
   generated `<tool>-commands.yaml`
 
 ## Configure agent permissions interactively
@@ -256,6 +270,14 @@ Interactive TUI for assigning allow/ask/deny to tools from your live MCP servers
 ```bash
 airlock configure-agent --config ./airlock.yaml --agent claude-code
 ```
+
+Options:
+
+| Flag              | Description                                                  |
+| ----------------- | ------------------------------------------------------------ |
+| `--config`, `-c`  | Path to airlock.yaml config file (default: `./airlock.yaml`) |
+| `--agent`, `-a`   | Agent name to use in output (default: `agent`)               |
+| `--verbose`, `-v` | Show MCP server output (suppressed by default)               |
 
 Features:
 
@@ -273,6 +295,9 @@ permissions:
 ```bash
 airlock configure-web --config ./airlock.yaml
 ```
+
+It accepts the same `--config`, `--port` (default 4177), `--host`,
+`--insecure-remote-bind`, and `--public-url` flags as `airlock run`.
 
 This editor updates the local YAML file and writes a backup before saving. Use
 `airlock run` when you also want live provider health, MCP status, and tool
@@ -294,6 +319,6 @@ plugin and prints next steps. See [OpenClaw Setup](/guides/openclaw).
 | Flag             | Description                       |
 | ---------------- | --------------------------------- |
 | `--config`, `-c` | Path to airlock.yaml config file  |
-| `--agent`        | Agent name for stdio mode         |
+| `--agent`, `-a`  | Agent name for stdio mode         |
 | `--pretty`       | Human-friendly colored log output |
 | `--help`         | Print help                        |

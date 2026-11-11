@@ -42,7 +42,7 @@ Airlock reads the session id from, in order:
 3. a `?session=` query parameter on the endpoint URL
 
 Ids are 1–128 characters of `A-Z a-z 0-9 . _ : @ -`; anything else is ignored. The header is the
-same one the [HTTP tools API](/guides/openclaw) uses, so a grant made over either covers the same
+same one the [REST tools API](/reference/management-api#rest-tools-api-data-plane) uses, so a grant made over either covers the same
 agent session.
 
 Without a session id, a call can still be approved, and grants can cover the whole profile for a

@@ -38,7 +38,7 @@ Each endpoint becomes a namespaced tool like `petstore/listPets`, `petstore/getP
 The `auth` block supports:
 
 - **bearer** — sends `Authorization: Bearer <token>` on every request
-- **basic** — sends `Authorization: Basic <base64(user:pass)>`
+- **header** — sends a custom header (`name: value`) on every request
 
 ```yaml
 apis:
@@ -46,9 +46,9 @@ apis:
     spec: ./internal-api.json
     base_url: https://internal.example.com
     auth:
-      type: basic
-      username: ${API_USER}
-      password: ${API_PASS}
+      type: header
+      name: X-API-Key
+      value: ${API_KEY}
 ```
 
 ## Filtering endpoints
@@ -68,7 +68,7 @@ Airlock converts OpenAPI operation IDs into tool names. If an operation ID isn't
 For example:
 
 - `GET /pets` with operationId `listPets` → `petstore/listPets`
-- `POST /pets/{id}/feed` without operationId → `petstore/post_pets_id_feed`
+- `POST /pets/{id}/feed` without operationId → `petstore/post_pets_by_id_feed` (a leading `/v<N>/` or `/api/` segment is dropped)
 
 ## Combining with permissions
 
