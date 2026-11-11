@@ -4,6 +4,25 @@ struct AirlockAPIClient: Sendable {
     var baseURL: URL
     var bearerToken: String?
 
+    /// The gateway URL, only when it uses HTTPS: every request carries a bearer secret.
+    static func secureBaseURL(from string: String) -> URL? {
+        guard let url = URL(string: string.trimmingCharacters(in: .whitespacesAndNewlines)),
+              url.scheme?.lowercased() == "https",
+              url.host?.isEmpty == false
+        else { return nil }
+        return url
+    }
+
+    /// `path` appended to the base URL, keeping any path prefix (a gateway behind a reverse proxy
+    /// at `https://host/airlock`). Resolving `/mobile/…` relative to the base would drop it.
+    func url(for path: String) -> URL? {
+        var base = baseURL.absoluteString
+        while base.hasSuffix("/") {
+            base.removeLast()
+        }
+        return URL(string: base + path)
+    }
+
     func registerDevice(name: String, pushToken: String, adminSecret: String) async throws -> DeviceRegistrationResponse {
         struct Body: Encodable {
             let name: String
@@ -169,7 +188,7 @@ struct AirlockAPIClient: Sendable {
         response: Response.Type,
         timeoutInterval: TimeInterval = 60
     ) async throws -> Response {
-        guard let url = URL(string: path, relativeTo: baseURL) else {
+        guard let url = url(for: path) else {
             throw URLError(.badURL)
         }
 
@@ -197,11 +216,12 @@ struct AirlockAPIClient: Sendable {
             if httpResponse.statusCode == 404 && path.hasPrefix("/mobile/batches/") {
                 throw AirlockAPIError.batchNotFound
             }
-            if let message = serverError?.error {
-                throw AirlockAPIError.server(message)
-            }
+            // Checked before the generic error: Fastify's own 404 body carries `error: "Not Found"`.
             if httpResponse.statusCode == 404 && path.hasSuffix("/preview") {
                 throw AirlockAPIError.unsupportedPreview
+            }
+            if let message = serverError?.error {
+                throw AirlockAPIError.server(message)
             }
             let message = String(data: data, encoding: .utf8) ?? "HTTP \(httpResponse.statusCode)"
             throw AirlockAPIError.server(message)

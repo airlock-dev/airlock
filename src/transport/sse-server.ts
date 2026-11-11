@@ -7,7 +7,6 @@ import {
   checkAgentBearerAuth,
   checkBearerAuth,
   checkOrigin,
-  checkRequestSecurity,
   currentRequestSecurity,
   hasAgentCredential,
   type RequestSecurityOptions,
@@ -62,14 +61,10 @@ export async function sseServerPlugin(
     });
   }
 
-  // Auth for non-agent endpoints (management API)
-  app.addHook('preHandler', async (request, reply) => {
-    const url = request.url;
-    // Agent endpoints handle their own auth
-    if (url.startsWith('/agents/')) return;
-    if (!checkRequestSecurity(request, reply, opts)) {
-      return;
-    }
+  // An open SSE channel never goes idle, so Fastify's close() would wait on it forever. End every
+  // session before the listener closes.
+  app.addHook('preClose', async () => {
+    await Promise.allSettled([...sessions.values()].map(({ transport }) => transport.close()));
   });
 
   app.get('/agents/:profileId/sse', async (request: FastifyRequest, reply: FastifyReply) => {

@@ -1,5 +1,5 @@
 import type { AgentConfig } from '../config/schema.js';
-import type { Middleware, MiddlewareDeps } from './types.js';
+import type { Middleware } from './types.js';
 import { compose } from './compose.js';
 import { allowlistMiddleware } from './core/allowlist.js';
 import { execPolicyMiddleware } from './core/exec-policy.js';
@@ -35,6 +35,8 @@ function withToolFilter(mw: Middleware, item: MiddlewareItemConfig): Middleware 
   };
 }
 
+// The schema rejects `mode`/`backend` values a middleware does not support (see
+// MIDDLEWARE_OPTION_VALUES), so the narrowing casts below are safe.
 function resolveMiddleware(item: MiddlewareItemConfig): Middleware {
   switch (item.name) {
     case 'schema-validator':
@@ -51,7 +53,7 @@ function resolveMiddleware(item: MiddlewareItemConfig): Middleware {
       return stripQueryParamsMiddleware();
     case 'output-injection-detector':
       return outputInjectionDetectorMiddleware({
-        mode: item.mode as 'detect' | 'mangle' | undefined, // schema includes 'escalate' which is not valid for output-injection-detector
+        mode: item.mode as 'detect' | 'mangle' | undefined,
       });
     case 'canary-token-injector':
       return canaryTokenInjectorMiddleware({
@@ -104,7 +106,7 @@ const DEFAULT_MIDDLEWARE: MiddlewareItemConfig[] = [
  * Default middlewares (schema-validator, untrusted-envelope, output-injection-detector)
  * are included unless explicitly disabled via `enabled: false`.
  */
-export function buildMiddlewareChain(agentConfig: AgentConfig, _deps: MiddlewareDeps): Middleware {
+export function buildMiddlewareChain(agentConfig: AgentConfig): Middleware {
   const userMiddleware = agentConfig.middleware;
 
   // undefined  → defaults (schema-validator, untrusted-envelope, output-injection-detector)

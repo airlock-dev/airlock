@@ -50,8 +50,6 @@ enum Constants {
     }
 
     static let maxResolvedRequests = 20
-    static let popoverWidth: CGFloat = 360
-    static let popoverMaxHeight: CGFloat = 500
 
     enum Reconnect {
         static let initialDelay: TimeInterval = 1.0

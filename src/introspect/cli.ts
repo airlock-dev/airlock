@@ -1005,7 +1005,7 @@ Usage:
   airlock explain <agent> [--config PATH] [--expand] [--json]
   airlock who-can <tool-or-glob> [--config PATH] [--level allow|ask|deny|any] [--json]
   airlock tools [--provider NAME] [--grep REGEX] [--config PATH] [--json]
-  airlock lint [--config PATH] [--verbose] [--quiet] [--fail-on info|warn|error] [--only IDS] [--disable IDS] [--rule ID=LEVEL] [--json]`);
+  airlock lint [--config PATH] [--with-catalog] [--verbose] [--quiet] [--fail-on info|warn|error] [--only IDS] [--disable IDS] [--rule ID=LEVEL] [--json]`);
 }
 
 function configCheckHelp(): string {

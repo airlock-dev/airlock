@@ -16,7 +16,7 @@ curl -X POST http://localhost:4113/hook \
   -H "Authorization: Bearer $MANAGEMENT_API_SECRET" \
   -d '{
     "client": "claude-code",
-    "tool": "bash",
+    "tool": "Bash",
     "input": {
       "command": "git push origin main"
     }
@@ -37,8 +37,11 @@ curl -X POST http://localhost:4113/hook \
 
 Different clients call the same tools by different names. Airlock normalizes tool names across clients:
 
-- Claude Code's `bash` → `exec/run`
-- Other client-specific mappings are handled by the normalizer
+- Claude Code's `Bash` → `bash/<executable>` (`git push …` → `bash/git`); commands using shell
+  metacharacters become `bash/_complex`
+- Claude Code's `Edit` / `Read` / `Write` → `file/edit` / `file/read` / `file/write`, and
+  `WebFetch` → `http/fetch`
+- Names are case-sensitive, and unknown tools pass through unchanged
 
 The normalized name is what gets evaluated against the agent's policy.
 
@@ -76,12 +79,18 @@ Use Claude Code's hook system to route tool calls through Airlock:
 ```json
 {
   "hooks": {
-    "pre_tool_use": {
-      "command": "curl -s -X POST http://localhost:4113/hook -H 'Content-Type: application/json' -d '{\"client\":\"claude-code\",\"tool\":\"$TOOL\",\"input\":$INPUT}'"
-    }
+    "PreToolUse": [
+      {
+        "hooks": [{ "type": "command", "command": "/path/to/airlock/scripts/claude-code-hook.sh" }]
+      }
+    ]
   }
 }
 ```
+
+`scripts/claude-code-hook.sh` reads the hook payload, calls `/hook`, and answers in the format
+Claude Code expects. Set `AIRLOCK_SECRET` to the management API secret; `AIRLOCK_URL` defaults to
+`http://localhost:4113`.
 
 ### CI pipeline gates
 
@@ -89,11 +98,11 @@ Check if a deployment or sensitive operation is approved:
 
 ```bash
 RESULT=$(curl -s -X POST http://localhost:4113/hook \
-  -H "Authorization: Bearer $AIRLOCK_SECRET" \
+  -H "Authorization: Bearer $MANAGEMENT_API_SECRET" \
   -H "Content-Type: application/json" \
   -d '{"client":"ci","agent":"deploy-bot","tool":"deploy/production","input":{"version":"v1.2.3"}}')
 
-if echo "$RESULT" | jq -e '.allowed' > /dev/null; then
+if echo "$RESULT" | jq -e '.decision == "allow"' > /dev/null; then
   echo "Approved — deploying"
 else
   echo "Denied — aborting"

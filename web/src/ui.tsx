@@ -86,11 +86,6 @@ export function DecisionSwitch({
   );
 }
 
-export function DecisionMark({ decision }: { decision: Resolved }) {
-  const text = decision === 'none' ? 'No access' : DECISION_LABEL[decision];
-  return <span class={cx('mark', `mark-${decision}`)}>{text}</span>;
-}
-
 export function TallyBar({ counts, total }: { counts: Record<Resolved, number>; total: number }) {
   if (!total) return <div class="tally tally-empty" />;
   return (

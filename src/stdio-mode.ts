@@ -111,15 +111,21 @@ export async function runStdioMode(
   // Pool — only the MCPs this profile actually needs
   const mcpConfigs = getMcpConfigs(config.providers);
   const allMcpIds = Object.keys(mcpConfigs);
-  const neededIds = [
-    ...new Set([
-      ...requiredMcpsForAgent(agentConfig, allMcpIds),
-      ...Object.values(config.approvals.previews ?? {})
-        .map((preview) => preview.tool.split('/')[0])
-        .filter((id) => allMcpIds.includes(id)),
-    ]),
-  ];
-  const filteredMcps = Object.fromEntries(neededIds.map((id) => [id, mcpConfigs[id]]));
+  const selectMcps = (cfg: Config, agent: Config['agents'][string]) => {
+    const all = getMcpConfigs(cfg.providers);
+    const ids = Object.keys(all);
+    const needed = [
+      ...new Set([
+        ...requiredMcpsForAgent(agent, ids),
+        ...Object.values(cfg.approvals.previews ?? {})
+          .map((preview) => preview.tool.split('/')[0])
+          .filter((id) => ids.includes(id)),
+      ]),
+    ];
+    return Object.fromEntries(needed.map((id) => [id, all[id]]));
+  };
+  const filteredMcps = selectMcps(config, agentConfig);
+  const neededIds = Object.keys(filteredMcps);
 
   log.info(
     { agentId, needed: neededIds, skipped: allMcpIds.filter((id) => !neededIds.includes(id)) },
@@ -192,7 +198,8 @@ export async function runStdioMode(
       hitlEngine.setTimeoutMs(newConfig.approvals.timeout_ms);
       hitlEngine.configure(engineOptionsFromConfig(newConfig, getConfig));
       updateManagementRequestSecurity(newConfig, managementRequestSecurity);
-      const newMcpConfigs = getMcpConfigs(newConfig.providers);
+      // Filtered like the initial pool: the unfiltered map would connect every configured provider.
+      const newMcpConfigs = selectMcps(newConfig, currentAgentConfig);
       pool
         .reload(newMcpConfigs)
         .then(() => {
@@ -223,6 +230,8 @@ export async function runStdioMode(
     if (cleanedUp) return;
     cleanedUp = true;
     watcher.stop();
+    // Open approval streams never go idle; end them or the listener's close() waits forever.
+    await approvalStream.stop();
     await managementApp?.close().catch(() => {});
     await pool.stop();
     await registry.stopAll();
@@ -318,7 +327,7 @@ async function startManagementApi(opts: {
   approvalStream: ApprovalStreamHub;
   approvalPreviews: ApprovalPreviewReader;
   getRequestSecurity: () => RequestSecurityOptions;
-}): Promise<FastifyInstance> {
+}): Promise<FastifyInstance | undefined> {
   const app = Fastify({ logger: false });
   const {
     auditLogger,
@@ -363,12 +372,22 @@ async function startManagementApi(opts: {
     if (!checkRequestSecurity(request, reply, getRequestSecurity())) return;
     return {
       status: 'ok',
-      pendingApprovals: hitlEngine.getPending().length,
+      pendingApprovals: hitlEngine.pendingCount(),
     };
   });
 
   const { port, host } = opts.config.server.management_api;
-  await app.listen({ port, host });
+  try {
+    await app.listen({ port, host });
+  } catch (err) {
+    // Every stdio session is its own process, and a gateway sharing this config may already hold
+    // the port. Run the session without a management API rather than refusing to start it.
+    const code = err && typeof err === 'object' && 'code' in err ? err.code : undefined;
+    if (code !== 'EADDRINUSE') throw err;
+    log.warn({ port, host }, 'Management API port in use; running this session without it');
+    await app.close().catch(() => {});
+    return undefined;
+  }
   log.info({ port, host }, 'Airlock stdio management API listening');
   return app;
 }

@@ -61,6 +61,7 @@ The fixed core always runs in this order:
 ```text
 allowlist
   -> exec-policy
+  -> command-policy
   -> schema-validator
   -> arg-policy
   -> injection-detector / sensitivity-classifier

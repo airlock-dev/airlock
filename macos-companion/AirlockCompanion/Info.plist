@@ -3,6 +3,8 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleName</key>
+    <string>AirlockCompanion</string>
+    <key>CFBundleDisplayName</key>
     <string>Airlock Companion</string>
     <key>CFBundleIdentifier</key>
     <string>bot.airlock.companion</string>
@@ -10,9 +12,22 @@
     <string>0.0.0</string>
     <key>CFBundleShortVersionString</key>
     <string>0.0.0</string>
+    <key>CFBundleExecutable</key>
+    <string>AirlockCompanion</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>14.0</string>
     <key>LSUIElement</key>
     <true/>
     <key>NSUserNotificationAlertStyle</key>
     <string>alert</string>
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsArbitraryLoads</key>
+        <true/>
+    </dict>
 </dict>
 </plist>

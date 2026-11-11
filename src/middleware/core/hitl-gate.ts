@@ -2,6 +2,7 @@ import { ProtocolError, ProtocolErrorCode } from '@modelcontextprotocol/server';
 import type { AirlockCallContext } from '../../airlock/context.js';
 import type { SandboxDisplayInfo } from '../../sandbox/index.js';
 import type { Middleware, ToolCallContext, ToolCallResponse } from '../types.js';
+import { serializeAuditArgs } from '../audit-args.js';
 import { fingerprintCall, type ApprovalSubject } from '../../hitl/grants.js';
 import { providerIdForTool } from '../../util/tool-name.js';
 
@@ -10,17 +11,6 @@ function errorResponse(message: string): ToolCallResponse {
     result: { content: [{ type: 'text', text: message }], isError: true },
     text: message,
   };
-}
-
-function serializeAuditArgs(args: Record<string, unknown>, meta: Record<string, unknown>): string {
-  const sandbox = meta.sandbox_info;
-  const context = meta.airlockContext as AirlockCallContext | undefined;
-  const grant = meta.approvalGrantId as string | undefined;
-  if (!sandbox && !context && !grant) return JSON.stringify(args);
-  return JSON.stringify({
-    ...args,
-    _airlock: { ...(context ?? {}), ...(sandbox ? { sandbox } : {}), ...(grant ? { grant } : {}) },
-  });
 }
 
 /** What the grant store and approval UIs need to know about this call. */
@@ -178,7 +168,7 @@ export function hitlGateMiddleware(): Middleware {
         agent_id: ctx.agentId,
         request_id: ctx.callId,
         tool: ctx.toolName,
-        args: JSON.stringify(ctx.args),
+        args: serializeAuditArgs(ctx.args, ctx.meta),
         result: 'hitl_disconnected',
       });
       throw new ProtocolError(

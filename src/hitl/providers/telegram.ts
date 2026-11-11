@@ -36,7 +36,9 @@ export class TelegramHitlProvider implements HitlProvider {
     const res = await fetch(`${this.apiBase}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: this.config.chat_id, text, parse_mode: 'Markdown' }),
+      // No parse_mode: the text is plain, and tool names like gmail/read_email contain Markdown
+      // metacharacters that make Telegram reject the message outright.
+      body: JSON.stringify({ chat_id: this.config.chat_id, text }),
     });
     if (!res.ok) {
       log.error({ status: res.status }, 'Failed to send Telegram notification');

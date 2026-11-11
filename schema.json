@@ -497,24 +497,18 @@
                       "type": "object",
                       "properties": {
                         "allow_write": {
-                          "default": [
-                            ".",
-                            "/tmp"
-                          ],
                           "type": "array",
                           "items": {
                             "type": "string"
                           }
                         },
                         "deny_read": {
-                          "default": [],
                           "type": "array",
                           "items": {
                             "type": "string"
                           }
                         },
                         "deny_write": {
-                          "default": [],
                           "type": "array",
                           "items": {
                             "type": "string"
@@ -533,14 +527,12 @@
                       "type": "object",
                       "properties": {
                         "allowed_domains": {
-                          "default": [],
                           "type": "array",
                           "items": {
                             "type": "string"
                           }
                         },
                         "denied_domains": {
-                          "default": [],
                           "type": "array",
                           "items": {
                             "type": "string"
@@ -913,24 +905,18 @@
             "type": "object",
             "properties": {
               "allow_write": {
-                "default": [
-                  ".",
-                  "/tmp"
-                ],
                 "type": "array",
                 "items": {
                   "type": "string"
                 }
               },
               "deny_read": {
-                "default": [],
                 "type": "array",
                 "items": {
                   "type": "string"
                 }
               },
               "deny_write": {
-                "default": [],
                 "type": "array",
                 "items": {
                   "type": "string"
@@ -949,14 +935,12 @@
             "type": "object",
             "properties": {
               "allowed_domains": {
-                "default": [],
                 "type": "array",
                 "items": {
                   "type": "string"
                 }
               },
               "denied_domains": {
-                "default": [],
                 "type": "array",
                 "items": {
                   "type": "string"
@@ -1259,24 +1243,18 @@
                       "type": "object",
                       "properties": {
                         "allow_write": {
-                          "default": [
-                            ".",
-                            "/tmp"
-                          ],
                           "type": "array",
                           "items": {
                             "type": "string"
                           }
                         },
                         "deny_read": {
-                          "default": [],
                           "type": "array",
                           "items": {
                             "type": "string"
                           }
                         },
                         "deny_write": {
-                          "default": [],
                           "type": "array",
                           "items": {
                             "type": "string"
@@ -1295,14 +1273,12 @@
                       "type": "object",
                       "properties": {
                         "allowed_domains": {
-                          "default": [],
                           "type": "array",
                           "items": {
                             "type": "string"
                           }
                         },
                         "denied_domains": {
-                          "default": [],
                           "type": "array",
                           "items": {
                             "type": "string"
@@ -1811,24 +1787,18 @@
                       "type": "object",
                       "properties": {
                         "allow_write": {
-                          "default": [
-                            ".",
-                            "/tmp"
-                          ],
                           "type": "array",
                           "items": {
                             "type": "string"
                           }
                         },
                         "deny_read": {
-                          "default": [],
                           "type": "array",
                           "items": {
                             "type": "string"
                           }
                         },
                         "deny_write": {
-                          "default": [],
                           "type": "array",
                           "items": {
                             "type": "string"
@@ -1847,14 +1817,12 @@
                       "type": "object",
                       "properties": {
                         "allowed_domains": {
-                          "default": [],
                           "type": "array",
                           "items": {
                             "type": "string"
                           }
                         },
                         "denied_domains": {
-                          "default": [],
                           "type": "array",
                           "items": {
                             "type": "string"

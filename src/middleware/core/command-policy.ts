@@ -18,11 +18,53 @@ function matchesGlob(pattern: string, value: string): boolean {
 }
 
 /** Precedence: deny > ask > allow; anything unmatched falls to `default` (deny if unset). */
-export function evaluateCommandPolicy(command: string, rule: CommandPolicyRuleConfig): CommandDecision {
+export function evaluateCommandPolicy(
+  command: string,
+  rule: CommandPolicyRuleConfig
+): CommandDecision {
   if (rule.deny.some((p) => matchesGlob(p, command))) return 'deny';
   if (rule.ask.some((p) => matchesGlob(p, command))) return 'ask';
   if (rule.allow.some((p) => matchesGlob(p, command))) return 'allow';
   return rule.default ?? 'deny';
+}
+
+type ToolCommandPolicy = Record<string, CommandPolicyRuleConfig>;
+
+const STRICTNESS: Record<CommandDecision, number> = { allow: 0, ask: 1, deny: 2 };
+
+/** The stricter of two fallbacks; an unset default means deny, so it can never be loosened. */
+function stricterDefault(
+  a: CommandDecision | undefined,
+  b: CommandDecision | undefined
+): CommandDecision {
+  const left = a ?? 'deny';
+  const right = b ?? 'deny';
+  return STRICTNESS[left] >= STRICTNESS[right] ? left : right;
+}
+
+/**
+ * Combines a base tool's per-arg rules with an alias's: the lists union (so a base `deny` still
+ * applies, and an alias can name explicit exceptions) and the stricter `default` wins, so an alias
+ * cannot loosen how the base tool treats commands neither of them lists.
+ */
+function mergeToolPolicies(
+  base: ToolCommandPolicy | undefined,
+  alias: ToolCommandPolicy | undefined
+): ToolCommandPolicy | undefined {
+  if (!base || !alias) return alias ?? base;
+  const merged: ToolCommandPolicy = { ...base };
+  for (const [argName, rule] of Object.entries(alias)) {
+    const baseRule = merged[argName];
+    merged[argName] = baseRule
+      ? {
+          allow: [...baseRule.allow, ...rule.allow],
+          ask: [...baseRule.ask, ...rule.ask],
+          deny: [...baseRule.deny, ...rule.deny],
+          default: stricterDefault(baseRule.default, rule.default),
+        }
+      : rule;
+  }
+  return merged;
 }
 
 function truncate(value: string): string {
@@ -51,7 +93,11 @@ export function commandPolicyMiddleware(): Middleware {
       ctx.deps.registry.resolveToolName?.(ctx.toolName, ctx.agentId) ??
       ctx.agentConfig.tool_overrides?.[ctx.toolName]?.alias_of ??
       ctx.toolName;
-    const policy = policies[ctx.toolName] ?? policies[resolvedToolName];
+    // Like arg_policy, an alias is bound by its base tool's policy as well as its own.
+    const policy = mergeToolPolicies(
+      resolvedToolName !== ctx.toolName ? policies[resolvedToolName] : undefined,
+      policies[ctx.toolName]
+    );
     if (!policy) return next();
 
     let needsApproval = false;
@@ -76,7 +122,10 @@ export function commandPolicyMiddleware(): Middleware {
 
       if (decision === 'deny') {
         const message = `Command "${truncate(value)}" is not permitted for ${ctx.toolName}.`;
-        log.info({ agentId: ctx.agentId, tool: ctx.toolName, arg: argName }, 'command denied by policy');
+        log.info(
+          { agentId: ctx.agentId, tool: ctx.toolName, arg: argName },
+          'command denied by policy'
+        );
         ctx.deps.auditLogger.log({
           agent_id: ctx.agentId,
           request_id: ctx.callId,

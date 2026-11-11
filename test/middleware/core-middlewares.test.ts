@@ -3,6 +3,7 @@ import { allowlistMiddleware } from '../../src/middleware/core/allowlist.js';
 import { execPolicyMiddleware } from '../../src/middleware/core/exec-policy.js';
 import { hitlGateMiddleware } from '../../src/middleware/core/hitl-gate.js';
 import { HitlEngine } from '../../src/hitl/engine.js';
+import { markDispatched } from '../../src/middleware/core/execute.js';
 import {
   rateLimiterMiddleware,
   resetRateLimiterState,
@@ -198,22 +199,41 @@ describe('hitlGateMiddleware', () => {
 describe('rateLimiterMiddleware', () => {
   beforeEach(() => resetRateLimiterState());
 
+  // A call that reached the downstream, as executeMiddleware marks it.
+  const executedNext = async (ctx: ToolCallContext) => {
+    markDispatched(ctx);
+    return okResponse;
+  };
+
+  it('refunds calls that never reach the downstream', async () => {
+    const mw = rateLimiterMiddleware({ max_requests: 1, window_ms: 60000 });
+    const deniedNext = async () => {
+      throw new Error('denied by policy');
+    };
+
+    await expect(mw(makeCtx(), deniedNext)).rejects.toThrow('denied by policy');
+    await expect(mw(makeCtx(), okNext)).resolves.toBe(okResponse);
+    const executed = makeCtx();
+    await mw(executed, () => executedNext(executed));
+    await expect(mw(makeCtx(), okNext)).rejects.toThrow('Rate limit exceeded');
+  });
+
   it('allows requests within limit', async () => {
     const mw = rateLimiterMiddleware({ max_requests: 3, window_ms: 1000 });
     const ctx = makeCtx();
 
-    await mw(ctx, okNext);
-    await mw(ctx, okNext);
-    await mw(ctx, okNext);
+    await mw(ctx, () => executedNext(ctx));
+    await mw(ctx, () => executedNext(ctx));
+    await mw(ctx, () => executedNext(ctx));
   });
 
   it('rejects when limit exceeded', async () => {
     const mw = rateLimiterMiddleware({ max_requests: 2, window_ms: 60000 });
     const ctx = makeCtx();
 
-    await mw(ctx, okNext);
-    await mw(ctx, okNext);
-    await expect(mw(ctx, okNext)).rejects.toThrow('Rate limit exceeded');
+    await mw(ctx, () => executedNext(ctx));
+    await mw(ctx, () => executedNext(ctx));
+    await expect(mw(ctx, () => executedNext(ctx))).rejects.toThrow('Rate limit exceeded');
   });
 
   it('separates limits per-tool', async () => {
@@ -221,8 +241,8 @@ describe('rateLimiterMiddleware', () => {
     const ctx1 = makeCtx({ toolName: 'tool/a' });
     const ctx2 = makeCtx({ toolName: 'tool/b' });
 
-    await mw(ctx1, okNext);
-    await mw(ctx2, okNext);
-    await expect(mw(ctx1, okNext)).rejects.toThrow('Rate limit exceeded');
+    await mw(ctx1, () => executedNext(ctx1));
+    await mw(ctx2, () => executedNext(ctx2));
+    await expect(mw(ctx1, () => executedNext(ctx1))).rejects.toThrow('Rate limit exceeded');
   });
 });

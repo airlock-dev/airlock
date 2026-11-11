@@ -82,7 +82,9 @@ export async function httpServerPlugin(
     return node;
   }
 
-  app.addHook('onClose', async () => {
+  // preClose, not onClose: a call parked on approval holds its SSE response open, and Fastify's
+  // close() waits for in-flight responses before onClose hooks ever run.
+  app.addHook('preClose', async () => {
     await Promise.allSettled([...handlers.values()].map(({ handler }) => handler.close()));
     handlers.clear();
   });

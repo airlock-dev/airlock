@@ -1,11 +1,7 @@
 import { writeFileSync } from 'fs';
 import { discoverCli } from './strategies/help-parser.js';
 import { fetchFigSpec, figSpecToCommands } from './strategies/fig.js';
-import {
-  detectCompletionSupport,
-  discoverViaCompletion,
-  deduplicateAliases,
-} from './strategies/completion.js';
+import { discoverViaCompletion, deduplicateAliases } from './strategies/completion.js';
 import { discoverOpenApi } from './openapi.js';
 import { serializeDiscovery } from './writer.js';
 import type { CliCommandConfig } from '../config/schema.js';
@@ -59,11 +55,17 @@ export async function handleDiscoverCli(options: DiscoverCliOptions): Promise<vo
 export async function discoverCliCommands(
   options: DiscoverCliOptions
 ): Promise<CliDiscoveryResult> {
+  const filters = {
+    maxDepth: options.maxDepth,
+    include: options.include,
+    exclude: options.exclude,
+  };
+
   if (options.fromFig) {
     const spec = await fetchFigSpec(options.tool);
     if (spec) {
       return {
-        commands: figSpecToCommands(spec),
+        commands: figSpecToCommands(spec, filters),
         strategy: 'fig',
       };
     }
@@ -71,30 +73,18 @@ export async function discoverCliCommands(
     console.error(`No Fig spec found for "${options.tool}". Falling back to local discovery.`);
   }
 
-  const completionAdapter = detectCompletionSupport(options.tool);
-  if (completionAdapter) {
-    const result = discoverViaCompletion(options.tool, {
-      maxDepth: options.maxDepth,
-      include: options.include,
-      exclude: options.exclude,
-    });
-    if (result) {
-      let commands = result.commands;
-      commands = deduplicateAliases(commands);
-
-      return {
-        commands,
-        strategy: `completion:${result.adapterId}`,
-      };
-    }
+  // Each adapter detects itself as it is tried; detecting up front as well would spawn the tool
+  // once more per adapter for nothing.
+  const result = discoverViaCompletion(options.tool, filters);
+  if (result) {
+    return {
+      commands: deduplicateAliases(result.commands),
+      strategy: `completion:${result.adapterId}`,
+    };
   }
 
   return {
-    commands: discoverCli(options.tool, {
-      maxDepth: options.maxDepth,
-      include: options.include,
-      exclude: options.exclude,
-    }),
+    commands: discoverCli(options.tool, filters),
     strategy: 'help-text',
   };
 }

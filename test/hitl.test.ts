@@ -7,7 +7,6 @@ function makeMockAuditLogger() {
   return {
     insertHitl: vi.fn(),
     updateHitlStatus: vi.fn(),
-    getHitlByCode: vi.fn(),
     getHitlById: vi.fn(),
     getPendingHitl: vi.fn().mockReturnValue([]),
     log: vi.fn(),
@@ -22,7 +21,6 @@ function makeMockProvider() {
   return {
     init: vi.fn().mockResolvedValue(undefined),
     notify: vi.fn().mockResolvedValue(undefined),
-    updateBadge: vi.fn().mockResolvedValue(undefined),
     updateApprovalStatus: vi.fn().mockResolvedValue(undefined),
     stop: vi.fn().mockResolvedValue(undefined),
   };

@@ -13,11 +13,18 @@ const CODE = '[A-Z0-9]{6,8}';
 
 // Matches bare commands ("approve ABC123"), prefixed ("hitl approve ABC123"), batch codes
 // ("approve all ABC123"), and grants ("approve ABC123 15m", "approve ABC123 for 2h reads").
+//
+// Anchored at the start (allowing a leading "/" or "@bot" mention): unanchored, "disapprove ABC123"
+// and "do not approve ABC123" both parsed as an approval.
+const COMMAND_START = '^(?:@\\S+\\s+)?/?';
 const APPROVE_RE = new RegExp(
-  `(?:hitl\\s+)?approve\\s+(?:all\\s+)?(${CODE})(?:\\s+(?:for\\s+)?(\\S+))?(?:\\s+(\\S+))?\\s*$`,
+  `${COMMAND_START}(?:hitl\\s+)?approve\\s+(?:all\\s+)?(${CODE})(?:\\s+(?:for\\s+)?(\\S+))?(?:\\s+(\\S+))?\\s*$`,
   'i'
 );
-const DENY_RE = new RegExp(`(?:hitl\\s+)?deny\\s+(?:all\\s+)?(${CODE})(?:\\s+(.+))?\\s*$`, 'i');
+const DENY_RE = new RegExp(
+  `${COMMAND_START}(?:hitl\\s+)?deny\\s+(?:all\\s+)?(${CODE})(?:\\s+(.+))?\\s*$`,
+  'i'
+);
 
 const SCOPE_WORDS: Record<string, Pick<GrantSpec, 'scope' | 'tier'>> = {
   tool: { scope: 'tool' },

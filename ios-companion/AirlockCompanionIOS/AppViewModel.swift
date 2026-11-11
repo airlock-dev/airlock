@@ -106,8 +106,7 @@ final class AppViewModel: ObservableObject {
     }
 
     private var secureBaseURL: URL? {
-        guard let baseURL = URL(string: baseURLString), baseURL.scheme == "https" else { return nil }
-        return baseURL
+        AirlockAPIClient.secureBaseURL(from: baseURLString)
     }
 
     func start() {
@@ -275,11 +274,7 @@ final class AppViewModel: ObservableObject {
         deviceId = ""
         deviceToken = ""
         lastNotificationActionError = ""
-        if #available(iOS 17.0, *) {
-            try? await UNUserNotificationCenter.current().setBadgeCount(activePendingCount)
-        } else {
-            UIApplication.shared.applicationIconBadgeNumber = activePendingCount
-        }
+        try? await UNUserNotificationCenter.current().setBadgeCount(activePendingCount)
 
         if let revokeError {
             lastError = "Forgot locally. Server revoke failed: \(revokeError.localizedDescription)"

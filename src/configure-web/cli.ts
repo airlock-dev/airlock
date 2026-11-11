@@ -16,12 +16,11 @@ import {
   getMcpConfigs,
   type GatewayConfig as ParsedGatewayConfig,
 } from '../config/schema.js';
-import { rememberAllow, type RememberAllowMode } from '../config/mutator.js';
+import { rememberAllow } from '../config/mutator.js';
 import { validateConfig, type ConfigDiagnostic } from '../config/loader.js';
 import { applyProfiles } from '../config/profiles.js';
 import { ClientPool } from '../pool/pool.js';
 import { checkSuspiciousPatterns } from '../registry/sanitizer.js';
-import { bestSpecificity } from '../allowlist/pattern.js';
 import { VERSION } from '../version.js';
 import { stringifyPreservingComments } from '../config/yaml-merge.js';
 import {
@@ -42,8 +41,6 @@ import {
 
 type PermissionKind = 'agent' | 'profile';
 type RecommendedDecision = 'allow' | 'ask' | 'deny';
-type EditableDecision = RecommendedDecision | 'unset';
-type EditableDecisionSource = 'exact' | 'pattern' | 'none';
 const LATEST_VERSION_CACHE_TTL_MS = 60 * 60 * 1000;
 let latestVersionCache: { version: string; fetchedAt: number } | null = null;
 
@@ -119,12 +116,6 @@ interface ToolEntry {
   tags: string[];
   suspiciousPatterns: string[];
   recommended: RecommendedDecision;
-}
-
-interface EditableRuleMatch {
-  decision: EditableDecision;
-  source: EditableDecisionSource;
-  pattern?: string;
 }
 
 type ProviderRuntimeStatus = 'ok' | 'down' | 'disabled';
@@ -418,6 +409,9 @@ export function createConfigureWebApp(configPath: string, options: ConfigureWebO
     version: VERSION,
     publicGatewayUrl: options.publicGatewayUrl ?? null,
     remoteGateway: Boolean(options.remoteGateway),
+    // Whether /approve, /deny and /events exist here. `airlock run` and `configure-web` read
+    // pending requests from the audit DB but cannot decide them.
+    approvals: Boolean(options.approvals || options.remoteGateway),
     assistant: assistant ? { enabled: true, model: assistant.model } : { enabled: false },
   }));
 
@@ -822,6 +816,8 @@ interface RemotePendingApproval {
   tool: string;
   args: Record<string, unknown>;
   context?: { reason?: string; note?: string };
+  kind?: 'call' | 'plan' | 'question';
+  escalated?: boolean;
   status?: string;
   created_at?: string;
   createdAt?: string;
@@ -833,8 +829,19 @@ async function readRemoteCommandCenterStatus(
 ): Promise<CommandCenterStatus> {
   const raw = readConfigObject(configPath);
   const config = GatewayConfig.parse(raw);
-  const health = await remoteGatewayJson<RemoteHealth>(remoteGateway, '/health');
+  const [health, served] = await Promise.all([
+    remoteGatewayJson<RemoteHealth>(remoteGateway, '/health'),
+    // Tool counts are a nicety; a gateway that can't list them still reports health.
+    remoteGatewayJson<{ tools?: { name: string }[] }>(remoteGateway, '/admin/tools').catch(() => ({
+      tools: [],
+    })),
+  ]);
   const mcpHealth = health.mcpHealth ?? {};
+  const toolNamesByProvider = new Map<string, string[]>();
+  for (const tool of served.tools ?? []) {
+    const provider = tool.name.split('/')[0] ?? '';
+    toolNamesByProvider.set(provider, [...(toolNamesByProvider.get(provider) ?? []), tool.name]);
+  }
   const providers = Object.entries(config.providers).map(([id, provider]) => {
     const providerConfig = ProviderConfig.parse(provider);
     const type = providerConfig === 'builtin' ? 'builtin' : providerConfig.type;
@@ -845,8 +852,8 @@ async function readRemoteCommandCenterStatus(
       type,
       enabled,
       status: enabled ? (runtime ?? 'ok') : 'disabled',
-      toolCount: 0,
-      toolFingerprint: '',
+      toolCount: toolNamesByProvider.get(id)?.length ?? 0,
+      toolFingerprint: toolFingerprint(toolNamesByProvider.get(id) ?? []),
       ...(runtime === 'down' ? { error: 'Provider is down on the gateway' } : {}),
     } satisfies ProviderStatusEntry;
   });
@@ -862,7 +869,7 @@ async function readRemoteCommandCenterStatus(
       ok,
       down,
       disabled,
-      tools: 0,
+      tools: providers.reduce((sum, provider) => sum + provider.toolCount, 0),
       pendingApprovals: health.pendingApprovals ?? 0,
     },
   };
@@ -960,28 +967,57 @@ function registerRemoteGatewayRoutes(
   app.post('/approve', async (request, reply) => {
     const query = request.query as Record<string, unknown>;
     const code = typeof query.code === 'string' ? query.code : '';
-    if (!code) return reply.send({ ok: true });
+    if (!code) return reply.code(400).send({ error: 'code is required' });
 
+    // `remember=temporary` and `grant_*` become a grant on the gateway, so they travel with the
+    // approval. `remember=always` edits the config this dashboard owns, which the gateway cannot:
+    // it is checked first, kept off the forwarded request, and written only once the gateway has
+    // accepted the approval, so a refused approval never leaves a permanent rule behind.
     const remember = typeof query.remember === 'string' ? query.remember : undefined;
-    if (remember) {
-      const result = await rememberRemoteDecision(
-        configPath,
-        remoteGateway,
-        code,
-        remember,
-        query.duration_ms
-      );
-      if (result.error) return reply.code(result.status).send({ error: result.error });
+    const persistRemember = remember !== undefined && remember !== 'temporary';
+    let remembered: RemotePendingApproval | undefined;
+    if (persistRemember) {
+      const checked = await checkRememberAlways(remoteGateway, code, remember);
+      if ('error' in checked) return reply.code(checked.status).send({ error: checked.error });
+      remembered = checked.request;
     }
 
-    await forwardRemoteApproval(remoteGateway, 'approve', code);
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(query)) {
+      if (typeof value !== 'string') continue;
+      if (persistRemember && key === 'remember') continue;
+      params.set(key, value);
+    }
+    const forwarded = await forwardRemoteDecision(remoteGateway, 'approve', params);
+    if (forwarded.error) return reply.code(forwarded.status).send({ error: forwarded.error });
+
+    if (remembered) {
+      try {
+        rememberAllow({
+          configPath,
+          agentId: remembered.agentId ?? remembered.agent_id ?? '',
+          tool: remembered.tool,
+          mode: 'always',
+        });
+      } catch (err) {
+        return reply
+          .code(500)
+          .send({ error: err instanceof Error ? err.message : 'Failed to update config' });
+      }
+    }
     return reply.send({ ok: true });
   });
 
   app.post('/deny', async (request, reply) => {
     const query = request.query as Record<string, unknown>;
     const code = typeof query.code === 'string' ? query.code : '';
-    if (code) await forwardRemoteApproval(remoteGateway, 'deny', code);
+    if (!code) return reply.code(400).send({ error: 'code is required' });
+    const forwarded = await forwardRemoteDecision(
+      remoteGateway,
+      'deny',
+      new URLSearchParams({ code })
+    );
+    if (forwarded.error) return reply.code(forwarded.status).send({ error: forwarded.error });
     return reply.send({ ok: true });
   });
 
@@ -989,56 +1025,42 @@ function registerRemoteGatewayRoutes(
   app.get('/version/latest', async (_request, reply) => handleLatestVersion(reply));
 }
 
-async function rememberRemoteDecision(
-  configPath: string,
+// Same rules as the gateway's own dashboard: only `always` is persisted here, and only for a
+// routine tool call that is still pending.
+async function checkRememberAlways(
   remoteGateway: RemoteGatewayOptions,
   code: string,
-  remember: string,
-  durationMsValue: unknown
-): Promise<{ status: number; error?: string }> {
-  if (remember !== 'always' && remember !== 'temporary') {
-    return { status: 400, error: 'Invalid remember mode' };
+  remember: string
+): Promise<{ request: RemotePendingApproval } | { status: number; error: string }> {
+  if (remember !== 'always') return { status: 400, error: 'Invalid remember mode' };
+  let pending: RemotePendingApproval[];
+  try {
+    pending = await remoteGatewayJson<RemotePendingApproval[]>(remoteGateway, '/hitl/pending');
+  } catch (err) {
+    return { status: 502, error: err instanceof Error ? err.message : String(err) };
   }
-
-  const pending = await remoteGatewayJson<RemotePendingApproval[]>(remoteGateway, '/hitl/pending');
   const request = pending.find((entry) => entry.code === code);
   if (!request) return { status: 404, error: 'No pending request found for code' };
-
-  const durationMs =
-    typeof durationMsValue === 'string' && durationMsValue.trim()
-      ? Number(durationMsValue)
-      : undefined;
-  if (durationMs !== undefined && (!Number.isFinite(durationMs) || durationMs <= 0)) {
-    return { status: 400, error: 'Invalid duration_ms' };
+  if ((request.kind ?? 'call') !== 'call' || request.escalated) {
+    return { status: 400, error: 'Only a routine tool call can be remembered' };
   }
-
-  try {
-    rememberAllow({
-      configPath,
-      agentId: request.agent_id ?? request.agentId ?? '',
-      tool: request.tool,
-      mode: remember as RememberAllowMode,
-      ...(durationMs ? { durationMs } : {}),
-    });
-    return { status: 200 };
-  } catch (err) {
-    return {
-      status: 500,
-      error: err instanceof Error ? err.message : 'Failed to update config',
-    };
-  }
+  return { request };
 }
 
-async function forwardRemoteApproval(
+async function forwardRemoteDecision(
   remoteGateway: RemoteGatewayOptions,
   action: 'approve' | 'deny',
-  code: string
-): Promise<void> {
-  const params = new URLSearchParams({ code });
-  const response = await remoteGatewayFetch(remoteGateway, `/${action}?${params.toString()}`, {
-    method: 'POST',
-  });
-  if (!response.ok) throw new Error(await remoteGatewayError(response));
+  params: URLSearchParams
+): Promise<{ status: number; error?: string }> {
+  try {
+    const response = await remoteGatewayFetch(remoteGateway, `/${action}?${params.toString()}`, {
+      method: 'POST',
+    });
+    if (!response.ok) return { status: response.status, error: await remoteGatewayError(response) };
+    return { status: 200 };
+  } catch (err) {
+    return { status: 502, error: err instanceof Error ? err.message : String(err) };
+  }
 }
 
 async function remoteGatewayJson<T>(
@@ -1099,17 +1121,10 @@ export function saveRules(configPath: string, body: SaveRulesBody): WebState {
   const section = asMutableRecord(doc[sectionName]);
   const existing = asMutableRecord(section[id]);
 
-  if (kind === 'agent') {
-    existing.extends = parseStringArray(body.extends, 'extends');
-    existing.allow = parseStringArray(body.allow, 'allow');
-    existing.ask = parseStringArray(body.ask, 'ask');
-    existing.deny = parseStringArray(body.deny, 'deny');
-  } else {
-    existing.extends = parseStringArray(body.extends, 'extends');
-    existing.allow = parseStringArray(body.allow, 'allow');
-    existing.ask = parseStringArray(body.ask, 'ask');
-    existing.deny = parseStringArray(body.deny, 'deny');
-  }
+  existing.extends = parseStringArray(body.extends, 'extends');
+  existing.allow = parseStringArray(body.allow, 'allow');
+  existing.ask = parseStringArray(body.ask, 'ask');
+  existing.deny = parseStringArray(body.deny, 'deny');
 
   section[id] = existing;
   doc[sectionName] = section;
@@ -1184,7 +1199,16 @@ export function upsertProvider(configPath: string, body: ProviderBody): WebState
     body.enabled === undefined ? providerEnabled(existing) : parseBoolean(body.enabled);
 
   if (type === 'builtin') {
-    providers[id] = enabled ? 'builtin' : { type: 'builtin', enabled: false };
+    // Keep a built-in's other fields (instructions, ...) across a toggle, and only use the short
+    // `exec: builtin` form when there is nothing else to keep.
+    const rest =
+      existing.type === 'builtin'
+        ? removeUndefined({ ...existing, type: undefined, enabled: undefined })
+        : {};
+    providers[id] =
+      enabled && Object.keys(rest).length === 0
+        ? 'builtin'
+        : removeUndefined({ ...rest, type, enabled: enabled ? undefined : false });
   } else if (type === 'stdio') {
     const command =
       typeof body.command === 'string' && body.command.trim()
@@ -1254,58 +1278,6 @@ export function annotationTags(
   if (annotations?.openWorldHint) tags.push('open-world');
   if (suspiciousPatterns.length > 0) tags.push('injection');
   return tags;
-}
-
-export function resolveEditableRuleDecision(
-  rules: Pick<EditableAgent | EditableProfile, 'allow' | 'ask' | 'deny'>,
-  toolName: string
-): EditableDecision {
-  return resolveEditableRuleMatch(rules, toolName).decision;
-}
-
-export function resolveEditableRuleMatch(
-  rules: Pick<EditableAgent | EditableProfile, 'allow' | 'ask' | 'deny'>,
-  toolName: string
-): EditableRuleMatch {
-  const deny = bestRuleMatch(rules.deny, toolName);
-  const ask = bestRuleMatch(rules.ask, toolName);
-  const allow = bestRuleMatch(rules.allow, toolName);
-  const denySpec = deny?.specificity ?? -1;
-  const askSpec = ask?.specificity ?? -1;
-  const allowSpec = allow?.specificity ?? -1;
-  const best = Math.max(denySpec, askSpec, allowSpec);
-
-  if (best < 0) return { decision: 'unset', source: 'none' };
-  if (denySpec === best) return editableRuleMatch('deny', deny, toolName);
-  if (askSpec === best) return editableRuleMatch('ask', ask, toolName);
-  return editableRuleMatch('allow', allow, toolName);
-}
-
-function editableRuleMatch(
-  decision: RecommendedDecision,
-  match: { pattern: string; specificity: number } | undefined,
-  toolName: string
-): EditableRuleMatch {
-  if (!match) return { decision, source: 'none' };
-  return {
-    decision,
-    source: match.pattern === toolName ? 'exact' : 'pattern',
-    pattern: match.pattern,
-  };
-}
-
-function bestRuleMatch(
-  patterns: string[],
-  toolName: string
-): { pattern: string; specificity: number } | undefined {
-  let best: { pattern: string; specificity: number } | undefined;
-  for (const pattern of patterns) {
-    const specificity = bestSpecificity([pattern], toolName);
-    if (specificity >= 0 && (!best || specificity > best.specificity)) {
-      best = { pattern, specificity };
-    }
-  }
-  return best;
 }
 
 export async function discoverTools(
@@ -2522,7 +2494,8 @@ export const CLASSIC_HTML = `<!doctype html>
       descriptionExpanded: {},
       search: '',
       provider: 'all',
-      decision: 'all'
+      decision: 'all',
+      approvals: false
     };
 
     const el = (id) => document.getElementById(id);
@@ -2821,6 +2794,7 @@ export const CLASSIC_HTML = `<!doctype html>
     }
 
     function approvalButtons(code, options = {}) {
+      if (!state.approvals) return '';
       const approveLabel = options.approveLabel || 'Approve';
       const remember = options.remember !== false;
       return '<button class="approve" data-approval-action="approve" data-code="' + escapeHtml(code) + '">' + escapeHtml(approveLabel) + '</button>' +
@@ -2876,7 +2850,7 @@ export const CLASSIC_HTML = `<!doctype html>
         '<div class="detail-label">Arguments</div><pre class="log-args">' + escapeHtml(prettyJson(pending.args)) + '</pre>';
       el('approvalModalFooter').innerHTML = approvalButtons(pending.code, { remember: !question, approveLabel: question ? 'Confirm' : 'Approve' });
       el('approvalModal').classList.add('open');
-      if (!question) loadApprovalPreview(pending.id);
+      if (!question && state.approvals) loadApprovalPreview(pending.id);
       el('approvalModalFooter').querySelectorAll('[data-approval-action]').forEach((button) => {
         button.addEventListener('click', () => {
           actApproval(
@@ -3023,7 +2997,7 @@ export const CLASSIC_HTML = `<!doctype html>
     }
 
     function resultTagClass(result) {
-      if (String(result).includes('denied') || String(result).includes('error') || String(result).includes('timeout')) return 'tag-danger';
+      if (/denied|error|timeout|injection|canary/.test(String(result))) return 'tag-danger';
       if (String(result).includes('hitl')) return 'tag-warn';
       return 'tag-good';
     }
@@ -3835,7 +3809,7 @@ export const CLASSIC_HTML = `<!doctype html>
       const target = event.target;
       if (target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) return;
       const key = event.key.toLowerCase();
-      if (key !== 'a' && key !== 'd') return;
+      if (!state.approvals || (key !== 'a' && key !== 'd')) return;
       const id = state.currentApprovalId || firstPendingApprovalId();
       const pending = findPendingApproval(id);
       if (!pending?.code) return;
@@ -3843,7 +3817,12 @@ export const CLASSIC_HTML = `<!doctype html>
     });
 
     initApprovalSettings();
-    connectApprovalEvents();
+    // Without approval routes (airlock run, configure-web) there is no stream and nothing to decide.
+    api('/api/meta').then((meta) => {
+      state.approvals = Boolean(meta.approvals);
+      if (state.approvals) connectApprovalEvents();
+      if (state.config) render();
+    }).catch(() => {});
     checkVersion().catch(() => {});
     loadState().then(() => Promise.all([refreshStatus(), refreshLogs(), refreshTools()])).catch((error) => {
       document.body.innerHTML = '<div class="empty">' + escapeHtml(error.message) + '</div>';

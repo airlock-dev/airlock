@@ -121,7 +121,9 @@ export class OpenApiAdapter implements BackendAdapter {
 
     // Build request body (exclude path/query params from body)
     let body: string | undefined;
-    if (op.hasBody) {
+    if (op.bodyIsValue) {
+      if (toolCall.args.body !== undefined) body = JSON.stringify(toolCall.args.body);
+    } else if (op.hasBody) {
       const bodyArgs: Record<string, unknown> = {};
       const paramNames = new Set([...op.pathParams, ...op.queryParams]);
       for (const [key, value] of Object.entries(toolCall.args)) {
@@ -146,8 +148,6 @@ export class OpenApiAdapter implements BackendAdapter {
         signal: controller.signal,
         redirect: 'manual',
       });
-
-      clearTimeout(timer);
 
       let responseBody = '';
       let truncated = false;
@@ -189,16 +189,18 @@ export class OpenApiAdapter implements BackendAdapter {
           status: response.status,
           headers: responseHeaders,
           body: responseBody,
+          truncated,
         },
         error: response.ok ? undefined : `HTTP ${response.status}: ${responseBody.slice(0, 200)}`,
-        metadata: { truncated },
       };
     } catch (err) {
-      clearTimeout(timer);
       if ((err as Error).name === 'AbortError') {
         return { success: false, error: `Request timed out after ${this.config.timeout_ms}ms` };
       }
       return { success: false, error: err instanceof Error ? err.message : String(err) };
+    } finally {
+      // Cleared only here so the deadline also covers reading the body, not just the headers.
+      clearTimeout(timer);
     }
   }
 

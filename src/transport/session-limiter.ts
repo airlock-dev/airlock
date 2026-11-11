@@ -8,13 +8,16 @@ const log = childLogger('session-limiter');
  * gateway — via a session-init storm, a leaked/never-closed session pile-up, or a connection
  * flood — and thereby starve every other agent's tool calls.
  *
- * A single SessionLimiter instance is shared across all transport planes (streamable-HTTP and
- * SSE) so caps and ceilings are enforced globally, not per-plane.
+ * Only the legacy SSE plane holds sessions, so only it uses this limiter: streamable HTTP is
+ * served statelessly and has no session to cap or reap.
  *
  * HITL-awareness is central: an agent's async task may legitimately hold a session open for
  * minutes-to-hours while a human approves it. Such a session is NOT idle — its request stays
  * in flight the whole time — so the idle reaper skips any session with inFlight > 0, and the
- * default max-lifetime cap is disabled.
+ * default max-lifetime cap is disabled. The SSE plane marks each channel in flight for its whole
+ * life (the channel itself is the long-lived request), so in practice the idle reaper never
+ * reaps an SSE session: they end on socket close (see enableTcpKeepAlive) or, when configured,
+ * at session_max_lifetime_ms.
  */
 
 export interface ResolvedLimits {

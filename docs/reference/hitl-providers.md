@@ -73,7 +73,7 @@ approvals:
       team_id: ${APPLE_TEAM_ID}
       key_id: ${APNS_KEY_ID}
       key_path: /config/AuthKey_XXXXXXXXXX.p8
-      bundle_id: com.airlock.companion.ios
+      bundle_id: bot.airlock.companion
       production: true
       interruption_level: time-sensitive
 ```

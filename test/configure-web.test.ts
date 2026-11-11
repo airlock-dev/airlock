@@ -13,8 +13,6 @@ import {
   readCommandCenterStatus,
   readState,
   recommendedDecision,
-  resolveEditableRuleDecision,
-  resolveEditableRuleMatch,
   saveRules,
   toolFingerprint,
   upsertProvider,
@@ -306,42 +304,6 @@ audit:
       ])
     ).toEqual(['readonly', 'open-world', 'injection']);
   });
-
-  it('resolves visible rule decisions with wildcard specificity', () => {
-    const rules = {
-      allow: ['ticktick/*'],
-      ask: ['ticktick/delete_task'],
-      deny: ['github/*'],
-    };
-
-    expect(resolveEditableRuleDecision(rules, 'ticktick/create_task')).toBe('allow');
-    expect(resolveEditableRuleDecision(rules, 'ticktick/delete_task')).toBe('ask');
-    expect(resolveEditableRuleDecision(rules, 'github/create_pr')).toBe('deny');
-    expect(resolveEditableRuleDecision(rules, 'ticktick/project/archive')).toBe('unset');
-  });
-
-  it('reports whether visible rule decisions came from exact rules or patterns', () => {
-    const rules = {
-      allow: ['ticktick/*', 'github/create_pr'],
-      ask: [],
-      deny: [],
-    };
-
-    expect(resolveEditableRuleMatch(rules, 'ticktick/create_task')).toEqual({
-      decision: 'allow',
-      source: 'pattern',
-      pattern: 'ticktick/*',
-    });
-    expect(resolveEditableRuleMatch(rules, 'github/create_pr')).toEqual({
-      decision: 'allow',
-      source: 'exact',
-      pattern: 'github/create_pr',
-    });
-    expect(resolveEditableRuleMatch(rules, 'slack/post_message')).toEqual({
-      decision: 'unset',
-      source: 'none',
-    });
-  });
 });
 
 describe('configure-web API', () => {
@@ -447,6 +409,14 @@ approvals:
         args: { command: 'pwd' },
         timeoutMs: 300000,
       },
+      {
+        id: 'req-2',
+        code: 'DEF456',
+        agentId: 'dev',
+        tool: 'exec/run',
+        args: { command: 'ls' },
+        timeoutMs: 300000,
+      },
     ]);
     const app = createConfigureWebApp(configPath, { approvals });
     await app.ready();
@@ -468,6 +438,11 @@ approvals:
 
     const denyRes = await app.inject({ method: 'POST', url: '/deny?code=DEF456' });
     expect(denyRes.statusCode).toBe(200);
+    expect(denied).toEqual(['DEF456']);
+
+    // A code nobody was shown is refused rather than reported as decided.
+    const unknownRes = await app.inject({ method: 'POST', url: '/deny?code=NOPE9999' });
+    expect(unknownRes.statusCode).toBe(404);
     expect(denied).toEqual(['DEF456']);
 
     await app.close();

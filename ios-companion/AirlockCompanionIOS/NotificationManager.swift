@@ -260,7 +260,7 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         }
 
         guard let client = clientFromDefaults() else {
-            UserDefaults.standard.set("Airlock URL or device token is missing.", forKey: "lastNotificationActionError")
+            UserDefaults.standard.set("Airlock HTTPS URL or device token is missing.", forKey: "lastNotificationActionError")
             postRefresh()
             return
         }
@@ -316,7 +316,7 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         }
 
         guard let client = clientFromDefaults() else {
-            UserDefaults.standard.set("Airlock URL or device token is missing.", forKey: "lastNotificationActionError")
+            UserDefaults.standard.set("Airlock HTTPS URL or device token is missing.", forKey: "lastNotificationActionError")
             postRefresh()
             return
         }
@@ -441,11 +441,7 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         if !identifiers.isEmpty {
             center.removeDeliveredNotifications(withIdentifiers: identifiers)
         }
-        if #available(iOS 17.0, *) {
-            try? await center.setBadgeCount(active.count)
-        } else {
-            UIApplication.shared.applicationIconBadgeNumber = active.count
-        }
+        try? await center.setBadgeCount(active.count)
     }
 
     private func refreshApprovalNotifications(using client: AirlockAPIClient) async {
@@ -458,8 +454,9 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
 
     func clientFromDefaults() -> AirlockAPIClient? {
         let defaults = UserDefaults.standard
+        // Same HTTPS rule as the app: notification actions send the same bearer secret.
         guard let baseURLString = defaults.string(forKey: "baseURL"),
-              let baseURL = URL(string: baseURLString)
+              let baseURL = AirlockAPIClient.secureBaseURL(from: baseURLString)
         else { return nil }
 
         let deviceToken = defaults.string(forKey: "deviceToken", default: "")

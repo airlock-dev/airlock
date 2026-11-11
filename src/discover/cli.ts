@@ -65,7 +65,7 @@ async function runDiscoverCli(argv: string[]): Promise<void> {
 
   if (values.help || positionals.length === 0) {
     console.log(HELP);
-    process.exit(positionals.length === 0 ? 1 : 0);
+    process.exit(values.help ? 0 : 1);
   }
 
   const tool = positionals[0];
@@ -94,7 +94,7 @@ async function runDiscoverApi(argv: string[]): Promise<void> {
 
   if (values.help || positionals.length === 0) {
     console.log(HELP);
-    process.exit(positionals.length === 0 ? 1 : 0);
+    process.exit(values.help ? 0 : 1);
   }
 
   const spec = positionals[0];

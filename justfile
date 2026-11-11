@@ -1,6 +1,6 @@
 # Build TypeScript
 build:
-    npx tsc
+    npm run build
 
 # Run all tests
 test:
@@ -16,11 +16,11 @@ test-integration:
 
 # Open MCP Inspector against Airlock with the echo server
 inspect:
-    npx @modelcontextprotocol/inspector npx tsx src/index.ts -- --profile test --config test/test-gateway.yaml
+    npx @modelcontextprotocol/inspector npx tsx src/index.ts -- --agent test --config test/test-gateway.yaml
 
 # Run with dashboard HITL (open http://localhost:4112 for approvals)
 dev:
-    npx tsx src/index.ts --profile dev --config examples/local-dev.yaml
+    npx tsx src/index.ts --agent dev --config examples/local-dev.yaml
 
 # Run tests with coverage
 coverage:

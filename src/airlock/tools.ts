@@ -1,5 +1,3 @@
-export const AIRLOCK_PROVIDER_ID = 'airlock';
-
 export const AIRLOCK_ASK_USER_TOOL = 'airlock/ask_user';
 export const AIRLOCK_NOTIFY_USER_TOOL = 'airlock/notify_user';
 export const AIRLOCK_LOG_TOOL = 'airlock/log';
@@ -19,8 +17,9 @@ export const AIRLOCK_TOOL_NAMES = [
 ] as const;
 
 /**
- * Approval-plumbing tools. Any agent with at least one `ask` rule can use them without an explicit
- * allow (an explicit deny still wins): they only ever create or read approvals, never grant anything.
+ * Approval-plumbing tools. Any agent whose config can route a call to approval (an `ask` rule, an
+ * exec or command policy, or a middleware that escalates) can use them without an explicit allow
+ * (an explicit deny still wins): they only ever create or read approvals, never grant anything.
  */
 export const AIRLOCK_APPROVAL_TOOLS = [
   AIRLOCK_REQUEST_APPROVAL_TOOL,

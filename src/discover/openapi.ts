@@ -46,6 +46,8 @@ export async function discoverOpenApi(
         base_url: parsed.baseUrl || undefined,
         timeout_ms: 30000,
         max_response_bytes: 1048576,
+        ...(options?.include?.length ? { include: options.include } : {}),
+        ...(options?.exclude?.length ? { exclude: options.exclude } : {}),
       },
     },
   };

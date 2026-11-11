@@ -7,25 +7,45 @@ function stringifyParamValue(paramName: string, value: unknown): string {
   throw new Error(`Parameter "${paramName}" must be a string, number, or boolean`);
 }
 
-export function buildCommand(config: CliCommandConfig, args: Record<string, unknown>): string {
+/** The call's args with each param's configured `default` filled in where the caller gave none. */
+function withDefaults(
+  config: CliCommandConfig,
+  args: Record<string, unknown>
+): Record<string, unknown> {
+  const resolved = { ...args };
+  for (const [paramName, paramConfig] of Object.entries(config.params)) {
+    const value = resolved[paramName];
+    if ((value === undefined || value === null) && paramConfig.default !== undefined) {
+      resolved[paramName] = paramConfig.default;
+    }
+  }
+  return resolved;
+}
+
+export function buildCommand(config: CliCommandConfig, callArgs: Record<string, unknown>): string {
+  const args = withDefaults(config, callArgs);
   let cmd = config.exec;
 
   const usedParams = new Set<string>();
 
-  // Template interpolation: replace {param} placeholders
-  cmd = cmd.replace(/\{(\w+)\}/g, (match, paramName: string) => {
-    const paramConfig = config.params[paramName];
-    const value = args[paramName];
-
-    if (value === undefined || value === null) {
-      if (paramConfig?.required) {
+  // Drop placeholders for absent optional params, then tidy the gaps they leave. This runs before
+  // any value is interpolated so that whitespace inside an argument value is never collapsed.
+  cmd = cmd
+    .replace(/\{(\w+)\}/g, (match, paramName: string) => {
+      const value = args[paramName];
+      if (value !== undefined && value !== null) return match;
+      if (config.params[paramName]?.required) {
         throw new Error(`Required parameter "${paramName}" is missing`);
       }
-      return ''; // Remove unreplaced optional placeholders
-    }
+      return '';
+    })
+    .replace(/\s{2,}/g, ' ')
+    .trim();
 
+  // Template interpolation: replace the remaining {param} placeholders
+  cmd = cmd.replace(/\{(\w+)\}/g, (_match, paramName: string) => {
     usedParams.add(paramName);
-    return escapeShellArg(stringifyParamValue(paramName, value));
+    return escapeShellArg(stringifyParamValue(paramName, args[paramName]));
   });
 
   // Append flag-based params not consumed by template interpolation
@@ -60,9 +80,6 @@ export function buildCommand(config: CliCommandConfig, args: Record<string, unkn
       flagParts.push(escapeShellArg(stringifyParamValue(paramName, value)));
     }
   }
-
-  // Clean up any leftover empty segments from removed placeholders
-  cmd = cmd.replace(/\s{2,}/g, ' ').trim();
 
   if (flagParts.length > 0) {
     cmd = cmd + ' ' + flagParts.join(' ');

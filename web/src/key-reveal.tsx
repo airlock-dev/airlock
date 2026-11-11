@@ -49,7 +49,7 @@ function snippet(
       };
     case 'openclaw':
       return {
-        note: 'Configures the airlock-bridge plugin.',
+        note: 'Configures the airlock-bridge plugin. AIRLOCK_URL, AIRLOCK_AGENT and AIRLOCK_SECRET in its environment take precedence.',
         text: `openclaw config set extensions.airlock-bridge.url ${root}\nopenclaw config set extensions.airlock-bridge.agent ${agentId}\nopenclaw config set extensions.airlock-bridge.secret ${key}`,
       };
     case 'json':

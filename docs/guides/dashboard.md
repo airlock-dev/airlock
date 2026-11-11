@@ -2,7 +2,9 @@
 
 The dashboard is a browser UI for reviewing approvals, editing agents and
 profiles, checking provider status, and reading the audit log. It is a
-self-contained HTML app with no build step and no external frontend service.
+Preact app bundled into the npm package and served by Airlock itself, so there
+is no separate frontend service to run. The previous single-file UI is still
+available at `/classic`.
 
 You can run it in two modes:
 

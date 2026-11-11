@@ -72,20 +72,26 @@ agents:
   helena:
     extends: [readonly, developer]
     deny:
-      - exec/run # Agent-level deny overrides everything
+      - exec/run # Same specificity as developer's allow, so deny wins the tie
 ```
 
 ## Merge precedence
 
-When multiple profiles contribute rules, and the agent has its own rules, they merge with the same precedence as always:
+When multiple profiles contribute rules, and the agent has its own rules, they merge into one set of
+allow/ask/deny lists and resolve with the same precedence as always:
 
 ```
-deny > ask > allow > default-deny
+most specific matching pattern wins
+  (exact name > provider/prefix* > provider/*)
+equally specific matches: deny > remember_allow > ask > allow
+no match: default-deny
 ```
 
-If `readonly` allows `http/get` and the agent denies `http/*`, the deny wins.
+Specificity comes first. If `readonly` allows `http/get` and the agent denies `http/*`, `http/get`
+stays **allowed**, because the exact name is more specific than the wildcard. To block it, deny
+`http/get` itself (an exact deny ties with the exact allow, and deny wins the tie).
 
-This also means a derived profile can downgrade an inherited grant without special syntax. If `base` allows `github/*` and `product` adds `ask: [github/merge_pull_request]`, merge requests require approval because `ask` wins over `allow`.
+This also means a derived profile can downgrade an inherited grant without special syntax. If `base` allows `github/*` and `product` adds `ask: [github/merge_pull_request]`, merge requests require approval because the exact `ask` is more specific than the `github/*` allow.
 
 Profile rules are resolved before agent-level rules are applied:
 
@@ -93,7 +99,7 @@ Profile rules are resolved before agent-level rules are applied:
 2. Diamond inheritance is deduplicated
 3. Agent `extends` consumes the fully resolved profiles
 4. Agent-level rules are added
-5. Precedence resolves conflicts: deny wins over ask, ask wins over allow
+5. Precedence resolves conflicts: the most specific pattern wins; ties break deny > ask > allow
 
 Airlock rejects invalid profile graphs at config load. Unknown profile references are fatal, and cycles report the path, for example `pa-work -> product -> pa-work`.
 
@@ -105,13 +111,14 @@ Airlock rejects invalid profile graphs at config load. Unknown profile reference
 profiles:
   readonly:
     allow:
-      - '*/list*'
-      - '*/get*'
-      - '*/search*'
+      - github/list*
+      - github/get*
+      - github/search*
       - http/get
 ```
 
-Most agents start here. Only explicitly add write capabilities.
+Patterns are prefix matches within one provider, so list each provider you want to cover; a
+leading wildcard such as `*/get*` is not supported. Most agents start here. Only explicitly add write capabilities.
 
 ### Tiered developer access
 

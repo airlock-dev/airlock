@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { AgentServerDeps } from '../transport/agent-server.js';
 import type { ToolCallContext } from '../middleware/types.js';
 import { buildMiddlewareChain } from '../middleware/chain-builder.js';
+import { deliveredResult } from '../middleware/response.js';
 import { generateId } from '../util/id.js';
 import { childLogger } from '../util/logger.js';
 import {
@@ -122,14 +123,7 @@ export async function toolsApiPlugin(app: FastifyInstance, opts: ToolsApiOpts): 
     request.raw.once('aborted', abort);
     reply.raw.once('close', abort);
 
-    const chain = buildMiddlewareChain(agentConfig, {
-      registry: deps.registry,
-      allowlist: deps.allowlist,
-      hitlEngine: deps.hitlEngine,
-      hitlBatcher: deps.hitlBatcher,
-      auditLogger: deps.auditLogger,
-      securityConfig: deps.securityConfig ?? { blocked_hosts: [], allowed_local: [] },
-    });
+    const chain = buildMiddlewareChain(agentConfig);
     const downstreamSessionId = deps.downstreamSessionId ?? sessionKey;
 
     const ctx: ToolCallContext = {
@@ -179,7 +173,7 @@ export async function toolsApiPlugin(app: FastifyInstance, opts: ToolsApiOpts): 
 
       return reply.send({
         success: true,
-        data: response.result,
+        data: deliveredResult(response),
         metadata: { duration_ms, truncated: response.truncated ?? false },
       });
     } catch (err) {

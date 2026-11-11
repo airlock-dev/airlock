@@ -36,11 +36,7 @@ export class ExecBackendAdapter implements BackendAdapter {
 
     try {
       const data = await executeExec(command, agent, cwd, timeoutMs, sandbox);
-      return {
-        success: true,
-        data,
-        metadata: { duration_ms: data.duration_ms },
-      };
+      return { success: true, data };
     } catch (err) {
       return { success: false, error: err instanceof Error ? err.message : String(err) };
     }

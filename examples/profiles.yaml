@@ -4,7 +4,8 @@
 # Profiles are union-merged recursively: a profile or agent that extends
 # [readonly, github-write] gets all allow/ask/deny patterns from both profiles,
 # plus its own.
-# Precedence still applies: deny > ask > allow > default-deny.
+# Precedence: the most specific matching pattern wins (exact name > provider/prefix* >
+# provider/*); equally specific matches break ties deny > ask > allow; unmatched is denied.
 #
 # Run:  npx tsx src/index.ts --agent helena --config examples/profiles.yaml
 

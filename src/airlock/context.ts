@@ -10,9 +10,12 @@ export function extractAirlockContext(args: Record<string, unknown>): {
   args: Record<string, unknown>;
   context?: AirlockCallContext;
 } {
-  const raw = args[AIRLOCK_CONTEXT_KEY];
+  if (!(AIRLOCK_CONTEXT_KEY in args)) return { args };
+
+  // The key is Airlock's own: strip it even when malformed, so it never reaches the upstream tool.
+  const { [AIRLOCK_CONTEXT_KEY]: raw, ...cleanArgs } = args;
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
-    return { args };
+    return { args: cleanArgs };
   }
 
   const source = raw as Record<string, unknown>;
@@ -24,7 +27,6 @@ export function extractAirlockContext(args: Record<string, unknown>): {
     context.note = clampHumanText(source.note);
   }
 
-  const { [AIRLOCK_CONTEXT_KEY]: _ignored, ...cleanArgs } = args;
   return {
     args: cleanArgs,
     ...(context.reason || context.note ? { context } : {}),

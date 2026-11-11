@@ -57,42 +57,12 @@ if [ -f "$PROJECT_DIR/AirlockCompanion/AppIcon.icns" ]; then
     cp "$PROJECT_DIR/AirlockCompanion/AppIcon.icns" "$RESOURCES/AppIcon.icns"
 fi
 
-# Create Info.plist
-cat > "$CONTENTS/Info.plist" << PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>CFBundleName</key>
-    <string>AirlockCompanion</string>
-    <key>CFBundleDisplayName</key>
-    <string>Airlock Companion</string>
-    <key>CFBundleIdentifier</key>
-    <string>bot.airlock.companion</string>
-    <key>CFBundleVersion</key>
-    <string>${APP_VERSION}</string>
-    <key>CFBundleShortVersionString</key>
-    <string>${APP_VERSION}</string>
-    <key>AirlockCompanionDisplayVersion</key>
-    <string>${DISPLAY_VERSION}</string>
-    <key>CFBundleExecutable</key>
-    <string>AirlockCompanion</string>
-    <key>CFBundlePackageType</key>
-    <string>APPL</string>
-    <key>LSUIElement</key>
-    <true/>
-    <key>CFBundleIconFile</key>
-    <string>AppIcon</string>
-    <key>LSMinimumSystemVersion</key>
-    <string>14.0</string>
-    <key>NSAppTransportSecurity</key>
-    <dict>
-        <key>NSAllowsArbitraryLoads</key>
-        <true/>
-    </dict>
-</dict>
-</plist>
-PLIST
+# Info.plist comes from the source tree (same as the release workflow); only versions are stamped.
+PLIST_PATH="$CONTENTS/Info.plist"
+cp "$PROJECT_DIR/AirlockCompanion/Info.plist" "$PLIST_PATH"
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $APP_VERSION" "$PLIST_PATH"
+/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $APP_VERSION" "$PLIST_PATH"
+/usr/libexec/PlistBuddy -c "Add :AirlockCompanionDisplayVersion string \"$DISPLAY_VERSION\"" "$PLIST_PATH"
 
 # Create entitlements for notifications
 cat > "$CONTENTS/Entitlements.plist" << 'ENTITLEMENTS'

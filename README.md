@@ -12,7 +12,7 @@ A permissions-aware MCP gateway that sits between AI agents (Claude Code, Cursor
 Agent (Claude Code / Cursor / OpenClaw)
   │  stdio, streamable HTTP, or SSE
   ▼
-Airlock  ←→  HITL (Telegram / Slack / webhook / TUI / macOS / dashboard)
+Airlock  ←→  HITL (Telegram / Slack / webhook / TUI / macOS / iOS / dashboard)
   │
   ├── MCP servers (github, filesystem, ...)
   ├── CLI tools (git, docker, kubectl, ...)
@@ -33,7 +33,7 @@ Airlock  ←→  HITL (Telegram / Slack / webhook / TUI / macOS / dashboard)
 - **Browser command center** — inspect provider health and tools, then edit profiles, agents, and permissions locally
 - **Policy introspection** — validate and lint config, explain effective permissions, and reverse-lookup which agents can call a tool
 - **Batched notifications** — requests arriving within a time window are bundled into a single message
-- **Multiple HITL providers** — Telegram, Slack webhook, generic webhook, OpenClaw, TUI, macOS dialog, dashboard, or stdio
+- **Multiple HITL providers** — Telegram, Slack webhook, generic webhook, OpenClaw, TUI, macOS dialog, iOS push, dashboard, or stdio
 - **Security defaults** — localhost and RFC-1918 ranges blocked for HTTP tools; per-agent domain allowlists; shell injection prevention
 - **Audit log** — every tool call logged to SQLite with agent, tool, args, result, duration, and HITL outcome
 - **Hot reload** — edit config and allowlist/HITL config updates without restarting
@@ -255,7 +255,9 @@ approvals:
   batch_window_ms: 10000
 ```
 
-Precedence: **deny > ask > allow > default-deny**
+Precedence: **the most specific matching pattern wins** — an exact tool name beats
+`provider/prefix*`, which beats `provider/*`. Equally specific matches break ties
+**deny > ask > allow**, and anything unmatched is default-denied.
 
 See [`examples/gateway.yaml`](examples/gateway.yaml) for a fully annotated reference config and [`examples/profiles.yaml`](examples/profiles.yaml) for composable profile examples.
 
@@ -392,16 +394,17 @@ See [`examples/sandbox-presets.yaml`](examples/sandbox-presets.yaml) for a fulle
 
 ## HITL providers
 
-| Provider        | Config `type` | Notes                                                                                             |
-| --------------- | ------------- | ------------------------------------------------------------------------------------------------- |
-| TUI             | `tui`         | Terminal UI on stderr — `[a]pprove` / `[d]eny` with `j/k` navigation via `/dev/tty`               |
-| macOS dialog    | `macos`       | Native approve/deny popup via `osascript` — best for local dev on Mac                             |
-| Dashboard       | `dashboard`   | Browser UI with live SSE updates; runs in-process or as a standalone admin dashboard              |
-| Telegram bot    | `telegram`    | Long-polls for replies; reply `approve ABC123` or `deny ABC123`                                   |
-| Slack webhook   | `slack`       | Incoming webhook, fire-and-forget; pair with slash commands for approvals                         |
-| Generic webhook | `webhook`     | POSTs `{requests, text}` JSON; configurable headers                                               |
-| OpenClaw        | `openclaw`    | WebSocket RPC to OpenClaw gateway; see [`examples/openclaw-setup.md`](examples/openclaw-setup.md) |
-| stdio           | `stdio`       | Prints to stderr, reads from stdin — for local dev and testing                                    |
+| Provider        | Config `type` | Notes                                                                                                               |
+| --------------- | ------------- | ------------------------------------------------------------------------------------------------------------------- |
+| TUI             | `tui`         | Terminal UI on stderr — `[a]pprove` / `[d]eny` with `j/k` navigation via `/dev/tty`                                 |
+| macOS dialog    | `macos`       | Native approve/deny popup via `osascript` — best for local dev on Mac                                               |
+| Dashboard       | `dashboard`   | Browser UI with live SSE updates; runs in-process or as a standalone admin dashboard                                |
+| iOS companion   | `ios`         | APNs push to the Airlock iOS companion app; see [HITL providers](https://docs.airlock.bot/reference/hitl-providers) |
+| Telegram bot    | `telegram`    | Long-polls for replies; reply `approve ABC123` or `deny ABC123`                                                     |
+| Slack webhook   | `slack`       | Incoming webhook, fire-and-forget; pair with slash commands for approvals                                           |
+| Generic webhook | `webhook`     | POSTs `{requests, text}` JSON; configurable headers                                                                 |
+| OpenClaw        | `openclaw`    | WebSocket RPC to OpenClaw gateway; see [`examples/openclaw-setup.md`](examples/openclaw-setup.md)                   |
+| stdio           | `stdio`       | Prints to stderr, reads from stdin — for local dev and testing                                                      |
 
 ## API
 
@@ -442,10 +445,10 @@ opt-in and trusted network controls.
 ## Testing
 
 ```bash
-npm test                              # unit + integration tests
-npm test -- test/integration.test.ts  # just the integration test (real child process)
-npm run typecheck                     # TypeScript type check (no emit)
-npm run build                         # Full build to dist/
+npx vitest run                              # unit + integration tests
+npx vitest run test/integration.test.ts     # just the integration test (real child process)
+npm run typecheck                           # TypeScript type check (no emit)
+npm run build                               # Full build to dist/
 ```
 
 ### Interactive testing with MCP Inspector
@@ -473,7 +476,7 @@ See [`airlock.service`](airlock.service) for the full unit file.
 Airlock can also run as a containerized gateway:
 
 ```bash
-docker build -t airlock-bot .
+docker build -t airlock-bot:local .
 mkdir -p airlock-config
 cp examples/docker-gateway.yaml airlock-config/airlock.yaml
 docker run --rm \
@@ -483,7 +486,7 @@ docker run --rm \
   -p 127.0.0.1:4111:4111 \
   -p 127.0.0.1:4113:4113 \
   -p 127.0.0.1:4112:4112 \
-  airlock-bot
+  airlock-bot:local
 ```
 
 The dashboard edits `/config/airlock.yaml` and writes `/config/airlock.bak`, so

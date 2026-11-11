@@ -11,6 +11,11 @@ export interface ParsedOperation {
   pathParams: string[];
   queryParams: string[];
   hasBody: boolean;
+  /**
+   * The JSON body is not an object, so it is taken whole from the single `body` argument rather
+   * than assembled from the remaining arguments.
+   */
+  bodyIsValue: boolean;
 }
 
 export interface ParsedApi {
@@ -134,6 +139,7 @@ export async function parseOpenApiSpec(
 
       // Parse request body
       const hasBody = !!operation.requestBody;
+      let bodyIsValue = false;
       if (hasBody) {
         const requestBody = operation.requestBody as OpenAPIV3.RequestBodyObject;
         const content = requestBody?.content?.['application/json'];
@@ -149,6 +155,7 @@ export async function parseOpenApiSpec(
           } else {
             // Non-object body — accept as single "body" field
             properties['body'] = schemaToJsonSchema(bodySchema);
+            bodyIsValue = true;
           }
         }
       }
@@ -166,6 +173,7 @@ export async function parseOpenApiSpec(
         pathParams,
         queryParams,
         hasBody,
+        bodyIsValue,
       });
     }
   }

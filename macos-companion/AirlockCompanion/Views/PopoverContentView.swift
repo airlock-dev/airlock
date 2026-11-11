@@ -157,7 +157,6 @@ struct PopoverContentView: View {
             return .handled
         }
         .onChange(of: viewModel.pendingRequests.count) { _, newCount in
-            if viewModel.selectedIndex >= newCount { viewModel.selectedIndex = max(0, newCount - 1) }
             if let detailRequest,
                !viewModel.pendingRequests.contains(where: { $0.id == detailRequest.id }) {
                 self.detailRequest = nil

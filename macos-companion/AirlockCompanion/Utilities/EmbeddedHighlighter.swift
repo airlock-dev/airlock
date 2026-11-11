@@ -105,27 +105,6 @@ final class EmbeddedHighlighter {
         return processHTMLString(renderedHTML)
     }
 
-    /// Highlight code in a specific language.
-    ///
-    /// - Parameters:
-    ///   - code: The source code string.
-    ///   - language: The language identifier (e.g. "json", "sql", "python").
-    /// - Returns: A syntax-highlighted `NSAttributedString`, or `nil` on failure.
-    func highlight(_ code: String, as language: String) -> NSAttributedString? {
-        let options: [String: Any] = ["language": language, "ignoreIllegals": true]
-        guard let returnValue = hljs.invokeMethod("highlight", withArguments: [code, options]) else {
-            return nil
-        }
-
-        guard let renderedValue = returnValue.objectForKeyedSubscript("value"),
-              let renderedHTML = renderedValue.toString(),
-              renderedHTML != "undefined" else {
-            return nil
-        }
-
-        return processHTMLString(renderedHTML)
-    }
-
     // MARK: - HTML to NSAttributedString Conversion
 
     /// Convert the HTML output from highlight.js into an `NSAttributedString`,
@@ -209,7 +188,6 @@ private final class EmbeddedTheme {
     let codeFont: NSFont
     let boldCodeFont: NSFont
     let italicCodeFont: NSFont
-    let backgroundColour: NSColor
 
     private typealias ThemeDict = [String: [NSAttributedString.Key: Any]]
     private var themeDict: ThemeDict
@@ -234,13 +212,6 @@ private final class EmbeddedTheme {
         // Parse the CSS into a style dictionary
         let stripped = EmbeddedTheme.stripCSS(css)
         self.themeDict = EmbeddedTheme.buildThemeDict(from: stripped, codeFont: self.codeFont, boldFont: self.boldCodeFont, italicFont: self.italicCodeFont)
-
-        // Extract background colour
-        if let bgHex = stripped[".hljs"]?["background"] ?? stripped[".hljs"]?["background-color"] {
-            self.backgroundColour = EmbeddedTheme.colour(from: bgHex)
-        } else {
-            self.backgroundColour = .white
-        }
     }
 
     /// Apply the theme style to a text string based on the current span class stack.

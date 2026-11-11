@@ -62,7 +62,7 @@ export function wireBatcher(
     const requests = collected.filter((request) => engine.hasPending(request.id));
     if (requests.length === 0) return;
     const batch = engine.registerBatch(requests.map((request) => request.id));
-    const badgeCount = engine.getPending().length;
+    const badgeCount = engine.pendingCount();
     void provider
       .notify(
         requests.map((request) => ({

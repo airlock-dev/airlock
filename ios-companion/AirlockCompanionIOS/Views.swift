@@ -276,14 +276,21 @@ private struct QueueApprovalDetailView: View {
                 .id(approval.id)
                 .transition(nextApprovalTransition)
             } else {
-                ContentUnavailableView("No Pending Approvals", systemImage: "lock.shield")
+                ContentUnavailableView(
+                    "No Longer Pending",
+                    systemImage: "lock.shield",
+                    description: Text("This approval was resolved elsewhere or expired.")
+                )
             }
         }
         .animation(.snappy(duration: 0.24), value: currentApproval?.id)
     }
 
+    /// Only ever the approval this screen was opened for (or advanced to after a decision). Falling
+    /// back to another pending approval would put live Approve buttons on a request the user never
+    /// chose to look at.
     private var currentApproval: ApprovalRequest? {
-        viewModel.activePending.first { $0.id == approvalId } ?? viewModel.activePending.first
+        viewModel.activePending.first { $0.id == approvalId }
     }
 
     private var nextApprovalTransition: AnyTransition {

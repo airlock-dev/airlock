@@ -5,7 +5,7 @@ import type { ApprovalStreamClient } from '../hitl/approval-stream.js';
 import type { ApprovalPreviewReader } from '../hitl/preview.js';
 import type { HitlEngine } from '../hitl/engine.js';
 import type { ActivityStream, AirlockActivityEvent } from '../activity/stream.js';
-import { rememberAllow, type RememberAllowMode } from '../config/mutator.js';
+import { rememberAllow } from '../config/mutator.js';
 import { checkRequestSecurity, type RequestSecurityOptions } from '../security/request.js';
 import { generateId } from '../util/id.js';
 import {
@@ -155,19 +155,14 @@ export function mobileApiPlugin(app: FastifyInstance, opts: MobileApiOptions): v
   app.get('/mobile/approvals', async (request, reply) => {
     if (!checkMobileOrAdminAuth(request, reply, opts)) return;
     return {
-      approvals: engine.getPending().map((entry) => {
-        const createdAt = auditLogger.getHitlById(entry.id)?.created_at ?? new Date().toISOString();
-        return {
-          ...entry,
-          ...(entry.context?.reason ? { reason: entry.context.reason } : {}),
-          ...(entry.context?.note ? { note: entry.context.note } : {}),
-          createdAt,
-          timeoutMs: engine.timeoutMs,
-          ...(engine.timeoutMs > 0
-            ? { expiresAt: new Date(Date.parse(createdAt) + engine.timeoutMs).toISOString() }
-            : {}),
-        };
-      }),
+      // createdAt and expiresAt come from the engine: the moment the request was made and the
+      // moment its timer actually fires (which a later timeout_ms reload does not move).
+      approvals: engine.getPending().map((entry) => ({
+        ...entry,
+        ...(entry.context?.reason ? { reason: entry.context.reason } : {}),
+        ...(entry.context?.note ? { note: entry.context.note } : {}),
+        timeoutMs: engine.timeoutMs,
+      })),
     };
   });
 
@@ -270,18 +265,24 @@ export function mobileApiPlugin(app: FastifyInstance, opts: MobileApiOptions): v
         reply.code(400);
         return { error: 'Only a routine tool call can be remembered' };
       }
+      // Everything an "always" rule needs is checked before approving, so a request that can't be
+      // remembered is refused outright instead of being approved and then reported as an error.
+      if (body.remember === 'always' && !opts.configPath) {
+        reply.code(400);
+        return { error: 'Config mutation is not available' };
+      }
       // Approve (validating any grant) before persisting an "always" rule, so a rejected grant
       // never leaves a permanent config change behind.
       const result = approveWithGrant(engine, id, grant.spec, reply);
       if ('error' in result || body.remember !== 'always') return result;
-      const rememberResult = applyRemember(opts.configPath, row, body);
+      const rememberResult = rememberAlways(opts.configPath, row);
       if (rememberResult.error) {
         reply.code(rememberResult.status);
         return { ...result, error: rememberResult.error };
       }
       return result;
     } else {
-      engine.deny(id, body.reason ?? 'Denied from iOS');
+      engine.deny(id, body.reason ?? 'Denied by operator');
     }
 
     return { ok: true };
@@ -362,31 +363,14 @@ function stripAirlockContext(args: Record<string, unknown>): Record<string, unkn
   return cleanArgs;
 }
 
-function applyRemember(
+/** Persist an "always allow" rule for an approved request (inputs were checked beforehand). */
+function rememberAlways(
   configPath: string | undefined,
-  row: NonNullable<ReturnType<AuditLogger['getHitlById']>>,
-  body: DecisionBody
+  row: NonNullable<ReturnType<AuditLogger['getHitlById']>>
 ): { status: number; error?: string } {
-  if (!body.remember) return { status: 200 };
-  if (body.remember !== 'always' && body.remember !== 'temporary') {
-    return { status: 400, error: 'Invalid remember mode' };
-  }
   if (!configPath) return { status: 400, error: 'Config mutation is not available' };
-  if (
-    body.duration_ms !== undefined &&
-    (!Number.isFinite(body.duration_ms) || body.duration_ms <= 0)
-  ) {
-    return { status: 400, error: 'Invalid duration_ms' };
-  }
-
   try {
-    rememberAllow({
-      configPath,
-      agentId: row.agent_id,
-      tool: row.tool,
-      mode: body.remember as RememberAllowMode,
-      ...(body.duration_ms ? { durationMs: body.duration_ms } : {}),
-    });
+    rememberAllow({ configPath, agentId: row.agent_id, tool: row.tool, mode: 'always' });
     return { status: 200 };
   } catch {
     return { status: 500, error: 'Failed to update config' };

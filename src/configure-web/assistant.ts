@@ -106,6 +106,10 @@ const OP_SCHEMA = {
         allow: { type: 'array', items: { type: 'string' } },
         ask: { type: 'array', items: { type: 'string' } },
         deny: { type: 'array', items: { type: 'string' } },
+        inherit_default: {
+          type: 'boolean',
+          description: 'false opts the agent out of the top-level default_profile',
+        },
         approval_mode: { type: 'string', enum: ['sync', 'async'] },
         exec: {
           type: 'object',

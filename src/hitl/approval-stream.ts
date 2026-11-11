@@ -92,6 +92,15 @@ export class ApprovalStreamHub implements ApprovalStreamClient, HitlProvider {
     return id ? this.pending.get(id) : undefined;
   }
 
+  /** Whether a request code or a batch code belongs to an approval operators were shown. */
+  hasPendingCode(code: string): boolean {
+    if (this.pendingCodeIndex.has(code)) return true;
+    for (const request of this.pending.values()) {
+      if (request.batchCode === code) return true;
+    }
+    return false;
+  }
+
   pendingCount(): number {
     return this.pending.size;
   }

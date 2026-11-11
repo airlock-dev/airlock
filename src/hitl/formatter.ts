@@ -75,7 +75,7 @@ export function formatNotification(req: HitlNotification): string {
     ``,
     `approve ${req.code} / deny ${req.code}`,
     grantHint(req),
-    `Expires: ${timeoutMin}m`,
+    timeoutMin > 0 ? `Expires: ${timeoutMin}m` : undefined,
   ]
     .filter(Boolean)
     .join('\n');

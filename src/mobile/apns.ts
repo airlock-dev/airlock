@@ -3,6 +3,17 @@ import { readFileSync } from 'fs';
 import { connect, constants } from 'http2';
 import type { ClientHttp2Session } from 'http2';
 
+/**
+ * Connection failures (offline, DNS, refused) surface as an 'error' event on the session as well as
+ * on the request. Without a listener here that event is an uncaught exception and takes the gateway
+ * down; the request's own error still rejects the send.
+ */
+function openSession(authority: string): ClientHttp2Session {
+  const session = connect(authority);
+  session.on('error', () => {});
+  return session;
+}
+
 export interface ApnsConfig {
   teamId: string;
   keyId: string;
@@ -93,23 +104,10 @@ export class ApnsClient {
     const authority = this.config.production
       ? 'https://api.push.apple.com'
       : 'https://api.sandbox.push.apple.com';
-    const session = connect(authority);
+    const session = openSession(authority);
 
     try {
       return await this.sendWithSession(session, deviceToken, approval);
-    } finally {
-      session.close();
-    }
-  }
-
-  async sendBadge(deviceToken: string, badgeCount: number): Promise<ApnsSendResult> {
-    const authority = this.config.production
-      ? 'https://api.push.apple.com'
-      : 'https://api.sandbox.push.apple.com';
-    const session = connect(authority);
-
-    try {
-      return await this.sendBadgeWithSession(session, deviceToken, badgeCount);
     } finally {
       session.close();
     }
@@ -122,7 +120,7 @@ export class ApnsClient {
     const authority = this.config.production
       ? 'https://api.push.apple.com'
       : 'https://api.sandbox.push.apple.com';
-    const session = connect(authority);
+    const session = openSession(authority);
 
     try {
       return await this.sendApprovalStatusWithSession(session, deviceToken, status);
@@ -135,7 +133,7 @@ export class ApnsClient {
     const authority = this.config.production
       ? 'https://api.push.apple.com'
       : 'https://api.sandbox.push.apple.com';
-    const session = connect(authority);
+    const session = openSession(authority);
 
     try {
       return await this.sendActivityWithSession(session, deviceToken, activity);
@@ -232,59 +230,6 @@ export class ApnsClient {
         'apns-push-type': 'alert',
         'apns-priority': '10',
         'apns-collapse-id': activity.id,
-        'apns-expiration': '0',
-      });
-
-      let status = 0;
-      let responseBody = '';
-
-      request.setEncoding('utf8');
-      request.on('response', (headers) => {
-        const rawStatus = headers[constants.HTTP2_HEADER_STATUS];
-        status = typeof rawStatus === 'number' ? rawStatus : Number(rawStatus ?? 0);
-      });
-      request.on('data', (chunk: string) => {
-        responseBody += chunk;
-      });
-      request.on('error', reject);
-      request.on('end', () => {
-        if (status >= 200 && status < 300) {
-          resolve({ ok: true, status });
-          return;
-        }
-
-        let reason: string | undefined;
-        try {
-          const parsed = JSON.parse(responseBody) as { reason?: string };
-          reason = parsed.reason;
-        } catch {
-          reason = responseBody || undefined;
-        }
-        resolve({ ok: false, status, ...(reason ? { reason } : {}) });
-      });
-      request.end(payload);
-    });
-  }
-
-  private sendBadgeWithSession(
-    session: ClientHttp2Session,
-    deviceToken: string,
-    badgeCount: number
-  ): Promise<ApnsSendResult> {
-    return new Promise((resolve, reject) => {
-      const payload = JSON.stringify({
-        aps: {
-          badge: normalizeBadgeCount(badgeCount) ?? 0,
-        },
-      });
-
-      const request = session.request({
-        [constants.HTTP2_HEADER_METHOD]: 'POST',
-        [constants.HTTP2_HEADER_PATH]: `/3/device/${deviceToken}`,
-        authorization: `bearer ${this.jwt()}`,
-        'apns-topic': this.config.bundleId,
-        'apns-push-type': 'alert',
-        'apns-priority': '10',
         'apns-expiration': '0',
       });
 

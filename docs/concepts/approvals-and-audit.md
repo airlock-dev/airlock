@@ -25,6 +25,7 @@ If your client times out long tool calls, use [async mode](#async-approvals).
 | TUI             | `tui`         | Terminal-based approval with `j/k` navigation                  |
 | Dashboard       | `dashboard`   | Browser-based approval queue with live SSE                     |
 | macOS dialog    | `macos`       | Native approve/deny popup on Mac                               |
+| iOS companion   | `ios`         | APNs push notifications to the Airlock iOS companion app       |
 | Telegram        | `telegram`    | Remote approval from your phone                                |
 | Slack           | `slack`       | Team-visible webhook notifications; pair with a decision route |
 | Generic webhook | `webhook`     | Custom integrations                                            |
@@ -76,8 +77,8 @@ reads in parallel, approving one of them with "allow `gmail/read_email` for 15m"
 
 Grants are deliberately limited:
 
-- **Policy still wins.** A grant only applies to calls that would otherwise ask. Denied tools stay
-  denied. The order is deny > grant > ask > allow > default-deny.
+- **Policy still wins.** A grant only applies to calls whose policy decision is `ask`. Calls that
+  resolve to `deny` (or default-deny) stay denied; calls that resolve to `allow` never need one.
 - **Time-boxed.** Grants default to `approvals.grants.default_duration_ms` (15 min) and can never
   last longer than `max_duration_ms` (24h). Permanent allows belong in config. You can also cap a
   grant by number of uses.
@@ -204,16 +205,21 @@ Pending approvals are persisted to SQLite on creation. If Airlock crashes and re
 
 Every tool call is recorded to SQLite:
 
-| Field          | Description                                         |
-| -------------- | --------------------------------------------------- |
-| `agent_id`     | Which agent made the call                           |
-| `tool`         | Namespaced tool name (e.g. `github/create_pr`)      |
-| `args`         | Serialized arguments                                |
-| `result`       | Success, error, denied, timeout, canary_leaked      |
-| `duration_ms`  | Wall-clock execution time                           |
-| `hitl_outcome` | approved, denied, timeout, or null (no HITL needed) |
-| `error`        | Error message if the call failed                    |
-| `created_at`   | Timestamp                                           |
+| Field         | Description                                                                                                                             |
+| ------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`          | Row id (integer)                                                                                                                        |
+| `ts`          | ISO timestamp                                                                                                                           |
+| `agent_id`    | Which agent made the call                                                                                                               |
+| `tool`        | Namespaced tool name (e.g. `github/create_pr`)                                                                                          |
+| `args`        | Serialized (redacted) arguments                                                                                                         |
+| `result`      | `received`, `dispatched`, then a terminal state such as `success`, `error`, `denied`, `hitl_approved`, `hitl_denied`, or `hitl_timeout` |
+| `error`       | Error message if the call failed                                                                                                        |
+| `duration_ms` | Wall-clock execution time                                                                                                               |
+| `hitl_code`   | Approval code when the call went through approval, otherwise null                                                                       |
+| `request_id`  | Shared by every row written for the same call                                                                                           |
+
+A single call writes several rows with the same `request_id`. A `request_id` with
+`received` or `dispatched` but no terminal row is a call that is still in flight.
 
 For sandboxed tools, the resolved sandbox context is included alongside the recorded args.
 

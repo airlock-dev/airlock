@@ -61,6 +61,9 @@ struct BulkDecisionOutcome: Decodable, Equatable, Sendable {
 }
 
 final class AirlockAPIClient: Sendable {
+    /// Recorded in the audit log and returned to the agent; the server's default is generic.
+    static let denyReason = "Denied from macOS companion"
+
     private let connection: DashboardConnection
 
     init(baseURL: String = Constants.defaultDashboardURL, bearerToken: String? = nil) {
@@ -83,7 +86,7 @@ final class AirlockAPIClient: Sendable {
     }
 
     func deny(id: String) async throws {
-        try await send(makeDecisionRequest(id: id, decision: "denied"))
+        try await send(makeDecisionRequest(id: id, decision: "denied", reason: Self.denyReason))
     }
 
     /// Decide an explicit list of approvals. The server skips escalated requests on approve.
@@ -150,7 +153,8 @@ final class AirlockAPIClient: Sendable {
         decision: String,
         remember: ApprovalRememberMode? = nil,
         durationMs: Int? = nil,
-        grant: GrantSpec? = nil
+        grant: GrantSpec? = nil,
+        reason: String? = nil
     ) throws -> URLRequest {
         let effectiveGrant = grant
             ?? (decision == "approved" && remember == .temporary
@@ -164,6 +168,7 @@ final class AirlockAPIClient: Sendable {
                 decision: decision,
                 remember: legacyRemember?.rawValue,
                 durationMs: legacyRemember == nil ? nil : durationMs,
+                reason: reason,
                 grant: effectiveGrant
             )
         )
@@ -238,12 +243,14 @@ private struct DecisionRequest: Encodable {
     let decision: String
     let remember: String?
     let durationMs: Int?
+    let reason: String?
     let grant: GrantSpec?
 
     enum CodingKeys: String, CodingKey {
         case decision
         case remember
         case durationMs = "duration_ms"
+        case reason
         case grant
     }
 }

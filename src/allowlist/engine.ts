@@ -88,11 +88,7 @@ function matchingPatterns(
 ): AllowlistMatch[] {
   return patterns
     .map((pattern) => ({ pattern, specificity: specificity(pattern, toolName), source }))
-    .filter(
-      (match): match is AllowlistMatch =>
-        match.specificity >= 0 &&
-        (source === 'deny' || source === 'remember_allow' || source === 'ask' || source === 'allow')
-    );
+    .filter((match) => match.specificity >= 0);
 }
 
 /**
@@ -104,6 +100,12 @@ function canNeedApproval(agent: AgentConfig): boolean {
     agent.ask.length > 0 ||
     (agent.exec?.ask.length ?? 0) > 0 ||
     agent.command_policy !== undefined ||
-    (agent.middleware ?? []).some((item) => item.mode === 'escalate')
+    (agent.middleware ?? []).some(
+      (item) =>
+        item.enabled !== false &&
+        // canary-token-injector escalates unless told otherwise.
+        (item.mode === 'escalate' ||
+          (item.name === 'canary-token-injector' && item.mode === undefined))
+    )
   );
 }

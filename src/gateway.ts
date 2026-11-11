@@ -44,6 +44,9 @@ import {
 
 const log = childLogger('gateway');
 
+/** Cap on remembered agent-supplied session ids, per agent (see downstreamSessionIdFor). */
+const MAX_DOWNSTREAM_SESSION_IDS = 10_000;
+
 export interface GatewayOptions {
   runtimeOnly?: boolean;
 }
@@ -62,7 +65,8 @@ export class Gateway {
   private auditLogger!: AuditLogger;
   private app!: FastifyInstance;
   private managementApp?: FastifyInstance;
-  private downstreamSessionIds = new Map<string, string>();
+  /** Per agent, so one agent churning through session ids can only evict its own sessions. */
+  private downstreamSessionIds = new Map<string, Map<string, string>>();
   private sessionLimiter!: SessionLimiter;
   private activityStream = new ActivityStream();
   private unsubscribeActivityNotifications?: () => void;
@@ -169,9 +173,10 @@ export class Gateway {
     // Agent data-plane server. Control-plane routes are registered on a
     // separate listener below and must never be added to this app.
     this.app = Fastify({ logger: false });
-    // Detect silently-dead peers on long-lived MCP streams: half-open TCP never emits 'close',
-    // so without keep-alive a vanished client pins its session's in-flight slot forever (see
-    // enableTcpKeepAlive). Probes surface the death and the existing onclose path reclaims it.
+    // Detect silently-dead peers on long-lived MCP streams (SSE sessions, calls parked on
+    // approval): half-open TCP never emits 'close', so without keep-alive a vanished client is
+    // never cleaned up (see enableTcpKeepAlive). Probes surface the death and the existing close
+    // paths reclaim it.
     enableTcpKeepAlive(this.app.server);
 
     const getDataPlaneRequestSecurity = () => this.dataPlaneRequestSecurity;
@@ -196,7 +201,7 @@ export class Gateway {
     await this.app.register(httpServerPlugin, {
       getDeps: (agentId: string) => this.buildAgentDeps(agentId),
       resolveSessionId: (agentId: string, sessionId: string) =>
-        this.downstreamSessionIdFor(`${agentId}:${sessionId}`),
+        this.downstreamSessionIdFor(agentId, `${agentId}:${sessionId}`),
       getRequestSecurity: getDataPlaneRequestSecurity,
     });
     // Mount the HTTP tools API unless it's globally off ('none'). Registration depends ONLY on
@@ -292,7 +297,7 @@ export class Gateway {
       const dataPlane = await this.dataPlaneHealth();
       const mcpHealth = this.pool.healthCheck();
       const credentialHealth = this.credentialHealth.snapshot();
-      const pendingApprovals = this.hitlEngine.getPending().length;
+      const pendingApprovals = this.hitlEngine.pendingCount();
       const uptime = Math.floor((Date.now() - this.startTime) / 1000);
       const status = dataPlane.status === 'ok' ? 'ok' : 'degraded';
       const sessions = this.sessionLimiter.snapshot();
@@ -447,7 +452,7 @@ export class Gateway {
     const agentConfig = this.config.agents[agentId];
     if (!agentConfig) return undefined;
     const downstreamSessionId = downstreamSessionKey
-      ? this.downstreamSessionIdFor(downstreamSessionKey)
+      ? this.downstreamSessionIdFor(agentId, downstreamSessionKey)
       : undefined;
 
     return {
@@ -465,12 +470,29 @@ export class Gateway {
     };
   }
 
-  private downstreamSessionIdFor(key: string): string {
-    let id = this.downstreamSessionIds.get(key);
-    if (!id) {
-      id = randomUUID();
-      this.downstreamSessionIds.set(key, id);
+  /**
+   * The opaque downstream id for an agent-supplied session key. Keys come from agents, so each
+   * agent's map is an LRU: re-inserting on every hit keeps live sessions at the young end, and the
+   * oldest key is dropped once the cap is reached. The maps are per agent, so another agent's churn
+   * never evicts these sessions. A session evicted and seen again gets a fresh id.
+   */
+  private downstreamSessionIdFor(agentId: string, key: string): string {
+    let ids = this.downstreamSessionIds.get(agentId);
+    if (!ids) {
+      ids = new Map();
+      this.downstreamSessionIds.set(agentId, ids);
     }
+    let id = ids.get(key);
+    if (id) {
+      ids.delete(key);
+    } else {
+      id = randomUUID();
+      if (ids.size >= MAX_DOWNSTREAM_SESSION_IDS) {
+        const oldest = ids.keys().next().value;
+        if (oldest !== undefined) ids.delete(oldest);
+      }
+    }
+    ids.set(key, id);
     return id;
   }
 
@@ -530,6 +552,9 @@ export class Gateway {
     this.credentialHealth?.stop();
     this.pool?.disableReconnect();
     await this.pool?.stop();
+    // End the approval streams (dashboard /events, /mobile/approvals/stream) first: an open SSE
+    // response never goes idle, so the listener's close() would otherwise wait on it forever.
+    await this.approvalStream?.stop();
     await this.managementApp?.close();
     await this.app?.close();
     this.unsubscribeActivityNotifications?.();

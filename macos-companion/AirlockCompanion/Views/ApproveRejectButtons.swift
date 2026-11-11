@@ -6,9 +6,7 @@ struct ApproveRejectButtons: View {
     var fontSize: CGFloat = 12
     var verticalPadding: CGFloat = 6
     var cornerRadius: CGFloat = 6
-    var focusable: Bool = false
     var approveLabel: String = "Approve"
-    var denyLabel: String = "Deny"
     /// Server-offered ways to widen this approval into a grant; empty hides the menu.
     var grantOptions: [GrantOption] = []
     var onApproveWithGrant: ((GrantSpec) -> Void)? = nil
@@ -30,7 +28,7 @@ struct ApproveRejectButtons: View {
                 action: onApprove
             )
             actionButton(
-                label: denyLabel, icon: "xmark.circle.fill",
+                label: "Deny", icon: "xmark.circle.fill",
                 shortcut: "D", color: .red,
                 action: onDeny
             )
@@ -85,7 +83,7 @@ struct ApproveRejectButtons: View {
             .contentShape(RoundedRectangle(cornerRadius: cornerRadius))
         }
         .buttonStyle(.plain)
-        .focusable(focusable)
-        .focusEffectDisabled(!focusable)
+        .focusable(false)
+        .focusEffectDisabled()
     }
 }

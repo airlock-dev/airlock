@@ -17,7 +17,6 @@
 		0B0000010000000000000008 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 0B000001000000000000010A /* Assets.xcassets */; };
 		0B0000020000000000000001 /* NotificationViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B0000020000000000000101 /* NotificationViewController.swift */; };
 		0B0000020000000000000002 /* AirlockNotificationContentExtension.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = 0B0000020000000000000100 /* AirlockNotificationContentExtension.appex */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
-		0B0000020000000000000003 /* MainInterface.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 0B0000020000000000000103 /* MainInterface.storyboard */; };
 		0B0000020000000000000004 /* UserNotifications.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0B0000020000000000000104 /* UserNotifications.framework */; };
 		0B0000020000000000000005 /* UserNotificationsUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0B0000020000000000000105 /* UserNotificationsUI.framework */; };
 /* End PBXBuildFile section */
@@ -61,7 +60,6 @@
 		0B0000020000000000000100 /* AirlockNotificationContentExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = AirlockNotificationContentExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		0B0000020000000000000101 /* NotificationViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationViewController.swift; sourceTree = "<group>"; };
 		0B0000020000000000000102 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
-		0B0000020000000000000103 /* MainInterface.storyboard */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; name = MainInterface.storyboard; path = Base.lproj/MainInterface.storyboard; sourceTree = "<group>"; };
 		0B0000020000000000000104 /* UserNotifications.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UserNotifications.framework; path = System/Library/Frameworks/UserNotifications.framework; sourceTree = SDKROOT; };
 		0B0000020000000000000105 /* UserNotificationsUI.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UserNotificationsUI.framework; path = System/Library/Frameworks/UserNotificationsUI.framework; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
@@ -125,7 +123,6 @@
 			isa = PBXGroup;
 			children = (
 				0B0000020000000000000101 /* NotificationViewController.swift */,
-				0B0000020000000000000103 /* MainInterface.storyboard */,
 				0B0000020000000000000102 /* Info.plist */,
 				0B0000020000000000000104 /* UserNotifications.framework */,
 				0B0000020000000000000105 /* UserNotificationsUI.framework */,
@@ -224,7 +221,6 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				0B0000020000000000000003 /* MainInterface.storyboard in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

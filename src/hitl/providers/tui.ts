@@ -83,13 +83,16 @@ export class TuiHitlProvider implements HitlProvider {
   private handleKey(key: string): void {
     if (!this.active) return;
 
+    // Ctrl-C. Raw mode turns it into a plain byte instead of SIGINT, so re-raise the signal: the
+    // process's own handler then runs a graceful shutdown. Checked before anything else so it works
+    // with nothing pending too.
+    if (key === '\x03') {
+      process.kill(process.pid, 'SIGINT');
+      return;
+    }
+
     const pending = this.items.filter((i) => i.status === 'pending');
     if (pending.length === 0) return;
-
-    // Ctrl-C
-    if (key === '\x03') {
-      process.exit(0);
-    }
 
     // j / down arrow
     if (key === 'j' || key === `${ESC}B`) {

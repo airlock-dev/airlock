@@ -8,7 +8,9 @@ import type { Middleware } from '../types.js';
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const Ajv = (AjvModule as any).default ?? AjvModule;
 const ajv = new Ajv({ allErrors: true, strict: false });
-const validatorCache = new Map<string, ValidateFunction>();
+// Keyed on the inputSchema object itself: a registry refresh replaces the tool objects, so a changed
+// schema gets a fresh validator, and the old one is collected with the old schema.
+const validatorCache = new WeakMap<object, ValidateFunction>();
 /* eslint-enable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access */
 
 export function schemaValidatorMiddleware(): Middleware {
@@ -22,12 +24,11 @@ export function schemaValidatorMiddleware(): Middleware {
       tools.find((t) => t.name === ctx.toolName) ?? tools.find((t) => t.name === resolvedToolName);
     if (!tool?.inputSchema) return next();
 
-    const cacheKey = `${ctx.toolName}->${resolvedToolName}`;
-    let validate = validatorCache.get(cacheKey);
+    let validate = validatorCache.get(tool.inputSchema);
     if (!validate) {
       // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
       validate = ajv.compile(tool.inputSchema) as ValidateFunction;
-      validatorCache.set(cacheKey, validate);
+      validatorCache.set(tool.inputSchema, validate);
     }
 
     if (!validate(ctx.args)) {
