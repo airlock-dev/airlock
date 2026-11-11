@@ -9,12 +9,11 @@ private final class NonFocusableTextView: NSTextView {
 
 struct CodeBlockView: NSViewRepresentable {
     let attributedText: NSAttributedString
-    var showsScrollers: Bool = true
 
     func makeNSView(context: Context) -> NSScrollView {
         let scrollView = NSScrollView()
         scrollView.drawsBackground = false
-        scrollView.hasVerticalScroller = showsScrollers
+        scrollView.hasVerticalScroller = true
         scrollView.hasHorizontalScroller = false
         scrollView.borderType = .noBorder
 
@@ -35,7 +34,6 @@ struct CodeBlockView: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: NSScrollView, context: Context) {
-        nsView.hasVerticalScroller = showsScrollers
         guard let textView = nsView.documentView as? NSTextView else { return }
         if textView.attributedString().isEqual(to: attributedText) {
             return

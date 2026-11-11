@@ -192,8 +192,11 @@ struct ApprovalRequest: Decodable, Identifiable, Equatable, Sendable {
     let args: [String: JSONValue]
     let context: ApprovalContext?
     let timeoutMs: Int
-    let receivedAt: Date
-    let expiresAt: Date?
+    /// The server's `createdAt` when it sent one, otherwise when this client first saw the request.
+    var receivedAt: Date
+    var expiresAt: Date?
+    /// True when `receivedAt`/`expiresAt` came from the server rather than the local clock.
+    var hasServerTimestamps: Bool = false
     // Newer gateways only; all optional and kept as raw strings so unknown values never fail decoding.
     var kind: String? = nil
     var mode: String? = nil
@@ -246,8 +249,10 @@ struct ApprovalRequest: Decodable, Identifiable, Equatable, Sendable {
         timeoutMs = try container.decode(Int.self, forKey: .timeoutMs)
         let createdAtValue = try container.decodeIfPresent(String.self, forKey: .createdAt)
         let expiresAtValue = try container.decodeIfPresent(String.self, forKey: .expiresAt)
-        receivedAt = Self.parseDate(createdAtValue) ?? Date()
+        let createdAt = Self.parseDate(createdAtValue)
+        receivedAt = createdAt ?? Date()
         expiresAt = Self.parseDate(expiresAtValue)
+        hasServerTimestamps = createdAt != nil
         kind = try? container.decodeIfPresent(String.self, forKey: .kind)
         mode = try? container.decodeIfPresent(String.self, forKey: .mode)
         tier = try? container.decodeIfPresent(String.self, forKey: .tier)
@@ -260,16 +265,34 @@ struct ApprovalRequest: Decodable, Identifiable, Equatable, Sendable {
         grantOptions = ((try? container.decodeIfPresent([GrantOption].self, forKey: .grantOptions)) ?? nil) ?? []
     }
 
+    /// This request with the timestamps of an already-known copy, unless this copy carries the
+    /// server's own. Stream events from older gateways have no `createdAt`, and a reconnect replays
+    /// every pending request; without this the countdown would restart at the full timeout.
+    func keepingTimestamps(of existing: ApprovalRequest?) -> ApprovalRequest {
+        guard let existing, !hasServerTimestamps else { return self }
+        var merged = self
+        merged.receivedAt = existing.receivedAt
+        merged.expiresAt = existing.expiresAt
+        merged.hasServerTimestamps = existing.hasServerTimestamps
+        return merged
+    }
+
     static func parseDate(_ value: String?) -> Date? {
         guard let value else { return nil }
-        let fractional = ISO8601DateFormatter()
-        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = fractional.date(from: value) { return date }
-
-        let standard = ISO8601DateFormatter()
-        standard.formatOptions = [.withInternetDateTime]
-        return standard.date(from: value)
+        return iso8601WithFractionalSeconds.date(from: value) ?? iso8601.date(from: value)
     }
+
+    private static let iso8601: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter
+    }()
+
+    private static let iso8601WithFractionalSeconds: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
 
     var argsDisplayString: String {
         args.sorted(by: { $0.key < $1.key })

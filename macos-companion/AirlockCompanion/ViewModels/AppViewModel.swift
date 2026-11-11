@@ -2,6 +2,32 @@ import Foundation
 import SwiftUI
 import Combine
 
+/// Decides which activity events become system notifications. The approval stream replays recent
+/// activity on every (re)connect, so an event must be new to this app run and not already shown.
+struct ActivityNotificationGate {
+    /// Events created before the app started were never this run's to announce.
+    let cutoff: Date
+    /// The stream replays at most the server's recent buffer, so remembering that many ids suffices.
+    var capacity = 200
+    private var notifiedIds: [String] = []
+
+    init(cutoff: Date = Date()) {
+        self.cutoff = cutoff
+    }
+
+    mutating func shouldNotify(_ event: ActivityEvent) -> Bool {
+        guard event.kind == "notification",
+              event.createdDate > cutoff,
+              !notifiedIds.contains(event.id)
+        else { return false }
+        notifiedIds.append(event.id)
+        if notifiedIds.count > capacity {
+            notifiedIds.removeFirst(notifiedIds.count - capacity)
+        }
+        return true
+    }
+}
+
 enum UpdateCheckStatus: Equatable {
     case checking
     case current
@@ -17,7 +43,8 @@ final class AppViewModel: ObservableObject {
     @Published var activityEvents: [ActivityEvent] = []
     @Published private(set) var grants: [ApprovalGrant] = []
     @Published var connectionState: ConnectionState = .disconnected(nil)
-    @Published var selectedIndex: Int = 0
+    /// The selection follows a request, not a row: the list can reorder or shrink under it.
+    @Published private(set) var selectedRequestId: String?
     @Published private(set) var appVersion: String
     @Published private(set) var availableUpdateVersion: String?
     @Published private(set) var updateCheckStatus: UpdateCheckStatus = .checking
@@ -64,8 +91,21 @@ final class AppViewModel: ObservableObject {
     private var cancellables = Set<AnyCancellable>()
     /// Lookup of all requests we've ever seen, so history always has metadata
     private var seenRequests: [String: ApprovalRequest] = [:]
+    private var activityNotifications = ActivityNotificationGate()
 
     var pendingCount: Int { pendingRequests.count }
+
+    /// Row of the selected request; 0 when nothing (or a request no longer pending) is selected.
+    var selectedIndex: Int {
+        get {
+            selectedRequestId.flatMap { id in pendingRequests.firstIndex { $0.id == id } } ?? 0
+        }
+        set {
+            selectedRequestId = pendingRequests.indices.contains(newValue)
+                ? pendingRequests[newValue].id
+                : pendingRequests.first?.id
+        }
+    }
 
     /// Visible requests that share a notification batch (or, without one, an agent), in list order.
     /// Only groups of two or more get "Approve all" / "Deny all" controls.
@@ -157,9 +197,10 @@ final class AppViewModel: ObservableObject {
                     if createsGrant { self.refreshGrants() }
                 }
             } catch {
-                await MainActor.run {
-                    self?.lastNotificationActionError = "Approve \(code) failed: \(error.localizedDescription)"
-                }
+                await self?.rollBackFailedDecision(
+                    ids: [id],
+                    message: "Approve \(code) failed: \(error.localizedDescription)"
+                )
             }
         }
     }
@@ -178,9 +219,10 @@ final class AppViewModel: ObservableObject {
                     self?.lastNotificationActionError = ""
                 }
             } catch {
-                await MainActor.run {
-                    self?.lastNotificationActionError = "Deny \(code) failed: \(error.localizedDescription)"
-                }
+                await self?.rollBackFailedDecision(
+                    ids: [id],
+                    message: "Deny \(code) failed: \(error.localizedDescription)"
+                )
             }
         }
     }
@@ -254,22 +296,15 @@ final class AppViewModel: ObservableObject {
         updateSettings(reconnect: true)
     }
 
+    // Removing the request moves the selection to the row that takes its place.
     func approveSelectedRequest() {
         guard !pendingRequests.isEmpty else { return }
-        let index = min(selectedIndex, pendingRequests.count - 1)
-        approve(id: pendingRequests[index].id)
-        if selectedIndex >= pendingRequests.count - 1 {
-            selectedIndex = max(0, pendingRequests.count - 2)
-        }
+        approve(id: pendingRequests[selectedIndex].id)
     }
 
     func denySelectedRequest() {
         guard !pendingRequests.isEmpty else { return }
-        let index = min(selectedIndex, pendingRequests.count - 1)
-        deny(id: pendingRequests[index].id)
-        if selectedIndex >= pendingRequests.count - 1 {
-            selectedIndex = max(0, pendingRequests.count - 2)
-        }
+        deny(id: pendingRequests[selectedIndex].id)
     }
 
     // MARK: - Private
@@ -281,9 +316,10 @@ final class AppViewModel: ObservableObject {
         }
 
         let client = apiClient
+        let reason = decision == "denied" ? AirlockAPIClient.denyReason : nil
         Task { [weak self] in
             do {
-                let outcome = try await client.decide(ids: ids, decision: decision)
+                let outcome = try await client.decide(ids: ids, decision: decision, reason: reason)
                 guard let self else { return }
                 self.lastNotificationActionError = ""
                 // Anything the server skipped may still be pending; re-sync now rather than on the next tick.
@@ -292,12 +328,22 @@ final class AppViewModel: ObservableObject {
                     await self.reconcilePendingRequests()
                 }
             } catch {
-                await MainActor.run {
-                    let verb = decision == "approved" ? "Approve" : "Deny"
-                    self?.lastNotificationActionError = "\(verb) all (\(ids.count)) failed: \(error.localizedDescription)"
-                }
+                let verb = decision == "approved" ? "Approve" : "Deny"
+                await self?.rollBackFailedDecision(
+                    ids: ids,
+                    message: "\(verb) all (\(ids.count)) failed: \(error.localizedDescription)"
+                )
             }
         }
+    }
+
+    /// A decision the server refused: put back whatever is still pending (without notifying it a
+    /// second time) and drop its optimistic "approved"/"denied" row from Recent.
+    private func rollBackFailedDecision(ids: [String], message: String) async {
+        lastNotificationActionError = message
+        await reconcilePendingRequests()
+        let stillPending = Set(pendingRequests.map(\.id)).intersection(ids)
+        resolvedRequests.removeAll { stillPending.contains($0.id) }
     }
 
     private func connectSSE() {
@@ -316,8 +362,9 @@ final class AppViewModel: ObservableObject {
 
     private func handleSSEMessage(_ message: SSEMessage) {
         switch message {
-        case .newRequest(let request):
+        case .newRequest(let incoming):
             pruneExpiredRequests()
+            let request = incoming.keepingTimestamps(of: seenRequests[incoming.id])
             guard request.timeoutMs == 0 || request.deadline > Date() else { return }
             upsertPendingRequest(request, notifyIfNew: true)
 
@@ -331,7 +378,9 @@ final class AppViewModel: ObservableObject {
 
         case .activity(let event):
             upsertActivityEvent(event)
-            notificationManager.showNotification(for: event, soundEnabled: soundEnabled)
+            if activityNotifications.shouldNotify(event) {
+                notificationManager.showNotification(for: event, soundEnabled: soundEnabled)
+            }
         }
     }
 
@@ -347,10 +396,12 @@ final class AppViewModel: ObservableObject {
         let wasPending = pendingRequests.contains(where: { $0.id == request.id })
         seenRequests[request.id] = request
 
-        if let index = pendingRequests.firstIndex(where: { $0.id == request.id }) {
-            pendingRequests[index] = request
-        } else {
-            pendingRequests.insert(request, at: 0)
+        updatePendingRequests { pending in
+            if let index = pending.firstIndex(where: { $0.id == request.id }) {
+                pending[index] = request
+            } else {
+                pending.append(request)
+            }
         }
 
         if notifyIfNew && !wasPending {
@@ -359,8 +410,7 @@ final class AppViewModel: ObservableObject {
     }
 
     private func moveToResolved(id: String, action: String) {
-        pendingRequests.removeAll { $0.id == id }
-        selectedIndex = min(selectedIndex, max(0, pendingRequests.count - 1))
+        updatePendingRequests { $0.removeAll { $0.id == id } }
         // Skip if already resolved (optimistic UI already added it).
         guard !resolvedRequests.contains(where: { $0.id == id }) else { return }
         let seen = seenRequests[id]
@@ -410,17 +460,49 @@ final class AppViewModel: ObservableObject {
         let removedIds = Set(pendingRequests.filter(shouldRemove).map(\.id))
         guard !removedIds.isEmpty else { return }
 
-        pendingRequests.removeAll { removedIds.contains($0.id) }
+        updatePendingRequests { $0.removeAll { removedIds.contains($0.id) } }
         for id in removedIds {
             notificationManager.removeNotification(id: id)
         }
-        if selectedIndex >= pendingRequests.count {
-            selectedIndex = max(0, pendingRequests.count - 1)
+    }
+
+    /// Every change to the pending list goes through here so the order stays stable (newest first)
+    /// and a selected request that disappears hands the selection to the row that replaces it.
+    private func updatePendingRequests(_ change: (inout [ApprovalRequest]) -> Void) {
+        let selectedRow = selectedRequestId.flatMap { id in pendingRequests.firstIndex { $0.id == id } }
+        var updated = pendingRequests
+        change(&updated)
+        updated = Self.pendingOrder(updated)
+        if updated != pendingRequests {
+            pendingRequests = updated
+        }
+        let selection = Self.selection(keeping: selectedRequestId, previousRow: selectedRow, in: updated)
+        if selection != selectedRequestId {
+            selectedRequestId = selection
         }
     }
 
-    private func pruneExpiredPendingRequests() {
-        pruneExpiredRequests()
+    /// The selected id while it is still listed; otherwise the request now in its old row.
+    nonisolated static func selection(
+        keeping selectedId: String?,
+        previousRow: Int?,
+        in requests: [ApprovalRequest]
+    ) -> String? {
+        guard let selectedId else { return nil }
+        if requests.contains(where: { $0.id == selectedId }) { return selectedId }
+        guard !requests.isEmpty else { return nil }
+        return requests[min(previousRow ?? 0, requests.count - 1)].id
+    }
+
+    /// Newest first. Ties keep their current relative order.
+    nonisolated static func pendingOrder(_ requests: [ApprovalRequest]) -> [ApprovalRequest] {
+        requests.enumerated()
+            .sorted { lhs, rhs in
+                lhs.element.receivedAt != rhs.element.receivedAt
+                    ? lhs.element.receivedAt > rhs.element.receivedAt
+                    : lhs.offset < rhs.offset
+            }
+            .map(\.element)
     }
 
     private func pruneExpiredRequests() {
@@ -431,7 +513,9 @@ final class AppViewModel: ObservableObject {
         let client = apiClient
         do {
             let fetched = try await client.pendingApprovals()
-            let snapshot = fetched.filter { !$0.isExpired() }
+            let snapshot = fetched
+                .map { $0.keepingTimestamps(of: seenRequests[$0.id]) }
+                .filter { !$0.isExpired() }
             let snapshotIds = Set(snapshot.map(\.id))
             let removedIds = Set(pendingRequests.map(\.id)).subtracting(snapshotIds)
 
@@ -439,15 +523,16 @@ final class AppViewModel: ObservableObject {
                 notificationManager.removeNotification(id: id)
             }
 
-            let existingIds = Set(pendingRequests.map(\.id))
-            pendingRequests = snapshot
+            updatePendingRequests { $0 = snapshot }
             for request in snapshot {
+                // Only announce requests this app has never seen; one put back after a failed
+                // decision was already announced.
+                let isNew = seenRequests[request.id] == nil
                 seenRequests[request.id] = request
-                if !existingIds.contains(request.id) {
+                if isNew {
                     notificationManager.showNotification(for: request, soundEnabled: soundEnabled)
                 }
             }
-            selectedIndex = min(selectedIndex, max(0, pendingRequests.count - 1))
         } catch {
         }
     }
@@ -459,7 +544,7 @@ final class AppViewModel: ObservableObject {
             var nextReconcile = Date()
 
             while !Task.isCancelled {
-                self.pruneExpiredPendingRequests()
+                self.pruneExpiredRequests()
 
                 if Date() >= nextReconcile {
                     await self.reconcilePendingRequests()

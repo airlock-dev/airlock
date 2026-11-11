@@ -60,10 +60,6 @@ final class SSEClient: ObservableObject {
         self.connection = DashboardConnection(baseURL: baseURL, bearerToken: bearerToken)
     }
 
-    func updateBaseURL(_ url: String) {
-        updateConnection(baseURL: url, bearerToken: connection.bearerToken)
-    }
-
     func updateConnection(baseURL: String, bearerToken: String? = nil) {
         connection = DashboardConnection(baseURL: baseURL, bearerToken: bearerToken)
     }

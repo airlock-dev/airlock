@@ -11,7 +11,10 @@
  * The companion app should pick it up via SSE.
  *
  * Also mocks grants (GET/DELETE /mobile/grants, `grant` on decisions), bulk decisions
- * (POST /mobile/approvals/decisions) and batch decisions (POST /mobile/batches/:id/decision).
+ * (POST /mobile/approvals/decisions), batch decisions (POST /mobile/batches/:id/decision) and
+ * approval previews (POST /mobile/approvals/:id/preview). Mirrors src/mobile/api.ts and
+ * src/hitl/approval-stream.ts: new stream clients get every pending request and then the recent
+ * activity buffer, oldest first.
  */
 
 import { createServer } from 'http';
@@ -22,7 +25,12 @@ const PORT = Number(process.env.PORT ?? 4113);
 const REQUIRED_TOKEN = process.env.AIRLOCK_API_SECRET ?? '';
 const clients = new Set();
 const pending = new Map();
+/** Ids decided or timed out; deciding them again is a 409 like the real gateway. */
+const resolved = new Set();
 const grants = new Map();
+/** Recent activity, oldest first, capped like ActivityStream (200). */
+const activity = [];
+const MAX_ACTIVITY = 200;
 let codeCounter = 0;
 
 const TOOLS = [
@@ -204,6 +212,25 @@ function createGrant(request, spec) {
   return { grant };
 }
 
+/** HitlEngine.approveMany: only routine, unflagged tool calls; plans and questions are skipped. */
+function isBulkApprovable(request) {
+  return Boolean(request) && request.kind === 'call' && !request.escalated;
+}
+
+function previewFor(request) {
+  if (request.tier !== 'read') return { status: 'unavailable' };
+  const fields = Object.entries(request.args)
+    .filter(([, value]) => value !== undefined)
+    .map(([label, value]) => ({ label, value: String(value), primary: false }));
+  return {
+    status: 'ready',
+    tool: request.tool,
+    text: fields.map((field) => `${field.label}: ${field.value}`).join('\n\n'),
+    truncated: false,
+    ...(fields.length ? { fields } : {}),
+  };
+}
+
 function readJson(req, callback) {
   let body = '';
   req.on('data', (chunk) => (body += chunk));
@@ -248,6 +275,7 @@ function resolveApproval(id, action) {
   const request = pending.get(id);
   if (!request) return false;
   pending.delete(id);
+  resolved.add(id);
   const batchPending = request.batchId
     ? Array.from(pending.values()).filter((r) => r.batchId === request.batchId).length
     : undefined;
@@ -308,6 +336,8 @@ const server = createServer((req, res) => {
         event.body = event.body ?? '';
         event.severity = event.severity ?? 'info';
         event.createdAt = event.createdAt ?? new Date().toISOString();
+        activity.push(event);
+        if (activity.length > MAX_ACTIVITY) activity.splice(0, activity.length - MAX_ACTIVITY);
         broadcast({ type: 'activity', event });
         console.log(`  Activity: ${event.kind} ${event.title}`);
         sendJson(res, 200, { id: event.id });
@@ -327,9 +357,13 @@ const server = createServer((req, res) => {
       'X-Accel-Buffering': 'no',
     });
     clients.add(res);
-    // Replay pending
+    // Replay pending, then recent activity oldest first (the real hub does both on connect).
+    res.write(': connected\n\n');
     for (const r of pending.values()) {
       res.write(`data: ${JSON.stringify({ type: 'new', request: r })}\n\n`);
+    }
+    for (const event of activity) {
+      res.write(`data: ${JSON.stringify({ type: 'activity', event })}\n\n`);
     }
     req.on('close', () => clients.delete(res));
     console.log(`  [sse] client connected (${clients.size} total)`);
@@ -352,9 +386,8 @@ const server = createServer((req, res) => {
         const approved = [];
         const skipped = [];
         for (const id of ids) {
-          const request = pending.get(id);
-          if (!request || request.escalated) skipped.push(id);
-          else if (resolveApproval(id, 'approved')) approved.push(id);
+          if (isBulkApprovable(pending.get(id)) && resolveApproval(id, 'approved')) approved.push(id);
+          else skipped.push(id);
         }
         console.log(`  Bulk approved ${approved.length}, skipped ${skipped.length}`);
         sendJson(res, 200, { ok: true, approved, skipped });
@@ -384,8 +417,8 @@ const server = createServer((req, res) => {
         const approved = [];
         const skipped = [];
         for (const r of members) {
-          if (r.escalated) skipped.push(r.id);
-          else if (resolveApproval(r.id, 'approved')) approved.push(r.id);
+          if (isBulkApprovable(r) && resolveApproval(r.id, 'approved')) approved.push(r.id);
+          else skipped.push(r.id);
         }
         sendJson(res, 200, { ok: true, approved, skipped });
       } else if (body?.decision === 'denied') {
@@ -418,6 +451,18 @@ const server = createServer((req, res) => {
     return;
   }
 
+  const previewMatch = url.pathname.match(/^\/mobile\/approvals\/([^/]+)\/preview$/);
+  if (req.method === 'POST' && previewMatch) {
+    res.setHeader('Cache-Control', 'no-store');
+    const request = pending.get(decodeURIComponent(previewMatch[1]));
+    if (!request) {
+      sendJson(res, 409, { error: 'Approval has resolved or is unavailable.' });
+      return;
+    }
+    sendJson(res, 200, previewFor(request));
+    return;
+  }
+
   const decisionMatch = url.pathname.match(/^\/mobile\/approvals\/([^/]+)\/decision$/);
   if (req.method === 'POST' && decisionMatch) {
     readJson(req, (body) => {
@@ -433,13 +478,26 @@ const server = createServer((req, res) => {
       const id = decodeURIComponent(decisionMatch[1]);
       const request = pending.get(id);
       if (!request) {
-        sendJson(res, 404, { error: 'No pending approval found' });
+        if (resolved.has(id)) {
+          sendJson(res, 409, { error: 'Approval already resolved', code: 'approval_resolved' });
+        } else {
+          sendJson(res, 404, { error: 'No pending approval found' });
+        }
         return;
       }
       if (decision === 'denied') {
         resolveApproval(id, 'denied');
         console.log(`  Denied: ${id}`);
         sendJson(res, 200, { ok: true });
+        return;
+      }
+
+      if (body.remember !== undefined && body.remember !== 'always' && body.remember !== 'temporary') {
+        sendJson(res, 400, { error: 'Invalid remember mode' });
+        return;
+      }
+      if (body.remember && (request.kind !== 'call' || request.escalated)) {
+        sendJson(res, 400, { error: 'Only a routine tool call can be remembered' });
         return;
       }
 

@@ -55,39 +55,11 @@ jobs:
           cp .build/arm64-apple-macosx/release/AirlockCompanion "$MACOS/AirlockCompanion"
           cp AirlockCompanion/AppIcon.icns "$RESOURCES/AppIcon.icns"
 
-          cat > "$CONTENTS/Info.plist" << PLIST
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-              <key>CFBundleName</key>
-              <string>AirlockCompanion</string>
-              <key>CFBundleDisplayName</key>
-              <string>Airlock Companion</string>
-              <key>CFBundleIdentifier</key>
-              <string>bot.airlock.companion</string>
-              <key>CFBundleVersion</key>
-              <string>${APP_VERSION}</string>
-              <key>CFBundleShortVersionString</key>
-              <string>${APP_VERSION}</string>
-              <key>CFBundleExecutable</key>
-              <string>AirlockCompanion</string>
-              <key>CFBundlePackageType</key>
-              <string>APPL</string>
-              <key>LSUIElement</key>
-              <true/>
-              <key>CFBundleIconFile</key>
-              <string>AppIcon</string>
-              <key>LSMinimumSystemVersion</key>
-              <string>14.0</string>
-              <key>NSAppTransportSecurity</key>
-              <dict>
-                  <key>NSAllowsArbitraryLoads</key>
-                  <true/>
-              </dict>
-          </dict>
-          </plist>
-          PLIST
+          # Info.plist comes from the source tree (same as scripts/bundle.sh); only versions are stamped.
+          cp AirlockCompanion/Info.plist "$CONTENTS/Info.plist"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${APP_VERSION}" "$CONTENTS/Info.plist"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${APP_VERSION}" "$CONTENTS/Info.plist"
+          plutil -lint "$CONTENTS/Info.plist"
 
       - name: Sign app
         run: |
@@ -207,6 +179,8 @@ jobs:
             homepage "https://airlock.bot"
 
             depends_on macos: :sonoma
+            # The release binary is built on an arm64 runner and is not universal.
+            depends_on arch: :arm64
 
             app "AirlockCompanion.app"
 

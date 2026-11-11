@@ -56,28 +56,6 @@ struct DashboardConnection: Sendable {
         return request
     }
 
-    func validateHealth(session: URLSession = .shared) async throws {
-        let healthStatus = try await statusCode(
-            for: request(path: Constants.healthPath, timeoutInterval: 5),
-            session: session
-        )
-
-        switch healthStatus {
-        case 200:
-            return
-        case 404:
-            let rootStatus = try await statusCode(
-                for: request(path: "/", timeoutInterval: 5),
-                session: session
-            )
-            guard rootStatus == 200 else {
-                throw DashboardConnectionStatusError(statusCode: rootStatus)
-            }
-        default:
-            throw DashboardConnectionStatusError(statusCode: healthStatus)
-        }
-    }
-
     func validateManagementAPI(session: URLSession = .shared) async throws {
         let status = try await statusCode(
             for: request(path: Constants.pendingPath, timeoutInterval: 5),

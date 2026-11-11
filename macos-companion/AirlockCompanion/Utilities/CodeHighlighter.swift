@@ -85,20 +85,6 @@ enum CodeHighlighter {
         }
     }
 
-    static func detectLanguage(for value: JSONValue) -> CodeLanguage {
-        switch value {
-        case .object, .array:
-            return .json
-        case .string(let string):
-            if normalizedJSONString(string) != nil {
-                return .json
-            }
-            return detectLanguage(for: string)
-        default:
-            return .plainText
-        }
-    }
-
     static func detectLanguage(for string: String) -> CodeLanguage {
         let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.hasPrefix("{") || trimmed.hasPrefix("[") {
