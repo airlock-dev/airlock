@@ -77,8 +77,15 @@ export function resultText(result: unknown): string {
  * textual blocks are dropped, non-text blocks (images, audio, links) keep their positions, and
  * structuredContent is dropped (its text is part of the rewrite). When no middleware changed the
  * text, or the result had no text to rewrite, the downstream result is returned as-is.
+ *
+ * `keepStructuredContent` is for MCP Apps tools: their structuredContent is the data the view
+ * renders, so dropping it would leave the view blank. It is still part of the text the response
+ * middlewares scanned; only the rewrite (envelope, truncation) does not reach it.
  */
-export function deliveredResult(response: ToolCallResponse): unknown {
+export function deliveredResult(
+  response: ToolCallResponse,
+  options: { keepStructuredContent?: boolean } = {}
+): unknown {
   const result = response.result;
   if (!isCallToolResult(result)) return result;
   const original = resultText(result);
@@ -97,6 +104,7 @@ export function deliveredResult(response: ToolCallResponse): unknown {
   }
   if (!placed) content.unshift(rewritten);
 
+  if (options.keepStructuredContent) return { ...result, content };
   const { structuredContent: _structured, ...rest } = result;
   return { ...rest, content };
 }

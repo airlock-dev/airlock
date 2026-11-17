@@ -1,9 +1,10 @@
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import { Client } from '@modelcontextprotocol/client';
-import type { Tool } from '@modelcontextprotocol/client';
+import type { ReadResourceResult, Tool } from '@modelcontextprotocol/client';
 import type { ProviderConnectionStatus } from './status.js';
 import { childLogger } from '../util/logger.js';
 import { VERSION } from '../version.js';
+import { UPSTREAM_CLIENT_CAPABILITIES } from '../mcp-apps/ui.js';
 
 const log = childLogger('stdio-client');
 
@@ -53,7 +54,10 @@ export class StdioMcpClient {
       stderr: this.stderr,
     });
 
-    this.client = new Client({ name: 'airlock', version: VERSION });
+    this.client = new Client(
+      { name: 'airlock', version: VERSION },
+      { capabilities: UPSTREAM_CLIENT_CAPABILITIES }
+    );
     this.connecting = true;
     this.reconnectExhausted = false;
 
@@ -119,6 +123,12 @@ export class StdioMcpClient {
       ? { name, arguments: args, _meta: requestMeta }
       : { name, arguments: args };
     return this.client.callTool(request);
+  }
+
+  /** Read one upstream resource (MCP Apps views are fetched this way). */
+  async readResource(uri: string): Promise<ReadResourceResult> {
+    if (!this.client || !this.ready) throw new Error(`MCP ${this.id} not connected`);
+    return this.client.readResource({ uri });
   }
 
   getServerInfo(): { name: string; version: string } | undefined {

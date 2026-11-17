@@ -115,6 +115,20 @@ Airlock manages MCP server connections through a connection pool:
 - **Lazy connection** — in stdio mode (`--agent`), Airlock only connects to MCP servers the agent actually references in its allow or ask lists. Unused providers stay disconnected.
 - **Parallel initialization** — all MCP servers connect concurrently at startup.
 
+## MCP Apps (inline UI)
+
+Upstream MCP servers that implement [MCP Apps](https://modelcontextprotocol.io/docs/extensions/apps) (`io.modelcontextprotocol/ui`) attach an HTML view to a tool through `_meta.ui.resourceUri`. Hosts that support MCP Apps render that view inline. Airlock proxies these views:
+
+- **Capability** — Airlock tells upstream servers it supports MCP Apps, so they register their UI tools.
+- **Namespacing** — Airlock rewrites each `ui://…` view URI to `ui://airlock/<provider>/…`. Two providers can then ship the same URI without colliding, and `resources/read` goes to the right one.
+- **Policy** — Airlock serves a view only if a tool the agent can see references it. A denied tool's view reads as not found, and so does any other upstream resource.
+- **App-only tools** — Airlock passes `visibility: ["app"]` tools through so the host can keep them away from the model. When the host has said it does not render MCP Apps, Airlock hides those tools itself.
+- **Results** — For tools with a view, Airlock keeps `structuredContent` and `_meta` even when a middleware such as `untrusted-envelope` rewrites the text, because the view renders from them. Middlewares still scan that data, but the rewrite only changes the text. Other tools behave as before.
+
+::: warning A button in a view is not an approval
+A view's tool calls reach Airlock as ordinary `tools/call` requests over the agent's own connection. Airlock cannot tell them apart from the model's calls, and neither can the upstream server. Every call goes through the same allow / ask / deny policy, whoever made it. If an action needs a human, such as "confirm booking", put the tool under `ask`. The approval then happens out of band in a companion app or the dashboard, not through a "confirm" button the agent could press itself.
+:::
+
 ## OAuth support
 
 For MCP servers that require browser-based OAuth authentication, the `http` transport type supports:

@@ -14,6 +14,7 @@ import { generateId } from '../util/id.js';
 import { sanitizeToolName } from '../util/tool-name.js';
 import { childLogger } from '../util/logger.js';
 import { VERSION } from '../version.js';
+import { hostSupportsUi, isAppOnlyTool, toolUiResourceUri } from '../mcp-apps/ui.js';
 
 const log = childLogger('agent-server');
 
@@ -98,11 +99,32 @@ export function createAgentServer(deps: AgentServerDeps): Server {
 
   const server = new Server(
     { name: 'airlock', version: VERSION },
-    { capabilities: { tools: {} }, ...(instructions ? { instructions } : {}) }
+    {
+      // `resources` serves MCP Apps views (`ui://`) of proxied tools; nothing else is exposed.
+      capabilities: { tools: {}, resources: {} },
+      ...(instructions ? { instructions } : {}),
+    }
   );
 
-  server.setRequestHandler('tools/list', () => {
-    const tools = registry.getFiltered(agentId);
+  /** Whether this request's host renders MCP Apps (undefined: it did not say). */
+  const uiSupport = (reqCtx: {
+    mcpReq: { envelope?: unknown; _meta?: unknown };
+  }): boolean | undefined =>
+    hostSupportsUi(
+      isRecord(reqCtx.mcpReq.envelope) ? reqCtx.mcpReq.envelope : undefined,
+      isRecord(reqCtx.mcpReq._meta) ? reqCtx.mcpReq._meta : undefined,
+      server.getClientCapabilities() as Record<string, unknown> | undefined
+    );
+
+  server.setRequestHandler('tools/list', (_request, reqCtx) => {
+    // Upstreams are told Airlock renders MCP Apps, so they may list app-only tools. A host that
+    // renders them filters those out of the model's list itself; for a host known not to, Airlock
+    // does it. When support is unknown (a 2025 client over stateless HTTP) they pass through: the
+    // host is the one that knows, and every call is policy-checked either way.
+    const hideAppOnly = uiSupport(reqCtx) === false;
+    const tools = registry
+      .getFiltered(agentId)
+      .filter((tool) => !(hideAppOnly && isAppOnlyTool(tool)));
     // outputSchema is not advertised: when a response middleware rewrites a result, its
     // structuredContent is dropped (see deliveredResult), and clients reject a tool that declares
     // an outputSchema but returns no structured content.
@@ -112,6 +134,16 @@ export function createAgentServer(deps: AgentServerDeps): Server {
         name: sanitizeToolName(t.name),
       })),
     };
+  });
+
+  server.setRequestHandler('resources/list', () => ({
+    resources: registry.listUiResources(agentId),
+  }));
+
+  server.setRequestHandler('resources/read', async (request) => {
+    const result = await registry.readUiResource(agentId, request.params.uri);
+    log.debug({ agentId, uri: request.params.uri }, 'Served MCP Apps view');
+    return result;
   });
 
   server.setRequestHandler('tools/call', async (request, reqCtx) => {
@@ -177,7 +209,12 @@ export function createAgentServer(deps: AgentServerDeps): Server {
     // Pass through downstream MCP response shape (content, structuredContent, isError)
     // if the result looks like a CallToolResult — with its text replaced when a response
     // middleware rewrote it. Otherwise wrap as text.
-    const result = deliveredResult(response) as Record<string, unknown> | undefined;
+    // An MCP Apps view renders from structuredContent and _meta, so for a tool with a view they are
+    // kept even when a middleware rewrote the text (unless the host is known not to render views).
+    const hasView = match !== undefined && toolUiResourceUri(match) !== undefined;
+    const result = deliveredResult(response, {
+      keepStructuredContent: hasView && uiSupport(reqCtx) !== false,
+    }) as Record<string, unknown> | undefined;
     if (result && Array.isArray(result.content)) {
       return {
         content: result.content as ContentBlock[],
@@ -185,6 +222,7 @@ export function createAgentServer(deps: AgentServerDeps): Server {
           ? { structuredContent: result.structuredContent as Record<string, unknown> }
           : {}),
         ...(result.isError ? { isError: true } : {}),
+        ...(isRecord(result._meta) ? { _meta: result._meta } : {}),
       };
     }
 

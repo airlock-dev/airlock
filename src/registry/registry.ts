@@ -1,5 +1,6 @@
 import { createHash } from 'crypto';
-import type { Tool } from '@modelcontextprotocol/server';
+import { ResourceNotFoundError } from '@modelcontextprotocol/server';
+import type { ReadResourceResult, Resource, Tool } from '@modelcontextprotocol/server';
 import type { BackendAdapter } from '../backend/types.js';
 import type { AllowlistEngine, Decision } from '../allowlist/engine.js';
 import type { AgentConfig, ProviderInstructionsConfig, ToolOverride } from '../config/schema.js';
@@ -13,6 +14,7 @@ import { childLogger } from '../util/logger.js';
 import { tierFromAnnotations, type ToolTier } from '../hitl/grants.js';
 import { stableStringify } from '../util/stable-json.js';
 import { providerIdForTool } from '../util/tool-name.js';
+import { UI_MIME_TYPE, parseNamespacedUiUri, toolUiResourceUri } from '../mcp-apps/ui.js';
 
 const log = childLogger('registry');
 
@@ -226,6 +228,46 @@ export class ToolRegistry {
     }
 
     throw new Error(`Unknown tool: ${resolvedName}`);
+  }
+
+  /**
+   * MCP Apps views this agent may load: one per `ui://` resource referenced by a tool it can see.
+   * A tool the agent is denied contributes nothing, so its view stays out of reach too.
+   */
+  listUiResources(agentId: string): Resource[] {
+    const byUri = new Map<string, Resource>();
+    for (const { tool } of this.getFilteredWithDecisions(agentId)) {
+      const uri = toolUiResourceUri(tool);
+      if (!uri || byUri.has(uri) || !parseNamespacedUiUri(uri)) continue;
+      byUri.set(uri, { uri, name: tool.title ?? tool.name, mimeType: UI_MIME_TYPE });
+    }
+    return [...byUri.values()];
+  }
+
+  /**
+   * Fetch an MCP Apps view from the provider that owns it. Only URIs a visible tool references are
+   * served; anything else reads as not found, so an agent cannot probe an upstream's resources.
+   */
+  async readUiResource(agentId: string, uri: string): Promise<ReadResourceResult> {
+    const parsed = parseNamespacedUiUri(uri);
+    const referenced = this.getFilteredWithDecisions(agentId).some(
+      ({ tool }) => toolUiResourceUri(tool) === uri
+    );
+    if (!parsed || !referenced) throw new ResourceNotFoundError(uri);
+
+    const adapter = this.adapters.find(
+      (a) => getAdapterPrefix(a) === `${parsed.providerId}/` && typeof a.readResource === 'function'
+    );
+    if (!adapter?.readResource) throw new ResourceNotFoundError(uri);
+
+    const result = await adapter.readResource(parsed.upstreamUri);
+    // Hand back only the view that was asked for, under the URI the host asked with. Extra items
+    // would be upstream resources the agent never had a tool reference for.
+    const contents = result.contents
+      .filter((item) => item.uri === parsed.upstreamUri)
+      .map((item) => ({ ...item, uri }));
+    if (contents.length === 0) throw new ResourceNotFoundError(uri);
+    return { ...result, contents };
   }
 
   getAllTools(): Tool[] {

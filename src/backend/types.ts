@@ -1,4 +1,4 @@
-import type { Tool } from '@modelcontextprotocol/server';
+import type { ReadResourceResult, Tool } from '@modelcontextprotocol/server';
 import type { ToolCall, ToolResult } from '../types.js';
 
 export interface BackendAdapter {
@@ -14,4 +14,9 @@ export interface BackendAdapter {
    * the provider's `instructions` config key.
    */
   instructions?(): string | undefined;
+  /**
+   * Read a resource by its upstream URI. Only real MCP servers have resources; Airlock uses this to
+   * serve MCP Apps views (`ui://`) for the tools it proxies.
+   */
+  readResource?(uri: string): Promise<ReadResourceResult>;
 }

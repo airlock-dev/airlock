@@ -3,7 +3,7 @@ import { SseMcpClient } from './sse-client.js';
 import { HttpMcpClient } from './http-client.js';
 import type { ProviderConnectionStatus } from './status.js';
 import type { McpServerConfig } from '../config/schema.js';
-import type { Tool } from '@modelcontextprotocol/server';
+import type { ReadResourceResult, Tool } from '@modelcontextprotocol/server';
 import { childLogger } from '../util/logger.js';
 
 const log = childLogger('pool');
@@ -145,6 +145,13 @@ export class ClientPool {
     if (!client) throw new Error(`Unknown MCP: ${mcpId}`);
     if (!client.isReady()) throw new Error(`MCP ${mcpId} is not connected`);
     return client.callTool(toolName, args, requestMeta);
+  }
+
+  async readResource(mcpId: string, uri: string): Promise<ReadResourceResult> {
+    const client = this.clients.get(mcpId);
+    if (!client) throw new Error(`Unknown MCP: ${mcpId}`);
+    if (!client.isReady()) throw new Error(`MCP ${mcpId} is not connected`);
+    return client.readResource(uri);
   }
 
   async reload(newMcps: Record<string, McpServerConfig>): Promise<void> {

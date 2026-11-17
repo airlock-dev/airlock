@@ -1,6 +1,6 @@
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import { Client } from '@modelcontextprotocol/client';
-import type { Tool } from '@modelcontextprotocol/client';
+import type { ReadResourceResult, Tool } from '@modelcontextprotocol/client';
 import type { BackendAdapter } from './types.js';
 import type { ToolCall, ToolResult } from '../types.js';
 import type { ClientPool } from '../pool/pool.js';
@@ -8,6 +8,7 @@ import type { McpServerConfig } from '../config/schema.js';
 import { wrapCommandWithSandbox, type ResolvedSandboxConfig } from '../sandbox/index.js';
 import { childLogger } from '../util/logger.js';
 import { VERSION } from '../version.js';
+import { UPSTREAM_CLIENT_CAPABILITIES, namespaceToolUiMeta } from '../mcp-apps/ui.js';
 
 const log = childLogger('mcp-adapter');
 
@@ -49,10 +50,13 @@ export class McpBackendAdapter implements BackendAdapter {
   async listTools(): Promise<Tool[]> {
     if (!this.pool.isReady(this.mcpId)) return [];
     const tools = await this.pool.listTools(this.mcpId);
-    return tools.map((t) => ({
-      ...t,
-      name: `${this.mcpId}/${t.name}`,
-    }));
+    return tools.map((t) =>
+      namespaceToolUiMeta({ ...t, name: `${this.mcpId}/${t.name}` }, this.mcpId)
+    );
+  }
+
+  async readResource(uri: string): Promise<ReadResourceResult> {
+    return this.pool.readResource(this.mcpId, uri);
   }
 
   instructions(): string | undefined {
@@ -118,7 +122,10 @@ export class McpBackendAdapter implements BackendAdapter {
         stderr: 'pipe',
       });
 
-      client = new Client({ name: 'airlock', version: VERSION });
+      client = new Client(
+        { name: 'airlock', version: VERSION },
+        { capabilities: UPSTREAM_CLIENT_CAPABILITIES }
+      );
       await client.connect(transport);
 
       log.info({ mcpId: this.mcpId, toolName }, 'Ephemeral sandboxed MCP connected');
