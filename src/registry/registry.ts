@@ -18,6 +18,9 @@ import { UI_MIME_TYPE, parseNamespacedUiUri, toolUiResourceUri } from '../mcp-ap
 
 const log = childLogger('registry');
 
+/** Upper bound on one MCP Apps view (HTML text or base64 blob) relayed to a host. */
+const MAX_VIEW_CHARS = 5 * 1024 * 1024;
+
 const INSTRUCTIONS_PREAMBLE =
   'You are connected to Airlock, a gateway that fronts several upstream MCP providers under one ' +
   'server. Tools are namespaced `provider_tool`. The notes below describe individual providers; ' +
@@ -267,6 +270,16 @@ export class ToolRegistry {
       .filter((item) => item.uri === parsed.upstreamUri)
       .map((item) => ({ ...item, uri }));
     if (contents.length === 0) throw new ResourceNotFoundError(uri);
+    const size = contents.reduce(
+      (total, item) =>
+        total +
+        ('text' in item && typeof item.text === 'string' ? item.text.length : 0) +
+        ('blob' in item && typeof item.blob === 'string' ? item.blob.length : 0),
+      0
+    );
+    if (size > MAX_VIEW_CHARS) {
+      throw new Error(`MCP Apps view ${uri} is too large (${size} chars, limit ${MAX_VIEW_CHARS})`);
+    }
     return { ...result, contents };
   }
 
@@ -342,6 +355,13 @@ function summarizeCatalog(tools: Tool[]): Record<string, ProviderCatalogSummary>
       hash.update('\0');
       hash.update(stableStringify(tool.inputSchema));
       hash.update('\0');
+      // MCP Apps metadata decides which view a tool opens and whether the model sees it at all.
+      // Hashed only when present, so fingerprints of tools without it are unchanged.
+      const ui = tool._meta?.ui ?? tool._meta?.['ui/resourceUri'];
+      if (ui !== undefined) {
+        hash.update(stableStringify(ui));
+        hash.update('\0');
+      }
     }
     summary[providerId] = {
       count: providerTools.length,

@@ -96,9 +96,16 @@ export class ClientPool {
   private createClient(id: string, cfg: McpServerConfig): McpClient {
     switch (cfg.type) {
       case 'stdio':
-        return new StdioMcpClient(id, cfg.command, cfg.args, cfg.env, this.options?.stdioStderr);
+        return new StdioMcpClient(
+          id,
+          cfg.command,
+          cfg.args,
+          cfg.env,
+          this.options?.stdioStderr,
+          cfg.mcp_apps === true
+        );
       case 'sse':
-        return new SseMcpClient(id, cfg.url, cfg.headers);
+        return new SseMcpClient(id, cfg.url, cfg.headers, cfg.mcp_apps === true);
       case 'http':
         return new HttpMcpClient(
           id,
@@ -110,7 +117,8 @@ export class ClientPool {
           cfg.client_secret,
           cfg.oauth_callback_url,
           cfg.client_credentials,
-          cfg.request_timeout_ms
+          cfg.request_timeout_ms,
+          cfg.mcp_apps === true
         );
     }
   }

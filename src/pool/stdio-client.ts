@@ -4,7 +4,7 @@ import type { ReadResourceResult, Tool } from '@modelcontextprotocol/client';
 import type { ProviderConnectionStatus } from './status.js';
 import { childLogger } from '../util/logger.js';
 import { VERSION } from '../version.js';
-import { UPSTREAM_CLIENT_CAPABILITIES } from '../mcp-apps/ui.js';
+import { upstreamClientCapabilities } from '../mcp-apps/ui.js';
 
 const log = childLogger('stdio-client');
 
@@ -39,7 +39,9 @@ export class StdioMcpClient {
     private command: string,
     private args: string[],
     private env?: Record<string, string>,
-    private stderr?: 'inherit' | 'ignore' | 'pipe'
+    private stderr?: 'inherit' | 'ignore' | 'pipe',
+    /** Declare MCP Apps support upstream (the provider's `mcp_apps` setting). */
+    private mcpApps = false
   ) {}
 
   onReady(cb: () => void): void {
@@ -56,7 +58,7 @@ export class StdioMcpClient {
 
     this.client = new Client(
       { name: 'airlock', version: VERSION },
-      { capabilities: UPSTREAM_CLIENT_CAPABILITIES }
+      { capabilities: upstreamClientCapabilities(this.mcpApps) }
     );
     this.connecting = true;
     this.reconnectExhausted = false;

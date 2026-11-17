@@ -11,7 +11,7 @@ import type { ClientCredentialsConfig } from '../config/schema.js';
 import type { ProviderConnectionStatus } from './status.js';
 import { childLogger } from '../util/logger.js';
 import { VERSION } from '../version.js';
-import { UPSTREAM_CLIENT_CAPABILITIES } from '../mcp-apps/ui.js';
+import { upstreamClientCapabilities } from '../mcp-apps/ui.js';
 
 const log = childLogger('http-client');
 
@@ -100,7 +100,9 @@ export class HttpMcpClient {
     private clientSecret?: string,
     private oauthCallbackUrl?: string,
     clientCredentials?: ClientCredentialsConfig,
-    private requestTimeoutMs = 60_000
+    private requestTimeoutMs = 60_000,
+    /** Declare MCP Apps support upstream (the provider's `mcp_apps` setting). */
+    private mcpApps = false
   ) {
     if (this.oauth) {
       this.oauthProvider = new FileOAuthProvider(
@@ -159,7 +161,10 @@ export class HttpMcpClient {
     // anything else falls back to the 2025 initialize handshake, unchanged from before.
     this.client = new Client(
       { name: 'airlock', version: VERSION },
-      { versionNegotiation: { mode: 'auto' }, capabilities: UPSTREAM_CLIENT_CAPABILITIES }
+      {
+        versionNegotiation: { mode: 'auto' },
+        capabilities: upstreamClientCapabilities(this.mcpApps),
+      }
     );
     this.connecting = true;
 

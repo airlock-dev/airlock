@@ -86,6 +86,17 @@ export const CredentialProbeConfig = z
   .strict();
 export type CredentialProbeConfig = z.infer<typeof CredentialProbeConfig>;
 
+/**
+ * MCP Apps (`io.modelcontextprotocol/ui`) passthrough for this provider: its tools' inline views,
+ * view-only tools, and the structured data views render from. Off by default because a view runs
+ * the provider's own code in the host, and over Airlock's single connection that code can call any
+ * tool the agent is allowed, from any provider, without the model choosing to. Turn it on only for
+ * providers you trust that far.
+ */
+const McpAppsFields = {
+  mcp_apps: z.boolean().optional(),
+};
+
 const CredentialProbeFields = {
   credential_probe: CredentialProbeConfig.optional(),
 };
@@ -131,6 +142,7 @@ export const McpServerConfig = z.discriminatedUnion('type', [
       env: z.record(z.string(), EnvString).optional(),
       ...ProviderInstructionsFields,
       ...CredentialProbeFields,
+      ...McpAppsFields,
     })
     .strict(),
   z
@@ -141,6 +153,7 @@ export const McpServerConfig = z.discriminatedUnion('type', [
       headers: z.record(z.string(), EnvString).optional(),
       ...ProviderInstructionsFields,
       ...CredentialProbeFields,
+      ...McpAppsFields,
     })
     .strict(),
   z
@@ -163,6 +176,7 @@ export const McpServerConfig = z.discriminatedUnion('type', [
       request_timeout_ms: z.number().int().positive().default(60_000),
       ...ProviderInstructionsFields,
       ...CredentialProbeFields,
+      ...McpAppsFields,
     })
     .strict(),
 ]);

@@ -19,6 +19,10 @@
  * inside the view.
  */
 
+import { CLIENT_CAPABILITIES_META_KEY } from '@modelcontextprotocol/server';
+import type { ClientCapabilities } from '@modelcontextprotocol/server';
+import { isRecord } from '../util/is-record.js';
+
 export const UI_EXTENSION_ID = 'io.modelcontextprotocol/ui';
 export const UI_MIME_TYPE = 'text/html;profile=mcp-app';
 const UI_SCHEME = 'ui://';
@@ -26,22 +30,21 @@ const UI_SCHEME = 'ui://';
 const LEGACY_RESOURCE_URI_KEY = 'ui/resourceUri';
 /** Airlock-owned authority under which upstream `ui://` URIs are namespaced. */
 const NAMESPACE_PREFIX = 'ui://airlock/';
-/** `_meta` key a 2026-07-28 request carries the client's capabilities under. */
-const CLIENT_CAPABILITIES_META_KEY = 'io.modelcontextprotocol/clientCapabilities';
+/** Prefix of `_meta` keys the MCP spec reserves for the protocol itself. */
+const RESERVED_META_PREFIX = 'io.modelcontextprotocol/';
 
 export type UiVisibility = 'model' | 'app';
 
-/** Capabilities Airlock declares to upstream MCP servers. */
-export const UPSTREAM_CLIENT_CAPABILITIES = {
-  extensions: { [UI_EXTENSION_ID]: { mimeTypes: [UI_MIME_TYPE] } },
-};
+/**
+ * Capabilities Airlock declares to an upstream MCP server. MCP Apps support is only declared for a
+ * provider that opted in (`mcp_apps: true`), so other providers register no UI tools at all.
+ */
+export function upstreamClientCapabilities(mcpApps: boolean): ClientCapabilities {
+  return mcpApps ? { extensions: { [UI_EXTENSION_ID]: { mimeTypes: [UI_MIME_TYPE] } } } : {};
+}
 
 interface WithMeta {
   _meta?: Record<string, unknown>;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function uiMeta(tool: WithMeta): Record<string, unknown> | undefined {
@@ -70,18 +73,15 @@ export function isAppOnlyTool(tool: WithMeta): boolean {
 /**
  * Whether the host renders MCP Apps: true or false when it said, undefined when it is not known.
  *
- * A 2026-07-28 request carries the client's capabilities in its own `_meta`; a stateful 2025
+ * A 2026-07-28 request carries the client's capabilities in its envelope; a stateful 2025
  * session has them from `initialize`. A 2025 client over stateless HTTP has neither on hand.
  */
 export function hostSupportsUi(
   requestEnvelope: Record<string, unknown> | undefined,
-  requestMeta: Record<string, unknown> | undefined,
   sessionCapabilities: Record<string, unknown> | undefined
 ): boolean | undefined {
-  const capabilities =
-    requestEnvelope?.[CLIENT_CAPABILITIES_META_KEY] ??
-    requestMeta?.[CLIENT_CAPABILITIES_META_KEY] ??
-    sessionCapabilities;
+  // The SDK lifts the reserved envelope keys off a request's `_meta` into the envelope.
+  const capabilities = requestEnvelope?.[CLIENT_CAPABILITIES_META_KEY] ?? sessionCapabilities;
   if (!isRecord(capabilities)) return undefined;
   const extensions = capabilities.extensions;
   const ui = isRecord(extensions) ? extensions[UI_EXTENSION_ID] : undefined;
@@ -133,4 +133,26 @@ export function namespaceToolUiMeta<T extends WithMeta>(tool: T, providerId: str
     changed = true;
   }
   return changed ? { ...tool, _meta: next } : tool;
+}
+
+/**
+ * The tool without any MCP Apps metadata, for a provider that did not opt in: no view reference
+ * reaches the host, so the host treats it as a plain tool.
+ */
+export function stripToolUiMeta<T extends WithMeta>(tool: T): T {
+  const meta = tool._meta;
+  if (!meta || (!('ui' in meta) && !(LEGACY_RESOURCE_URI_KEY in meta))) return tool;
+  const { ui: _ui, [LEGACY_RESOURCE_URI_KEY]: _legacy, ...rest } = meta;
+  const { _meta: _dropped, ...withoutMeta } = tool;
+  return (Object.keys(rest).length > 0 ? { ...withoutMeta, _meta: rest } : withoutMeta) as T;
+}
+
+/**
+ * An upstream result's `_meta` as it may be handed to a view: the spec-reserved protocol keys are
+ * Airlock's to set on its own responses, never an upstream's. Undefined when nothing is left.
+ */
+export function viewResultMeta(meta: unknown): Record<string, unknown> | undefined {
+  if (!isRecord(meta)) return undefined;
+  const kept = Object.entries(meta).filter(([key]) => !key.startsWith(RESERVED_META_PREFIX));
+  return kept.length > 0 ? Object.fromEntries(kept) : undefined;
 }

@@ -3,7 +3,7 @@ import type { ReadResourceResult, Tool } from '@modelcontextprotocol/client';
 import type { ProviderConnectionStatus } from './status.js';
 import { childLogger } from '../util/logger.js';
 import { VERSION } from '../version.js';
-import { UPSTREAM_CLIENT_CAPABILITIES } from '../mcp-apps/ui.js';
+import { upstreamClientCapabilities } from '../mcp-apps/ui.js';
 
 const log = childLogger('sse-client');
 
@@ -35,7 +35,9 @@ export class SseMcpClient {
   constructor(
     private id: string,
     private url: string,
-    private headers?: Record<string, string>
+    private headers?: Record<string, string>,
+    /** Declare MCP Apps support upstream (the provider's `mcp_apps` setting). */
+    private mcpApps = false
   ) {}
 
   onReady(cb: () => void): void {
@@ -49,7 +51,7 @@ export class SseMcpClient {
 
     this.client = new Client(
       { name: 'airlock', version: VERSION },
-      { capabilities: UPSTREAM_CLIENT_CAPABILITIES }
+      { capabilities: upstreamClientCapabilities(this.mcpApps) }
     );
     this.connecting = true;
 
