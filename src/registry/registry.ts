@@ -1,5 +1,6 @@
 import { createHash } from 'crypto';
-import type { Tool } from '@modelcontextprotocol/server';
+import { ResourceNotFoundError } from '@modelcontextprotocol/server';
+import type { ReadResourceResult, Resource, Tool } from '@modelcontextprotocol/server';
 import type { BackendAdapter } from '../backend/types.js';
 import type { AllowlistEngine, Decision } from '../allowlist/engine.js';
 import type { AgentConfig, ProviderInstructionsConfig, ToolOverride } from '../config/schema.js';
@@ -13,8 +14,12 @@ import { childLogger } from '../util/logger.js';
 import { tierFromAnnotations, type ToolTier } from '../hitl/grants.js';
 import { stableStringify } from '../util/stable-json.js';
 import { providerIdForTool } from '../util/tool-name.js';
+import { UI_MIME_TYPE, parseNamespacedUiUri, toolUiResourceUri } from '../mcp-apps/ui.js';
 
 const log = childLogger('registry');
+
+/** Upper bound on one MCP Apps view (HTML text or base64 blob) relayed to a host. */
+const MAX_VIEW_CHARS = 5 * 1024 * 1024;
 
 const INSTRUCTIONS_PREAMBLE =
   'You are connected to Airlock, a gateway that fronts several upstream MCP providers under one ' +
@@ -228,6 +233,56 @@ export class ToolRegistry {
     throw new Error(`Unknown tool: ${resolvedName}`);
   }
 
+  /**
+   * MCP Apps views this agent may load: one per `ui://` resource referenced by a tool it can see.
+   * A tool the agent is denied contributes nothing, so its view stays out of reach too.
+   */
+  listUiResources(agentId: string): Resource[] {
+    const byUri = new Map<string, Resource>();
+    for (const { tool } of this.getFilteredWithDecisions(agentId)) {
+      const uri = toolUiResourceUri(tool);
+      if (!uri || byUri.has(uri) || !parseNamespacedUiUri(uri)) continue;
+      byUri.set(uri, { uri, name: tool.title ?? tool.name, mimeType: UI_MIME_TYPE });
+    }
+    return [...byUri.values()];
+  }
+
+  /**
+   * Fetch an MCP Apps view from the provider that owns it. Only URIs a visible tool references are
+   * served; anything else reads as not found, so an agent cannot probe an upstream's resources.
+   */
+  async readUiResource(agentId: string, uri: string): Promise<ReadResourceResult> {
+    const parsed = parseNamespacedUiUri(uri);
+    const referenced = this.getFilteredWithDecisions(agentId).some(
+      ({ tool }) => toolUiResourceUri(tool) === uri
+    );
+    if (!parsed || !referenced) throw new ResourceNotFoundError(uri);
+
+    const adapter = this.adapters.find(
+      (a) => getAdapterPrefix(a) === `${parsed.providerId}/` && typeof a.readResource === 'function'
+    );
+    if (!adapter?.readResource) throw new ResourceNotFoundError(uri);
+
+    const result = await adapter.readResource(parsed.upstreamUri);
+    // Hand back only the view that was asked for, under the URI the host asked with. Extra items
+    // would be upstream resources the agent never had a tool reference for.
+    const contents = result.contents
+      .filter((item) => item.uri === parsed.upstreamUri)
+      .map((item) => ({ ...item, uri }));
+    if (contents.length === 0) throw new ResourceNotFoundError(uri);
+    const size = contents.reduce(
+      (total, item) =>
+        total +
+        ('text' in item && typeof item.text === 'string' ? item.text.length : 0) +
+        ('blob' in item && typeof item.blob === 'string' ? item.blob.length : 0),
+      0
+    );
+    if (size > MAX_VIEW_CHARS) {
+      throw new Error(`MCP Apps view ${uri} is too large (${size} chars, limit ${MAX_VIEW_CHARS})`);
+    }
+    return { ...result, contents };
+  }
+
   getAllTools(): Tool[] {
     return this.cachedTools;
   }
@@ -300,6 +355,13 @@ function summarizeCatalog(tools: Tool[]): Record<string, ProviderCatalogSummary>
       hash.update('\0');
       hash.update(stableStringify(tool.inputSchema));
       hash.update('\0');
+      // MCP Apps metadata decides which view a tool opens and whether the model sees it at all.
+      // Hashed only when present, so fingerprints of tools without it are unchanged.
+      const ui = tool._meta?.ui ?? tool._meta?.['ui/resourceUri'];
+      if (ui !== undefined) {
+        hash.update(stableStringify(ui));
+        hash.update('\0');
+      }
     }
     summary[providerId] = {
       count: providerTools.length,

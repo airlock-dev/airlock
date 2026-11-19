@@ -3,7 +3,7 @@ import { SseMcpClient } from './sse-client.js';
 import { HttpMcpClient } from './http-client.js';
 import type { ProviderConnectionStatus } from './status.js';
 import type { McpServerConfig } from '../config/schema.js';
-import type { Tool } from '@modelcontextprotocol/server';
+import type { ReadResourceResult, Tool } from '@modelcontextprotocol/server';
 import { childLogger } from '../util/logger.js';
 
 const log = childLogger('pool');
@@ -96,9 +96,16 @@ export class ClientPool {
   private createClient(id: string, cfg: McpServerConfig): McpClient {
     switch (cfg.type) {
       case 'stdio':
-        return new StdioMcpClient(id, cfg.command, cfg.args, cfg.env, this.options?.stdioStderr);
+        return new StdioMcpClient(
+          id,
+          cfg.command,
+          cfg.args,
+          cfg.env,
+          this.options?.stdioStderr,
+          cfg.mcp_apps === true
+        );
       case 'sse':
-        return new SseMcpClient(id, cfg.url, cfg.headers);
+        return new SseMcpClient(id, cfg.url, cfg.headers, cfg.mcp_apps === true);
       case 'http':
         return new HttpMcpClient(
           id,
@@ -110,7 +117,8 @@ export class ClientPool {
           cfg.client_secret,
           cfg.oauth_callback_url,
           cfg.client_credentials,
-          cfg.request_timeout_ms
+          cfg.request_timeout_ms,
+          cfg.mcp_apps === true
         );
     }
   }
@@ -145,6 +153,13 @@ export class ClientPool {
     if (!client) throw new Error(`Unknown MCP: ${mcpId}`);
     if (!client.isReady()) throw new Error(`MCP ${mcpId} is not connected`);
     return client.callTool(toolName, args, requestMeta);
+  }
+
+  async readResource(mcpId: string, uri: string): Promise<ReadResourceResult> {
+    const client = this.clients.get(mcpId);
+    if (!client) throw new Error(`Unknown MCP: ${mcpId}`);
+    if (!client.isReady()) throw new Error(`MCP ${mcpId} is not connected`);
+    return client.readResource(uri);
   }
 
   async reload(newMcps: Record<string, McpServerConfig>): Promise<void> {

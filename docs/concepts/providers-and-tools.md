@@ -115,6 +115,35 @@ Airlock manages MCP server connections through a connection pool:
 - **Lazy connection** — in stdio mode (`--agent`), Airlock only connects to MCP servers the agent actually references in its allow or ask lists. Unused providers stay disconnected.
 - **Parallel initialization** — all MCP servers connect concurrently at startup.
 
+## MCP Apps (inline UI)
+
+Upstream MCP servers that implement [MCP Apps](https://modelcontextprotocol.io/docs/extensions/apps) (`io.modelcontextprotocol/ui`) attach an HTML view to a tool through `_meta.ui.resourceUri`. Hosts that support MCP Apps render that view inline. Airlock proxies these views only for providers that opt in:
+
+```yaml
+providers:
+  weather:
+    type: http
+    url: https://weather.example.com/mcp
+    mcp_apps: true # off by default
+```
+
+::: danger Only opt in providers you trust with your other tools
+A view is the provider's own code, running in the host. Its tool calls reach Airlock as ordinary `tools/call` requests over the agent's single connection, and the host does not say whether a call came from the view or the model. So an opted-in provider's view can call any tool the agent may use, **from any provider**, without the model choosing to. Policy still applies to every call, so `ask` tools still wait for a human. Anything under `allow` runs.
+:::
+
+For an opted-in provider:
+
+- **Capability** — Airlock tells the provider it supports MCP Apps, so it registers its UI tools. Other providers are not told, and Airlock strips any UI metadata they send.
+- **Namespacing** — Airlock rewrites each `ui://…` view URI to `ui://airlock/<provider>/…`. Two providers can then ship the same URI without colliding, and `resources/read` goes to the right one.
+- **Policy on views** — Airlock serves a view only if a tool the agent can see references it. A denied tool's view reads as not found, and so does any other upstream resource. Views over 5 MB are refused. Every view read is written to the audit log (`resources/read`, `view_served` or `view_refused`).
+- **App-only tools** — Airlock passes `visibility: ["app"]` tools through so the host can keep them away from the model. When the host has said it does not render MCP Apps, Airlock hides those tools and refuses calls to them.
+- **Results** — The view renders from a result's `structuredContent` and `_meta`. Airlock keeps them when the content reached the agent changed only by the `untrusted-envelope` wrapper. If a middleware mangled, truncated or summarised the content, they are dropped, just as for any other tool. Results of tools without a view never carry upstream `_meta`.
+- **Drift** — The provider's catalog fingerprint covers each tool's UI metadata, so a changed view or visibility shows up as drift.
+
+::: warning A button in a view is not an approval
+Airlock cannot tell a view's call from the model's, so a "confirm" button inside a view proves nothing about a human. If an action needs a human, such as "confirm booking", put the tool under `ask`. The approval then happens out of band in a companion app or the dashboard.
+:::
+
 ## OAuth support
 
 For MCP servers that require browser-based OAuth authentication, the `http` transport type supports:

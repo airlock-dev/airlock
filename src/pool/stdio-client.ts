@@ -1,9 +1,10 @@
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import { Client } from '@modelcontextprotocol/client';
-import type { Tool } from '@modelcontextprotocol/client';
+import type { ReadResourceResult, Tool } from '@modelcontextprotocol/client';
 import type { ProviderConnectionStatus } from './status.js';
 import { childLogger } from '../util/logger.js';
 import { VERSION } from '../version.js';
+import { upstreamClientCapabilities } from '../mcp-apps/ui.js';
 
 const log = childLogger('stdio-client');
 
@@ -38,7 +39,9 @@ export class StdioMcpClient {
     private command: string,
     private args: string[],
     private env?: Record<string, string>,
-    private stderr?: 'inherit' | 'ignore' | 'pipe'
+    private stderr?: 'inherit' | 'ignore' | 'pipe',
+    /** Declare MCP Apps support upstream (the provider's `mcp_apps` setting). */
+    private mcpApps = false
   ) {}
 
   onReady(cb: () => void): void {
@@ -53,7 +56,10 @@ export class StdioMcpClient {
       stderr: this.stderr,
     });
 
-    this.client = new Client({ name: 'airlock', version: VERSION });
+    this.client = new Client(
+      { name: 'airlock', version: VERSION },
+      { capabilities: upstreamClientCapabilities(this.mcpApps) }
+    );
     this.connecting = true;
     this.reconnectExhausted = false;
 
@@ -119,6 +125,12 @@ export class StdioMcpClient {
       ? { name, arguments: args, _meta: requestMeta }
       : { name, arguments: args };
     return this.client.callTool(request);
+  }
+
+  /** Read one upstream resource (MCP Apps views are fetched this way). */
+  async readResource(uri: string): Promise<ReadResourceResult> {
+    if (!this.client || !this.ready) throw new Error(`MCP ${this.id} not connected`);
+    return this.client.readResource({ uri });
   }
 
   getServerInfo(): { name: string; version: string } | undefined {

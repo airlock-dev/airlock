@@ -77,12 +77,26 @@ export function resultText(result: unknown): string {
  * textual blocks are dropped, non-text blocks (images, audio, links) keep their positions, and
  * structuredContent is dropped (its text is part of the rewrite). When no middleware changed the
  * text, or the result had no text to rewrite, the downstream result is returned as-is.
+ *
+ * `forView` is for MCP Apps tools, whose view renders from structuredContent and the result's
+ * `_meta`. Those are kept only when the content reached the agent unchanged apart from the
+ * untrusted envelope: once a middleware mangled, truncated or summarised the text, the raw
+ * structured data would carry exactly what it removed, so it is dropped like any other result's.
+ * Everywhere else the result's `_meta` is dropped: no middleware scans it, so it only goes to a view.
  */
-export function deliveredResult(response: ToolCallResponse): unknown {
+export function deliveredResult(
+  response: ToolCallResponse,
+  options: { forView?: boolean } = {}
+): unknown {
   const result = response.result;
   if (!isCallToolResult(result)) return result;
   const original = resultText(result);
-  if (original === '' || response.text === original) return result;
+  const keepViewData = options.forView === true && onlyEnveloped(response, original);
+  const { _meta: _droppedMeta, ...withoutMeta } = result as CallToolResultLike & {
+    _meta?: unknown;
+  };
+  const base = keepViewData || !('_meta' in result) ? result : withoutMeta;
+  if (original === '' || response.text === original) return base;
 
   const rewritten: TextBlock = { type: 'text', text: response.text };
   let placed = false;
@@ -97,6 +111,14 @@ export function deliveredResult(response: ToolCallResponse): unknown {
   }
   if (!placed) content.unshift(rewritten);
 
-  const { structuredContent: _structured, ...rest } = result;
+  if (keepViewData) return { ...result, content };
+  const { structuredContent: _structured, ...rest } = withoutMeta;
   return { ...rest, content };
+}
+
+/** Whether the delivered text is the original, at most wrapped by the untrusted envelope. */
+function onlyEnveloped(response: ToolCallResponse, original: string): boolean {
+  if (response.text === original) return true;
+  const env = response.envelope;
+  return env !== undefined && response.text === `${env.prefix}${original}${env.suffix}`;
 }
