@@ -301,6 +301,8 @@ export class Gateway {
       const uptime = Math.floor((Date.now() - this.startTime) / 1000);
       const status = dataPlane.status === 'ok' ? 'ok' : 'degraded';
       const sessions = this.sessionLimiter.snapshot();
+      let downstreamSessionMappings = 0;
+      for (const ids of this.downstreamSessionIds.values()) downstreamSessionMappings += ids.size;
       // Per-provider contract fingerprints. mcpHealth says a provider ANSWERS and credentialHealth
       // says its credential WORKS; neither notices the provider quietly changing what its tools
       // accept or what they tell an agent to do. Pin these downstream and you find out.
@@ -313,6 +315,8 @@ export class Gateway {
         toolCatalog,
         pendingApprovals,
         sessions,
+        downstreamSessionMappings,
+        memory: process.memoryUsage(),
         uptime,
       };
     });

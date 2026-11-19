@@ -171,7 +171,27 @@ describe('Gateway exposure controls', () => {
         port: agentPort,
       },
       mcpHealth: {},
+      downstreamSessionMappings: 0,
+      memory: {
+        rss: expect.any(Number),
+        heapTotal: expect.any(Number),
+        heapUsed: expect.any(Number),
+        external: expect.any(Number),
+        arrayBuffers: expect.any(Number),
+      },
     });
+
+    gateway.buildAgentDeps('test', 'session-one');
+    gateway.buildAgentDeps('test', 'session-two');
+    gateway.buildAgentDeps('test', 'session-one');
+    const memoryHealth = await fetch(`http://127.0.0.1:${managementPort}/health`, {
+      headers: { authorization: 'Bearer admin-secret' },
+    });
+    await expect(memoryHealth.json()).resolves.toMatchObject({
+      sessions: { total: 0 },
+      downstreamSessionMappings: 2,
+    });
+
     expect(audit.status).toBe(200);
     expect(hitl.status).toBe(200);
     expect(mobileDevices.status).toBe(200);

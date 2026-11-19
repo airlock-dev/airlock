@@ -122,7 +122,7 @@ both routes answer `404`.
 
 ### `GET /health`
 
-Returns gateway health status, pending HITL count, and uptime.
+Returns gateway health status, pending HITL count, process memory, and uptime.
 
 ```json
 {
@@ -153,6 +153,14 @@ Returns gateway health status, pending HITL count, and uptime.
     "total": 1,
     "perAgent": { "claude-code": 1 }
   },
+  "downstreamSessionMappings": 18,
+  "memory": {
+    "rss": 188743680,
+    "heapTotal": 71303168,
+    "heapUsed": 53477376,
+    "external": 8388608,
+    "arrayBuffers": 5242880
+  },
   "uptime": 3600
 }
 ```
@@ -161,6 +169,18 @@ Returns gateway health status, pending HITL count, and uptime.
 the downstream MCP provider pool behind that listener. `sessions` counts open
 sessions on the legacy SSE endpoint (`/agents/:agentId/sse`), in total and per
 agent; the stateless streamable HTTP endpoint holds no sessions.
+
+`downstreamSessionMappings` counts the retained mappings from agent-supplied
+session keys to downstream session IDs. A mapping may remain after a client
+disconnects. Compare this count with `sessions.total` to distinguish retained
+mappings from open legacy SSE streams.
+
+`memory` samples the gateway Node.js process in bytes. `rss` is the resident
+size, `heapTotal` is V8's allocated heap, and `heapUsed` is the portion V8 uses.
+`external` includes memory held by native objects bound to JavaScript, and
+`arrayBuffers` is the part of `external` used by array buffers, including Node
+buffers. Sample these counters alongside `uptime` to track changes across
+requests, idle periods, and restarts.
 
 `credentialHealth` answers a different question: not "is this provider
 reachable?" but "does its credential still work?" The two are independent — a
