@@ -17,7 +17,7 @@ export async function runStdioServer(deps: AgentServerDeps): Promise<void> {
     process.stdin.once('end', resolve);
     process.stdin.once('close', resolve);
   });
-  const handle = serveStdio(() => createAgentServer(deps), {
+  const handle = serveStdio((ctx) => createAgentServer({ ...deps, era: ctx.era }), {
     onerror: (err) => log.warn({ agentId: deps.agentId, err }, 'stdio MCP error'),
   });
   log.info({ agentId: deps.agentId }, 'Stdio server connected');

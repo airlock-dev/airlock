@@ -2,7 +2,12 @@ import { readFileSync } from 'fs';
 import { isIP } from 'net';
 import { parse as parseYaml } from 'yaml';
 import { hasAgentCredential } from '../security/request.js';
-import { GatewayConfig, getBuiltinProviders, withEnvVarResolution } from './schema.js';
+import {
+  GatewayConfig,
+  getBuiltinProviders,
+  getMcpConfigs,
+  withEnvVarResolution,
+} from './schema.js';
 import { applyProfiles } from './profiles.js';
 import { matches } from '../allowlist/pattern.js';
 import { AIRLOCK_APPROVAL_TOOLS, AIRLOCK_NON_ASK_TOOLS } from '../airlock/tools.js';
@@ -145,6 +150,7 @@ export function loadConfig(path: string, options: LoadConfigOptions = {}): Confi
 export function validateConfig(config: Config): ConfigDiagnostic[] {
   const diagnostics: ConfigDiagnostic[] = [];
   const providerNames = new Set(Object.keys(config.providers));
+  const mcpProviderNames = new Set(Object.keys(getMcpConfigs(config.providers)));
   const builtins = getBuiltinProviders(config.providers);
 
   const profileNames = new Set(Object.keys(config.profiles));
@@ -368,15 +374,8 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
       }
     }
 
-    // Collect all referenced namespaces from allow/ask/deny (tools and events)
-    const allPatterns = [
-      ...agent.allow,
-      ...agent.ask,
-      ...agent.deny,
-      ...(agent.events?.allow ?? []),
-      ...(agent.events?.ask ?? []),
-      ...(agent.events?.deny ?? []),
-    ];
+    // Collect all referenced tool namespaces from allow/ask/deny
+    const allPatterns = [...agent.allow, ...agent.ask, ...agent.deny];
     const referencedNamespaces = new Set<string>();
     const toolOverrideNamespaces = new Set(
       Object.keys(agent.tool_overrides)
@@ -406,6 +405,49 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
           agent: agentId,
           message: `Pattern references unknown provider "${ns}".`,
           suggestion: `Add "${ns}" to your providers block, or check for typos.`,
+        });
+      }
+    }
+
+    // Validate event patterns separately: events are only served by MCP providers (never
+    // tool_overrides or builtin approval tools), and events.arg_policy matches exact event names.
+    const eventPatterns = [
+      ...(agent.events?.allow ?? []),
+      ...(agent.events?.ask ?? []),
+      ...(agent.events?.deny ?? []),
+    ];
+    const eventNamespaces = new Set<string>();
+    for (const pattern of eventPatterns) {
+      const ns = pattern.split('/')[0];
+      if (ns) eventNamespaces.add(ns);
+    }
+    for (const ns of eventNamespaces) {
+      if (!mcpProviderNames.has(ns)) {
+        diagnostics.push({
+          level: 'error',
+          agent: agentId,
+          message: `Event pattern references unknown or non-MCP provider "${ns}".`,
+          suggestion: `Add "${ns}" as an enabled MCP provider in your providers block, or check for typos.`,
+        });
+      }
+    }
+    for (const eventKey of Object.keys(agent.events?.arg_policy ?? {})) {
+      if (eventKey.includes('*')) {
+        diagnostics.push({
+          level: 'warn',
+          agent: agentId,
+          message: `events.arg_policy key "${eventKey}" contains a wildcard, which will never match.`,
+          suggestion: 'Use exact namespaced event names (e.g. "pagerduty/incident.created").',
+        });
+        continue;
+      }
+      const ns = eventKey.split('/')[0];
+      if (ns && !mcpProviderNames.has(ns)) {
+        diagnostics.push({
+          level: 'error',
+          agent: agentId,
+          message: `events.arg_policy references unknown or non-MCP provider "${ns}" in "${eventKey}".`,
+          suggestion: `Add "${ns}" as an enabled MCP provider in your providers block, or check for typos.`,
         });
       }
     }

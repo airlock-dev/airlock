@@ -4,9 +4,11 @@ import type { ProviderCatalogSummary } from '../registry/registry.js';
 import { sanitizeToolDescription } from '../registry/sanitizer.js';
 import { stableStringify } from '../util/stable-json.js';
 import { childLogger } from '../util/logger.js';
+import { compileEventSchema, type CompiledEventSchema } from './schema-validator.js';
 import {
   SUPPORTED_GATEWAY_DELIVERY_MODES,
   namespaceEventName,
+  scanXMcpHeaderDeclarations,
   type EventDeliveryMode,
   type EventDescriptor,
 } from './protocol.js';
@@ -25,6 +27,10 @@ export interface RegisteredEvent {
   upstreamName: string;
   /** Gateway-namespaced event descriptor (`provider/upstream.name`), webhook stripped. */
   descriptor: EventDescriptor;
+  /** Precompiled JSON Schema (2020-12 or draft-07) validator for subscription arguments. */
+  validateInput?: CompiledEventSchema;
+  /** Precompiled JSON Schema (2020-12 or draft-07) validator for delivered event payloads. */
+  validatePayload?: CompiledEventSchema;
 }
 
 export interface AgentVisibleEvent {
@@ -35,23 +41,31 @@ export interface AgentVisibleEvent {
 }
 
 /**
- * Discovers, sanitizes, fingerprints, and policy-filters upstream MCP Events (`events/list`).
+ * Discovers, validates, sanitizes, fingerprints, and policy-filters upstream MCP Events (`events/list`).
  *
- * Mirrors `ToolRegistry` for the SEP-3415 `io.modelcontextprotocol/events` extension.
- * Only `poll` and `push` delivery modes are advertised through Airlock; `webhook` is stripped so
- * upstream servers cannot POST directly to external URLs and bypass Airlock's inspection, audit,
- * and revocation controls.
+ * Mirrors `ToolRegistry` for the SEP-3415 `io.modelcontextprotocol/events` extension:
+ * - Only `poll` and `push` delivery modes are advertised (`webhook` is stripped).
+ * - Descriptors with invalid `x-mcp-header` annotations or uncompilable JSON Schemas are excluded
+ *   with a diagnostic warning at ingestion time.
+ * - Notifies `onRefresh` listeners after each committed refresh so active streams can reconcile
+ *   against removed events, dropped delivery modes, or breaking schema changes.
  */
 export class EventRegistry {
   private cachedEvents: RegisteredEvent[] = [];
   private cachedByName = new Map<string, RegisteredEvent>();
   private cachedCatalogSummary: Record<string, ProviderCatalogSummary> = {};
   private refreshGeneration = 0;
+  private refreshListeners = new Set<() => void | Promise<void>>();
 
   constructor(
     private pool: EventSourcePool,
     private allowlist: AllowlistEngine
   ) {}
+
+  onRefresh(listener: () => void | Promise<void>): () => void {
+    this.refreshListeners.add(listener);
+    return () => this.refreshListeners.delete(listener);
+  }
 
   async refresh(): Promise<void> {
     const generation = ++this.refreshGeneration;
@@ -76,6 +90,42 @@ export class EventRegistry {
           }
 
           const namespacedName = namespaceEventName(providerId, raw.name);
+
+          const headerScan = scanXMcpHeaderDeclarations(raw.inputSchema);
+          if (!headerScan.valid) {
+            log.warn(
+              { providerId, event: namespacedName, reason: headerScan.reason },
+              'Excluding upstream event with invalid x-mcp-header declaration'
+            );
+            continue;
+          }
+
+          let validateInput: CompiledEventSchema | undefined;
+          if (raw.inputSchema) {
+            const compiled = compileEventSchema(raw.inputSchema);
+            if (!compiled.ok) {
+              log.warn(
+                { providerId, event: namespacedName, error: compiled.error },
+                'Excluding upstream event with invalid inputSchema'
+              );
+              continue;
+            }
+            validateInput = compiled.validate;
+          }
+
+          let validatePayload: CompiledEventSchema | undefined;
+          if (raw.payloadSchema) {
+            const compiled = compileEventSchema(raw.payloadSchema);
+            if (!compiled.ok) {
+              log.warn(
+                { providerId, event: namespacedName, error: compiled.error },
+                'Excluding upstream event with invalid payloadSchema'
+              );
+              continue;
+            }
+            validatePayload = compiled.validate;
+          }
+
           const sanitizedDescription = raw.description
             ? sanitizeToolDescription(namespacedName, raw.description)
             : undefined;
@@ -89,6 +139,8 @@ export class EventRegistry {
               ...(sanitizedDescription !== undefined ? { description: sanitizedDescription } : {}),
               delivery,
             },
+            validateInput,
+            validatePayload,
           });
         }
       } catch (err) {
@@ -102,6 +154,14 @@ export class EventRegistry {
     this.cachedByName = new Map(discovered.map((entry) => [entry.descriptor.name, entry]));
     this.cachedCatalogSummary = summarizeEventCatalog(discovered);
     log.info({ count: discovered.length }, 'Event registry refreshed');
+
+    for (const listener of this.refreshListeners) {
+      try {
+        await listener();
+      } catch (err) {
+        log.warn({ err }, 'Event registry refresh listener failed');
+      }
+    }
   }
 
   getAllEvents(): RegisteredEvent[] {

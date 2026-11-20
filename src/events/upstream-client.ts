@@ -15,6 +15,7 @@ import {
   EVENT_METHODS,
   EVENT_NOTIFICATIONS,
   EVENTS_EXTENSION_ID,
+  EVENTS_NAMED_METHODS,
   SUBSCRIPTION_ID_META_KEY,
   EventsListResultSchema,
   EventsPollResultSchema,
@@ -38,14 +39,14 @@ import {
 
 const MAX_EVENT_LIST_PAGES = 50;
 const DEFAULT_STREAM_ACK_TIMEOUT_MS = 30_000;
-const EVENTS_NAMED_METHODS = new Set<string>([
-  EVENT_METHODS.poll,
-  EVENT_METHODS.stream,
-  EVENT_METHODS.subscribe,
-  EVENT_METHODS.unsubscribe,
-]);
+/** Max buffered notifications per stream before dropping a stalled consumer. */
+const MAX_QUEUED_STREAM_NOTIFICATIONS = 256;
 
 export interface UpstreamEventStreamCallbacks {
+  /**
+   * Invoked strictly in-order on the initial `notifications/events/active` confirmation (BEFORE any
+   * `onEvent` callback runs) as well as on mid-stream gap confirmations (`truncated: true`).
+   */
   onActive?: (params: EventStreamActiveParams) => void | Promise<void>;
   onEvent: (occurrence: EventOccurrence) => void | Promise<void>;
   onHeartbeat?: (params: EventStreamHeartbeatParams) => void | Promise<void>;
@@ -72,6 +73,8 @@ interface StreamState {
   callbacks: UpstreamEventStreamCallbacks;
   ackReceived: boolean;
   chain: Promise<void>;
+  queuedCount: number;
+  enqueue: (fn: () => void | Promise<void>) => void;
   onActive: (params: EventStreamActiveParams) => void;
   settle: (outcome: {
     cause: 'local' | 'graceful' | 'terminated' | 'remote';
@@ -89,6 +92,7 @@ interface StreamState {
  */
 export class EventsAwareClient extends Client {
   private readonly eventStreams = new Map<string, StreamState>();
+  private readonly listChangedListeners = new Set<() => void>();
   private nextEventStreamId = 0;
 
   constructor(clientInfo: Implementation, options?: ClientOptions) {
@@ -106,6 +110,12 @@ export class EventsAwareClient extends Client {
         },
       },
     });
+  }
+
+  /** Subscribe to upstream `notifications/events/list_changed` notifications. */
+  onEventsListChanged(listener: () => void): () => void {
+    this.listChangedListeners.add(listener);
+    return () => this.listChangedListeners.delete(listener);
   }
 
   /** Whether the connected upstream server advertised `io.modelcontextprotocol/events`. */
@@ -127,6 +137,18 @@ export class EventsAwareClient extends Client {
       ext !== null &&
       (ext as { listChanged?: unknown }).listChanged === true
     );
+  }
+
+  /**
+   * Explicitly settle all open `events/stream` handles (e.g. before replacing a transport during
+   * OAuth or session recovery where `transport.onclose` is detached to suppress auto-reconnect).
+   */
+  closeEventStreams(reason = 'events/stream: upstream connection replaced'): void {
+    if (this.eventStreams.size === 0) return;
+    const err = new SdkError(SdkErrorCode.ConnectionClosed, reason);
+    for (const entry of Array.from(this.eventStreams.values())) {
+      entry.settle({ cause: 'remote', error: err });
+    }
   }
 
   /** List all event types advertised by the upstream server, following pagination cursors. */
@@ -177,9 +199,10 @@ export class EventsAwareClient extends Client {
 
   /**
    * Open a long-lived `events/stream` subscription on the upstream server.
-   * Resolves once `notifications/events/active` arrives; rejects if the server returns an immediate
-   * JSON-RPC error (`Forbidden`, `InvalidParams`, `NotFound`, `Unsupported`) or times out before
-   * confirming.
+   *
+   * Serializes the initial `notifications/events/active` callback BEFORE every subsequent event,
+   * heartbeat, error, or termination callback on the stream's ordered delivery queue, so a fast
+   * burst of `active` + `event` frames can never deliver an event before `active`.
    */
   async openEventStream(
     params: EventsStreamParams,
@@ -228,6 +251,14 @@ export class EventsAwareClient extends Client {
       }
     };
 
+    const wireTeardown = async () => {
+      requestAbort.abort();
+      await this.notification({
+        method: 'notifications/cancelled',
+        params: { requestId: streamId },
+      }).catch(() => {});
+    };
+
     const settle = (outcome: {
       cause: 'local' | 'graceful' | 'terminated' | 'remote';
       error?: Error;
@@ -255,21 +286,11 @@ export class EventsAwareClient extends Client {
         resolveClosed(outcome);
       };
 
-      // Drain any already-queued notification callbacks before signalling stream closure so
-      // consumers receive the final event or `terminated` frame before `closed` resolves.
       if (entry) {
         void entry.chain.finally(finish);
       } else {
         finish();
       }
-    };
-
-    const wireTeardown = async () => {
-      requestAbort.abort();
-      await this.notification({
-        method: 'notifications/cancelled',
-        params: { requestId: streamId },
-      }).catch(() => {});
     };
 
     const close = async () => {
@@ -282,16 +303,36 @@ export class EventsAwareClient extends Client {
       callbacks,
       ackReceived: false,
       chain: Promise.resolve(),
+      queuedCount: 0,
+      enqueue(fn) {
+        if (state.queuedCount >= MAX_QUEUED_STREAM_NOTIFICATIONS) {
+          settle({
+            cause: 'remote',
+            error: new Error(
+              `events/stream notification buffer exceeded (${MAX_QUEUED_STREAM_NOTIFICATIONS})`
+            ),
+          });
+          void wireTeardown();
+          return;
+        }
+        state.queuedCount += 1;
+        state.chain = state.chain
+          .then(() => fn())
+          .catch(() => {})
+          .finally(() => {
+            state.queuedCount = Math.max(0, state.queuedCount - 1);
+          });
+      },
       onActive: (active) => {
         clearAckTimer();
         const firstAck = !acked;
         acked = true;
         state.ackReceived = true;
+        // Enqueue `onActive` onto the SAME ordered queue as `onEvent` so the downstream client
+        // ALWAYS receives `notifications/events/active` strictly before any event frame.
+        state.enqueue(() => callbacks.onActive?.(active));
         if (firstAck) {
           resolveActive(active);
-        } else {
-          // Mid-stream `notifications/events/active` signals a gap (`truncated: true`) per SEP-3415.
-          state.chain = state.chain.then(() => callbacks.onActive?.(active)).catch(() => {});
         }
       },
       settle,
@@ -374,6 +415,17 @@ export class EventsAwareClient extends Client {
 
   protected override _onnotification(raw: JSONRPCNotification, extra?: MessageExtraInfo): void {
     const method = raw.method;
+    if (method === EVENT_NOTIFICATIONS.listChanged) {
+      for (const listener of this.listChangedListeners) {
+        try {
+          listener();
+        } catch {
+          // best effort
+        }
+      }
+      return;
+    }
+
     if (
       method === EVENT_NOTIFICATIONS.active ||
       method === EVENT_NOTIFICATIONS.event ||
@@ -417,7 +469,7 @@ export class EventsAwareClient extends Client {
     if (method === EVENT_NOTIFICATIONS.event) {
       const parsed = EventOccurrenceSchema.safeParse(rawParams);
       if (parsed.success) {
-        entry.chain = entry.chain.then(() => entry.callbacks.onEvent(parsed.data)).catch(() => {});
+        entry.enqueue(() => entry.callbacks.onEvent(parsed.data));
       }
       return;
     }
@@ -425,9 +477,7 @@ export class EventsAwareClient extends Client {
     if (method === EVENT_NOTIFICATIONS.heartbeat) {
       const parsed = EventStreamHeartbeatParamsSchema.safeParse(rawParams);
       if (parsed.success) {
-        entry.chain = entry.chain
-          .then(() => entry.callbacks.onHeartbeat?.(parsed.data))
-          .catch(() => {});
+        entry.enqueue(() => entry.callbacks.onHeartbeat?.(parsed.data));
       }
       return;
     }
@@ -435,9 +485,7 @@ export class EventsAwareClient extends Client {
     if (method === EVENT_NOTIFICATIONS.error) {
       const parsed = EventStreamErrorParamsSchema.safeParse(rawParams);
       if (parsed.success) {
-        entry.chain = entry.chain
-          .then(() => entry.callbacks.onError?.(parsed.data))
-          .catch(() => {});
+        entry.enqueue(() => entry.callbacks.onError?.(parsed.data));
       }
       return;
     }
@@ -446,9 +494,7 @@ export class EventsAwareClient extends Client {
       const parsed = EventStreamTerminatedParamsSchema.safeParse(rawParams);
       if (parsed.success) {
         const terminated = parsed.data;
-        entry.chain = entry.chain
-          .then(() => entry.callbacks.onTerminated?.(terminated))
-          .catch(() => {});
+        entry.enqueue(() => entry.callbacks.onTerminated?.(terminated));
         entry.settle({
           cause: 'terminated',
           error: ProtocolError.fromError(
@@ -485,26 +531,19 @@ export class EventsAwareClient extends Client {
   }
 
   protected override _onclose(): void {
-    if (this.eventStreams.size > 0) {
-      const err = new SdkError(
-        SdkErrorCode.ConnectionClosed,
-        'events/stream: upstream connection closed'
-      );
-      for (const entry of Array.from(this.eventStreams.values())) {
-        entry.settle({ cause: 'remote', error: err });
-      }
-    }
+    this.closeEventStreams('events/stream: upstream connection closed');
     super._onclose();
   }
 }
 
 /**
  * Wrap a `fetch` function for `StreamableHTTPClientTransport` so outgoing SEP-3415 `events/*`
- * requests carry the required `Mcp-Name` routing header (`params.name`).
+ * requests always carry the canonical `Mcp-Name` routing header derived from `params.name`.
  *
  * SDK v2.3.1's `StreamableHTTPClientTransport` does not yet include `events/*` in its built-in
  * `MCP_NAME_HEADER_SOURCE` table and strips `mcp-name` from per-request `options.headers`, so
- * injecting at the fetch seam guarantees full SEP-3415 HTTP wire compliance.
+ * setting `Mcp-Name` unconditionally at the fetch seam guarantees full SEP-3415 wire compliance
+ * (even overriding any stale preconfigured `Mcp-Name` header).
  */
 export function wrapFetchWithEventHeaders(
   baseFetch?: (url: string | URL, init?: RequestInit) => Promise<Response>
@@ -514,7 +553,7 @@ export function wrapFetchWithEventHeaders(
     if (init?.method?.toUpperCase() === 'POST' && typeof init.body === 'string') {
       const headers = new Headers(init.headers);
       const mcpMethod = headers.get('mcp-method');
-      if (mcpMethod && EVENTS_NAMED_METHODS.has(mcpMethod) && !headers.has('mcp-name')) {
+      if (mcpMethod && EVENTS_NAMED_METHODS.has(mcpMethod)) {
         try {
           const body = JSON.parse(init.body) as { params?: { name?: unknown } };
           if (typeof body?.params?.name === 'string' && body.params.name.length > 0) {

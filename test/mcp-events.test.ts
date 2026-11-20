@@ -13,6 +13,7 @@ import { AllowlistEngine } from '../src/allowlist/engine.js';
 import { HitlEngine } from '../src/hitl/engine.js';
 import { HitlBatcher } from '../src/hitl/batcher.js';
 import { GatewayConfig, type AgentConfig } from '../src/config/schema.js';
+import { validateConfig } from '../src/config/loader.js';
 import { applyProfiles } from '../src/config/profiles.js';
 import { eventEnabledProviders, requiredMcpsForAgent } from '../src/pool/required-mcps.js';
 import { EventRegistry } from '../src/events/registry.js';
@@ -36,6 +37,7 @@ import {
   decodeMcpHeaderValue,
   encodeMcpHeaderValue,
   namespaceEventName,
+  scanXMcpHeaderDeclarations,
   splitEventName,
   validateEventRoutingHeaders,
   type EventDescriptor,
@@ -45,6 +47,7 @@ import {
   type EventStreamHeartbeatParams,
   type EventStreamTerminatedParams,
 } from '../src/events/protocol.js';
+import { GrantStore } from '../src/hitl/grants.js';
 import type { AuditLogger } from '../src/audit/logger.js';
 import type { AgentServerDeps } from '../src/transport/agent-server.js';
 
@@ -305,16 +308,56 @@ describe('MCP Events protocol helpers', () => {
     expect(splitEventName('trailing/')).toBeUndefined();
   });
 
-  it('encodes and decodes plain ASCII and Base64 sentinel header values', () => {
+  it('encodes and decodes plain ASCII, empty strings, and Base64 sentinel values with strict UTF-8', () => {
     expect(encodeMcpHeaderValue('gmail/email.received')).toBe('gmail/email.received');
     expect(decodeMcpHeaderValue('gmail/email.received')).toBe('gmail/email.received');
+
+    // Empty string round-trips via Base64 sentinel
+    expect(encodeMcpHeaderValue('')).toBe('=?base64??=');
+    expect(decodeMcpHeaderValue('=?base64??=')).toBe('');
 
     const withSpace = 'team alerts / P1';
     const encoded = encodeMcpHeaderValue(withSpace);
     expect(encoded).toMatch(/^=\?base64\?[A-Za-z0-9+/=]+\?=$/);
     expect(decodeMcpHeaderValue(encoded)).toBe(withSpace);
 
+    // Invalid base64 and invalid UTF-8 sequences (0xff 0xfe) are rejected
     expect(decodeMcpHeaderValue('=?base64?not-valid-b64!?=')).toBeUndefined();
+    expect(decodeMcpHeaderValue('=?base64?//4=?=')).toBeUndefined();
+
+    // Nested x-mcp-header scanning and validation of duplicates / non-primitives
+    const nested = scanXMcpHeaderDeclarations({
+      type: 'object',
+      properties: {
+        filter: {
+          type: 'object',
+          properties: {
+            tenant: { type: 'string', 'x-mcp-header': 'Tenant.Id' },
+          },
+        },
+      },
+    });
+    expect(nested).toEqual({
+      valid: true,
+      bindings: [{ path: ['filter', 'tenant'], headerName: 'Mcp-Param-Tenant.Id' }],
+    });
+
+    const dup = scanXMcpHeaderDeclarations({
+      type: 'object',
+      properties: {
+        a: { type: 'string', 'x-mcp-header': 'Region' },
+        b: { type: 'string', 'x-mcp-header': 'region' },
+      },
+    });
+    expect(dup.valid).toBe(false);
+
+    const badType = scanXMcpHeaderDeclarations({
+      type: 'object',
+      properties: {
+        obj: { type: 'object', 'x-mcp-header': 'Obj' },
+      },
+    });
+    expect(badType.valid).toBe(false);
   });
 
   it('validates Mcp-Name and Mcp-Param-* routing headers and rejects mismatches with -32020', () => {
@@ -733,16 +776,287 @@ describe('End-to-end MCP Events gateway (poll + push + revocation)', () => {
     h.hitlEngine.approveByCode(pending[0].code);
 
     const res1 = await firstPoll;
-    expect(res1.cursor).toBe('cur_1');
+    expect(res1.cursor).toMatch(/^al_evt_[0-9a-f]{32}$/);
 
-    // Second poll with non-null cursor reuses the approved lease without prompting again
+    // Second poll with the gateway-issued continuation cursor reuses the lease without re-prompting
+    // and unwraps the real upstream cursor (`cur_1`) to the upstream server.
     const res2 = await h.downstreamClient.pollEvents({
       name: 'pagerduty/incident.created',
       arguments: { severity: 'P1' },
       cursor: res1.cursor,
     });
-    expect(res2.cursor).toBe('cur_1_next');
+    expect(res2.cursor).toMatch(/^al_evt_[0-9a-f]{32}$/);
+    expect(res2.cursor).not.toBe(res1.cursor);
+    expect(h.upstream.pollCalls[1].cursor).toBe('cur_1');
     expect(h.hitlEngine.getPending()).toHaveLength(0);
+
+    // An arbitrary forged non-null cursor does NOT bypass HITL approval
+    const forgedPoll = h.downstreamClient.pollEvents({
+      name: 'pagerduty/incident.created',
+      arguments: { severity: 'P1' },
+      cursor: 'forged_upstream_cursor',
+    });
+    await new Promise((r) => setTimeout(r, 15));
+    const pending2 = h.hitlEngine.getPending();
+    expect(pending2).toHaveLength(1);
+    h.hitlEngine.denyByCode(pending2[0].code, 'forged');
+    await expect(forgedPoll).rejects.toMatchObject({ code: EVENTS_ERROR_CODES.Forbidden });
+  });
+
+  it('prevents tool provider/tier grants from authorizing events.ask and enforces cross-session lease isolation', async () => {
+    const auditLogger = makeMockAuditLogger();
+    const grants = new GrantStore(undefined);
+    const provider = makeMockProvider();
+    const hitlEngine = new HitlEngine(auditLogger, provider, 5000, { grants });
+    const hitlBatcher = new HitlBatcher(20);
+
+    // Grant broad read-tier & provider-wide TOOL access on pagerduty — must NOT cover event:pagerduty/*
+    grants.create({
+      agentId: 'agent1',
+      source: 'approval',
+      scope: { kind: 'provider', provider: 'pagerduty' },
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    });
+    grants.create({
+      agentId: 'agent1',
+      source: 'approval',
+      scope: { kind: 'tier', tier: 'read', provider: 'pagerduty' },
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    });
+
+    const upstream = createUpstreamEventsServer({
+      events: [incidentDescriptor],
+      pollEventsQueue: [[], []],
+    });
+    const [upClientTx, upServerTx] = InMemoryTransport.createLinkedPair();
+    await upstream.server.connect(upServerTx);
+    const upstreamClient = new EventsAwareClient({ name: 'airlock', version: '0.0.1' });
+    await upstreamClient.connect(upClientTx);
+    cleanups.push(() => upstreamClient.close());
+
+    const agentConfig = makeAgentConfig({
+      events: { allow: [], ask: ['pagerduty/incident.created'], deny: [] },
+    });
+    const agents = { agent1: agentConfig };
+    const allowlist = new AllowlistEngine(agents);
+    const pool = makeInMemoryEventPool({ pagerduty: upstreamClient });
+    const eventRegistry = new EventRegistry(pool, allowlist);
+    await eventRegistry.refresh();
+    const streamManager = new EventStreamManager(() => ({
+      maxEventStreamsPerAgent: 8,
+      maxEventStreamsGlobal: 64,
+    }));
+    const eventService = new EventService({
+      pool,
+      registry: eventRegistry,
+      allowlist,
+      streamManager,
+      hitlEngine,
+      hitlBatcher,
+      auditLogger,
+      getAgentConfig: (id) => agents[id],
+    });
+
+    // Session A opens and gets HITL approval (tool grants must NOT auto-approve it)
+    const pollA = eventService.handlePoll(
+      {
+        agentId: 'agent1',
+        agentConfig,
+        requestId: 1,
+        downstreamSessionId: 'session-A',
+        notify: async () => {},
+      },
+      { name: 'pagerduty/incident.created', arguments: { severity: 'P1' }, cursor: null }
+    );
+    await new Promise((r) => setTimeout(r, 15));
+    expect(hitlEngine.getPending()).toHaveLength(1);
+    hitlEngine.approveByCode(hitlEngine.getPending()[0].code);
+    const resA = await pollA;
+    expect(resA.cursor).toMatch(/^al_evt_/);
+
+    // Session B trying to reuse Session A's lease token must still require fresh approval!
+    const pollB = eventService.handlePoll(
+      {
+        agentId: 'agent1',
+        agentConfig,
+        requestId: 2,
+        downstreamSessionId: 'session-B',
+        notify: async () => {},
+      },
+      { name: 'pagerduty/incident.created', arguments: { severity: 'P1' }, cursor: resA.cursor }
+    );
+    await new Promise((r) => setTimeout(r, 15));
+    expect(hitlEngine.getPending()).toHaveLength(1);
+    hitlEngine.denyByCode(hitlEngine.getPending()[0].code, 'wrong session');
+    await expect(pollB).rejects.toMatchObject({ code: EVENTS_ERROR_CODES.Forbidden });
+  });
+
+  it('prevents concurrent stream opens from bypassing caps and terminates allow streams downgraded to ask', async () => {
+    let releaseAck!: () => void;
+    const ackGate = new Promise<void>((resolve) => {
+      releaseAck = resolve;
+    });
+
+    const agentConfig = makeAgentConfig({
+      events: { allow: ['pagerduty/incident.created'], ask: [], deny: [] },
+    });
+    const agents: Record<string, AgentConfig> = { agent1: agentConfig };
+    const allowlist = new AllowlistEngine(agents);
+    const auditLogger = makeMockAuditLogger();
+    const provider = makeMockProvider();
+    const hitlEngine = new HitlEngine(auditLogger, provider, 5000);
+    const hitlBatcher = new HitlBatcher(20);
+
+    let activeUpstreamCount = 0;
+    const mockPool = {
+      getMcpIds: () => ['pagerduty'],
+      isReady: () => true,
+      supportsEvents: () => true,
+      listEvents: async () => [incidentDescriptor],
+      pollEvents: async () => ({ events: [], cursor: null }),
+      openEventStream: async (
+        _mcpId: string,
+        _params: unknown,
+        callbacks: Parameters<EventUpstreamPool['openEventStream']>[2],
+        options?: Parameters<EventUpstreamPool['openEventStream']>[3]
+      ) => {
+        activeUpstreamCount += 1;
+        await ackGate;
+        await callbacks.onActive?.({ cursor: 'c1', heartbeatMs: 10_000 });
+        let resolveClosed!: (o: { cause: 'local' | 'graceful' | 'terminated' | 'remote' }) => void;
+        const closed = new Promise<{ cause: 'local' | 'graceful' | 'terminated' | 'remote' }>(
+          (resolve) => {
+            resolveClosed = resolve;
+          }
+        );
+        options?.signal?.addEventListener('abort', () => resolveClosed({ cause: 'local' }), {
+          once: true,
+        });
+        return {
+          active: { cursor: 'c1', heartbeatMs: 10_000 },
+          closed,
+          close: async () => resolveClosed({ cause: 'local' }),
+        };
+      },
+    };
+
+    const eventRegistry = new EventRegistry(mockPool, allowlist);
+    await eventRegistry.refresh();
+    const streamManager = new EventStreamManager(() => ({
+      maxEventStreamsPerAgent: 1,
+      maxEventStreamsGlobal: 10,
+    }));
+    const eventService = new EventService({
+      pool: mockPool,
+      registry: eventRegistry,
+      allowlist,
+      streamManager,
+      hitlEngine,
+      hitlBatcher,
+      auditLogger,
+      getAgentConfig: (id) => agents[id],
+    });
+
+    const notifications: Array<{ method: string; params?: Record<string, unknown> }> = [];
+    const stream1 = eventService.handleStream(
+      {
+        agentId: 'agent1',
+        agentConfig,
+        requestId: 'req-1',
+        notify: async (n) => {
+          notifications.push(n as { method: string; params?: Record<string, unknown> });
+        },
+      },
+      { name: 'pagerduty/incident.created', arguments: { severity: 'P1' }, cursor: null }
+    );
+
+    // Before stream1 even receives upstream active ack, stream2 must be rejected with -32025!
+    await expect(
+      eventService.handleStream(
+        {
+          agentId: 'agent1',
+          agentConfig,
+          requestId: 'req-2',
+          notify: async () => {},
+        },
+        { name: 'pagerduty/incident.created', arguments: { severity: 'P1' }, cursor: null }
+      )
+    ).rejects.toMatchObject({ code: EVENTS_ERROR_CODES.ResourceExhausted });
+    expect(activeUpstreamCount).toBe(1);
+
+    releaseAck();
+    await new Promise((r) => setTimeout(r, 15));
+
+    // Downgrading allow → ask must terminate the existing unapproved stream with -32024!
+    agents.agent1 = makeAgentConfig({
+      events: { allow: [], ask: ['pagerduty/incident.created'], deny: [] },
+    });
+    allowlist.reload(agents);
+    await eventService.reconcileAfterReload();
+
+    await stream1;
+    expect(notifications.some((n) => n.method === EVENT_NOTIFICATIONS.active)).toBe(true);
+    const term = notifications.find((n) => n.method === EVENT_NOTIFICATIONS.terminated);
+    expect(term?.params?.error).toMatchObject({
+      code: EVENTS_ERROR_CODES.Forbidden,
+      data: { reason: 'Approval now required' },
+    });
+    expect(streamManager.snapshot().total).toBe(0);
+  });
+
+  it('enforces JSON Schema 2020-12 dependentRequired and validates event config rules separately from tools', async () => {
+    const schema2020Event: EventDescriptor = {
+      name: 'alert.fired',
+      delivery: ['poll'],
+      inputSchema: {
+        type: 'object',
+        properties: {
+          service: { type: 'string' },
+          env: { type: 'string' },
+        },
+        dependentRequired: { service: ['env'] },
+      },
+    };
+    const h = await buildHarness({
+      agentConfig: makeAgentConfig({
+        events: { allow: ['pagerduty/alert.fired'], ask: [], deny: [] },
+      }),
+      events: [schema2020Event],
+    });
+
+    await expect(
+      h.downstreamClient.pollEvents({
+        name: 'pagerduty/alert.fired',
+        arguments: { service: 'api' }, // missing dependentRequired `env`
+        cursor: null,
+      })
+    ).rejects.toMatchObject({ code: EVENTS_ERROR_CODES.InvalidParams });
+
+    // Config validation rejects event patterns naming non-MCP providers / tool aliases and warns on wildcard arg_policy
+    const cfg = GatewayConfig.parse({
+      providers: {
+        exec: 'builtin',
+        github: { type: 'http', url: 'https://gh.example.com/mcp' },
+      },
+      agents: {
+        a1: {
+          allow: ['exec/run'],
+          tool_overrides: {
+            custom_alias: { alias_of: 'exec/run' },
+          },
+          events: {
+            allow: ['custom_alias/ev', 'airlock/request_approval'],
+            arg_policy: {
+              'github/*': { repo: { equals: 'airlock' } },
+            },
+          },
+        },
+      },
+    });
+    const diags = validateConfig(cfg);
+    expect(diags.some((d) => d.level === 'error' && d.message.includes('custom_alias'))).toBe(true);
+    expect(diags.some((d) => d.level === 'error' && d.message.includes('airlock'))).toBe(true);
+    expect(diags.some((d) => d.level === 'warn' && d.message.includes('wildcard'))).toBe(true);
   });
 
   it('proxies push events/stream notifications, enforces stream caps, and terminates on live policy revocation', async () => {
@@ -1000,8 +1314,260 @@ describe('End-to-end MCP Events gateway (poll + push + revocation)', () => {
     expect(streamed).toHaveLength(1);
     expect(streamed[0].name).toBe('pagerduty/incident.created');
     expect(streamed[0].eventId).toBe('evt_http_push_1');
-    expect(actives).toHaveLength(0); // initial active returned on handle, not double-fired
+    expect(actives).toHaveLength(1);
+    expect(actives[0].cursor).toBe('cur_start');
 
     await stream.close();
+
+    // Verify raw HTTP 400 + JSON-RPC -32020 when Mcp-Name or annotated Mcp-Param-Region is missing!
+    const missingNameRes = await fetch(gwUrl, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+        'mcp-protocol-version': '2026-07-28',
+        'mcp-method': 'events/poll',
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 99,
+        method: 'events/poll',
+        params: {
+          name: 'pagerduty/incident.created',
+          arguments: { severity: 'P1' },
+          cursor: null,
+        },
+      }),
+    });
+    expect(missingNameRes.status).toBe(400);
+    const missingNameJson = (await missingNameRes.json()) as { error?: { code?: number } };
+    expect(missingNameJson.error?.code).toBe(EVENTS_ERROR_CODES.HeaderMismatch);
+
+    const missingParamRes = await fetch(gwUrl, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+        'mcp-protocol-version': '2026-07-28',
+        'mcp-method': 'events/subscribe',
+        'mcp-name': 'pagerduty/incident.created',
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 100,
+        method: 'events/subscribe',
+        params: {
+          name: 'pagerduty/incident.created',
+          arguments: { severity: 'P1', region: 'us-west1' },
+        },
+      }),
+    });
+    expect(missingParamRes.status).toBe(400);
+    const missingParamJson = (await missingParamRes.json()) as { error?: { code?: number } };
+    expect(missingParamJson.error?.code).toBe(EVENTS_ERROR_CODES.HeaderMismatch);
+
+    // Verify legacy 2025-era HTTP initialize does NOT advertise io.modelcontextprotocol/events
+    const legacyInitRes = await fetch(gwUrl, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 101,
+        method: 'initialize',
+        params: {
+          protocolVersion: '2025-03-26',
+          capabilities: {},
+          clientInfo: { name: 'legacy-client', version: '1.0.0' },
+        },
+      }),
+    });
+    expect(legacyInitRes.status).toBe(200);
+    const legacyText = await legacyInitRes.text();
+    expect(legacyText).not.toContain(EVENTS_EXTENSION_ID);
+  });
+
+  it('does not create a poll lease on failed bootstrap or null cursor and preserves active-before-event burst ordering', async () => {
+    // 1) Failed bootstrap poll must NOT create a reusable lease, and null cursor must require fresh approval
+    let pollCalls = 0;
+    const upstream = createUpstreamEventsServer({
+      events: [incidentDescriptor],
+    });
+    // Override events/poll to fail first call, then return null cursor on second call
+    upstream.server.setRequestHandler(
+      EVENT_METHODS.poll,
+      { params: EventsPollParamsSchema, result: EventsPollResultSchema },
+      () => {
+        pollCalls++;
+        if (pollCalls === 1) {
+          throw new Error('upstream temporary outage');
+        }
+        return { events: [], cursor: null, hasMore: false, nextPollMs: 1000 };
+      }
+    );
+
+    const [upClientTx, upServerTx] = InMemoryTransport.createLinkedPair();
+    await upstream.server.connect(upServerTx);
+    const upstreamClient = new EventsAwareClient({ name: 'airlock', version: '0.0.1' });
+    await upstreamClient.connect(upClientTx);
+    cleanups.push(() => upstreamClient.close());
+
+    const auditLogger = makeMockAuditLogger();
+    const grants = new GrantStore(undefined);
+    const hitlProvider = makeMockProvider();
+    const hitlEngine = new HitlEngine(auditLogger, hitlProvider, 5000, { grants });
+    const hitlBatcher = new HitlBatcher(20);
+    const agentConfig = makeAgentConfig({
+      events: { allow: [], ask: ['pagerduty/incident.created'], deny: [] },
+    });
+    const agents = { agent1: agentConfig };
+    const allowlist = new AllowlistEngine(agents);
+    const pool = makeInMemoryEventPool({ pagerduty: upstreamClient });
+    const eventRegistry = new EventRegistry(pool, allowlist);
+    await eventRegistry.refresh();
+    const streamManager = new EventStreamManager(() => ({
+      maxEventStreamsPerAgent: 8,
+      maxEventStreamsGlobal: 64,
+    }));
+    const eventService = new EventService({
+      pool,
+      registry: eventRegistry,
+      allowlist,
+      streamManager,
+      hitlEngine,
+      hitlBatcher,
+      auditLogger,
+      getAgentConfig: (id) => agents[id],
+    });
+
+    // First poll gets approved, then fails upstream -> must NOT mint a lease
+    const p1 = eventService.handlePoll(
+      {
+        agentId: 'agent1',
+        agentConfig,
+        requestId: 'r1',
+        downstreamSessionId: 'sess-a',
+        notify: async () => {},
+      },
+      { name: 'pagerduty/incident.created', arguments: { severity: 'P1' }, cursor: null }
+    );
+    await new Promise((r) => setTimeout(r, 15));
+    const pending1 = hitlEngine.getPending();
+    expect(pending1).toHaveLength(1);
+    hitlEngine.approveByCode(pending1[0].code);
+    await expect(p1).rejects.toThrow();
+
+    // Second poll succeeds with cursor: null -> still required approval AND returns null cursor (no continuation lease)
+    const p2 = eventService.handlePoll(
+      {
+        agentId: 'agent1',
+        agentConfig,
+        requestId: 'r2',
+        downstreamSessionId: 'sess-a',
+        notify: async () => {},
+      },
+      { name: 'pagerduty/incident.created', arguments: { severity: 'P1' }, cursor: null }
+    );
+    await new Promise((r) => setTimeout(r, 15));
+    const pending2 = hitlEngine.getPending();
+    expect(pending2).toHaveLength(1);
+    hitlEngine.approveByCode(pending2[0].code);
+    const res2 = await p2;
+    expect(res2.cursor).toBeNull();
+
+    // Third poll with cursor: null must ask again (no lease was stored for null cursor)
+    const p3 = eventService.handlePoll(
+      {
+        agentId: 'agent1',
+        agentConfig,
+        requestId: 'r3',
+        downstreamSessionId: 'sess-a',
+        notify: async () => {},
+      },
+      { name: 'pagerduty/incident.created', arguments: { severity: 'P1' }, cursor: null }
+    );
+    await new Promise((r) => setTimeout(r, 15));
+    const pending3 = hitlEngine.getPending();
+    expect(pending3).toHaveLength(1);
+    hitlEngine.denyByCode(pending3[0].code, 'no lease');
+    await expect(p3).rejects.toMatchObject({ code: EVENTS_ERROR_CODES.Forbidden });
+
+    // 2) Push burst ordering: active MUST be delivered strictly before event when emitted back-to-back
+    const burstUpstream = new Server(
+      { name: 'burst-upstream', version: '1.0.0' },
+      { capabilities: { extensions: { [EVENTS_EXTENSION_ID]: {} } } }
+    );
+    burstUpstream.setRequestHandler(
+      EVENT_METHODS.list,
+      { params: EventsListParamsSchema, result: EventsListResultSchema },
+      () => ({ events: [incidentDescriptor] })
+    );
+    burstUpstream.setRequestHandler(
+      EVENT_METHODS.stream,
+      { params: EventsStreamParamsSchema, result: EventsStreamResultSchema },
+      async (_params, reqCtx) => {
+        const meta = { [SUBSCRIPTION_ID_META_KEY]: reqCtx.mcpReq.id };
+        await reqCtx.mcpReq.notify({
+          method: EVENT_NOTIFICATIONS.active,
+          params: { cursor: 'cur_0', _meta: meta },
+        } as Notification);
+        await reqCtx.mcpReq.notify({
+          method: EVENT_NOTIFICATIONS.event,
+          params: {
+            eventId: 'evt_burst_1',
+            name: 'incident.created',
+            timestamp: '2026-11-20T14:20:00Z',
+            data: { title: 'Burst', severity: 'P1' },
+            cursor: 'cur_1',
+            _meta: meta,
+          },
+        } as Notification);
+        return {};
+      }
+    );
+
+    const [bClientTx, bServerTx] = InMemoryTransport.createLinkedPair();
+    await burstUpstream.connect(bServerTx);
+    const burstClient = new EventsAwareClient({ name: 'airlock', version: '0.0.1' });
+    await burstClient.connect(bClientTx);
+    cleanups.push(() => burstClient.close());
+
+    const allowCfg = makeAgentConfig({
+      events: { allow: ['pagerduty/incident.created'], ask: [], deny: [] },
+    });
+    const allowAgents = { agent1: allowCfg };
+    const allowList2 = new AllowlistEngine(allowAgents);
+    const burstPool = makeInMemoryEventPool({ pagerduty: burstClient });
+    const burstRegistry = new EventRegistry(burstPool, allowList2);
+    await burstRegistry.refresh();
+    const burstService = new EventService({
+      pool: burstPool,
+      registry: burstRegistry,
+      allowlist: allowList2,
+      streamManager: new EventStreamManager(() => ({
+        maxEventStreamsPerAgent: 8,
+        maxEventStreamsGlobal: 64,
+      })),
+      hitlEngine,
+      hitlBatcher,
+      auditLogger,
+      getAgentConfig: (id) => allowAgents[id],
+    });
+
+    const deliveredMethods: string[] = [];
+    await burstService.handleStream(
+      {
+        agentId: 'agent1',
+        agentConfig: allowCfg,
+        requestId: 'burst-req',
+        notify: async (n) => {
+          deliveredMethods.push(n.method);
+        },
+      },
+      { name: 'pagerduty/incident.created', arguments: { severity: 'P1' }, cursor: null }
+    );
+    expect(deliveredMethods).toEqual([EVENT_NOTIFICATIONS.active, EVENT_NOTIFICATIONS.event]);
   });
 });

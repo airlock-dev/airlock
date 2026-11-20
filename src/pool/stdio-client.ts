@@ -43,6 +43,7 @@ export class StdioMcpClient {
   private reconnectTimer?: NodeJS.Timeout;
   private lastError?: string;
   private readyListeners = new Set<() => void>();
+  private eventsListChangedListeners = new Set<() => void>();
 
   constructor(
     private id: string,
@@ -55,6 +56,14 @@ export class StdioMcpClient {
 
   onReady(cb: () => void): void {
     this.readyListeners.add(cb);
+  }
+
+  onEventsListChanged(cb: () => void): void {
+    this.eventsListChangedListeners.add(cb);
+  }
+
+  setProbeModern(enabled: boolean): void {
+    this.probeModern = enabled;
   }
 
   async connect(): Promise<void> {
@@ -71,6 +80,9 @@ export class StdioMcpClient {
       { name: 'airlock', version: VERSION },
       this.probeModern ? { versionNegotiation: { mode: 'auto' } } : undefined
     );
+    this.client.onEventsListChanged?.(() => {
+      for (const cb of this.eventsListChangedListeners) cb();
+    });
     this.connecting = true;
     this.reconnectExhausted = false;
 
@@ -202,6 +214,7 @@ export class StdioMcpClient {
 
   async stop(): Promise<void> {
     this.stopped = true;
+    this.client?.closeEventStreams?.('events/stream: upstream stdio client stopped');
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = undefined;

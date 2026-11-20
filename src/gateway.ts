@@ -174,9 +174,11 @@ export class Gateway {
         this.config.agents[profileId]?.limits,
         this.config.security.limits
       );
+      // Gateway-wide ceiling must come strictly from global limits so an agent override cannot raise it.
+      const globalLimits = resolveLimits(undefined, this.config.security.limits);
       return {
         maxEventStreamsPerAgent: resolved.maxEventStreamsPerAgent,
-        maxEventStreamsGlobal: resolved.maxEventStreamsGlobal,
+        maxEventStreamsGlobal: globalLimits.maxEventStreamsGlobal,
       };
     });
     this.eventService = new EventService({
@@ -189,8 +191,10 @@ export class Gateway {
       auditLogger: this.auditLogger,
       getAgentConfig: (profileId) => this.config.agents[profileId],
     });
+    // Every committed event catalog refresh reconciles live streams against removals/breaking changes.
+    this.eventRegistry.onRefresh(() => this.eventService.reconcileAfterReload());
 
-    // Register callback for late-connecting MCPs (after registry exists)
+    // Register callback for late-connecting MCPs and dynamic event list changes
     this.pool.onClientReady((id) => {
       log.info({ id }, 'MCP became ready, refreshing tool and event registries');
       this.registry
@@ -199,6 +203,12 @@ export class Gateway {
       this.eventRegistry
         .refresh()
         .catch((err) => log.error({ err }, 'Failed to refresh event registry after MCP ready'));
+    });
+    this.pool.onEventsListChanged((id) => {
+      log.info({ id }, 'MCP emitted notifications/events/list_changed, refreshing event registry');
+      this.eventRegistry
+        .refresh()
+        .catch((err) => log.error({ err }, 'Failed to refresh event registry after list_changed'));
     });
 
     await this.registry.refresh();
@@ -572,17 +582,19 @@ export class Gateway {
     this.updateRequestSecurity(newConfig);
     this.hitlEngine.setTimeoutMs(newConfig.approvals.timeout_ms);
     this.hitlEngine.configure(engineOptionsFromConfig(newConfig, () => this.config));
+    // Apply allowlist + revoke disallowed event streams immediately — do not wait for slow
+    // upstream pool reconnects before cutting off revoked agents.
+    this.allowlist.reload(newConfig.agents);
+    await this.eventService.reconcileAfterReload();
     const mcpConfigs = getMcpConfigs(newConfig.providers);
     await this.pool.reload(mcpConfigs, eventEnabledProviders(newConfig.agents));
     this.credentialHealth.reload(getCredentialProbes(newConfig.providers));
-    this.allowlist.reload(newConfig.agents);
     this.registry.reloadAgents(newConfig.agents, getProviderInstructions(newConfig.providers));
     // Rebuild adapters to pick up new CLIs/APIs
     const adapters = this.buildAdapters();
     this.registry.setAdapters(adapters);
     await this.registry.refresh();
     await this.eventRegistry.refresh();
-    await this.eventService.reconcileAfterReload();
     log.info('Config reloaded: providers, allowlist, registry, events, and agent configs updated');
   }
 

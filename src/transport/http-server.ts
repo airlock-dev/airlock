@@ -4,6 +4,7 @@ import { toNodeHandler, type NodeMcpRequestHandler } from '@modelcontextprotocol
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { createAgentServer } from './agent-server.js';
 import type { AgentServerDeps } from './agent-server.js';
+import { validateHttpEventRoutingHeaders } from '../events/service.js';
 import { childLogger } from '../util/logger.js';
 import {
   checkAgentBearerAuth,
@@ -54,13 +55,14 @@ export async function httpServerPlugin(
     if (existing) return existing.node;
 
     const handler = createMcpHandler(
-      () => {
+      (reqCtx) => {
         const deps = opts.getDeps(profileId);
         // The route checked the profile before dispatching; it can only vanish in a reload race.
         if (!deps) throw new Error(`Unknown agent profile: ${profileId}`);
         const { resolveSessionId } = opts;
         return createAgentServer({
           ...deps,
+          era: reqCtx.era,
           ...(resolveSessionId
             ? { resolveSessionId: (id: string) => resolveSessionId(profileId, id) }
             : {}),
@@ -75,7 +77,25 @@ export async function httpServerPlugin(
         onerror: (err) => log.warn({ profileId, err }, 'MCP handler error'),
       }
     );
-    const node = toNodeHandler(handler, {
+    // Pre-dispatch SEP-3415 routing header check (`Mcp-Name` & `Mcp-Param-*`) so missing or
+    // mismatched headers return HTTP 400 + JSON-RPC -32020 before `createMcpHandler` opens SSE.
+    const wrappedHandler = {
+      fetch: async (
+        webReq: Request,
+        reqOpts?: Parameters<McpHttpHandler['fetch']>[1]
+      ): Promise<Response> => {
+        const deps = opts.getDeps(profileId);
+        if (deps?.eventService?.shouldAdvertiseFor(profileId, deps.agentConfig)) {
+          const eventService = deps.eventService;
+          const headerError = await validateHttpEventRoutingHeaders(webReq, (eventName) =>
+            eventService.getEventInputSchema(eventName)
+          );
+          if (headerError) return headerError;
+        }
+        return handler.fetch(webReq, reqOpts);
+      },
+    };
+    const node = toNodeHandler(wrappedHandler, {
       onerror: (err) => log.error({ profileId, err }, 'MCP node adapter error'),
     });
     handlers.set(profileId, { handler, node });

@@ -93,6 +93,7 @@ export class HttpMcpClient {
   private reconnectTimer?: NodeJS.Timeout;
   private refreshTimer?: NodeJS.Timeout;
   private readyListeners = new Set<() => void>();
+  private eventsListChangedListeners = new Set<() => void>();
 
   private awaitingAuth = false;
   private connecting = false;
@@ -131,6 +132,10 @@ export class HttpMcpClient {
 
   onReady(cb: () => void): void {
     this.readyListeners.add(cb);
+  }
+
+  onEventsListChanged(cb: () => void): void {
+    this.eventsListChangedListeners.add(cb);
   }
 
   async connect(): Promise<void> {
@@ -174,6 +179,9 @@ export class HttpMcpClient {
       { name: 'airlock', version: VERSION },
       { versionNegotiation: { mode: 'auto' } }
     );
+    this.client.onEventsListChanged?.(() => {
+      for (const cb of this.eventsListChangedListeners) cb();
+    });
     this.connecting = true;
 
     this.transport.onclose = () => {
@@ -294,6 +302,9 @@ export class HttpMcpClient {
           // The reactive 401 raced a usable refresh token. Reconnect without asking the operator
           // to complete a browser flow that is no longer necessary.
           this.awaitingAuth = false;
+          this.client?.closeEventStreams?.(
+            'events/stream: upstream reconnecting after OAuth refresh'
+          );
           const oldTransport = this.transport;
           if (oldTransport) oldTransport.onclose = undefined;
           await oldTransport?.close();
@@ -325,6 +336,7 @@ export class HttpMcpClient {
         this.oauthProvider!.stopCallbackServer();
         const result = await auth(this.oauthProvider!, { serverUrl: this.url });
         if (result === 'AUTHORIZED') {
+          this.client?.closeEventStreams?.('events/stream: upstream reconnecting after OAuth');
           const oldTransport = this.transport;
           if (oldTransport) oldTransport.onclose = undefined;
           await oldTransport?.close();
@@ -362,6 +374,7 @@ export class HttpMcpClient {
     this.connecting = false;
     this.authorizationRequired = true;
     this.lastError = 'OAuth authorization required';
+    this.client?.closeEventStreams?.('events/stream: upstream OAuth authorization required');
     if (this.refreshTimer) {
       clearTimeout(this.refreshTimer);
       this.refreshTimer = undefined;
@@ -499,10 +512,12 @@ export class HttpMcpClient {
     callbacks: UpstreamEventStreamCallbacks,
     options?: UpstreamEventStreamOptions
   ): Promise<UpstreamEventStreamHandle> {
-    if (!this.client || !this.ready) throw new Error(`MCP ${this.id} not connected`);
-    return this.client.openEventStream(params, callbacks, {
-      ackTimeoutMs: this.requestTimeoutMs,
-      ...options,
+    return this.withSessionRetry('openEventStream', async () => {
+      if (!this.client || !this.ready) throw new Error(`MCP ${this.id} not connected`);
+      return this.client.openEventStream(params, callbacks, {
+        ackTimeoutMs: this.requestTimeoutMs,
+        ...options,
+      });
     });
   }
 
@@ -561,6 +576,7 @@ export class HttpMcpClient {
         'HTTP MCP session invalid, reconnecting'
       );
       this.ready = false;
+      this.client?.closeEventStreams?.('events/stream: upstream session invalid, reconnecting');
       const oldTransport = this.transport;
       if (oldTransport) oldTransport.onclose = undefined;
       await oldTransport
@@ -575,6 +591,7 @@ export class HttpMcpClient {
 
   async stop(): Promise<void> {
     this.stopped = true;
+    this.client?.closeEventStreams?.('events/stream: upstream client stopped');
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = undefined;

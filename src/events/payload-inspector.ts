@@ -2,6 +2,7 @@ import type { AgentConfig, MiddlewareItemConfig } from '../config/schema.js';
 import type { AuditLogger } from '../audit/logger.js';
 import { matches } from '../allowlist/pattern.js';
 import { childLogger } from '../util/logger.js';
+import type { CompiledEventSchema } from './schema-validator.js';
 import {
   AIRLOCK_INJECTION_DETECTED_META_KEY,
   AIRLOCK_UNTRUSTED_META_KEY,
@@ -31,6 +32,9 @@ const EVENT_INJECTION_PATTERNS = [
 
 const URL_WITH_QUERY_REGEX = /(https?:\/\/[^\s"'<>)\]]+)\?([^\s"'<>)\]]+)/g;
 
+/** Only protocol-reserved and Airlock-owned metadata namespaces pass through on EventOccurrence._meta. */
+const SAFE_META_PREFIXES = ['io.modelcontextprotocol/', 'dev.airlock/'];
+
 interface EffectiveEventPostConfig {
   injectionEnabled: boolean;
   injectionMode: 'detect' | 'mangle';
@@ -51,10 +55,6 @@ function resolveEventPostConfig(
 ): EffectiveEventPostConfig {
   const userMiddleware = agentConfig.middleware;
 
-  // Match buildMiddlewareChain's exact default semantics:
-  //   undefined  → defaults (untrusted-envelope + output-injection-detector in detect mode)
-  //   []         → bare pipeline, no defaults
-  //   [items...] → defaults unless explicitly disabled via enabled: false
   if (userMiddleware && userMiddleware.length === 0) {
     return {
       injectionEnabled: false,
@@ -100,16 +100,22 @@ function resolveEventPostConfig(
   };
 }
 
+function textHasInjection(text: string): boolean {
+  return EVENT_INJECTION_PATTERNS.some((pattern) => pattern.test(text));
+}
+
 function transformPayloadValue(
   value: unknown,
   cfg: EffectiveEventPostConfig,
-  state: { injectionDetected: boolean }
+  state: { injectionDetected: boolean; modified: boolean }
 ): unknown {
   if (typeof value === 'string') {
     let next = value;
 
     if (cfg.stripQueryParams) {
-      next = next.replace(URL_WITH_QUERY_REGEX, '$1');
+      const stripped = next.replace(URL_WITH_QUERY_REGEX, '$1');
+      if (stripped !== next) state.modified = true;
+      next = stripped;
     }
 
     if (cfg.injectionEnabled) {
@@ -117,10 +123,12 @@ function transformPayloadValue(
         if (pattern.test(next)) {
           state.injectionDetected = true;
           if (cfg.injectionMode === 'mangle') {
-            next = next.replace(
+            const mangled = next.replace(
               new RegExp(pattern.source, pattern.flags + (pattern.flags.includes('g') ? '' : 'g')),
               '[REDACTED: suspected injection]'
             );
+            if (mangled !== next) state.modified = true;
+            next = mangled;
           }
         }
       }
@@ -128,6 +136,7 @@ function transformPayloadValue(
 
     if (cfg.maxStringChars !== undefined && next.length > cfg.maxStringChars) {
       next = `${next.slice(0, cfg.maxStringChars)}… [truncated by Airlock]`;
+      state.modified = true;
     }
 
     return next;
@@ -140,12 +149,28 @@ function transformPayloadValue(
   if (value && typeof value === 'object') {
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      if (cfg.injectionEnabled && textHasInjection(k)) {
+        state.injectionDetected = true;
+      }
       out[k] = transformPayloadValue(v, cfg, state);
     }
     return out;
   }
 
   return value;
+}
+
+function filterOccurrenceMeta(
+  rawMeta: Record<string, unknown> | undefined
+): Record<string, unknown> {
+  if (!rawMeta) return {};
+  const filtered: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(rawMeta)) {
+    if (SAFE_META_PREFIXES.some((prefix) => k.startsWith(prefix))) {
+      filtered[k] = v;
+    }
+  }
+  return filtered;
 }
 
 export interface InspectEventOccurrenceParams {
@@ -155,24 +180,45 @@ export interface InspectEventOccurrenceParams {
   occurrence: EventOccurrence;
   auditLogger: AuditLogger;
   requestId: string;
+  /** Optional precompiled `payloadSchema` validator so transforms never break the advertised contract. */
+  validatePayload?: CompiledEventSchema;
 }
 
 /**
  * Inspect and sanitize an upstream `EventOccurrence` before delivering it to an agent.
  *
- * Preserves the JSON object structure of `occurrence.data` so it remains conformant with the event
- * type's `payloadSchema`, while applying Airlock's prompt-injection detection/mangling, URL query
- * stripping, string size capping, audit logging, and untrusted-provenance `_meta` stamping.
+ * - Strips unknown pass-through top-level fields and untrusted upstream `_meta` entries.
+ * - Inspects both property keys and string values in `data` for prompt injection.
+ * - Verifies transformed `data` against `payloadSchema` (when available) so mangling or truncation
+ *   never silently emits a schema-invalid payload; falls back to the valid original value while
+ *   keeping `dev.airlock/injectionDetected` and audit logging intact.
  */
 export function inspectEventOccurrence(params: InspectEventOccurrenceParams): EventOccurrence {
-  const { agentId, agentConfig, namespacedEventName, occurrence, auditLogger, requestId } = params;
+  const {
+    agentId,
+    agentConfig,
+    namespacedEventName,
+    occurrence,
+    auditLogger,
+    requestId,
+    validatePayload,
+  } = params;
   const cfg = resolveEventPostConfig(agentConfig, namespacedEventName);
-  const state = { injectionDetected: false };
+  const state = { injectionDetected: false, modified: false };
 
-  const inspectedData = transformPayloadValue(occurrence.data, cfg, state) as Record<
-    string,
-    unknown
-  >;
+  let deliveredData = transformPayloadValue(occurrence.data, cfg, state) as Record<string, unknown>;
+
+  if (state.modified && validatePayload) {
+    const originalValid = Boolean(validatePayload(occurrence.data));
+    const transformedValid = Boolean(validatePayload(deliveredData));
+    if (originalValid && !transformedValid) {
+      log.warn(
+        { agentId, event: namespacedEventName, eventId: occurrence.eventId },
+        'Event payload transform violated payloadSchema; preserving schema-valid data and flagging metadata'
+      );
+      deliveredData = occurrence.data;
+    }
+  }
 
   if (state.injectionDetected) {
     log.warn(
@@ -194,15 +240,17 @@ export function inspectEventOccurrence(params: InspectEventOccurrenceParams): Ev
   }
 
   const nextMeta: Record<string, unknown> = {
-    ...(occurrence._meta ?? {}),
+    ...filterOccurrenceMeta(occurrence._meta),
     ...(cfg.markUntrusted ? { [AIRLOCK_UNTRUSTED_META_KEY]: true } : {}),
     ...(state.injectionDetected ? { [AIRLOCK_INJECTION_DETECTED_META_KEY]: true } : {}),
   };
 
   return {
-    ...occurrence,
+    eventId: occurrence.eventId,
     name: namespacedEventName,
-    data: inspectedData,
+    timestamp: occurrence.timestamp,
+    data: deliveredData,
+    ...(occurrence.cursor !== undefined ? { cursor: occurrence.cursor } : {}),
     ...(Object.keys(nextMeta).length > 0 ? { _meta: nextMeta } : {}),
   };
 }

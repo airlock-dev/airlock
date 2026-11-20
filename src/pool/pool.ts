@@ -62,6 +62,7 @@ export class ClientPool {
   private clients = new Map<string, McpClient>();
   private healthTimer?: NodeJS.Timeout;
   private _onClientReady?: (id: string) => void;
+  private _onEventsListChanged?: (id: string) => void;
   private eventsProviders: Set<string>;
 
   constructor(
@@ -75,6 +76,10 @@ export class ClientPool {
     this._onClientReady = cb;
   }
 
+  onEventsListChanged(cb: (id: string) => void): void {
+    this._onEventsListChanged = cb;
+  }
+
   async initialize(): Promise<void> {
     const entries = Object.entries(this.mcps);
     await Promise.allSettled(entries.map(([id, cfg]) => this.connectClient(id, cfg)));
@@ -85,6 +90,9 @@ export class ClientPool {
     const client = this.createClient(id, cfg);
     this.clients.set(id, client);
     client.onReady(() => this.notifyClientReady(id));
+    if (client instanceof HttpMcpClient || client instanceof StdioMcpClient) {
+      client.onEventsListChanged(() => this._onEventsListChanged?.(id));
+    }
     try {
       await client.connect();
       if (!client.isReady()) {
@@ -246,6 +254,12 @@ export class ClientPool {
               void this.connectClient(id, cfg);
             })
         );
+      } else if (cfg.type === 'stdio') {
+        // Keep probeModern in sync so a future reconnect stops probing once event access is removed.
+        const client = this.clients.get(id);
+        if (client instanceof StdioMcpClient) {
+          client.setProbeModern(this.eventsProviders.has(id));
+        }
       }
     }
     await Promise.all(restarts);

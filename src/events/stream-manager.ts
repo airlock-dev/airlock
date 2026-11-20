@@ -5,6 +5,7 @@ const log = childLogger('events:streams');
 
 export interface EventStreamLimits {
   maxEventStreamsPerAgent: number;
+  /** Gateway-wide ceiling (must come from global limits, never raised by per-agent overrides). */
   maxEventStreamsGlobal: number;
 }
 
@@ -13,8 +14,10 @@ export interface TrackedEventStream {
   agentId: string;
   eventName: string;
   args: Record<string, unknown>;
+  /** True when the stream was explicitly approved through HITL (`events.ask`). */
+  approved: boolean;
   /**
-   * Send `notifications/events/terminated` to the downstream client (if possible) and tear down
+   * Send `notifications/events/terminated` to the downstream client (if active) and tear down
    * both upstream and downstream sides of the stream.
    */
   terminate: (error: EventStreamErrorObject) => Promise<void>;
@@ -23,11 +26,12 @@ export interface TrackedEventStream {
 }
 
 /**
- * Tracks live downstream `events/stream` subscriptions across the gateway.
+ * Tracks pending and live downstream `events/stream` subscriptions across the gateway.
  *
- * Enforces dedicated per-agent and global stream caps (separate from general request caps, per
- * SEP-3415), supports live revocation when config reloads revoke an agent's permission or tighten
- * `events.arg_policy`, and cleanly shuts down open SSE streams before Fastify closes.
+ * - Atomically reserves a slot via `reserve()` BEFORE opening an upstream stream so concurrent
+ *   opens cannot race past per-agent or global caps.
+ * - Tracks pending opens so `revokeDisallowed()` and `closeAll()` abort in-flight opens as well
+ *   as active streams.
  */
 export class EventStreamManager {
   private readonly streams = new Map<string, TrackedEventStream>();
@@ -36,12 +40,15 @@ export class EventStreamManager {
   constructor(private readonly getLimits: (agentId: string) => EventStreamLimits) {}
 
   /**
-   * Reserve a slot for a new `events/stream`. Throws SEP-3415 `ResourceExhausted` (`-32025`) when
-   * per-agent or global subscription ceilings are reached.
+   * Atomically check per-agent and global caps and reserve a slot for `stream`.
+   * Throws SEP-3415 `ResourceExhausted` (`-32025`) when either cap is reached.
+   * Callers MUST call `release(stream.id)` in a `finally` block.
    */
-  tryAdmit(agentId: string): void {
-    const limits = this.getLimits(agentId);
-    const agentCount = this.perAgentCount.get(agentId) ?? 0;
+  reserve(stream: TrackedEventStream): void {
+    if (this.streams.has(stream.id)) return;
+
+    const limits = this.getLimits(stream.agentId);
+    const agentCount = this.perAgentCount.get(stream.agentId) ?? 0;
     if (agentCount >= limits.maxEventStreamsPerAgent) {
       throw createEventsError(
         EVENTS_ERROR_CODES.ResourceExhausted,
@@ -57,15 +64,23 @@ export class EventStreamManager {
         { limit: 'subscriptions', max: limits.maxEventStreamsGlobal }
       );
     }
-  }
 
-  register(stream: TrackedEventStream): void {
-    if (this.streams.has(stream.id)) return;
     this.streams.set(stream.id, stream);
-    this.perAgentCount.set(stream.agentId, (this.perAgentCount.get(stream.agentId) ?? 0) + 1);
+    this.perAgentCount.set(stream.agentId, agentCount + 1);
   }
 
-  unregister(streamId: string): void {
+  /** Replace lifecycle handlers on a reserved stream (e.g. once upstream opens). */
+  updateHandlers(
+    streamId: string,
+    handlers: Pick<TrackedEventStream, 'terminate' | 'closeGracefully'>
+  ): void {
+    const existing = this.streams.get(streamId);
+    if (!existing) return;
+    existing.terminate = handlers.terminate;
+    existing.closeGracefully = handlers.closeGracefully;
+  }
+
+  release(streamId: string): void {
     const existing = this.streams.get(streamId);
     if (!existing) return;
     this.streams.delete(streamId);
@@ -75,13 +90,14 @@ export class EventStreamManager {
   }
 
   /**
-   * Re-check every open stream after a config reload or event catalog refresh.
+   * Re-check every reserved/open stream after a config reload or event catalog refresh.
    * Any stream that is no longer permitted receives `notifications/events/terminated` with the
-   * returned error (`Forbidden` `-32024` or `NotFound` `-32023`) and is torn down immediately.
+   * returned error (`Forbidden` `-32024`, `NotFound` `-32023`, or `Unsupported` `-32026`) and is
+   * torn down immediately.
    */
   async revokeDisallowed(
     check: (
-      stream: Pick<TrackedEventStream, 'agentId' | 'eventName' | 'args'>
+      stream: Pick<TrackedEventStream, 'agentId' | 'eventName' | 'args' | 'approved'>
     ) => EventStreamErrorObject | undefined
   ): Promise<number> {
     const toTerminate: Array<{ stream: TrackedEventStream; error: EventStreamErrorObject }> = [];
@@ -98,14 +114,14 @@ export class EventStreamManager {
     );
     await Promise.allSettled(
       toTerminate.map(async ({ stream, error }) => {
-        this.unregister(stream.id);
+        this.release(stream.id);
         await stream.terminate(error);
       })
     );
     return toTerminate.length;
   }
 
-  /** Gracefully close every active stream during gateway/stdio shutdown. */
+  /** Gracefully close every active or pending stream during gateway/stdio shutdown. */
   async closeAll(): Promise<void> {
     const active = Array.from(this.streams.values());
     this.streams.clear();

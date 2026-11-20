@@ -173,9 +173,10 @@ export async function runStdioMode(
       activeConfig.agents[profileId]?.limits,
       activeConfig.security.limits
     );
+    const globalLimits = resolveLimits(undefined, activeConfig.security.limits);
     return {
       maxEventStreamsPerAgent: resolved.maxEventStreamsPerAgent,
-      maxEventStreamsGlobal: resolved.maxEventStreamsGlobal,
+      maxEventStreamsGlobal: globalLimits.maxEventStreamsGlobal,
     };
   });
   const eventService = new EventService({
@@ -188,8 +189,9 @@ export async function runStdioMode(
     auditLogger,
     getAgentConfig: (profileId) => activeConfig.agents[profileId],
   });
+  eventRegistry.onRefresh(() => eventService.reconcileAfterReload());
 
-  // Register callback for late-connecting MCPs (after registry exists)
+  // Register callback for late-connecting MCPs and dynamic event list changes
   pool.onClientReady((id) => {
     log.info({ id }, 'MCP became ready, refreshing tool and event registries');
     registry
@@ -198,6 +200,12 @@ export async function runStdioMode(
     eventRegistry
       .refresh()
       .catch((err) => log.error({ err }, 'Failed to refresh event registry after MCP ready'));
+  });
+  pool.onEventsListChanged((id) => {
+    log.info({ id }, 'MCP emitted notifications/events/list_changed, refreshing event registry');
+    eventRegistry
+      .refresh()
+      .catch((err) => log.error({ err }, 'Failed to refresh event registry after list_changed'));
   });
 
   await registry.refresh();
@@ -230,20 +238,22 @@ export async function runStdioMode(
       hitlEngine.setTimeoutMs(newConfig.approvals.timeout_ms);
       hitlEngine.configure(engineOptionsFromConfig(newConfig, getConfig));
       updateManagementRequestSecurity(newConfig, managementRequestSecurity);
+      // Apply allowlist + revoke disallowed event streams immediately before waiting on pool reload.
+      allowlist.reload(newConfig.agents);
+      void eventService
+        .reconcileAfterReload()
+        .catch((err) => log.error({ err }, 'Failed to reconcile event streams on reload'));
       // Filtered like the initial pool: the unfiltered map would connect every configured provider.
       const newMcpConfigs = selectMcps(newConfig, currentAgentConfig);
       pool
         .reload(newMcpConfigs, eventEnabledProviders({ [agentId]: currentAgentConfig }))
         .then(() => {
-          allowlist.reload(newConfig.agents);
           registry.reloadAgents(newConfig.agents, getProviderInstructions(newConfig.providers));
           const newAdapters = buildAdapters(newConfig, pool, {
             airlock: airlockDeps(),
           });
           registry.setAdapters(newAdapters);
-          return Promise.all([registry.refresh(), eventRegistry.refresh()]).then(() =>
-            eventService.reconcileAfterReload()
-          );
+          return Promise.all([registry.refresh(), eventRegistry.refresh()]);
         })
         .then(() => {
           log.info('Config reloaded: providers, allowlist, agent config, security');

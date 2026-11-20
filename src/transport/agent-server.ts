@@ -56,6 +56,8 @@ export interface AgentServerDeps {
   signal?: AbortSignal;
   /** Optional SEP-3415 MCP Events service (`io.modelcontextprotocol/events`). */
   eventService?: EventService;
+  /** Negotiated MCP protocol era; Events (SEP-3415) is only advertised and served in modern era. */
+  era?: 'legacy' | 'modern';
 }
 
 /** Per-request `_meta` key an agent can set to identify its session to Airlock. */
@@ -111,7 +113,8 @@ export function createAgentServer(deps: AgentServerDeps): Server {
     log.debug({ agentId, err }, 'Failed to build server instructions');
   }
 
-  const advertiseEvents = Boolean(deps.eventService?.shouldAdvertiseFor(agentId, getConfig()));
+  const advertiseEvents =
+    deps.era !== 'legacy' && Boolean(deps.eventService?.shouldAdvertiseFor(agentId, getConfig()));
 
   const server = new Server(
     { name: 'airlock', version: VERSION },

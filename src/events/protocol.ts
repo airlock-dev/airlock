@@ -184,6 +184,13 @@ export const EVENT_METHODS = {
   unsubscribe: 'events/unsubscribe',
 } as const;
 
+export const EVENTS_NAMED_METHODS = new Set<string>([
+  EVENT_METHODS.poll,
+  EVENT_METHODS.stream,
+  EVENT_METHODS.subscribe,
+  EVENT_METHODS.unsubscribe,
+]);
+
 export const EVENT_NOTIFICATIONS = {
   active: 'notifications/events/active',
   event: 'notifications/events/event',
@@ -218,18 +225,25 @@ export function splitEventName(
   };
 }
 
+// RFC 9110 visible ASCII (`field-vchar`, 0x21..0x7E) without leading/trailing OWS.
 const PLAIN_ASCII_HEADER = /^[\x21-\x7e]+$/;
-const BASE64_SENTINEL = /^=\?base64\?([A-Za-z0-9+/=]+)\?=$/;
+// RFC 9110 `tchar` token characters permitted in HTTP header names (`Mcp-Param-<suffix>`).
+const HTTP_TOKEN_PATTERN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+const BASE64_SENTINEL = /^=\?base64\?([A-Za-z0-9+/=]*)\?=$/;
+const UTF8_FATAL_DECODER = new TextDecoder('utf-8', { fatal: true });
 
-/** Encode a header value per SEP-2243 (plain visible ASCII or Base64 sentinel). */
+/** Encode a header value per SEP-2243 (plain visible ASCII or Base64 sentinel, including empty strings). */
 export function encodeMcpHeaderValue(value: string): string {
-  if (PLAIN_ASCII_HEADER.test(value) && !value.startsWith('=?base64?')) {
+  if (value.length > 0 && PLAIN_ASCII_HEADER.test(value) && !value.startsWith('=?base64?')) {
     return value;
   }
   return `=?base64?${Buffer.from(value, 'utf-8').toString('base64')}?=`;
 }
 
-/** Decode a SEP-2243 header value (plain ASCII or `=?base64?...?=`). Returns undefined if malformed. */
+/**
+ * Decode a SEP-2243 header value (plain ASCII or `=?base64?...?=`).
+ * Rejects malformed base64 and invalid UTF-8 byte sequences.
+ */
 export function decodeMcpHeaderValue(header: string): string | undefined {
   const trimmed = header.trim();
   if (!trimmed.startsWith('=?base64?')) {
@@ -242,44 +256,131 @@ export function decodeMcpHeaderValue(header: string): string | undefined {
   const decoded = Buffer.from(raw, 'base64');
   // Reject non-canonical base64 payloads.
   if (decoded.toString('base64') !== raw) return undefined;
-  return decoded.toString('utf-8');
-}
-
-/**
- * Extract `x-mcp-header` property declarations from an event's `inputSchema`.
- * Returns entries of `[argName, headerSuffix]` (for `Mcp-Param-${headerSuffix}`).
- */
-export function extractXMcpHeaders(
-  inputSchema?: Record<string, unknown>
-): Array<{ argName: string; headerName: string }> {
-  const properties = inputSchema?.properties;
-  if (!properties || typeof properties !== 'object' || Array.isArray(properties)) return [];
-
-  const result: Array<{ argName: string; headerName: string }> = [];
-  for (const [argName, prop] of Object.entries(properties as Record<string, unknown>)) {
-    if (!prop || typeof prop !== 'object' || Array.isArray(prop)) continue;
-    const headerSuffix = (prop as Record<string, unknown>)['x-mcp-header'];
-    if (typeof headerSuffix === 'string' && /^[A-Za-z0-9-]+$/.test(headerSuffix)) {
-      result.push({ argName, headerName: `Mcp-Param-${headerSuffix}` });
-    }
+  try {
+    return UTF8_FATAL_DECODER.decode(decoded);
+  } catch {
+    return undefined;
   }
-  return result;
+}
+
+export interface XMcpHeaderBinding {
+  /** Property path segments inside `params.arguments` (e.g. `['region']` or `['filter', 'tenant']`). */
+  path: string[];
+  headerName: string;
+}
+
+export type XMcpHeaderScanResult =
+  | { valid: true; bindings: XMcpHeaderBinding[] }
+  | { valid: false; reason: string };
+
+const PRIMITIVE_TYPES = new Set(['string', 'number', 'integer', 'boolean']);
+
+function isAllowedHeaderPropertyType(prop: Record<string, unknown>): boolean {
+  const rawType = prop.type;
+  if (rawType === undefined) return true;
+  if (typeof rawType === 'string') return PRIMITIVE_TYPES.has(rawType);
+  if (Array.isArray(rawType)) {
+    const nonNull = rawType.filter((t) => t !== 'null');
+    return (
+      nonNull.length > 0 && nonNull.every((t) => typeof t === 'string' && PRIMITIVE_TYPES.has(t))
+    );
+  }
+  return false;
 }
 
 /**
- * Validate `Mcp-Name` and `Mcp-Param-*` routing headers when present on a Streamable HTTP request.
- * Throws `-32020 HeaderMismatch` on invalid encoding or header/body disagreement per SEP-3415.
+ * Scan an event's `inputSchema` for SEP-2243 `x-mcp-header` declarations (recursing into nested
+ * object `properties`). Enforces RFC 9110 token syntax, primitive property types, and uniqueness
+ * across case-insensitive header names.
+ */
+export function scanXMcpHeaderDeclarations(
+  inputSchema?: Record<string, unknown>
+): XMcpHeaderScanResult {
+  if (!inputSchema) return { valid: true, bindings: [] };
+
+  const bindings: XMcpHeaderBinding[] = [];
+  const seenHeaders = new Set<string>();
+
+  const walk = (node: Record<string, unknown>, prefix: string[]): string | undefined => {
+    const properties = node.properties;
+    if (!properties || typeof properties !== 'object' || Array.isArray(properties)) {
+      return undefined;
+    }
+
+    for (const [propName, rawProp] of Object.entries(properties as Record<string, unknown>)) {
+      if (!rawProp || typeof rawProp !== 'object' || Array.isArray(rawProp)) continue;
+      const prop = rawProp as Record<string, unknown>;
+      const path = [...prefix, propName];
+
+      if (Object.prototype.hasOwnProperty.call(prop, 'x-mcp-header')) {
+        const suffix = prop['x-mcp-header'];
+        if (typeof suffix !== 'string' || !HTTP_TOKEN_PATTERN.test(suffix)) {
+          return `Invalid x-mcp-header suffix on "${path.join('.')}": must be a non-empty HTTP token`;
+        }
+        if (!isAllowedHeaderPropertyType(prop)) {
+          return `Invalid x-mcp-header on "${path.join('.')}": only primitive types may be mirrored to headers`;
+        }
+        const headerName = `Mcp-Param-${suffix}`;
+        const lower = headerName.toLowerCase();
+        if (seenHeaders.has(lower)) {
+          return `Duplicate x-mcp-header "${headerName}" declared on "${path.join('.')}"`;
+        }
+        seenHeaders.add(lower);
+        bindings.push({ path, headerName });
+      }
+
+      const nestedErr = walk(prop, path);
+      if (nestedErr) return nestedErr;
+    }
+    return undefined;
+  };
+
+  const err = walk(inputSchema, []);
+  if (err) return { valid: false, reason: err };
+  return { valid: true, bindings };
+}
+
+function getValueAtPath(root: Record<string, unknown>, path: string[]): unknown {
+  let curr: unknown = root;
+  for (const segment of path) {
+    if (!curr || typeof curr !== 'object' || Array.isArray(curr)) return undefined;
+    if (!Object.prototype.hasOwnProperty.call(curr, segment)) return undefined;
+    curr = (curr as Record<string, unknown>)[segment];
+  }
+  return curr;
+}
+
+function serializeHeaderArgValue(value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  return undefined;
+}
+
+/**
+ * Validate `Mcp-Name` and `Mcp-Param-*` routing headers on a Streamable HTTP request.
+ * Throws `-32020 HeaderMismatch` on missing required headers, invalid Base64 sentinel encoding,
+ * or header/body disagreement per SEP-3415 & SEP-2243.
  */
 export function validateEventRoutingHeaders(
   httpReq: Request | undefined,
   eventName: string,
   args: Record<string, unknown>,
-  inputSchema?: Record<string, unknown>
+  inputSchema?: Record<string, unknown>,
+  options?: { requireHeaders?: boolean }
 ): void {
   if (!httpReq) return;
+  const requireHeaders = options?.requireHeaders ?? false;
 
   const mcpName = httpReq.headers.get('mcp-name');
-  if (mcpName !== null) {
+  if (mcpName === null) {
+    if (requireHeaders) {
+      throw createEventsError(
+        EVENTS_ERROR_CODES.HeaderMismatch,
+        `HeaderMismatch: required Mcp-Name header is missing for params.name "${eventName}"`
+      );
+    }
+  } else {
     const decoded = decodeMcpHeaderValue(mcpName);
     if (decoded === undefined) {
       throw createEventsError(
@@ -295,9 +396,24 @@ export function validateEventRoutingHeaders(
     }
   }
 
-  for (const { argName, headerName } of extractXMcpHeaders(inputSchema)) {
+  const scan = scanXMcpHeaderDeclarations(inputSchema);
+  if (!scan.valid) return;
+
+  for (const { path, headerName } of scan.bindings) {
+    const argVal = getValueAtPath(args, path);
+    const expected = serializeHeaderArgValue(argVal);
     const headerVal = httpReq.headers.get(headerName);
-    if (headerVal === null) continue;
+
+    if (headerVal === null) {
+      if (requireHeaders && expected !== undefined) {
+        throw createEventsError(
+          EVENTS_ERROR_CODES.HeaderMismatch,
+          `HeaderMismatch: required ${headerName} header is missing for params.arguments.${path.join('.')}`
+        );
+      }
+      continue;
+    }
+
     const decoded = decodeMcpHeaderValue(headerVal);
     if (decoded === undefined) {
       throw createEventsError(
@@ -305,17 +421,10 @@ export function validateEventRoutingHeaders(
         `HeaderMismatch: ${headerName} carries an invalid Base64 sentinel value`
       );
     }
-    const argVal = args[argName];
-    const expected =
-      argVal === undefined || argVal === null
-        ? undefined
-        : typeof argVal === 'string'
-          ? argVal
-          : JSON.stringify(argVal);
     if (expected === undefined || decoded !== expected) {
       throw createEventsError(
         EVENTS_ERROR_CODES.HeaderMismatch,
-        `HeaderMismatch: ${headerName} does not match params.arguments.${argName}`
+        `HeaderMismatch: ${headerName} does not match params.arguments.${path.join('.')}`
       );
     }
   }
@@ -327,13 +436,14 @@ export function buildEventParamHeaders(
   inputSchema?: Record<string, unknown>
 ): Record<string, string> {
   if (!args) return {};
+  const scan = scanXMcpHeaderDeclarations(inputSchema);
+  if (!scan.valid) return {};
+
   const headers: Record<string, string> = {};
-  for (const { argName, headerName } of extractXMcpHeaders(inputSchema)) {
-    const value = args[argName];
-    if (value === undefined || value === null) continue;
-    const str = typeof value === 'string' ? value : JSON.stringify(value);
-    if (str !== undefined) {
-      headers[headerName] = encodeMcpHeaderValue(str);
+  for (const { path, headerName } of scan.bindings) {
+    const expected = serializeHeaderArgValue(getValueAtPath(args, path));
+    if (expected !== undefined) {
+      headers[headerName] = encodeMcpHeaderValue(expected);
     }
   }
   return headers;
