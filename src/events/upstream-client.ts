@@ -223,6 +223,8 @@ export class EventsAwareClient extends Client {
 
     let settled = false;
     let acked = false;
+    let activeResolved = false;
+    let droppingQueued = false;
     let ackTimer: ReturnType<typeof setTimeout> | undefined;
     let onCallerAbort: (() => void) | undefined;
 
@@ -259,12 +261,18 @@ export class EventsAwareClient extends Client {
       }).catch(() => {});
     };
 
-    const settle = (outcome: {
-      cause: 'local' | 'graceful' | 'terminated' | 'remote';
-      error?: Error;
-    }) => {
+    const settle = (
+      outcome: {
+        cause: 'local' | 'graceful' | 'terminated' | 'remote';
+        error?: Error;
+      },
+      opts?: { dropQueued?: boolean }
+    ) => {
       if (settled) return;
       settled = true;
+      if (opts?.dropQueued) {
+        droppingQueued = true;
+      }
       clearAckTimer();
       if (onCallerAbort) {
         options.signal?.removeEventListener('abort', onCallerAbort);
@@ -274,7 +282,8 @@ export class EventsAwareClient extends Client {
       requestAbort.abort();
 
       const finish = () => {
-        if (!acked) {
+        if (!activeResolved) {
+          activeResolved = true;
           rejectActive(
             outcome.error ??
               new SdkError(
@@ -286,7 +295,7 @@ export class EventsAwareClient extends Client {
         resolveClosed(outcome);
       };
 
-      if (entry) {
+      if (entry && !droppingQueued) {
         void entry.chain.finally(finish);
       } else {
         finish();
@@ -295,7 +304,7 @@ export class EventsAwareClient extends Client {
 
     const close = async () => {
       if (settled) return;
-      settle({ cause: 'local' });
+      settle({ cause: 'local' }, { dropQueued: true });
       await wireTeardown();
     };
 
@@ -305,19 +314,26 @@ export class EventsAwareClient extends Client {
       chain: Promise.resolve(),
       queuedCount: 0,
       enqueue(fn) {
+        if (droppingQueued) return;
         if (state.queuedCount >= MAX_QUEUED_STREAM_NOTIFICATIONS) {
-          settle({
-            cause: 'remote',
-            error: new Error(
-              `events/stream notification buffer exceeded (${MAX_QUEUED_STREAM_NOTIFICATIONS})`
-            ),
-          });
+          settle(
+            {
+              cause: 'remote',
+              error: new Error(
+                `events/stream notification buffer exceeded (${MAX_QUEUED_STREAM_NOTIFICATIONS})`
+              ),
+            },
+            { dropQueued: true }
+          );
           void wireTeardown();
           return;
         }
         state.queuedCount += 1;
         state.chain = state.chain
-          .then(() => fn())
+          .then(() => {
+            if (droppingQueued) return undefined;
+            return fn();
+          })
           .catch(() => {})
           .finally(() => {
             state.queuedCount = Math.max(0, state.queuedCount - 1);
@@ -329,11 +345,16 @@ export class EventsAwareClient extends Client {
         acked = true;
         state.ackReceived = true;
         // Enqueue `onActive` onto the SAME ordered queue as `onEvent` so the downstream client
-        // ALWAYS receives `notifications/events/active` strictly before any event frame.
-        state.enqueue(() => callbacks.onActive?.(active));
-        if (firstAck) {
-          resolveActive(active);
-        }
+        // ALWAYS receives `notifications/events/active` strictly before any event frame, and
+        // resolve `activePromise` only after `callbacks.onActive` completes so callers never race
+        // `updateHandlers()` or policy revocation against an unsent `active` notification.
+        state.enqueue(async () => {
+          await callbacks.onActive?.(active);
+          if (firstAck && !activeResolved) {
+            activeResolved = true;
+            resolveActive(active);
+          }
+        });
       },
       settle,
     };
@@ -342,12 +363,15 @@ export class EventsAwareClient extends Client {
 
     const ackTimeoutMs = options.ackTimeoutMs ?? DEFAULT_STREAM_ACK_TIMEOUT_MS;
     ackTimer = setTimeout(() => {
-      settle({
-        cause: 'remote',
-        error: new SdkError(SdkErrorCode.RequestTimeout, 'events/stream confirmation timed out', {
-          timeout: ackTimeoutMs,
-        }),
-      });
+      settle(
+        {
+          cause: 'remote',
+          error: new SdkError(SdkErrorCode.RequestTimeout, 'events/stream confirmation timed out', {
+            timeout: ackTimeoutMs,
+          }),
+        },
+        { dropQueued: true }
+      );
       void wireTeardown();
     }, ackTimeoutMs);
     ackTimer.unref?.();
@@ -356,10 +380,13 @@ export class EventsAwareClient extends Client {
       const callerSignal = options.signal;
       onCallerAbort = () => {
         if (settled) return;
-        settle({
-          cause: 'local',
-          error: toAbortError(callerSignal.reason),
-        });
+        settle(
+          {
+            cause: 'local',
+            error: toAbortError(callerSignal.reason),
+          },
+          { dropQueued: true }
+        );
         void wireTeardown();
       };
       callerSignal.addEventListener('abort', onCallerAbort, { once: true });

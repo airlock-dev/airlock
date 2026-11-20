@@ -150,8 +150,90 @@ export function loadConfig(path: string, options: LoadConfigOptions = {}): Confi
 export function validateConfig(config: Config): ConfigDiagnostic[] {
   const diagnostics: ConfigDiagnostic[] = [];
   const providerNames = new Set(Object.keys(config.providers));
-  const mcpProviderNames = new Set(Object.keys(getMcpConfigs(config.providers)));
+  const mcpConfigs = getMcpConfigs(config.providers);
+  const mcpProviderNames = new Set(Object.keys(mcpConfigs));
+  const sseProviderNames = new Set(
+    Object.entries(mcpConfigs)
+      .filter(([, cfg]) => cfg.type === 'sse')
+      .map(([id]) => id)
+  );
   const builtins = getBuiltinProviders(config.providers);
+
+  const validateEventRules = (
+    events: Config['agents'][string]['events'],
+    scopeLabel: string,
+    agent?: string
+  ) => {
+    if (!events) return;
+    const eventPatterns = [...events.allow, ...events.ask, ...events.deny];
+    const eventNamespaces = new Set<string>();
+    for (const pattern of eventPatterns) {
+      if (!pattern.includes('/') && !pattern.includes('*')) {
+        diagnostics.push({
+          level: 'warn',
+          ...(agent ? { agent } : {}),
+          message: `${scopeLabel} event pattern "${pattern}" has no "/" namespace separator and will never match namespaced "provider/event" names.`,
+          suggestion: `Use a namespaced pattern such as "${pattern}/*" or "${pattern}/event.name".`,
+        });
+        continue;
+      }
+      const ns = pattern.split('/')[0];
+      if (ns && !ns.includes('*')) eventNamespaces.add(ns);
+    }
+    for (const ns of eventNamespaces) {
+      if (!mcpProviderNames.has(ns)) {
+        diagnostics.push({
+          level: 'error',
+          ...(agent ? { agent } : {}),
+          message: `${scopeLabel} event pattern references unknown or non-MCP provider "${ns}".`,
+          suggestion: `Add "${ns}" as an enabled MCP provider in your providers block, or check for typos.`,
+        });
+      } else if (sseProviderNames.has(ns)) {
+        diagnostics.push({
+          level: 'warn',
+          ...(agent ? { agent } : {}),
+          message: `${scopeLabel} event pattern references legacy SSE provider "${ns}", which does not support MCP Events (SEP-3415).`,
+          suggestion: `Use a Streamable HTTP ("type: http") or stdio MCP provider for events.`,
+        });
+      }
+    }
+    for (const eventKey of Object.keys(events.arg_policy ?? {})) {
+      if (eventKey.includes('*')) {
+        diagnostics.push({
+          level: 'warn',
+          ...(agent ? { agent } : {}),
+          message: `${scopeLabel}.events.arg_policy key "${eventKey}" contains a wildcard, which will never match.`,
+          suggestion: 'Use exact namespaced event names (e.g. "pagerduty/incident.created").',
+        });
+        continue;
+      }
+      if (!eventKey.includes('/')) {
+        diagnostics.push({
+          level: 'warn',
+          ...(agent ? { agent } : {}),
+          message: `${scopeLabel}.events.arg_policy key "${eventKey}" has no "/" namespace separator and will never match.`,
+          suggestion: 'Use exact namespaced event names (e.g. "pagerduty/incident.created").',
+        });
+        continue;
+      }
+      const ns = eventKey.split('/')[0];
+      if (ns && !mcpProviderNames.has(ns)) {
+        diagnostics.push({
+          level: 'error',
+          ...(agent ? { agent } : {}),
+          message: `${scopeLabel}.events.arg_policy references unknown or non-MCP provider "${ns}" in "${eventKey}".`,
+          suggestion: `Add "${ns}" as an enabled MCP provider in your providers block, or check for typos.`,
+        });
+      } else if (ns && sseProviderNames.has(ns)) {
+        diagnostics.push({
+          level: 'warn',
+          ...(agent ? { agent } : {}),
+          message: `${scopeLabel}.events.arg_policy references legacy SSE provider "${ns}" in "${eventKey}", which does not support MCP Events.`,
+          suggestion: `Use a Streamable HTTP ("type: http") or stdio MCP provider for events.`,
+        });
+      }
+    }
+  };
 
   const profileNames = new Set(Object.keys(config.profiles));
   const sandboxPresetNames = new Set(Object.keys(config.sandbox_presets ?? {}));
@@ -411,46 +493,7 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
 
     // Validate event patterns separately: events are only served by MCP providers (never
     // tool_overrides or builtin approval tools), and events.arg_policy matches exact event names.
-    const eventPatterns = [
-      ...(agent.events?.allow ?? []),
-      ...(agent.events?.ask ?? []),
-      ...(agent.events?.deny ?? []),
-    ];
-    const eventNamespaces = new Set<string>();
-    for (const pattern of eventPatterns) {
-      const ns = pattern.split('/')[0];
-      if (ns) eventNamespaces.add(ns);
-    }
-    for (const ns of eventNamespaces) {
-      if (!mcpProviderNames.has(ns)) {
-        diagnostics.push({
-          level: 'error',
-          agent: agentId,
-          message: `Event pattern references unknown or non-MCP provider "${ns}".`,
-          suggestion: `Add "${ns}" as an enabled MCP provider in your providers block, or check for typos.`,
-        });
-      }
-    }
-    for (const eventKey of Object.keys(agent.events?.arg_policy ?? {})) {
-      if (eventKey.includes('*')) {
-        diagnostics.push({
-          level: 'warn',
-          agent: agentId,
-          message: `events.arg_policy key "${eventKey}" contains a wildcard, which will never match.`,
-          suggestion: 'Use exact namespaced event names (e.g. "pagerduty/incident.created").',
-        });
-        continue;
-      }
-      const ns = eventKey.split('/')[0];
-      if (ns && !mcpProviderNames.has(ns)) {
-        diagnostics.push({
-          level: 'error',
-          agent: agentId,
-          message: `events.arg_policy references unknown or non-MCP provider "${ns}" in "${eventKey}".`,
-          suggestion: `Add "${ns}" as an enabled MCP provider in your providers block, or check for typos.`,
-        });
-      }
-    }
+    validateEventRules(agent.events, `agents.${agentId}`, agentId);
 
     // The engine lets the most specific matching pattern win and breaks ties deny-first, so a
     // narrower allow/ask legitimately carves an exception out of a broader deny (and vice versa).
@@ -560,6 +603,7 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
         `profiles.${profileId}.events.arg_policy`
       )
     );
+    validateEventRules(profile.events, `profiles.${profileId}`);
     for (const [toolName, override] of Object.entries(profile.tool_overrides)) {
       diagnostics.push(
         ...validateArgPolicyRefs(
@@ -918,6 +962,13 @@ function collectArgPolicySources(config: Config): {
       agent: agentName,
       policy: agent.arg_policy,
     });
+    if (agent.events?.arg_policy) {
+      sources.push({
+        location: `agents.${agentName}.events.arg_policy`,
+        agent: agentName,
+        policy: agent.events.arg_policy,
+      });
+    }
     for (const [toolName, override] of Object.entries(agent.tool_overrides)) {
       if (!override.args) continue;
       sources.push({
@@ -930,6 +981,12 @@ function collectArgPolicySources(config: Config): {
 
   for (const [profileName, profile] of Object.entries(config.profiles)) {
     sources.push({ location: `profiles.${profileName}.arg_policy`, policy: profile.arg_policy });
+    if (profile.events?.arg_policy) {
+      sources.push({
+        location: `profiles.${profileName}.events.arg_policy`,
+        policy: profile.events.arg_policy,
+      });
+    }
   }
 
   return sources;

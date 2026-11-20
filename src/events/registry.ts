@@ -144,7 +144,15 @@ export class EventRegistry {
           });
         }
       } catch (err) {
-        log.warn({ err, providerId }, 'Failed to list events from MCP provider');
+        log.warn(
+          { err, providerId },
+          'Failed to list events from MCP provider; preserving cached descriptors for this provider'
+        );
+        for (const prev of this.cachedEvents) {
+          if (prev.providerId === providerId) {
+            discovered.push(prev);
+          }
+        }
       }
     }
 

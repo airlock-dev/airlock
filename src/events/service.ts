@@ -1,5 +1,5 @@
 import { randomBytes } from 'crypto';
-import type { Notification } from '@modelcontextprotocol/server';
+import { isJsonContentType, type Notification } from '@modelcontextprotocol/server';
 import type { AllowlistEngine } from '../allowlist/engine.js';
 import type { AuditLogger } from '../audit/logger.js';
 import type { AgentConfig } from '../config/schema.js';
@@ -43,6 +43,8 @@ const POLL_APPROVAL_MIN_STEP_TTL_MS = 60_000;
 const POLL_APPROVAL_MAX_STEP_TTL_MS = 15 * 60_000;
 const POLL_APPROVAL_MAX_LIFETIME_MS = 24 * 60 * 60_000;
 const POLL_APPROVAL_MAX_ENTRIES = 10_000;
+const MAX_HTTP_EVENT_BODY_BYTES = 4 * 1024 * 1024;
+const MODERN_PROTOCOL_MIN_VERSION = '2026-07-28';
 
 interface PollApprovalLease {
   agentId: string;
@@ -52,6 +54,15 @@ interface PollApprovalLease {
   upstreamCursor: string;
   expiresAt: number;
   hardExpiresAt: number;
+  /** Backing grant id, if approval came from a grant (checked live against revocation). */
+  grantId?: string;
+}
+
+interface EventApprovalResult {
+  grantId?: string;
+  expiresAt?: number;
+  /** False for capped-use (`maxUses`) grants so each poll consumes a use instead of minting a multi-poll lease. */
+  allowLease: boolean;
 }
 
 export interface EventUpstreamPool {
@@ -100,6 +111,7 @@ export class EventService {
    * absolute lifetime cap. Never created until the upstream poll succeeds.
    */
   private readonly pollLeases = new Map<string, PollApprovalLease>();
+  private readonly inFlightLeaseTokens = new Set<string>();
   private policyGeneration = 0;
 
   constructor(private readonly deps: EventServiceDeps) {}
@@ -113,8 +125,15 @@ export class EventService {
     return Boolean(ev && (ev.allow.length > 0 || ev.ask.length > 0));
   }
 
-  /** Look up an event's `inputSchema` (used by HTTP pre-dispatch `Mcp-Param-*` validation). */
-  getEventInputSchema(eventName: string): Record<string, unknown> | undefined {
+  /**
+   * Look up an event's `inputSchema` for a specific agent (used by HTTP pre-dispatch `Mcp-Param-*`
+   * validation). Returns `undefined` for denied events so `x-mcp-header` schemas are never leaked.
+   */
+  getEventInputSchemaForAgent(
+    agentId: string,
+    eventName: string
+  ): Record<string, unknown> | undefined {
+    if (this.deps.allowlist.evaluateEvent(agentId, eventName) === 'deny') return undefined;
     return this.deps.registry.getByName(eventName)?.descriptor.inputSchema;
   }
 
@@ -137,27 +156,45 @@ export class EventService {
       'poll'
     );
 
+    const isGatewayCursor =
+      typeof params.cursor === 'string' && params.cursor.startsWith(POLL_LEASE_PREFIX);
+    if (isGatewayCursor && this.inFlightLeaseTokens.has(params.cursor!)) {
+      throw createEventsError(
+        EVENTS_ERROR_CODES.InvalidParams,
+        'Event poll cursor is already in use by an in-flight poll request'
+      );
+    }
+
     let upstreamCursor: string | null | undefined = params.cursor;
     let hardExpiresAt = Date.now() + POLL_APPROVAL_MAX_LIFETIME_MS;
     let consumedLeaseToken: string | undefined;
+    let backingGrantId: string | undefined;
+    let allowContinuationLease = true;
 
     if (decision === 'ask') {
       const resolvedLease = this.matchPollLease(ctx, params.name, args, params.cursor);
       if (resolvedLease) {
         consumedLeaseToken = resolvedLease.token;
+        this.inFlightLeaseTokens.add(consumedLeaseToken);
         upstreamCursor = resolvedLease.lease.upstreamCursor;
         hardExpiresAt = resolvedLease.lease.hardExpiresAt;
+        backingGrantId = resolvedLease.lease.grantId;
       } else {
-        const approvalGrantExpiry = await this.requireApproval(
-          ctx,
-          callId,
-          params.name,
-          args,
-          'poll'
-        );
-        if (approvalGrantExpiry !== undefined) {
-          hardExpiresAt = Math.min(hardExpiresAt, approvalGrantExpiry);
+        // Never leak an internal `al_evt_*` token upstream if it expired, was revoked, or came
+        // from another session. Only unwrap an expired token belonging to this exact binding.
+        let fallbackCursor: string | null | undefined = upstreamCursor;
+        if (isGatewayCursor) {
+          fallbackCursor = this.unwrapSameBindingCursor(ctx, params.name, args, params.cursor!);
         }
+
+        const approval = await this.requireApproval(ctx, callId, params.name, args, 'poll');
+        allowContinuationLease = approval.allowLease;
+        backingGrantId = approval.grantId;
+        if (approval.expiresAt !== undefined) {
+          hardExpiresAt = Math.min(hardExpiresAt, approval.expiresAt);
+        }
+        upstreamCursor = fallbackCursor;
+
         // Re-check live policy & catalog after awaiting human approval!
         const rechecked = this.authorizeAndValidate(
           this.withLiveAgentConfig(ctx),
@@ -169,6 +206,22 @@ export class EventService {
         registered = rechecked.registered;
         decision = rechecked.decision;
       }
+    } else if (isGatewayCursor) {
+      // Event moved from `ask` -> `allow` while the client still holds a gateway lease cursor.
+      // Unwrap matching binding to the upstream cursor, or reject unknown/mismatched tokens so
+      // `al_evt_*` is never leaked to an upstream provider.
+      const resolved = this.matchPollLease(ctx, params.name, args, params.cursor, {
+        ignoreExpiry: true,
+      });
+      if (!resolved) {
+        throw createEventsError(
+          EVENTS_ERROR_CODES.InvalidParams,
+          'Invalid or unrecognized gateway event cursor'
+        );
+      }
+      consumedLeaseToken = resolved.token;
+      this.inFlightLeaseTokens.add(consumedLeaseToken);
+      upstreamCursor = resolved.lease.upstreamCursor;
     }
 
     const genBeforeUpstream = this.policyGeneration;
@@ -198,6 +251,10 @@ export class EventService {
         error: err instanceof Error ? err.message : String(err),
       });
       throw err;
+    } finally {
+      if (consumedLeaseToken) {
+        this.inFlightLeaseTokens.delete(consumedLeaseToken);
+      }
     }
 
     // Re-check live policy if a config/catalog reload occurred while the upstream poll was in flight.
@@ -216,6 +273,7 @@ export class EventService {
     }
 
     const liveAgentConfig = this.deps.getAgentConfig(ctx.agentId) ?? ctx.agentConfig;
+    const liveRegistered = this.deps.registry.getByName(params.name) ?? registered;
     const inspectedEvents = rawResult.events.map((occurrence) =>
       inspectEventOccurrence({
         agentId: ctx.agentId,
@@ -224,7 +282,7 @@ export class EventService {
         occurrence,
         auditLogger: this.deps.auditLogger,
         requestId: callId,
-        validatePayload: registered.validatePayload,
+        validatePayload: liveRegistered.validatePayload,
       })
     );
 
@@ -234,7 +292,12 @@ export class EventService {
     if (consumedLeaseToken) {
       this.pollLeases.delete(consumedLeaseToken);
     }
-    if (decision === 'ask' && typeof rawResult.cursor === 'string') {
+    if (
+      decision === 'ask' &&
+      allowContinuationLease &&
+      typeof rawResult.cursor === 'string' &&
+      (!backingGrantId || this.isGrantActive(ctx.agentId, backingGrantId))
+    ) {
       const now = Date.now();
       const rawStepMs =
         typeof rawResult.nextPollMs === 'number' && Number.isFinite(rawResult.nextPollMs)
@@ -254,6 +317,7 @@ export class EventService {
           upstreamCursor: rawResult.cursor,
           expiresAt,
           hardExpiresAt,
+          ...(backingGrantId ? { grantId: backingGrantId } : {}),
         });
       }
     }
@@ -286,6 +350,21 @@ export class EventService {
     const initial = this.authorizeAndValidate(ctx, callId, params.name, args, 'push');
     let registered = initial.registered;
     const decision = initial.decision;
+
+    // Never forward internal `al_evt_*` poll lease tokens upstream when handing off poll -> push.
+    let streamCursor: string | null | undefined = params.cursor;
+    if (typeof params.cursor === 'string' && params.cursor.startsWith(POLL_LEASE_PREFIX)) {
+      const resolved = this.matchPollLease(ctx, params.name, args, params.cursor, {
+        ignoreExpiry: true,
+      });
+      if (!resolved) {
+        throw createEventsError(
+          EVENTS_ERROR_CODES.InvalidParams,
+          'Invalid or unrecognized gateway event cursor'
+        );
+      }
+      streamCursor = resolved.lease.upstreamCursor;
+    }
 
     const wasApproved = decision === 'ask';
     if (wasApproved) {
@@ -370,7 +449,7 @@ export class EventService {
       const upstreamParams: EventsStreamParams = {
         name: registered.upstreamName,
         ...(params.arguments !== undefined ? { arguments: params.arguments } : {}),
-        ...(params.cursor !== undefined ? { cursor: params.cursor } : {}),
+        ...(streamCursor !== undefined ? { cursor: streamCursor } : {}),
         ...(params.maxAgeMs !== undefined ? { maxAgeMs: params.maxAgeMs } : {}),
         ...(params.heartbeatMs !== undefined ? { heartbeatMs: params.heartbeatMs } : {}),
       };
@@ -443,13 +522,33 @@ export class EventService {
         }
       );
 
+      // If policy revocation landed during the open/active window, tear down immediately so a
+      // revoked stream never completes cleanly without error or termination.
+      if (terminatedByGateway) {
+        await upstreamHandle.close();
+        if (!activeSent && pendingTerminationError) {
+          throw createEventsError(
+            pendingTerminationError.code,
+            pendingTerminationError.message,
+            pendingTerminationError.data
+          );
+        }
+        return {
+          resultType: 'complete',
+          _meta: subscriptionMeta,
+        };
+      }
+
       // Upgrade handlers so live revocation/shutdown tears down the open upstream handle cleanly.
       const handle = upstreamHandle;
       this.deps.streamManager.updateHandlers(callId, {
         terminate: async (error: EventStreamErrorObject) => {
           if (terminatedByGateway) return;
           terminatedByGateway = true;
-          await emitDownstream(EVENT_NOTIFICATIONS.terminated, { error });
+          pendingTerminationError = error;
+          if (activeSent) {
+            await emitDownstream(EVENT_NOTIFICATIONS.terminated, { error });
+          }
           streamAbort.abort();
           await handle.close();
         },
@@ -469,16 +568,20 @@ export class EventService {
       });
 
       const outcome = await handle.closed;
-      // Distinguish abnormal upstream EOF/disconnect from a clean graceful close: emit an error
-      // notification before closing if the upstream died without sending `terminated`.
+      // Distinguish abnormal upstream EOF/disconnect/overflow from a clean graceful close:
+      // per SEP-3415, `notifications/events/terminated` signals terminal closure with error,
+      // whereas `notifications/events/error` is non-terminal.
       if (outcome.cause === 'remote' && !terminatedByGateway && !streamAbort.signal.aborted) {
-        await emitDownstream(EVENT_NOTIFICATIONS.error, {
-          error: {
-            code: -32603,
-            message: outcome.error?.message ?? 'Upstream event stream closed unexpectedly',
-            data: { reason: 'upstream_closed' },
-          },
-        });
+        const errObj: EventStreamErrorObject = {
+          code: -32603,
+          message: outcome.error?.message ?? 'Upstream event stream closed unexpectedly',
+          data: { reason: 'upstream_closed' },
+        };
+        if (!activeSent) {
+          throw createEventsError(errObj.code, errObj.message, errObj.data);
+        }
+        terminatedByGateway = true;
+        await emitDownstream(EVENT_NOTIFICATIONS.terminated, { error: errObj });
       }
 
       return {
@@ -509,19 +612,25 @@ export class EventService {
     }
   }
 
-  handleUnsupportedWebhook(ctx: EventRequestContext, eventName: string): never {
-    const args = {};
+  handleUnsupportedWebhook(
+    ctx: EventRequestContext,
+    eventName: string,
+    args: Record<string, unknown> = {}
+  ): never {
+    const decision = this.deps.allowlist.evaluateEvent(ctx.agentId, eventName);
     validateEventRoutingHeaders(
       ctx.httpReq,
       eventName,
       args,
-      this.deps.registry.getByName(eventName)?.descriptor.inputSchema
+      decision === 'deny'
+        ? undefined
+        : this.deps.registry.getByName(eventName)?.descriptor.inputSchema
     );
     this.deps.auditLogger.log({
       agent_id: ctx.agentId,
       request_id: generateId(),
       tool: `event:${eventName}`,
-      args: '{}',
+      args: JSON.stringify(args),
       result: 'denied',
       error: 'Webhook delivery is not supported by Airlock gateway; use poll or push delivery.',
     });
@@ -655,7 +764,13 @@ export class EventService {
     const decision = this.deps.allowlist.evaluateEvent(ctx.agentId, eventName);
 
     // Validate routing headers (defense-in-depth alongside HTTP pre-dispatch validation).
-    validateEventRoutingHeaders(ctx.httpReq, eventName, args, registered?.descriptor.inputSchema);
+    // Never pass a denied event's inputSchema (prevents leaking x-mcp-header annotations).
+    validateEventRoutingHeaders(
+      ctx.httpReq,
+      eventName,
+      args,
+      decision === 'deny' ? undefined : registered?.descriptor.inputSchema
+    );
 
     if (decision === 'deny') {
       this.deps.auditLogger.log({
@@ -714,21 +829,20 @@ export class EventService {
     return { registered, decision };
   }
 
+  private isGrantActive(agentId: string, grantId: string): boolean {
+    return this.deps.hitlEngine.listGrants(agentId).some((g) => g.id === grantId);
+  }
+
   private matchPollLease(
     ctx: EventRequestContext,
     eventName: string,
     args: Record<string, unknown>,
-    cursor: string | null | undefined
+    cursor: string | null | undefined,
+    options?: { ignoreExpiry?: boolean }
   ): { token: string; lease: PollApprovalLease } | undefined {
     if (typeof cursor !== 'string' || !cursor.startsWith(POLL_LEASE_PREFIX)) return undefined;
     const lease = this.pollLeases.get(cursor);
     if (!lease) return undefined;
-
-    const now = Date.now();
-    if (lease.expiresAt <= now || lease.hardExpiresAt <= now) {
-      this.pollLeases.delete(cursor);
-      return undefined;
-    }
 
     if (
       lease.agentId !== ctx.agentId ||
@@ -739,7 +853,45 @@ export class EventService {
       return undefined;
     }
 
+    if (!options?.ignoreExpiry) {
+      const now = Date.now();
+      if (lease.expiresAt <= now || lease.hardExpiresAt <= now) {
+        this.pollLeases.delete(cursor);
+        return undefined;
+      }
+      if (lease.grantId && !this.isGrantActive(ctx.agentId, lease.grantId)) {
+        this.pollLeases.delete(cursor);
+        return undefined;
+      }
+    }
+
     return { token: cursor, lease };
+  }
+
+  /**
+   * If a client presented an expired/revoked `al_evt_*` cursor belonging to THIS exact
+   * `(agentId, sessionId, eventName, args)` binding, unwrap its upstream cursor after fresh
+   * approval so the internal `al_evt_*` token is never forwarded upstream. For unknown or
+   * cross-session tokens, reset to `null` (never leak `al_evt_*` or another session's cursor).
+   */
+  private unwrapSameBindingCursor(
+    ctx: EventRequestContext,
+    eventName: string,
+    args: Record<string, unknown>,
+    cursor: string
+  ): string | null {
+    const lease = this.pollLeases.get(cursor);
+    if (
+      lease &&
+      lease.agentId === ctx.agentId &&
+      lease.sessionId === ctx.downstreamSessionId &&
+      lease.eventName === eventName &&
+      lease.argsKey === stableStringify(args)
+    ) {
+      this.pollLeases.delete(cursor);
+      return lease.upstreamCursor;
+    }
+    return null;
   }
 
   private issuePollLease(lease: PollApprovalLease): string {
@@ -752,14 +904,14 @@ export class EventService {
     return token;
   }
 
-  /** Returns optional grant expiry timestamp (ms) if satisfied by a time-bounded grant. */
+  /** Returns approval grant metadata so poll leases honor grant lifetime, revocation, and use caps. */
   private async requireApproval(
     ctx: EventRequestContext,
     callId: string,
     eventName: string,
     args: Record<string, unknown>,
     mode: 'poll' | 'push'
-  ): Promise<number | undefined> {
+  ): Promise<EventApprovalResult> {
     const { hitlEngine, hitlBatcher, auditLogger } = this.deps;
     const approvalTarget = `event:${eventName}`;
     const approvalArgs = { delivery: mode, arguments: args };
@@ -782,7 +934,13 @@ export class EventService {
         args: JSON.stringify(approvalArgs),
         result: 'hitl_granted',
       });
-      return grant.expiresAt ? Date.parse(grant.expiresAt) : undefined;
+      return {
+        grantId: grant.id,
+        expiresAt: grant.expiresAt ? Date.parse(grant.expiresAt) : undefined,
+        // Capped-use grants (e.g. maxUses: 1) must consume a use per poll rather than minting an
+        // unbounded multi-poll continuation lease.
+        allowLease: grant.usesRemaining === undefined,
+      };
     }
 
     log.info(
@@ -866,6 +1024,68 @@ export class EventService {
       );
     }
 
+    // If the operator approved with a time/use-bounded grant, propagate its expiry/revocation.
+    const createdGrant = hitlEngine.listGrants(ctx.agentId).find((g) => g.approvalId === ticket.id);
+    if (createdGrant) {
+      return {
+        grantId: createdGrant.id,
+        expiresAt: createdGrant.expiresAt ? Date.parse(createdGrant.expiresAt) : undefined,
+        allowLease: createdGrant.usesRemaining === undefined,
+      };
+    }
+
+    return { allowLease: true };
+  }
+}
+
+async function readBoundedJsonBody(webReq: Request, maxBytes: number): Promise<unknown> {
+  const contentLength = webReq.headers.get('content-length');
+  if (contentLength !== null) {
+    const parsedLength = Number(contentLength);
+    if (Number.isFinite(parsedLength) && parsedLength > maxBytes) {
+      return undefined;
+    }
+  }
+
+  let cloned: Request;
+  try {
+    cloned = webReq.clone();
+  } catch {
+    return undefined;
+  }
+
+  const bodyStream = cloned.body as ReadableStream<Uint8Array> | null;
+  const reader = bodyStream?.getReader();
+  if (!reader) return undefined;
+
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      const value = chunk.value;
+      if (!value) continue;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel().catch(() => {});
+        return undefined;
+      }
+      chunks.push(value);
+    }
+  } catch {
+    return undefined;
+  }
+
+  const combined = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    combined.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  try {
+    return JSON.parse(new TextDecoder('utf-8').decode(combined));
+  } catch {
     return undefined;
   }
 }
@@ -876,32 +1096,32 @@ export class EventService {
  *
  * Runs BEFORE `createMcpHandler` opens an SSE response so missing or mismatched `Mcp-Name` /
  * `Mcp-Param-*` headers return HTTP `400 Bad Request` with JSON-RPC `-32020 HeaderMismatch` as
- * required by SEP-3415 & SEP-2243.
+ * required by SEP-3415 & SEP-2243, while deferring non-JSON (415), >4 MiB (413), legacy-era,
+ * and missing-envelope requests to the SDK's own inbound ladder.
  */
 export async function validateHttpEventRoutingHeaders(
   webReq: Request,
   getInputSchema: (eventName: string) => Record<string, unknown> | undefined
 ): Promise<Response | undefined> {
   if (webReq.method !== 'POST') return undefined;
+  if (!isJsonContentType(webReq.headers.get('content-type'))) return undefined;
   const mcpMethod = webReq.headers.get('mcp-method');
   if (!mcpMethod || !EVENTS_NAMED_METHODS.has(mcpMethod)) return undefined;
-  // Only enforce modern 2026-07-28 routing headers on modern-era HTTP requests.
-  if (!webReq.headers.get('mcp-protocol-version')) return undefined;
+  const protocolVersion = webReq.headers.get('mcp-protocol-version');
+  if (!protocolVersion || protocolVersion < MODERN_PROTOCOL_MIN_VERSION) return undefined;
 
-  let body: unknown;
-  try {
-    body = await webReq.clone().json();
-  } catch {
-    return undefined; // Let the SDK's JSON parser emit standard -32700 ParseError.
-  }
-
+  const body = await readBoundedJsonBody(webReq, MAX_HTTP_EVENT_BODY_BYTES);
   if (!body || typeof body !== 'object' || Array.isArray(body)) return undefined;
   const reqObj = body as { id?: unknown; method?: unknown; params?: unknown };
   if (reqObj.method !== mcpMethod) return undefined; // Let SDK's Mcp-Method check handle it.
   if (!reqObj.params || typeof reqObj.params !== 'object' || Array.isArray(reqObj.params)) {
     return undefined;
   }
-  const params = reqObj.params as { name?: unknown; arguments?: unknown };
+  const params = reqObj.params as { name?: unknown; arguments?: unknown; _meta?: unknown };
+  // Defer requests missing the 2026-07-28 `_meta` envelope to the SDK's own `-32602` ladder.
+  if (!params._meta || typeof params._meta !== 'object' || Array.isArray(params._meta)) {
+    return undefined;
+  }
   if (typeof params.name !== 'string' || params.name.length === 0) return undefined;
   const args =
     params.arguments && typeof params.arguments === 'object' && !Array.isArray(params.arguments)

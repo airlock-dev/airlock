@@ -32,8 +32,11 @@ const EVENT_INJECTION_PATTERNS = [
 
 const URL_WITH_QUERY_REGEX = /(https?:\/\/[^\s"'<>)\]]+)\?([^\s"'<>)\]]+)/g;
 
-/** Only protocol-reserved and Airlock-owned metadata namespaces pass through on EventOccurrence._meta. */
-const SAFE_META_PREFIXES = ['io.modelcontextprotocol/', 'dev.airlock/'];
+/**
+ * Only protocol-reserved upstream metadata namespaces pass through on `EventOccurrence._meta`.
+ * `dev.airlock/*` is strictly gateway-owned and NEVER accepted from upstream servers.
+ */
+const SAFE_UPSTREAM_META_PREFIXES = ['io.modelcontextprotocol/'];
 
 interface EffectiveEventPostConfig {
   injectionEnabled: boolean;
@@ -160,13 +163,30 @@ function transformPayloadValue(
   return value;
 }
 
+function scanForInjection(value: unknown, state: { injectionDetected: boolean }): void {
+  if (typeof value === 'string') {
+    if (textHasInjection(value)) state.injectionDetected = true;
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) scanForInjection(item, state);
+    return;
+  }
+  if (value && typeof value === 'object') {
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      if (textHasInjection(k)) state.injectionDetected = true;
+      scanForInjection(v, state);
+    }
+  }
+}
+
 function filterOccurrenceMeta(
   rawMeta: Record<string, unknown> | undefined
 ): Record<string, unknown> {
   if (!rawMeta) return {};
   const filtered: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(rawMeta)) {
-    if (SAFE_META_PREFIXES.some((prefix) => k.startsWith(prefix))) {
+    if (SAFE_UPSTREAM_META_PREFIXES.some((prefix) => k.startsWith(prefix))) {
       filtered[k] = v;
     }
   }
@@ -207,6 +227,14 @@ export function inspectEventOccurrence(params: InspectEventOccurrenceParams): Ev
   const state = { injectionDetected: false, modified: false };
 
   let deliveredData = transformPayloadValue(occurrence.data, cfg, state) as Record<string, unknown>;
+  const filteredUpstreamMeta = filterOccurrenceMeta(occurrence._meta);
+
+  if (cfg.injectionEnabled) {
+    if (textHasInjection(occurrence.eventId) || textHasInjection(occurrence.timestamp)) {
+      state.injectionDetected = true;
+    }
+    scanForInjection(filteredUpstreamMeta, state);
+  }
 
   if (state.modified && validatePayload) {
     const originalValid = Boolean(validatePayload(occurrence.data));
@@ -240,7 +268,7 @@ export function inspectEventOccurrence(params: InspectEventOccurrenceParams): Ev
   }
 
   const nextMeta: Record<string, unknown> = {
-    ...filterOccurrenceMeta(occurrence._meta),
+    ...filteredUpstreamMeta,
     ...(cfg.markUntrusted ? { [AIRLOCK_UNTRUSTED_META_KEY]: true } : {}),
     ...(state.injectionDetected ? { [AIRLOCK_INJECTION_DETECTED_META_KEY]: true } : {}),
   };

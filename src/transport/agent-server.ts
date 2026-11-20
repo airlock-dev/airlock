@@ -275,14 +275,18 @@ export function createAgentServer(deps: AgentServerDeps): Server {
       EVENT_METHODS.subscribe,
       { params: EventsSubscribeParamsSchema },
       (params, reqCtx) =>
-        eventService.handleUnsupportedWebhook(buildEventContext(params, reqCtx), params.name)
+        eventService.handleUnsupportedWebhook(
+          buildEventContext(params, reqCtx),
+          params.name,
+          params.arguments ?? {}
+        )
     );
 
     server.setRequestHandler(
       EVENT_METHODS.unsubscribe,
       { params: EventsUnsubscribeParamsSchema },
       (params, reqCtx) =>
-        eventService.handleUnsupportedWebhook(buildEventContext(params, reqCtx), params.name)
+        eventService.handleUnsupportedWebhook(buildEventContext(params, reqCtx), params.name, {})
     );
   }
 

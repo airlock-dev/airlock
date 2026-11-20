@@ -636,6 +636,12 @@ export class HitlEngine implements ApprovalApi {
         'This call was flagged for review by a security check; it cannot be widened into a grant'
       );
     }
+    const isEventSubject = subject.tool.startsWith('event:');
+    if (isEventSubject && spec.scope !== 'tool') {
+      throw new GrantSpecError(
+        'Event subscription approvals only support single-event ("tool") grants'
+      );
+    }
     switch (spec.scope) {
       case 'tool':
         return { kind: 'tool', tool: subject.tool };
@@ -666,6 +672,9 @@ export class HitlEngine implements ApprovalApi {
     const subject = req.subject;
     if (req.kind !== 'call' || !subject || subject.escalated) return [];
     const options: GrantOption[] = [{ scope: 'tool', label: `Allow ${subject.tool}` }];
+    if (subject.tool.startsWith('event:')) {
+      return options;
+    }
     if (subject.tier === 'read') {
       options.push({
         scope: 'tier',

@@ -267,6 +267,8 @@ export interface XMcpHeaderBinding {
   /** Property path segments inside `params.arguments` (e.g. `['region']` or `['filter', 'tenant']`). */
   path: string[];
   headerName: string;
+  /** Declared primitive JSON Schema type (`string` | `number` | `integer` | `boolean`). */
+  type: 'string' | 'number' | 'integer' | 'boolean';
 }
 
 export type XMcpHeaderScanResult =
@@ -274,24 +276,45 @@ export type XMcpHeaderScanResult =
   | { valid: false; reason: string };
 
 const PRIMITIVE_TYPES = new Set(['string', 'number', 'integer', 'boolean']);
+const CANONICAL_DECIMAL = /^-?\d+(\.\d+)?$/;
 
-function isAllowedHeaderPropertyType(prop: Record<string, unknown>): boolean {
-  const rawType = prop.type;
-  if (rawType === undefined) return true;
-  if (typeof rawType === 'string') return PRIMITIVE_TYPES.has(rawType);
-  if (Array.isArray(rawType)) {
-    const nonNull = rawType.filter((t) => t !== 'null');
-    return (
-      nonNull.length > 0 && nonNull.every((t) => typeof t === 'string' && PRIMITIVE_TYPES.has(t))
-    );
-  }
-  return false;
-}
+/**
+ * JSON Schema keywords whose subschemas are NOT statically reachable via a chain of `properties`
+ * keys per SEP-2243. An `x-mcp-header` found under any of these invalidates the schema.
+ */
+const NON_REACHABLE_SUBSCHEMA_KEYWORDS = [
+  'items',
+  'prefixItems',
+  'contains',
+  'additionalProperties',
+  'unevaluatedProperties',
+  'unevaluatedItems',
+  'propertyNames',
+  'patternProperties',
+  'dependentSchemas',
+  'oneOf',
+  'anyOf',
+  'allOf',
+  'not',
+  'if',
+  'then',
+  'else',
+  '$defs',
+  'definitions',
+] as const;
+
+const OBJECT_VALUED_SUBSCHEMA_KEYWORDS = new Set<string>([
+  'patternProperties',
+  'dependentSchemas',
+  '$defs',
+  'definitions',
+]);
 
 /**
  * Scan an event's `inputSchema` for SEP-2243 `x-mcp-header` declarations (recursing into nested
- * object `properties`). Enforces RFC 9110 token syntax, primitive property types, and uniqueness
- * across case-insensitive header names.
+ * object `properties` and auditing non-reachable subschemas). Matches SDK v2.3.1 & SEP-2243:
+ * - Rejects `x-mcp-header` at schema root or inside non-reachable subschemas (`oneOf`/`items`/etc.)
+ * - Requires RFC 9110 token syntax, an explicit primitive string `type`, and case-insensitive uniqueness
  */
 export function scanXMcpHeaderDeclarations(
   inputSchema?: Record<string, unknown>
@@ -301,41 +324,64 @@ export function scanXMcpHeaderDeclarations(
   const bindings: XMcpHeaderBinding[] = [];
   const seenHeaders = new Set<string>();
 
-  const walk = (node: Record<string, unknown>, prefix: string[]): string | undefined => {
-    const properties = node.properties;
-    if (!properties || typeof properties !== 'object' || Array.isArray(properties)) {
-      return undefined;
-    }
+  const formatPath = (path: string[]) => (path.length === 0 ? '<root>' : path.join('.'));
 
-    for (const [propName, rawProp] of Object.entries(properties as Record<string, unknown>)) {
-      if (!rawProp || typeof rawProp !== 'object' || Array.isArray(rawProp)) continue;
-      const prop = rawProp as Record<string, unknown>;
-      const path = [...prefix, propName];
+  const walk = (node: unknown, path: string[], reachable: boolean): string | undefined => {
+    if (node === null || typeof node !== 'object' || Array.isArray(node)) return undefined;
+    const schema = node as Record<string, unknown>;
 
-      if (Object.prototype.hasOwnProperty.call(prop, 'x-mcp-header')) {
-        const suffix = prop['x-mcp-header'];
-        if (typeof suffix !== 'string' || !HTTP_TOKEN_PATTERN.test(suffix)) {
-          return `Invalid x-mcp-header suffix on "${path.join('.')}": must be a non-empty HTTP token`;
-        }
-        if (!isAllowedHeaderPropertyType(prop)) {
-          return `Invalid x-mcp-header on "${path.join('.')}": only primitive types may be mirrored to headers`;
-        }
-        const headerName = `Mcp-Param-${suffix}`;
-        const lower = headerName.toLowerCase();
-        if (seenHeaders.has(lower)) {
-          return `Duplicate x-mcp-header "${headerName}" declared on "${path.join('.')}"`;
-        }
-        seenHeaders.add(lower);
-        bindings.push({ path, headerName });
+    if (Object.prototype.hasOwnProperty.call(schema, 'x-mcp-header')) {
+      if (!reachable || path.length === 0) {
+        return `Invalid x-mcp-header on "${formatPath(path)}": only permitted on properties statically reachable via 'properties'`;
       }
-
-      const nestedErr = walk(prop, path);
-      if (nestedErr) return nestedErr;
+      const suffix = schema['x-mcp-header'];
+      if (typeof suffix !== 'string' || !HTTP_TOKEN_PATTERN.test(suffix)) {
+        return `Invalid x-mcp-header suffix on "${formatPath(path)}": must be a non-empty HTTP token`;
+      }
+      const rawType = typeof schema.type === 'string' ? schema.type : undefined;
+      if (!rawType || !PRIMITIVE_TYPES.has(rawType)) {
+        return `Invalid x-mcp-header on "${formatPath(path)}": requires explicit primitive type (string, number, integer, boolean)`;
+      }
+      const headerName = `Mcp-Param-${suffix}`;
+      const lower = headerName.toLowerCase();
+      if (seenHeaders.has(lower)) {
+        return `Duplicate x-mcp-header "${headerName}" declared on "${formatPath(path)}"`;
+      }
+      seenHeaders.add(lower);
+      bindings.push({
+        path,
+        headerName,
+        type: rawType as XMcpHeaderBinding['type'],
+      });
     }
+
+    const properties = schema.properties;
+    if (properties && typeof properties === 'object' && !Array.isArray(properties)) {
+      for (const [propName, child] of Object.entries(properties as Record<string, unknown>)) {
+        const nestedErr = walk(child, [...path, propName], reachable);
+        if (nestedErr) return nestedErr;
+      }
+    }
+
+    for (const kw of NON_REACHABLE_SUBSCHEMA_KEYWORDS) {
+      if (!Object.prototype.hasOwnProperty.call(schema, kw)) continue;
+      const sub = schema[kw];
+      if (sub === undefined) continue;
+      const branches = Array.isArray(sub)
+        ? sub
+        : sub !== null && typeof sub === 'object' && OBJECT_VALUED_SUBSCHEMA_KEYWORDS.has(kw)
+          ? Object.values(sub as Record<string, unknown>)
+          : [sub];
+      for (const branch of branches) {
+        const nestedErr = walk(branch, [...path, `<${kw}>`], false);
+        if (nestedErr) return nestedErr;
+      }
+    }
+
     return undefined;
   };
 
-  const err = walk(inputSchema, []);
+  const err = walk(inputSchema, [], true);
   if (err) return { valid: false, reason: err };
   return { valid: true, bindings };
 }
@@ -353,7 +399,12 @@ function getValueAtPath(root: Record<string, unknown>, path: string[]): unknown 
 function serializeHeaderArgValue(value: unknown): string | undefined {
   if (value === undefined || value === null) return undefined;
   if (typeof value === 'string') return value;
-  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (typeof value === 'boolean') return value ? 'true' : 'false';
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) return undefined;
+    if (Number.isInteger(value) && !Number.isSafeInteger(value)) return undefined;
+    return String(value);
+  }
   return undefined;
 }
 
@@ -399,13 +450,17 @@ export function validateEventRoutingHeaders(
   const scan = scanXMcpHeaderDeclarations(inputSchema);
   if (!scan.valid) return;
 
-  for (const { path, headerName } of scan.bindings) {
+  for (const { path, headerName, type } of scan.bindings) {
     const argVal = getValueAtPath(args, path);
+    // Per SEP-2243 & SDK v2.3.1: when body property is absent or null, header is not expected
+    // (and a present header is ignored).
+    if (argVal === undefined || argVal === null) continue;
     const expected = serializeHeaderArgValue(argVal);
-    const headerVal = httpReq.headers.get(headerName);
+    if (expected === undefined) continue;
 
+    const headerVal = httpReq.headers.get(headerName);
     if (headerVal === null) {
-      if (requireHeaders && expected !== undefined) {
+      if (requireHeaders) {
         throw createEventsError(
           EVENTS_ERROR_CODES.HeaderMismatch,
           `HeaderMismatch: required ${headerName} header is missing for params.arguments.${path.join('.')}`
@@ -421,7 +476,13 @@ export function validateEventRoutingHeaders(
         `HeaderMismatch: ${headerName} carries an invalid Base64 sentinel value`
       );
     }
-    if (expected === undefined || decoded !== expected) {
+    const equal =
+      (type === 'integer' || type === 'number') &&
+      typeof argVal === 'number' &&
+      CANONICAL_DECIMAL.test(decoded)
+        ? Number(decoded) === argVal
+        : decoded === expected;
+    if (!equal) {
       throw createEventsError(
         EVENTS_ERROR_CODES.HeaderMismatch,
         `HeaderMismatch: ${headerName} does not match params.arguments.${path.join('.')}`

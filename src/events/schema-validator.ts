@@ -4,6 +4,7 @@ import type { ValidateFunction } from 'ajv';
 
 interface SchemaCompiler {
   compile(schema: Record<string, unknown>): ValidateFunction;
+  removeSchema(schemaKeyRef?: unknown): unknown;
 }
 
 /* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access */
@@ -16,9 +17,20 @@ const Ajv2020Ctor = (Ajv2020Module as any).default ?? Ajv2020Module;
  * MCP 2026-07-28 specifies JSON Schema 2020-12 as the default dialect when `$schema` is omitted,
  * while permitting explicit draft-07 schemas. Use Ajv2020 by default and dispatch draft-07 to
  * standard Ajv when `$schema` declares draft-07.
+ *
+ * `addUsedSchema: false` + `removeSchema()` after each compilation keeps `$id`-bearing schemas
+ * isolated across events and catalog refreshes and prevents Ajv's strong `_cache` Map from leaking.
  */
-const ajv2020: SchemaCompiler = new Ajv2020Ctor({ allErrors: true, strict: false });
-const ajvDraft07: SchemaCompiler = new AjvDraft07Ctor({ allErrors: true, strict: false });
+const ajv2020: SchemaCompiler = new Ajv2020Ctor({
+  allErrors: true,
+  strict: false,
+  addUsedSchema: false,
+});
+const ajvDraft07: SchemaCompiler = new AjvDraft07Ctor({
+  allErrors: true,
+  strict: false,
+  addUsedSchema: false,
+});
 /* eslint-enable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access */
 
 export type CompiledEventSchema = ValidateFunction;
@@ -34,8 +46,8 @@ function isDraft07Schema(schema: Record<string, unknown>): boolean {
 
 /** Compile an event `inputSchema` or `payloadSchema` at catalog ingestion time. */
 export function compileEventSchema(schema: Record<string, unknown>): CompileSchemaResult {
+  const engine = isDraft07Schema(schema) ? ajvDraft07 : ajv2020;
   try {
-    const engine = isDraft07Schema(schema) ? ajvDraft07 : ajv2020;
     const validate = engine.compile(schema);
     return { ok: true, validate };
   } catch (err) {
@@ -43,6 +55,10 @@ export function compileEventSchema(schema: Record<string, unknown>): CompileSche
       ok: false,
       error: err instanceof Error ? err.message : String(err),
     };
+  } finally {
+    // Evict compiled schema objects from Ajv's internal cache while preserving meta-schemas;
+    // the returned `validate` function is already self-contained.
+    engine.removeSchema();
   }
 }
 

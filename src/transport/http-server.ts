@@ -88,7 +88,7 @@ export async function httpServerPlugin(
         if (deps?.eventService?.shouldAdvertiseFor(profileId, deps.agentConfig)) {
           const eventService = deps.eventService;
           const headerError = await validateHttpEventRoutingHeaders(webReq, (eventName) =>
-            eventService.getEventInputSchema(eventName)
+            eventService.getEventInputSchemaForAgent(profileId, eventName)
           );
           if (headerError) return headerError;
         }
