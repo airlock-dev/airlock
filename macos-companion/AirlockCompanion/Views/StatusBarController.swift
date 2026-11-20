@@ -30,32 +30,142 @@ struct StatusItemPresentation {
     }
 }
 
+struct CompanionWindowLayout {
+    static let minSize = NSSize(width: 340, height: 420)
+    static let maxSize = NSSize(width: 1200, height: 1600)
+    static let detailMinWidth: CGFloat = 620
+    static let screenMargin: CGFloat = 8
+    static let menuBarGap: CGFloat = 6
+
+    static func clampedSize(_ size: NSSize, visibleFrame: NSRect? = nil) -> NSSize {
+        let maxW: CGFloat
+        let maxH: CGFloat
+        if let visibleFrame {
+            maxW = max(minSize.width, min(maxSize.width, visibleFrame.width - screenMargin * 2))
+            maxH = max(minSize.height, min(maxSize.height, visibleFrame.height - menuBarGap - screenMargin))
+        } else {
+            maxW = maxSize.width
+            maxH = maxSize.height
+        }
+        return NSSize(
+            width: min(max(size.width, minSize.width), maxW).rounded(),
+            height: min(max(size.height, minSize.height), maxH).rounded()
+        )
+    }
+
+    static func preferredSize(density: DisplayDensity, defaults: UserDefaults = .standard) -> NSSize {
+        let savedWidth = defaults.double(forKey: Constants.UserDefaultsKeys.companionWindowWidth)
+        let savedHeight = defaults.double(forKey: Constants.UserDefaultsKeys.companionWindowHeight)
+        let width = savedWidth > 0 ? CGFloat(savedWidth) : density.popoverWidth
+        let height = savedHeight > 0 ? CGFloat(savedHeight) : density.popoverMaxHeight
+        return clampedSize(NSSize(width: width, height: height))
+    }
+
+    static func saveSize(_ size: NSSize, defaults: UserDefaults = .standard) {
+        let clamped = clampedSize(size)
+        defaults.set(Double(clamped.width), forKey: Constants.UserDefaultsKeys.companionWindowWidth)
+        defaults.set(Double(clamped.height), forKey: Constants.UserDefaultsKeys.companionWindowHeight)
+    }
+
+    static func clearSavedSize(defaults: UserDefaults = .standard) {
+        defaults.removeObject(forKey: Constants.UserDefaultsKeys.companionWindowWidth)
+        defaults.removeObject(forKey: Constants.UserDefaultsKeys.companionWindowHeight)
+    }
+
+    static func anchoredFrame(
+        size desiredSize: NSSize,
+        anchorRect: NSRect?,
+        visibleFrame: NSRect
+    ) -> NSRect {
+        let size = clampedSize(desiredSize, visibleFrame: visibleFrame)
+
+        let rawX: CGFloat
+        let topY: CGFloat
+        if let anchorRect {
+            rawX = anchorRect.midX - size.width / 2
+            topY = min(anchorRect.minY, visibleFrame.maxY) - menuBarGap
+        } else {
+            rawX = visibleFrame.maxX - size.width - screenMargin
+            topY = visibleFrame.maxY - menuBarGap
+        }
+
+        let minX = visibleFrame.minX + screenMargin
+        let maxX = max(minX, visibleFrame.maxX - size.width - screenMargin)
+        let x = min(max(rawX, minX), maxX)
+
+        let minY = visibleFrame.minY + screenMargin
+        let maxY = max(minY, visibleFrame.maxY - size.height - menuBarGap)
+        let y = min(max(topY - size.height, minY), maxY)
+
+        return NSRect(x: x.rounded(), y: y.rounded(), width: size.width, height: size.height)
+    }
+
+    static func resizedFrame(
+        from currentFrame: NSRect,
+        to desiredSize: NSSize,
+        visibleFrame: NSRect?
+    ) -> NSRect {
+        let size = clampedSize(desiredSize, visibleFrame: visibleFrame)
+        var x = currentFrame.midX - size.width / 2
+        var y = currentFrame.maxY - size.height
+
+        if let visibleFrame {
+            let minX = visibleFrame.minX + screenMargin
+            let maxX = max(minX, visibleFrame.maxX - size.width - screenMargin)
+            x = min(max(x, minX), maxX)
+
+            let minY = visibleFrame.minY + screenMargin
+            let maxY = max(minY, visibleFrame.maxY - size.height - menuBarGap)
+            y = min(max(y, minY), maxY)
+        }
+
+        return NSRect(x: x.rounded(), y: y.rounded(), width: size.width, height: size.height)
+    }
+}
+
+private final class CompanionPanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { false }
+    override func zoom(_ sender: Any?) {}
+}
+
 @MainActor
-final class StatusBarController {
+final class StatusBarController: NSObject, NSWindowDelegate {
     private var statusItem: NSStatusItem
-    private var popover: NSPopover
+    private let panel: CompanionPanel
+    private var hostingController: NSHostingController<PopoverContentView>?
     private weak var viewModel: AppViewModel?
     private var clickMonitor: Any?
     private var localKeyMonitor: Any?
+    private var appResignObserver: NSObjectProtocol?
     private var eventHandlerRef: EventHandlerRef?
     private var hotkeyRefs: [UInt32: EventHotKeyRef] = [:]
+    private var isProgrammaticResize = false
+    private var lastAppliedDensity: DisplayDensity
+    private var savedListWidthBeforeDetail: CGFloat?
+    private var autoDetailWidth: CGFloat?
 
     init(viewModel: AppViewModel) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        popover = NSPopover()
+        let initialDensity = viewModel.density
+        lastAppliedDensity = initialDensity
+        let initialSize = CompanionWindowLayout.preferredSize(density: initialDensity)
 
+        panel = CompanionPanel(
+            contentRect: NSRect(origin: .zero, size: initialSize),
+            styleMask: [.titled, .resizable, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
         self.viewModel = viewModel
-        let contentView = PopoverContentView(viewModel: viewModel) { [weak self] in
-            self?.closePopover()
-        }
-        popover.contentSize = NSSize(width: DisplayDensity.compact.popoverWidth, height: DisplayDensity.compact.popoverMaxHeight)
-        popover.behavior = .transient
-        popover.animates = false
-        popover.contentViewController = NSHostingController(rootView: contentView)
+
+        super.init()
+
+        configurePanel(initialSize: initialSize, viewModel: viewModel)
 
         viewModel.onSettingsChanged = { [weak self] in
             self?.registerHotkeys()
-            self?.updatePopoverSize()
+            self?.updatePanelSizeIfDensityChanged()
         }
 
         if let button = statusItem.button {
@@ -64,12 +174,22 @@ final class StatusBarController {
             button.target = self
         }
 
-        // Close popover when clicking outside
+        // Close window when clicking outside
         clickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
             self?.closePopover()
         }
 
-        // Local hotkey: Ctrl+Shift+A toggles the popover when the app is focused
+        appResignObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didResignActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.closePopover()
+            }
+        }
+
+        // Local hotkey: Ctrl+Shift+A toggles the companion window when the app is focused
         localKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             let requiredFlags: NSEvent.ModifierFlags = [.control, .shift]
             let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
@@ -82,6 +202,67 @@ final class StatusBarController {
 
         installHotkeyHandler()
         registerGlobalHotkey()
+    }
+
+    private func configurePanel(initialSize: NSSize, viewModel: AppViewModel) {
+        panel.titleVisibility = .hidden
+        panel.titlebarAppearsTransparent = true
+        panel.isMovable = false
+        panel.isMovableByWindowBackground = false
+        panel.isReleasedWhenClosed = false
+        panel.hidesOnDeactivate = false
+        panel.level = .statusBar
+        panel.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary, .transient]
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = true
+        panel.animationBehavior = .none
+
+        for buttonType: NSWindow.ButtonType in [.closeButton, .miniaturizeButton, .zoomButton] {
+            panel.standardWindowButton(buttonType)?.isHidden = true
+        }
+
+        let contentView = PopoverContentView(
+            viewModel: viewModel,
+            onOpenSettingsRequest: { [weak self] in
+                self?.closePopover()
+            },
+            onDetailModeChanged: { [weak self] isDetail in
+                self?.handleDetailModeChanged(isDetail)
+            }
+        )
+
+        let visualEffect = NSVisualEffectView(frame: NSRect(origin: .zero, size: initialSize))
+        visualEffect.material = .popover
+        visualEffect.blendingMode = .behindWindow
+        visualEffect.state = .active
+        visualEffect.autoresizingMask = [.width, .height]
+
+        let hosting = NSHostingController(rootView: contentView)
+        hosting.sizingOptions = []
+        hosting.safeAreaRegions = []
+        hosting.view.translatesAutoresizingMaskIntoConstraints = false
+        hostingController = hosting
+
+        visualEffect.addSubview(hosting.view)
+        NSLayoutConstraint.activate([
+            hosting.view.leadingAnchor.constraint(equalTo: visualEffect.leadingAnchor),
+            hosting.view.trailingAnchor.constraint(equalTo: visualEffect.trailingAnchor),
+            hosting.view.topAnchor.constraint(equalTo: visualEffect.topAnchor),
+            hosting.view.bottomAnchor.constraint(equalTo: visualEffect.bottomAnchor),
+        ])
+
+        let containerVC = NSViewController()
+        containerVC.view = visualEffect
+        containerVC.addChild(hosting)
+        panel.contentViewController = containerVC
+
+        panel.contentMinSize = CompanionWindowLayout.minSize
+        panel.contentMaxSize = CompanionWindowLayout.maxSize
+        performProgrammaticResize {
+            panel.setContentSize(initialSize)
+        }
+        panel.delegate = self
     }
 
     // MARK: - Carbon Global Hotkey
@@ -127,10 +308,102 @@ final class StatusBarController {
         )
     }
 
-    private func updatePopoverSize() {
+    private func performProgrammaticResize(_ body: () -> Void) {
+        isProgrammaticResize = true
+        defer { isProgrammaticResize = false }
+        body()
+    }
+
+    private func currentDesiredSize() -> NSSize {
+        let density = viewModel?.density ?? .compact
+        var size = CompanionWindowLayout.preferredSize(density: density)
+        if let autoDetailWidth {
+            size.width = max(size.width, autoDetailWidth)
+        }
+        return size
+    }
+
+    private func updatePanelSizeIfDensityChanged() {
         guard let viewModel else { return }
         let density = viewModel.density
-        popover.contentSize = NSSize(width: density.popoverWidth, height: density.popoverMaxHeight)
+        guard density != lastAppliedDensity else { return }
+        lastAppliedDensity = density
+
+        CompanionWindowLayout.clearSavedSize()
+        savedListWidthBeforeDetail = nil
+        autoDetailWidth = nil
+
+        let targetSize = NSSize(width: density.popoverWidth, height: density.popoverMaxHeight)
+        let visibleFrame = panel.screen?.visibleFrame ?? NSScreen.main?.visibleFrame
+        let newFrame = CompanionWindowLayout.resizedFrame(
+            from: panel.frame,
+            to: targetSize,
+            visibleFrame: visibleFrame
+        )
+        performProgrammaticResize {
+            panel.setFrame(newFrame, display: true)
+        }
+    }
+
+    private func handleDetailModeChanged(_ isDetail: Bool) {
+        let visibleFrame = panel.screen?.visibleFrame ?? NSScreen.main?.visibleFrame
+        let currentFrame = panel.frame
+
+        if isDetail {
+            if currentFrame.width < CompanionWindowLayout.detailMinWidth {
+                savedListWidthBeforeDetail = currentFrame.width
+                let newSize = NSSize(width: CompanionWindowLayout.detailMinWidth, height: currentFrame.height)
+                let newFrame = CompanionWindowLayout.resizedFrame(
+                    from: currentFrame,
+                    to: newSize,
+                    visibleFrame: visibleFrame
+                )
+                autoDetailWidth = newFrame.width
+                performProgrammaticResize {
+                    panel.setFrame(newFrame, display: true)
+                }
+            } else {
+                savedListWidthBeforeDetail = nil
+                autoDetailWidth = nil
+            }
+        } else {
+            if let restoreWidth = savedListWidthBeforeDetail {
+                let newSize = NSSize(width: restoreWidth, height: currentFrame.height)
+                let newFrame = CompanionWindowLayout.resizedFrame(
+                    from: currentFrame,
+                    to: newSize,
+                    visibleFrame: visibleFrame
+                )
+                savedListWidthBeforeDetail = nil
+                autoDetailWidth = nil
+                performProgrammaticResize {
+                    panel.setFrame(newFrame, display: true)
+                }
+            } else {
+                autoDetailWidth = nil
+            }
+        }
+    }
+
+    // MARK: - NSWindowDelegate
+
+    func windowDidResize(_ notification: Notification) {
+        guard !isProgrammaticResize, panel.isVisible else { return }
+        let newSize = panel.frame.size
+
+        if let savedListWidth = savedListWidthBeforeDetail,
+           let autoWidth = autoDetailWidth,
+           abs(newSize.width - autoWidth) < 1.0 {
+            CompanionWindowLayout.saveSize(NSSize(width: savedListWidth, height: newSize.height))
+        } else {
+            savedListWidthBeforeDetail = nil
+            autoDetailWidth = nil
+            CompanionWindowLayout.saveSize(newSize)
+        }
+    }
+
+    func windowShouldZoom(_ window: NSWindow, toFrame newFrame: NSRect) -> Bool {
+        false
     }
 
     private func registerGlobalHotkey() {
@@ -226,6 +499,9 @@ final class StatusBarController {
             if let monitor = localKeyMonitor {
                 NSEvent.removeMonitor(monitor)
             }
+            if let observer = appResignObserver {
+                NotificationCenter.default.removeObserver(observer)
+            }
             for ref in hotkeyRefs.values {
                 UnregisterEventHotKey(ref)
             }
@@ -249,7 +525,7 @@ final class StatusBarController {
     }
 
     @objc private func togglePopover() {
-        if popover.isShown {
+        if panel.isVisible {
             closePopover()
         } else {
             showPopover()
@@ -257,18 +533,34 @@ final class StatusBarController {
     }
 
     private func showPopover() {
-        if let button = statusItem.button {
-            viewModel?.selectedIndex = 0
+        guard let button = statusItem.button else { return }
+        viewModel?.selectedIndex = 0
 
-            NSApp.activate(ignoringOtherApps: true)
-            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        let targetSize = currentDesiredSize()
+        let screen = button.window?.screen ?? NSScreen.main ?? NSScreen.screens.first
+        let visibleFrame = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+        let anchorRect = button.window.map { window in
+            window.convertToScreen(button.convert(button.bounds, to: nil))
+        }
 
-            // Ensure popover window is key so .onKeyPress works
-            popover.contentViewController?.view.window?.makeKey()
+        let frame = CompanionWindowLayout.anchoredFrame(
+            size: targetSize,
+            anchorRect: anchorRect,
+            visibleFrame: visibleFrame
+        )
+        performProgrammaticResize {
+            panel.setFrame(frame, display: true)
+        }
+
+        NSApp.activate(ignoringOtherApps: true)
+        panel.makeKeyAndOrderFront(nil)
+        if let hostingView = hostingController?.view {
+            panel.makeFirstResponder(hostingView)
         }
     }
 
     private func closePopover() {
-        popover.performClose(nil)
+        guard panel.isVisible else { return }
+        panel.orderOut(nil)
     }
 }

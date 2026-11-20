@@ -22,7 +22,7 @@ struct SettingsView: View {
             }
             .padding(24)
         }
-        .frame(width: 540, height: 520)
+        .frame(minWidth: 480, idealWidth: 540, minHeight: 420, idealHeight: 560)
         .background(windowBackground)
         .onAppear {
             urlText = viewModel.dashboardURL
@@ -138,7 +138,7 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 10) {
                     settingsRowTitle(
                         title: "Display density",
-                        detail: "Controls the width of the popover."
+                        detail: "Sets the preset window size. You can also drag any window edge to resize."
                     )
 
                     Picker("Display density", selection: densityBinding) {
@@ -215,7 +215,7 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 16) {
                 HStack(spacing: 14) {
                     shortcutPicker(
-                        title: "Open popover",
+                        title: "Open window",
                         value: .constant("A"),
                         disabled: true,
                         note: "Fixed"
