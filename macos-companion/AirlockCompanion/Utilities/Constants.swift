@@ -29,6 +29,8 @@ enum Constants {
         static let denyShortcutKey = "denyShortcutKey"
         static let autoExpandSelectedRequest = "autoExpandSelectedRequest"
         static let displayDensity = "displayDensity"
+        static let companionWindowWidth = "companionWindowWidth"
+        static let companionWindowHeight = "companionWindowHeight"
         static let lastNotificationActionError = "lastNotificationActionError"
         static let lastNotificationDeliveryError = "lastNotificationDeliveryError"
     }

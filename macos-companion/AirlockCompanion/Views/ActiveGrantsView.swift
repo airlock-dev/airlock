@@ -5,6 +5,9 @@ struct ActiveGrantsView: View {
     let grants: [ApprovalGrant]
     @Binding var isExpanded: Bool
     let onRevoke: (String) -> Void
+    @State private var contentHeight: CGFloat = 0
+
+    private static let maxListHeight: CGFloat = 120
 
     var body: some View {
         // Re-render periodically so "expires in" stays current and lapsed grants drop off.
@@ -58,9 +61,18 @@ struct ActiveGrantsView: View {
                         }
                     }
                     .padding(.trailing, 6)
+                    .background(
+                        GeometryReader { proxy in
+                            Color.clear
+                                .onAppear { contentHeight = proxy.size.height }
+                                .onChange(of: proxy.size.height) { _, newHeight in
+                                    contentHeight = newHeight
+                                }
+                        }
+                    )
                 }
                 .scrollIndicators(.hidden)
-                .frame(maxHeight: 120)
+                .frame(maxHeight: contentHeight > 0 ? min(contentHeight, Self.maxListHeight) : Self.maxListHeight)
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }

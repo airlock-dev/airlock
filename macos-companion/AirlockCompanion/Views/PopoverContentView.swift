@@ -6,15 +6,14 @@ import SwiftUI
 struct PopoverContentView: View {
     @ObservedObject var viewModel: AppViewModel
     let onOpenSettingsRequest: () -> Void
+    var onDetailModeChanged: ((Bool) -> Void)? = nil
     @Environment(\.openSettings) private var openSettings
-    @AppStorage(Constants.UserDefaultsKeys.displayDensity) private var densityString: String = DisplayDensity.compact.rawValue
     @State private var showRecent = true
     @State private var showGrants = true
     @State private var detailRequest: ApprovalRequest?
     @State private var detailArgsScrollView: NSScrollView? = nil
     @FocusState private var isFocused: Bool
 
-    private var density: DisplayDensity { DisplayDensity(rawValue: densityString) ?? .compact }
     private var isDetail: Bool { detailRequest != nil }
 
     private var statusColor: Color {
@@ -87,8 +86,10 @@ struct PopoverContentView: View {
                     RequestListView(viewModel: viewModel, selectedIndex: $viewModel.selectedIndex) { request in
                         detailRequest = request
                     }
+                    .frame(maxWidth: .infinity, minHeight: 180, maxHeight: .infinity)
                 } else {
                     EmptyStateView(connectionState: viewModel.connectionState)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
 
                 if !viewModel.grants.isEmpty {
@@ -110,12 +111,17 @@ struct PopoverContentView: View {
                 }
             }
         }
-        .frame(width: isDetail ? 620 : density.popoverWidth)
-        .frame(maxHeight: isDetail ? 520 : density.popoverMaxHeight)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .focusable()
         .focused($isFocused)
         .focusEffectDisabled()
         .onAppear { isFocused = true }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in
+            isFocused = true
+        }
+        .onChange(of: isDetail) { _, newValue in
+            onDetailModeChanged?(newValue)
+        }
         .onKeyPress(phases: .down) { press in
             guard !press.modifiers.contains(.command) else { return .ignored }
 
@@ -139,6 +145,10 @@ struct PopoverContentView: View {
                 return .handled
             }
 
+            if press.key == .escape {
+                onOpenSettingsRequest()
+                return .handled
+            }
             let count = viewModel.pendingRequests.count
             if key == "j" || press.key == .downArrow {
                 if count > 0 { viewModel.selectedIndex = min(viewModel.selectedIndex + 1, count - 1) }
@@ -217,6 +227,9 @@ private struct RecentEventsView: View {
     let activityEvents: [ActivityEvent]
     let resolvedRequests: [ResolvedRequest]
     @Binding var isExpanded: Bool
+    @State private var contentHeight: CGFloat = 0
+
+    private static let maxListHeight: CGFloat = 160
 
     private var items: [RecentItem] {
         let activity = activityEvents.map(RecentItem.activity)
@@ -266,9 +279,18 @@ private struct RecentEventsView: View {
                         }
                     }
                     .padding(.trailing, 6)
+                    .background(
+                        GeometryReader { proxy in
+                            Color.clear
+                                .onAppear { contentHeight = proxy.size.height }
+                                .onChange(of: proxy.size.height) { _, newHeight in
+                                    contentHeight = newHeight
+                                }
+                        }
+                    )
                 }
                 .scrollIndicators(.hidden)
-                .frame(maxHeight: 160)
+                .frame(maxHeight: contentHeight > 0 ? min(contentHeight, Self.maxListHeight) : Self.maxListHeight)
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
