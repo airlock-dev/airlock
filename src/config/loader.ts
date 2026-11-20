@@ -327,6 +327,14 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
     diagnostics.push(
       ...validateArgPolicyRefs(config, agent.arg_policy, `agents.${agentId}.arg_policy`, agentId)
     );
+    diagnostics.push(
+      ...validateArgPolicyRefs(
+        config,
+        agent.events?.arg_policy,
+        `agents.${agentId}.events.arg_policy`,
+        agentId
+      )
+    );
 
     for (const presetName of agent.sandbox.presets) {
       if (!sandboxPresetNames.has(presetName)) {
@@ -360,8 +368,15 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
       }
     }
 
-    // Collect all referenced namespaces from allow/ask/deny
-    const allPatterns = [...agent.allow, ...agent.ask, ...agent.deny];
+    // Collect all referenced namespaces from allow/ask/deny (tools and events)
+    const allPatterns = [
+      ...agent.allow,
+      ...agent.ask,
+      ...agent.deny,
+      ...(agent.events?.allow ?? []),
+      ...(agent.events?.ask ?? []),
+      ...(agent.events?.deny ?? []),
+    ];
     const referencedNamespaces = new Set<string>();
     const toolOverrideNamespaces = new Set(
       Object.keys(agent.tool_overrides)
@@ -454,7 +469,13 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
     }
 
     // Check empty agent
-    if (agent.extends.length === 0 && agent.allow.length === 0 && agent.ask.length === 0) {
+    const hasEvents = (agent.events?.allow.length ?? 0) > 0 || (agent.events?.ask.length ?? 0) > 0;
+    if (
+      agent.extends.length === 0 &&
+      agent.allow.length === 0 &&
+      agent.ask.length === 0 &&
+      !hasEvents
+    ) {
       diagnostics.push({
         level: 'info',
         agent: agentId,
@@ -489,6 +510,13 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
     );
     diagnostics.push(
       ...validateArgPolicyRefs(config, profile.arg_policy, `profiles.${profileId}.arg_policy`)
+    );
+    diagnostics.push(
+      ...validateArgPolicyRefs(
+        config,
+        profile.events?.arg_policy,
+        `profiles.${profileId}.events.arg_policy`
+      )
     );
     for (const [toolName, override] of Object.entries(profile.tool_overrides)) {
       diagnostics.push(

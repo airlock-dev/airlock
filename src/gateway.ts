@@ -3,9 +3,13 @@ import { createConnection, isIP } from 'net';
 import Fastify from 'fastify';
 import type { FastifyInstance } from 'fastify';
 import { ClientPool } from './pool/pool.js';
+import { eventEnabledProviders } from './pool/required-mcps.js';
 import { CredentialHealthMonitor } from './pool/credential-health.js';
 import { ToolRegistry } from './registry/registry.js';
 import { AllowlistEngine } from './allowlist/engine.js';
+import { EventRegistry } from './events/registry.js';
+import { EventStreamManager } from './events/stream-manager.js';
+import { EventService } from './events/service.js';
 import { HitlEngine } from './hitl/engine.js';
 import { HitlBatcher } from './hitl/batcher.js';
 import { createGrantStore, engineOptionsFromConfig, wireBatcher } from './hitl/runtime.js';
@@ -56,6 +60,9 @@ export class Gateway {
   private credentialHealth!: CredentialHealthMonitor;
   private registry!: ToolRegistry;
   private allowlist!: AllowlistEngine;
+  private eventRegistry!: EventRegistry;
+  private eventStreamManager!: EventStreamManager;
+  private eventService!: EventService;
   private hitlEngine!: HitlEngine;
   private hitlBatcher!: HitlBatcher;
   private hitlProvider!: HitlProvider;
@@ -137,7 +144,9 @@ export class Gateway {
 
     // MCP pool — only connect to actual MCP servers, not builtins
     const mcpConfigs = getMcpConfigs(this.config.providers);
-    this.pool = new ClientPool(mcpConfigs);
+    this.pool = new ClientPool(mcpConfigs, {
+      eventsProviders: eventEnabledProviders(this.config.agents),
+    });
     await this.pool.initialize();
 
     // Credential probes. Primed here (not on a timer) so the first /health poll after a restart
@@ -151,7 +160,7 @@ export class Gateway {
     // Build adapters from config (MCP, builtins, CLIs, APIs)
     const adapters = this.buildAdapters();
 
-    // Allowlist + registry
+    // Allowlist + registry + SEP-3415 events
     this.allowlist = new AllowlistEngine(this.config.agents);
     this.registry = new ToolRegistry(
       adapters,
@@ -159,16 +168,41 @@ export class Gateway {
       this.config.agents,
       getProviderInstructions(this.config.providers)
     );
+    this.eventRegistry = new EventRegistry(this.pool, this.allowlist);
+    this.eventStreamManager = new EventStreamManager((profileId) => {
+      const resolved = resolveLimits(
+        this.config.agents[profileId]?.limits,
+        this.config.security.limits
+      );
+      return {
+        maxEventStreamsPerAgent: resolved.maxEventStreamsPerAgent,
+        maxEventStreamsGlobal: resolved.maxEventStreamsGlobal,
+      };
+    });
+    this.eventService = new EventService({
+      pool: this.pool,
+      registry: this.eventRegistry,
+      allowlist: this.allowlist,
+      streamManager: this.eventStreamManager,
+      hitlEngine: this.hitlEngine,
+      hitlBatcher: this.hitlBatcher,
+      auditLogger: this.auditLogger,
+      getAgentConfig: (profileId) => this.config.agents[profileId],
+    });
 
     // Register callback for late-connecting MCPs (after registry exists)
     this.pool.onClientReady((id) => {
-      log.info({ id }, 'MCP became ready, refreshing tool registry');
+      log.info({ id }, 'MCP became ready, refreshing tool and event registries');
       this.registry
         .refresh()
         .catch((err) => log.error({ err }, 'Failed to refresh registry after MCP ready'));
+      this.eventRegistry
+        .refresh()
+        .catch((err) => log.error({ err }, 'Failed to refresh event registry after MCP ready'));
     });
 
     await this.registry.refresh();
+    await this.eventRegistry.refresh();
 
     // Agent data-plane server. Control-plane routes are registered on a
     // separate listener below and must never be added to this app.
@@ -307,14 +341,18 @@ export class Gateway {
       // says its credential WORKS; neither notices the provider quietly changing what its tools
       // accept or what they tell an agent to do. Pin these downstream and you find out.
       const toolCatalog = this.registry.getCatalogSummary();
+      const eventCatalog = this.eventRegistry.getCatalogSummary();
+      const eventStreams = this.eventStreamManager.snapshot();
       return {
         status,
         dataPlane,
         mcpHealth,
         credentialHealth,
         toolCatalog,
+        eventCatalog,
         pendingApprovals,
         sessions,
+        eventStreams,
         downstreamSessionMappings,
         memory: process.memoryUsage(),
         uptime,
@@ -471,6 +509,7 @@ export class Gateway {
       hitlProvider: this.hitlProvider,
       auditLogger: this.auditLogger,
       securityConfig: this.config.security,
+      eventService: this.eventService,
     };
   }
 
@@ -534,7 +573,7 @@ export class Gateway {
     this.hitlEngine.setTimeoutMs(newConfig.approvals.timeout_ms);
     this.hitlEngine.configure(engineOptionsFromConfig(newConfig, () => this.config));
     const mcpConfigs = getMcpConfigs(newConfig.providers);
-    await this.pool.reload(mcpConfigs);
+    await this.pool.reload(mcpConfigs, eventEnabledProviders(newConfig.agents));
     this.credentialHealth.reload(getCredentialProbes(newConfig.providers));
     this.allowlist.reload(newConfig.agents);
     this.registry.reloadAgents(newConfig.agents, getProviderInstructions(newConfig.providers));
@@ -542,7 +581,9 @@ export class Gateway {
     const adapters = this.buildAdapters();
     this.registry.setAdapters(adapters);
     await this.registry.refresh();
-    log.info('Config reloaded: providers, allowlist, registry, and agent configs updated');
+    await this.eventRegistry.refresh();
+    await this.eventService.reconcileAfterReload();
+    log.info('Config reloaded: providers, allowlist, registry, events, and agent configs updated');
   }
 
   /** Prevent MCP clients from reconnecting during shutdown. */
@@ -556,8 +597,9 @@ export class Gateway {
     this.credentialHealth?.stop();
     this.pool?.disableReconnect();
     await this.pool?.stop();
-    // End the approval streams (dashboard /events, /mobile/approvals/stream) first: an open SSE
-    // response never goes idle, so the listener's close() would otherwise wait on it forever.
+    // End open push event streams and approval streams first: open SSE responses never go idle,
+    // so Fastify's close() would otherwise wait on them forever.
+    await this.eventStreamManager?.closeAll();
     await this.approvalStream?.stop();
     await this.managementApp?.close();
     await this.app?.close();

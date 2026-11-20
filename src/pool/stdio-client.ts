@@ -1,6 +1,17 @@
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
-import { Client } from '@modelcontextprotocol/client';
 import type { Tool } from '@modelcontextprotocol/client';
+import {
+  EventsAwareClient,
+  type UpstreamEventStreamCallbacks,
+  type UpstreamEventStreamHandle,
+  type UpstreamEventStreamOptions,
+} from '../events/upstream-client.js';
+import type {
+  EventDescriptor,
+  EventsPollParams,
+  EventsPollResult,
+  EventsStreamParams,
+} from '../events/protocol.js';
 import type { ProviderConnectionStatus } from './status.js';
 import { childLogger } from '../util/logger.js';
 import { VERSION } from '../version.js';
@@ -22,7 +33,7 @@ function friendlyError(err: unknown): string {
 }
 
 export class StdioMcpClient {
-  private client?: Client;
+  private client?: EventsAwareClient;
   private transport?: StdioClientTransport;
   private reconnectAttempt = 0;
   private stopped = false;
@@ -38,7 +49,8 @@ export class StdioMcpClient {
     private command: string,
     private args: string[],
     private env?: Record<string, string>,
-    private stderr?: 'inherit' | 'ignore' | 'pipe'
+    private stderr?: 'inherit' | 'ignore' | 'pipe',
+    private probeModern = false
   ) {}
 
   onReady(cb: () => void): void {
@@ -53,7 +65,12 @@ export class StdioMcpClient {
       stderr: this.stderr,
     });
 
-    this.client = new Client({ name: 'airlock', version: VERSION });
+    // Only probe 2026-07-28 `server/discover` on stdio when an agent has event permissions for
+    // this provider; legacy 2025 stdio servers expect `initialize` as their first frame.
+    this.client = new EventsAwareClient(
+      { name: 'airlock', version: VERSION },
+      this.probeModern ? { versionNegotiation: { mode: 'auto' } } : undefined
+    );
     this.connecting = true;
     this.reconnectExhausted = false;
 
@@ -119,6 +136,32 @@ export class StdioMcpClient {
       ? { name, arguments: args, _meta: requestMeta }
       : { name, arguments: args };
     return this.client.callTool(request);
+  }
+
+  supportsEvents(): boolean {
+    return Boolean(this.client && this.ready && this.client.supportsEvents());
+  }
+
+  async listEvents(): Promise<EventDescriptor[]> {
+    if (!this.client || !this.ready) throw new Error(`MCP ${this.id} not connected`);
+    return this.client.listEvents();
+  }
+
+  async pollEvents(
+    params: EventsPollParams,
+    options?: { inputSchema?: Record<string, unknown>; signal?: AbortSignal }
+  ): Promise<EventsPollResult> {
+    if (!this.client || !this.ready) throw new Error(`MCP ${this.id} not connected`);
+    return this.client.pollEvents(params, options);
+  }
+
+  async openEventStream(
+    params: EventsStreamParams,
+    callbacks: UpstreamEventStreamCallbacks,
+    options?: UpstreamEventStreamOptions
+  ): Promise<UpstreamEventStreamHandle> {
+    if (!this.client || !this.ready) throw new Error(`MCP ${this.id} not connected`);
+    return this.client.openEventStream(params, callbacks, options);
   }
 
   getServerInfo(): { name: string; version: string } | undefined {

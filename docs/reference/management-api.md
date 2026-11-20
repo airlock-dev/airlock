@@ -148,8 +148,18 @@ Returns gateway health status, pending HITL count, process memory, and uptime.
       "fingerprint": "sha256:9f2b…"
     }
   },
+  "eventCatalog": {
+    "github": {
+      "count": 4,
+      "fingerprint": "sha256:3a1c…"
+    }
+  },
   "pendingApprovals": 2,
   "sessions": {
+    "total": 1,
+    "perAgent": { "claude-code": 1 }
+  },
+  "eventStreams": {
     "total": 1,
     "perAgent": { "claude-code": 1 }
   },
@@ -205,7 +215,9 @@ has an explicit probe — a green that hasn't been earned is worse than an hones
 
 `toolCatalog` answers a third question neither of the others can: **has the
 provider changed what its tools do?** One entry per provider, hashing every tool
-name, description, and input schema as agents actually receive them.
+name, description, and input schema as agents actually receive them. `eventCatalog`
+provides the same drift fingerprint for SEP-3415 MCP Events (`io.modelcontextprotocol/events`),
+and `eventStreams` counts live `events/stream` push subscriptions in total and per agent.
 
 | Field         | Meaning                                                |
 | ------------- | ------------------------------------------------------ |

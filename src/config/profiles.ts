@@ -2,6 +2,7 @@ import { isDeepStrictEqual } from 'util';
 import { mergeSandboxOverride } from './schema.js';
 import type {
   AgentConfig,
+  AgentEventsConfig,
   CommandPolicyConfig,
   GatewayConfig,
   NormalizerName,
@@ -15,6 +16,7 @@ export interface ResolvedPermissions {
   allow: string[];
   ask: string[];
   deny: string[];
+  events?: AgentEventsConfig;
   tool_overrides: Record<string, ToolOverride>;
   arg_policy?: ToolArgPolicyConfig;
   arg_scope?: Record<string, string[]>;
@@ -66,7 +68,14 @@ export interface ExtendsTreeNode {
 
 type PermissionSource = Pick<
   ProfileConfig | AgentConfig,
-  'allow' | 'ask' | 'deny' | 'tool_overrides' | 'arg_policy' | 'arg_scope' | 'command_policy'
+  | 'allow'
+  | 'ask'
+  | 'deny'
+  | 'events'
+  | 'tool_overrides'
+  | 'arg_policy'
+  | 'arg_scope'
+  | 'command_policy'
 >;
 
 /**
@@ -178,6 +187,11 @@ function unionPermissions(...sources: PermissionSource[]): ResolvedPermissions {
   const allow = new Set<string>();
   const ask = new Set<string>();
   const deny = new Set<string>();
+  const eventAllow = new Set<string>();
+  const eventAsk = new Set<string>();
+  const eventDeny = new Set<string>();
+  const eventArgPolicy: ToolArgPolicyConfig = {};
+  let hasEvents = false;
   const arg_policy: ToolArgPolicyConfig = {};
   const arg_scope: Record<string, string[]> = {};
   const command_policy: CommandPolicyConfig = {};
@@ -187,6 +201,13 @@ function unionPermissions(...sources: PermissionSource[]): ResolvedPermissions {
     for (const p of source.allow) allow.add(p);
     for (const p of source.ask) ask.add(p);
     for (const p of source.deny) deny.add(p);
+    if (source.events) {
+      hasEvents = true;
+      for (const p of source.events.allow) eventAllow.add(p);
+      for (const p of source.events.ask) eventAsk.add(p);
+      for (const p of source.events.deny) eventDeny.add(p);
+      mergeArgPolicy(eventArgPolicy, source.events.arg_policy);
+    }
     mergeArgPolicy(arg_policy, source.arg_policy);
     mergeArgScope(arg_scope, source.arg_scope);
     mergeCommandPolicy(command_policy, source.command_policy);
@@ -197,6 +218,16 @@ function unionPermissions(...sources: PermissionSource[]): ResolvedPermissions {
     allow: Array.from(allow),
     ask: Array.from(ask),
     deny: Array.from(deny),
+    ...(hasEvents
+      ? {
+          events: {
+            allow: Array.from(eventAllow),
+            ask: Array.from(eventAsk),
+            deny: Array.from(eventDeny),
+            ...(Object.keys(eventArgPolicy).length > 0 ? { arg_policy: eventArgPolicy } : {}),
+          },
+        }
+      : {}),
     tool_overrides,
     ...(Object.keys(arg_policy).length > 0 ? { arg_policy } : {}),
     ...(Object.keys(arg_scope).length > 0 ? { arg_scope } : {}),
@@ -674,6 +705,20 @@ export function applyProfiles(config: GatewayConfig): void {
     agent.allow = resolved.allow;
     agent.ask = resolved.ask;
     agent.deny = resolved.deny;
+    if (resolved.events) {
+      agent.events = {
+        ...resolved.events,
+        ...(resolved.events.arg_policy
+          ? {
+              arg_policy: resolveNamedSetPolicy(
+                config,
+                resolved.events.arg_policy,
+                'agents.events.arg_policy'
+              ),
+            }
+          : {}),
+      };
+    }
     agent.arg_policy = resolveNamedSetPolicy(
       config,
       mergeArgPolicy(

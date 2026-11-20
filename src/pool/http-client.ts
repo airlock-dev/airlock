@@ -1,10 +1,22 @@
 import {
-  Client,
   StreamableHTTPClientTransport,
   auth,
   UnauthorizedError,
 } from '@modelcontextprotocol/client';
 import type { Tool } from '@modelcontextprotocol/client';
+import {
+  EventsAwareClient,
+  wrapFetchWithEventHeaders,
+  type UpstreamEventStreamCallbacks,
+  type UpstreamEventStreamHandle,
+  type UpstreamEventStreamOptions,
+} from '../events/upstream-client.js';
+import type {
+  EventDescriptor,
+  EventsPollParams,
+  EventsPollResult,
+  EventsStreamParams,
+} from '../events/protocol.js';
 import { FileOAuthProvider } from './oauth-provider.js';
 import { ClientCredentialsTokenSource } from './client-credentials.js';
 import type { ClientCredentialsConfig } from '../config/schema.js';
@@ -71,7 +83,7 @@ function isAuthRequiredError(err: unknown): boolean {
 }
 
 export class HttpMcpClient {
-  private client?: Client;
+  private client?: EventsAwareClient;
   private transport?: StreamableHTTPClientTransport;
   private oauthProvider?: FileOAuthProvider;
   private tokenSource?: ClientCredentialsTokenSource;
@@ -149,14 +161,16 @@ export class HttpMcpClient {
     }
 
     if (this.tokenSource) {
-      transportOpts.fetch = this.clientCredentialsFetch();
+      transportOpts.fetch = wrapFetchWithEventHeaders(this.clientCredentialsFetch());
+    } else {
+      transportOpts.fetch = wrapFetchWithEventHeaders();
     }
 
     this.transport = new StreamableHTTPClientTransport(new URL(this.url), transportOpts);
 
     // Probe with server/discover and speak 2026-07-28 (stateless) to upstreams that support it;
     // anything else falls back to the 2025 initialize handshake, unchanged from before.
-    this.client = new Client(
+    this.client = new EventsAwareClient(
       { name: 'airlock', version: VERSION },
       { versionNegotiation: { mode: 'auto' } }
     );
@@ -452,6 +466,43 @@ export class HttpMcpClient {
         ? { name, arguments: args, _meta: requestMeta }
         : { name, arguments: args };
       return this.client.callTool(request, { timeout: this.requestTimeoutMs });
+    });
+  }
+
+  supportsEvents(): boolean {
+    return Boolean(this.client && this.ready && this.client.supportsEvents());
+  }
+
+  async listEvents(): Promise<EventDescriptor[]> {
+    return this.withSessionRetry('listEvents', async () => {
+      if (!this.client || !this.ready) throw new Error(`MCP ${this.id} not connected`);
+      return this.client.listEvents({ timeout: this.requestTimeoutMs });
+    });
+  }
+
+  async pollEvents(
+    params: EventsPollParams,
+    options?: { inputSchema?: Record<string, unknown>; signal?: AbortSignal }
+  ): Promise<EventsPollResult> {
+    return this.withSessionRetry('pollEvents', async () => {
+      if (!this.client || !this.ready) throw new Error(`MCP ${this.id} not connected`);
+      return this.client.pollEvents(params, {
+        timeout: this.requestTimeoutMs,
+        signal: options?.signal,
+        inputSchema: options?.inputSchema,
+      });
+    });
+  }
+
+  async openEventStream(
+    params: EventsStreamParams,
+    callbacks: UpstreamEventStreamCallbacks,
+    options?: UpstreamEventStreamOptions
+  ): Promise<UpstreamEventStreamHandle> {
+    if (!this.client || !this.ready) throw new Error(`MCP ${this.id} not connected`);
+    return this.client.openEventStream(params, callbacks, {
+      ackTimeoutMs: this.requestTimeoutMs,
+      ...options,
     });
   }
 

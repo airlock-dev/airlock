@@ -1,5 +1,18 @@
 import { Client, SSEClientTransport } from '@modelcontextprotocol/client';
 import type { Tool } from '@modelcontextprotocol/client';
+import {
+  EVENTS_ERROR_CODES,
+  createEventsError,
+  type EventDescriptor,
+  type EventsPollParams,
+  type EventsPollResult,
+  type EventsStreamParams,
+} from '../events/protocol.js';
+import type {
+  UpstreamEventStreamCallbacks,
+  UpstreamEventStreamHandle,
+  UpstreamEventStreamOptions,
+} from '../events/upstream-client.js';
 import type { ProviderConnectionStatus } from './status.js';
 import { childLogger } from '../util/logger.js';
 import { VERSION } from '../version.js';
@@ -102,6 +115,38 @@ export class SseMcpClient {
       ? { name, arguments: args, _meta: requestMeta }
       : { name, arguments: args };
     return this.client.callTool(request);
+  }
+
+  /** Legacy SSE transport predates MCP 2026-07-28 and does not support SEP-3415 Events. */
+  supportsEvents(): boolean {
+    return false;
+  }
+
+  // eslint-disable-next-line @typescript-eslint/require-await
+  async listEvents(): Promise<EventDescriptor[]> {
+    return [];
+  }
+
+  // eslint-disable-next-line @typescript-eslint/require-await
+  async pollEvents(_params: EventsPollParams): Promise<EventsPollResult> {
+    throw createEventsError(
+      EVENTS_ERROR_CODES.Unsupported,
+      `MCP provider ${this.id} uses legacy SSE transport and does not support Events`,
+      { feature: 'events' }
+    );
+  }
+
+  // eslint-disable-next-line @typescript-eslint/require-await
+  async openEventStream(
+    _params: EventsStreamParams,
+    _callbacks: UpstreamEventStreamCallbacks,
+    _options?: UpstreamEventStreamOptions
+  ): Promise<UpstreamEventStreamHandle> {
+    throw createEventsError(
+      EVENTS_ERROR_CODES.Unsupported,
+      `MCP provider ${this.id} uses legacy SSE transport and does not support Events`,
+      { feature: 'events' }
+    );
   }
 
   getServerInfo(): { name: string; version: string } | undefined {

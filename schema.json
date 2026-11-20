@@ -459,6 +459,167 @@
               "type": "string"
             }
           },
+          "events": {
+            "type": "object",
+            "properties": {
+              "allow": {
+                "default": [],
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "ask": {
+                "default": [],
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "deny": {
+                "default": [],
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "arg_policy": {
+                "type": "object",
+                "propertyNames": {
+                  "type": "string"
+                },
+                "additionalProperties": {
+                  "type": "object",
+                  "propertyNames": {
+                    "type": "string"
+                  },
+                  "additionalProperties": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "allow": {
+                            "type": "array",
+                            "items": {}
+                          },
+                          "equals": {},
+                          "in": {
+                            "type": "string"
+                          },
+                          "glob_in": {
+                            "type": "string"
+                          },
+                          "each_in": {
+                            "type": "string"
+                          },
+                          "glob_allow": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "each_allow": {
+                            "type": "array",
+                            "items": {}
+                          },
+                          "normalize": {
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "enum": [
+                                "phone",
+                                "email",
+                                "lower",
+                                "trim"
+                              ]
+                            }
+                          },
+                          "path": {
+                            "type": "string"
+                          },
+                          "required": {
+                            "type": "boolean"
+                          },
+                          "label": {
+                            "type": "string"
+                          },
+                          "value_set": {
+                            "type": "string"
+                          },
+                          "expose_values": {
+                            "type": "boolean"
+                          }
+                        },
+                        "additionalProperties": false
+                      },
+                      {
+                        "minItems": 1,
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "allow": {
+                              "type": "array",
+                              "items": {}
+                            },
+                            "equals": {},
+                            "in": {
+                              "type": "string"
+                            },
+                            "glob_in": {
+                              "type": "string"
+                            },
+                            "each_in": {
+                              "type": "string"
+                            },
+                            "glob_allow": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            },
+                            "each_allow": {
+                              "type": "array",
+                              "items": {}
+                            },
+                            "normalize": {
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "enum": [
+                                  "phone",
+                                  "email",
+                                  "lower",
+                                  "trim"
+                                ]
+                              }
+                            },
+                            "path": {
+                              "type": "string"
+                            },
+                            "required": {
+                              "type": "boolean"
+                            },
+                            "label": {
+                              "type": "string"
+                            },
+                            "value_set": {
+                              "type": "string"
+                            },
+                            "expose_values": {
+                              "type": "boolean"
+                            }
+                          },
+                          "additionalProperties": false
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            "additionalProperties": false
+          },
           "tool_overrides": {
             "default": {},
             "type": "object",
@@ -1204,6 +1365,167 @@
             "items": {
               "type": "string"
             }
+          },
+          "events": {
+            "type": "object",
+            "properties": {
+              "allow": {
+                "default": [],
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "ask": {
+                "default": [],
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "deny": {
+                "default": [],
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "arg_policy": {
+                "type": "object",
+                "propertyNames": {
+                  "type": "string"
+                },
+                "additionalProperties": {
+                  "type": "object",
+                  "propertyNames": {
+                    "type": "string"
+                  },
+                  "additionalProperties": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "allow": {
+                            "type": "array",
+                            "items": {}
+                          },
+                          "equals": {},
+                          "in": {
+                            "type": "string"
+                          },
+                          "glob_in": {
+                            "type": "string"
+                          },
+                          "each_in": {
+                            "type": "string"
+                          },
+                          "glob_allow": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "each_allow": {
+                            "type": "array",
+                            "items": {}
+                          },
+                          "normalize": {
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "enum": [
+                                "phone",
+                                "email",
+                                "lower",
+                                "trim"
+                              ]
+                            }
+                          },
+                          "path": {
+                            "type": "string"
+                          },
+                          "required": {
+                            "type": "boolean"
+                          },
+                          "label": {
+                            "type": "string"
+                          },
+                          "value_set": {
+                            "type": "string"
+                          },
+                          "expose_values": {
+                            "type": "boolean"
+                          }
+                        },
+                        "additionalProperties": false
+                      },
+                      {
+                        "minItems": 1,
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "allow": {
+                              "type": "array",
+                              "items": {}
+                            },
+                            "equals": {},
+                            "in": {
+                              "type": "string"
+                            },
+                            "glob_in": {
+                              "type": "string"
+                            },
+                            "each_in": {
+                              "type": "string"
+                            },
+                            "glob_allow": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            },
+                            "each_allow": {
+                              "type": "array",
+                              "items": {}
+                            },
+                            "normalize": {
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "enum": [
+                                  "phone",
+                                  "email",
+                                  "lower",
+                                  "trim"
+                                ]
+                              }
+                            },
+                            "path": {
+                              "type": "string"
+                            },
+                            "required": {
+                              "type": "boolean"
+                            },
+                            "label": {
+                              "type": "string"
+                            },
+                            "value_set": {
+                              "type": "string"
+                            },
+                            "expose_values": {
+                              "type": "boolean"
+                            }
+                          },
+                          "additionalProperties": false
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            "additionalProperties": false
           },
           "tool_overrides": {
             "default": {},
@@ -1975,6 +2297,16 @@
                 "type": "integer",
                 "minimum": 0,
                 "maximum": 9007199254740991
+              },
+              "max_event_streams_per_agent": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              "max_event_streams_global": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
               }
             },
             "additionalProperties": false
@@ -2659,6 +2991,16 @@
             "call_execution_timeout_ms": {
               "type": "integer",
               "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "max_event_streams_per_agent": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            },
+            "max_event_streams_global": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
               "maximum": 9007199254740991
             }
           },
