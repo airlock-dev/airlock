@@ -104,10 +104,18 @@ describe('HttpMcpClient with client_credentials', () => {
     expect(headers.get('Authorization')).toBe('Bearer tok-1');
   });
 
-  it('does not install a fetch override for providers without client_credentials', async () => {
+  it('does not inject auth headers for providers without client_credentials', async () => {
     const client = new HttpMcpClient('plain', 'https://mcp.example.com/mcp');
     await client.connect();
-    expect(transportOptions[0].fetch).toBeUndefined();
+    const customFetch = transportOptions[0].fetch as
+      | ((url: string, init?: RequestInit) => Promise<Response>)
+      | undefined;
+    if (customFetch) {
+      await customFetch('https://mcp.example.com/mcp', { method: 'POST', body: '{}' });
+      const passedInit = fetchMock.mock.calls[0]?.[1] as RequestInit | undefined;
+      expect(new Headers(passedInit?.headers).get('Authorization')).toBeNull();
+    }
+    expect(getToken).not.toHaveBeenCalled();
   });
 
   it('forces a re-mint and retries once on 401', async () => {

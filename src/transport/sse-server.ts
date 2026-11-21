@@ -109,6 +109,7 @@ export async function sseServerPlugin(
 
     const server = createAgentServer({
       ...deps,
+      era: 'legacy',
       downstreamSessionId: transport.sessionId,
       signal: sessionAc.signal,
     });

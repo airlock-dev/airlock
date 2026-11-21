@@ -509,6 +509,24 @@ export const AgentHttpConfig = z
   .strict();
 export type AgentHttpConfig = z.infer<typeof AgentHttpConfig>;
 
+/**
+ * Per-agent / per-profile MCP Events (SEP-3415, `io.modelcontextprotocol/events`) permissions.
+ *
+ * Separate from tool permissions so an agent allowed to subscribe to upstream events (e.g.
+ * `github/issue.opened`) does not automatically receive write tools on that provider, and vice
+ * versa. Precedence matches tool allowlists: most specific pattern wins, ties break
+ * `deny > ask > allow`, and unmatched events are default-deny.
+ */
+export const AgentEventsConfig = z
+  .object({
+    allow: z.array(z.string()).default([]),
+    ask: z.array(z.string()).default([]),
+    deny: z.array(z.string()).default([]),
+    arg_policy: ToolArgPolicyConfig.optional(),
+  })
+  .strict();
+export type AgentEventsConfig = z.infer<typeof AgentEventsConfig>;
+
 export const RememberAllowRule = z
   .object({
     tool: z.string(),
@@ -611,6 +629,10 @@ export const LimitsConfig = z
     // Deadline on a single downstream tool execution, excluding any HITL approval wait.
     // 0 = disabled (default), so genuinely long async downstream calls are never severed.
     call_execution_timeout_ms: z.number().int().nonnegative().optional(),
+    // Dedicated caps for long-lived SEP-3415 `events/stream` push subscriptions (kept separate
+    // from general request caps per SEP-3415).
+    max_event_streams_per_agent: z.number().int().positive().optional(),
+    max_event_streams_global: z.number().int().positive().optional(),
   })
   .strict();
 export type LimitsConfig = z.infer<typeof LimitsConfig>;
@@ -637,6 +659,7 @@ export const AgentConfig = z
     remember_allow: z.array(RememberAllowRule).default([]),
     ask: z.array(z.string()).default([]),
     deny: z.array(z.string()).default([]),
+    events: AgentEventsConfig.optional(),
     tool_overrides: z.record(z.string(), ToolOverride).prefault({}),
     arg_policy: ToolArgPolicyConfig.optional(),
     arg_scope: ArgScopeConfig.optional(),
@@ -664,6 +687,7 @@ export const ProfileConfig = z
     allow: z.array(z.string()).default([]),
     ask: z.array(z.string()).default([]),
     deny: z.array(z.string()).default([]),
+    events: AgentEventsConfig.optional(),
     // Composes through `extends` alongside the permission lists, so a profile that grants a
     // provider's tools can also carry the notes an agent needs to use them correctly.
     tool_overrides: z.record(z.string(), ToolOverride).prefault({}),

@@ -4,6 +4,17 @@ import { HttpMcpClient } from './http-client.js';
 import type { ProviderConnectionStatus } from './status.js';
 import type { McpServerConfig } from '../config/schema.js';
 import type { Tool } from '@modelcontextprotocol/server';
+import type {
+  EventDescriptor,
+  EventsPollParams,
+  EventsPollResult,
+  EventsStreamParams,
+} from '../events/protocol.js';
+import type {
+  UpstreamEventStreamCallbacks,
+  UpstreamEventStreamHandle,
+  UpstreamEventStreamOptions,
+} from '../events/upstream-client.js';
 import { childLogger } from '../util/logger.js';
 
 const log = childLogger('pool');
@@ -43,20 +54,30 @@ interface ClientPoolOptions {
   stdioStderr?: 'inherit' | 'ignore' | 'pipe';
   healthCheck?: boolean;
   retryFailedConnections?: boolean;
+  /** Provider IDs that should probe MCP 2026-07-28 (`server/discover`) even over stdio. */
+  eventsProviders?: Set<string>;
 }
 
 export class ClientPool {
   private clients = new Map<string, McpClient>();
   private healthTimer?: NodeJS.Timeout;
   private _onClientReady?: (id: string) => void;
+  private _onEventsListChanged?: (id: string) => void;
+  private eventsProviders: Set<string>;
 
   constructor(
     private mcps: Record<string, McpServerConfig>,
     private options?: ClientPoolOptions
-  ) {}
+  ) {
+    this.eventsProviders = new Set(options?.eventsProviders ?? []);
+  }
 
   onClientReady(cb: (id: string) => void): void {
     this._onClientReady = cb;
+  }
+
+  onEventsListChanged(cb: (id: string) => void): void {
+    this._onEventsListChanged = cb;
   }
 
   async initialize(): Promise<void> {
@@ -69,6 +90,9 @@ export class ClientPool {
     const client = this.createClient(id, cfg);
     this.clients.set(id, client);
     client.onReady(() => this.notifyClientReady(id));
+    if (client instanceof HttpMcpClient || client instanceof StdioMcpClient) {
+      client.onEventsListChanged(() => this._onEventsListChanged?.(id));
+    }
     try {
       await client.connect();
       if (!client.isReady()) {
@@ -96,7 +120,14 @@ export class ClientPool {
   private createClient(id: string, cfg: McpServerConfig): McpClient {
     switch (cfg.type) {
       case 'stdio':
-        return new StdioMcpClient(id, cfg.command, cfg.args, cfg.env, this.options?.stdioStderr);
+        return new StdioMcpClient(
+          id,
+          cfg.command,
+          cfg.args,
+          cfg.env,
+          this.options?.stdioStderr,
+          this.eventsProviders.has(id)
+        );
       case 'sse':
         return new SseMcpClient(id, cfg.url, cfg.headers);
       case 'http':
@@ -147,9 +178,50 @@ export class ClientPool {
     return client.callTool(toolName, args, requestMeta);
   }
 
-  async reload(newMcps: Record<string, McpServerConfig>): Promise<void> {
+  supportsEvents(mcpId: string): boolean {
+    return this.clients.get(mcpId)?.supportsEvents() ?? false;
+  }
+
+  async listEvents(mcpId: string): Promise<EventDescriptor[]> {
+    const client = this.clients.get(mcpId);
+    if (!client) throw new Error(`Unknown MCP: ${mcpId}`);
+    if (!client.isReady()) throw new Error(`MCP ${mcpId} is not connected`);
+    return client.listEvents();
+  }
+
+  async pollEvents(
+    mcpId: string,
+    params: EventsPollParams,
+    options?: { inputSchema?: Record<string, unknown>; signal?: AbortSignal }
+  ): Promise<EventsPollResult> {
+    const client = this.clients.get(mcpId);
+    if (!client) throw new Error(`Unknown MCP: ${mcpId}`);
+    if (!client.isReady()) throw new Error(`MCP ${mcpId} is not connected`);
+    return client.pollEvents(params, options);
+  }
+
+  async openEventStream(
+    mcpId: string,
+    params: EventsStreamParams,
+    callbacks: UpstreamEventStreamCallbacks,
+    options?: UpstreamEventStreamOptions
+  ): Promise<UpstreamEventStreamHandle> {
+    const client = this.clients.get(mcpId);
+    if (!client) throw new Error(`Unknown MCP: ${mcpId}`);
+    if (!client.isReady()) throw new Error(`MCP ${mcpId} is not connected`);
+    return client.openEventStream(params, callbacks, options);
+  }
+
+  async reload(
+    newMcps: Record<string, McpServerConfig>,
+    newEventsProviders?: Set<string>
+  ): Promise<void> {
     const oldIds = new Set(this.clients.keys());
     const newIds = new Set(Object.keys(newMcps));
+    const prevEventsProviders = this.eventsProviders;
+    if (newEventsProviders) {
+      this.eventsProviders = new Set(newEventsProviders);
+    }
 
     // Remove MCPs that no longer exist
     for (const id of oldIds) {
@@ -162,15 +234,16 @@ export class ClientPool {
     }
 
     // Add new MCPs, and restart existing ones whose connection settings changed (url, headers,
-    // command, auth…): a client is built from its config once, so keeping it would silently ignore
-    // the edit. A restart drops the provider's in-flight calls, so edits the client never reads
-    // (instructions, credential probes) or a mere reordering of keys do not trigger one.
+    // command, auth…), or stdio providers that newly gained event permissions and need 2026-07-28
+    // `server/discover` negotiation.
     const restarts: Promise<void>[] = [];
     for (const [id, cfg] of Object.entries(newMcps)) {
+      const stdioNeedsModernUpgrade =
+        cfg.type === 'stdio' && !prevEventsProviders.has(id) && this.eventsProviders.has(id);
       if (!oldIds.has(id)) {
         log.info({ id }, 'Adding new MCP from config reload');
         void this.connectClient(id, cfg);
-      } else if (connectionKey(this.mcps[id]) !== connectionKey(cfg)) {
+      } else if (connectionKey(this.mcps[id]) !== connectionKey(cfg) || stdioNeedsModernUpgrade) {
         log.info({ id }, 'Restarting MCP (connection settings changed)');
         const client = this.clients.get(id);
         restarts.push(
@@ -181,6 +254,12 @@ export class ClientPool {
               void this.connectClient(id, cfg);
             })
         );
+      } else if (cfg.type === 'stdio') {
+        // Keep probeModern in sync so a future reconnect stops probing once event access is removed.
+        const client = this.clients.get(id);
+        if (client instanceof StdioMcpClient) {
+          client.setProbeModern(this.eventsProviders.has(id));
+        }
       }
     }
     await Promise.all(restarts);

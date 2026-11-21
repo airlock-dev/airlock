@@ -10,6 +10,19 @@ import type { AgentConfig, SecurityConfig } from '../config/schema.js';
 import type { Middleware, ToolCallContext } from '../middleware/types.js';
 import { buildMiddlewareChain } from '../middleware/chain-builder.js';
 import { deliveredResult } from '../middleware/response.js';
+import type { EventService } from '../events/service.js';
+import {
+  EVENT_METHODS,
+  EVENTS_EXTENSION_ID,
+  EventsListParamsSchema,
+  EventsListResultSchema,
+  EventsPollParamsSchema,
+  EventsPollResultSchema,
+  EventsStreamParamsSchema,
+  EventsStreamResultSchema,
+  EventsSubscribeParamsSchema,
+  EventsUnsubscribeParamsSchema,
+} from '../events/protocol.js';
 import { generateId } from '../util/id.js';
 import { sanitizeToolName } from '../util/tool-name.js';
 import { childLogger } from '../util/logger.js';
@@ -41,6 +54,10 @@ export interface AgentServerDeps {
   resolveSessionId?: (explicitSessionId: string) => string;
   /** Signals that the transport/session has been closed. */
   signal?: AbortSignal;
+  /** Optional SEP-3415 MCP Events service (`io.modelcontextprotocol/events`). */
+  eventService?: EventService;
+  /** Negotiated MCP protocol era; Events (SEP-3415) is only advertised and served in modern era. */
+  era?: 'legacy' | 'modern';
 }
 
 /** Per-request `_meta` key an agent can set to identify its session to Airlock. */
@@ -96,9 +113,18 @@ export function createAgentServer(deps: AgentServerDeps): Server {
     log.debug({ agentId, err }, 'Failed to build server instructions');
   }
 
+  const advertiseEvents =
+    deps.era !== 'legacy' && Boolean(deps.eventService?.shouldAdvertiseFor(agentId, getConfig()));
+
   const server = new Server(
     { name: 'airlock', version: VERSION },
-    { capabilities: { tools: {} }, ...(instructions ? { instructions } : {}) }
+    {
+      capabilities: {
+        tools: {},
+        ...(advertiseEvents ? { extensions: { [EVENTS_EXTENSION_ID]: {} } } : {}),
+      },
+      ...(instructions ? { instructions } : {}),
+    }
   );
 
   server.setRequestHandler('tools/list', () => {
@@ -192,6 +218,77 @@ export function createAgentServer(deps: AgentServerDeps): Server {
       content: [{ type: 'text', text: response.text }],
     };
   });
+
+  if (advertiseEvents && deps.eventService) {
+    const eventService = deps.eventService;
+
+    const buildEventContext = (
+      params: { _meta?: Record<string, unknown> },
+      reqCtx: {
+        mcpReq: {
+          id: string | number;
+          signal: AbortSignal;
+          notify: (notification: Notification) => Promise<void>;
+        };
+        http?: { req?: Request };
+      }
+    ) => {
+      const requestMeta = isRecord(params._meta) ? params._meta : {};
+      const explicit = deps.resolveSessionId
+        ? explicitSessionId(requestMeta, reqCtx.http?.req)
+        : undefined;
+      const downstreamSessionId =
+        (explicit !== undefined ? deps.resolveSessionId?.(explicit) : undefined) ??
+        deps.getDownstreamSessionId?.() ??
+        deps.downstreamSessionId;
+
+      return {
+        agentId,
+        agentConfig: getConfig(),
+        requestId: reqCtx.mcpReq.id,
+        downstreamSessionId,
+        httpReq: reqCtx.http?.req,
+        signal: anySignal(deps.signal, reqCtx.mcpReq.signal),
+        notify: reqCtx.mcpReq.notify,
+      };
+    };
+
+    server.setRequestHandler(
+      EVENT_METHODS.list,
+      { params: EventsListParamsSchema, result: EventsListResultSchema },
+      (params) => eventService.handleList(agentId, params)
+    );
+
+    server.setRequestHandler(
+      EVENT_METHODS.poll,
+      { params: EventsPollParamsSchema, result: EventsPollResultSchema },
+      (params, reqCtx) => eventService.handlePoll(buildEventContext(params, reqCtx), params)
+    );
+
+    server.setRequestHandler(
+      EVENT_METHODS.stream,
+      { params: EventsStreamParamsSchema, result: EventsStreamResultSchema },
+      (params, reqCtx) => eventService.handleStream(buildEventContext(params, reqCtx), params)
+    );
+
+    server.setRequestHandler(
+      EVENT_METHODS.subscribe,
+      { params: EventsSubscribeParamsSchema },
+      (params, reqCtx) =>
+        eventService.handleUnsupportedWebhook(
+          buildEventContext(params, reqCtx),
+          params.name,
+          params.arguments ?? {}
+        )
+    );
+
+    server.setRequestHandler(
+      EVENT_METHODS.unsubscribe,
+      { params: EventsUnsubscribeParamsSchema },
+      (params, reqCtx) =>
+        eventService.handleUnsupportedWebhook(buildEventContext(params, reqCtx), params.name, {})
+    );
+  }
 
   return server;
 }

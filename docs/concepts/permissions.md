@@ -257,3 +257,31 @@ agents:
 
 The alias remains the permission unit, so `gcal_work_write` can run
 autonomously while `gcal_family_write` requires approval.
+
+## MCP Events (SEP-3415)
+
+Airlock supports the official [MCP Events extension](https://modelcontextprotocol.io/extensions/events/overview) (`io.modelcontextprotocol/events`) for **poll** (`events/poll`) and **push** (`events/stream`) delivery over both Streamable HTTP and stdio.
+
+Event permissions live in a separate `events` block (default-deny, composable via `profiles`), so granting an agent access to subscribe to upstream events never grants tool execution access on the same provider:
+
+```yaml
+agents:
+  oncall:
+    events:
+      allow:
+        - pagerduty/incident.created
+      ask:
+        - github/release.published
+      deny:
+        - pagerduty/incident.deleted
+      arg_policy:
+        pagerduty/incident.created:
+          severity:
+            allow: [P1, P2]
+```
+
+- **Default-deny & capability hiding:** Agents with no `events` permissions do not see `io.modelcontextprotocol/events` advertised.
+- **Schema & argument policy:** Subscription arguments are validated against the event type's `inputSchema` and constrained via `events.arg_policy` (including `value_sets`).
+- **Untrusted payload protection:** Delivered event payloads are inspected for prompt injection (using the agent's `output-injection-detector` settings), audited, and stamped with `_meta["dev.airlock/untrusted"] = true` without breaking `payloadSchema`.
+- **Live revocation:** If a config reload revokes an agent's access or tightens `events.arg_policy`, Airlock immediately terminates open `events/stream` subscriptions with `notifications/events/terminated` (`-32024 Forbidden`).
+- **No webhook bypass:** Airlock strips `webhook` from proxied delivery modes and rejects `events/subscribe` with `-32026 Unsupported` so upstream servers cannot POST directly to external URLs outside Airlock's inspection and revocation boundary.

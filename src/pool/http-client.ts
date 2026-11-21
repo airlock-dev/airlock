@@ -1,10 +1,22 @@
 import {
-  Client,
   StreamableHTTPClientTransport,
   auth,
   UnauthorizedError,
 } from '@modelcontextprotocol/client';
 import type { Tool } from '@modelcontextprotocol/client';
+import {
+  EventsAwareClient,
+  wrapFetchWithEventHeaders,
+  type UpstreamEventStreamCallbacks,
+  type UpstreamEventStreamHandle,
+  type UpstreamEventStreamOptions,
+} from '../events/upstream-client.js';
+import type {
+  EventDescriptor,
+  EventsPollParams,
+  EventsPollResult,
+  EventsStreamParams,
+} from '../events/protocol.js';
 import { FileOAuthProvider } from './oauth-provider.js';
 import { ClientCredentialsTokenSource } from './client-credentials.js';
 import type { ClientCredentialsConfig } from '../config/schema.js';
@@ -71,7 +83,7 @@ function isAuthRequiredError(err: unknown): boolean {
 }
 
 export class HttpMcpClient {
-  private client?: Client;
+  private client?: EventsAwareClient;
   private transport?: StreamableHTTPClientTransport;
   private oauthProvider?: FileOAuthProvider;
   private tokenSource?: ClientCredentialsTokenSource;
@@ -81,6 +93,7 @@ export class HttpMcpClient {
   private reconnectTimer?: NodeJS.Timeout;
   private refreshTimer?: NodeJS.Timeout;
   private readyListeners = new Set<() => void>();
+  private eventsListChangedListeners = new Set<() => void>();
 
   private awaitingAuth = false;
   private connecting = false;
@@ -121,6 +134,10 @@ export class HttpMcpClient {
     this.readyListeners.add(cb);
   }
 
+  onEventsListChanged(cb: () => void): void {
+    this.eventsListChangedListeners.add(cb);
+  }
+
   async connect(): Promise<void> {
     // Don't reconnect while waiting for the user to complete the browser OAuth flow
     if (this.awaitingAuth) {
@@ -149,17 +166,22 @@ export class HttpMcpClient {
     }
 
     if (this.tokenSource) {
-      transportOpts.fetch = this.clientCredentialsFetch();
+      transportOpts.fetch = wrapFetchWithEventHeaders(this.clientCredentialsFetch());
+    } else {
+      transportOpts.fetch = wrapFetchWithEventHeaders();
     }
 
     this.transport = new StreamableHTTPClientTransport(new URL(this.url), transportOpts);
 
     // Probe with server/discover and speak 2026-07-28 (stateless) to upstreams that support it;
     // anything else falls back to the 2025 initialize handshake, unchanged from before.
-    this.client = new Client(
+    this.client = new EventsAwareClient(
       { name: 'airlock', version: VERSION },
       { versionNegotiation: { mode: 'auto' } }
     );
+    this.client.onEventsListChanged?.(() => {
+      for (const cb of this.eventsListChangedListeners) cb();
+    });
     this.connecting = true;
 
     this.transport.onclose = () => {
@@ -280,6 +302,9 @@ export class HttpMcpClient {
           // The reactive 401 raced a usable refresh token. Reconnect without asking the operator
           // to complete a browser flow that is no longer necessary.
           this.awaitingAuth = false;
+          this.client?.closeEventStreams?.(
+            'events/stream: upstream reconnecting after OAuth refresh'
+          );
           const oldTransport = this.transport;
           if (oldTransport) oldTransport.onclose = undefined;
           await oldTransport?.close();
@@ -311,6 +336,7 @@ export class HttpMcpClient {
         this.oauthProvider!.stopCallbackServer();
         const result = await auth(this.oauthProvider!, { serverUrl: this.url });
         if (result === 'AUTHORIZED') {
+          this.client?.closeEventStreams?.('events/stream: upstream reconnecting after OAuth');
           const oldTransport = this.transport;
           if (oldTransport) oldTransport.onclose = undefined;
           await oldTransport?.close();
@@ -348,6 +374,7 @@ export class HttpMcpClient {
     this.connecting = false;
     this.authorizationRequired = true;
     this.lastError = 'OAuth authorization required';
+    this.client?.closeEventStreams?.('events/stream: upstream OAuth authorization required');
     if (this.refreshTimer) {
       clearTimeout(this.refreshTimer);
       this.refreshTimer = undefined;
@@ -455,6 +482,45 @@ export class HttpMcpClient {
     });
   }
 
+  supportsEvents(): boolean {
+    return Boolean(this.client && this.ready && this.client.supportsEvents());
+  }
+
+  async listEvents(): Promise<EventDescriptor[]> {
+    return this.withSessionRetry('listEvents', async () => {
+      if (!this.client || !this.ready) throw new Error(`MCP ${this.id} not connected`);
+      return this.client.listEvents({ timeout: this.requestTimeoutMs });
+    });
+  }
+
+  async pollEvents(
+    params: EventsPollParams,
+    options?: { inputSchema?: Record<string, unknown>; signal?: AbortSignal }
+  ): Promise<EventsPollResult> {
+    return this.withSessionRetry('pollEvents', async () => {
+      if (!this.client || !this.ready) throw new Error(`MCP ${this.id} not connected`);
+      return this.client.pollEvents(params, {
+        timeout: this.requestTimeoutMs,
+        signal: options?.signal,
+        inputSchema: options?.inputSchema,
+      });
+    });
+  }
+
+  async openEventStream(
+    params: EventsStreamParams,
+    callbacks: UpstreamEventStreamCallbacks,
+    options?: UpstreamEventStreamOptions
+  ): Promise<UpstreamEventStreamHandle> {
+    return this.withSessionRetry('openEventStream', async () => {
+      if (!this.client || !this.ready) throw new Error(`MCP ${this.id} not connected`);
+      return this.client.openEventStream(params, callbacks, {
+        ackTimeoutMs: this.requestTimeoutMs,
+        ...options,
+      });
+    });
+  }
+
   getServerInfo(): { name: string; version: string } | undefined {
     return this.client?.getServerVersion();
   }
@@ -510,6 +576,7 @@ export class HttpMcpClient {
         'HTTP MCP session invalid, reconnecting'
       );
       this.ready = false;
+      this.client?.closeEventStreams?.('events/stream: upstream session invalid, reconnecting');
       const oldTransport = this.transport;
       if (oldTransport) oldTransport.onclose = undefined;
       await oldTransport
@@ -524,6 +591,7 @@ export class HttpMcpClient {
 
   async stop(): Promise<void> {
     this.stopped = true;
+    this.client?.closeEventStreams?.('events/stream: upstream client stopped');
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = undefined;

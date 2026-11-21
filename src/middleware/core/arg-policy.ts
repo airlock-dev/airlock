@@ -207,50 +207,54 @@ function retryInstruction(constraint: ToolArgConstraintConfig): string {
   return 'Retry with one of the allowed values.';
 }
 
+export function evaluateArgPolicy(
+  policy: ToolArgPolicy,
+  targetName: string,
+  args: Record<string, unknown>
+): string | undefined {
+  const entries = Object.entries(policy);
+  if (entries.length === 0) return undefined;
+
+  for (const [argName, constraints] of entries) {
+    for (const constraint of constraints) {
+      const actual = resolveArgValue(args, argName, constraint.path);
+      const required = constraint.required ?? true;
+      const displayName = constraint.path ?? argName;
+
+      if (actual === MISSING) {
+        if (!required) continue;
+        return (
+          `${displayName} is required by policy for ${targetName}. ` +
+          `Allowed ${displayName}: ${formatAllowed(constraint)}. ${retryInstruction(constraint)}`
+        );
+      }
+
+      if (!passesConstraint(actual, constraint)) {
+        return (
+          `${displayName} ${formatValue(actual)} is not permitted for ${targetName}. ` +
+          `Allowed ${displayName}: ${formatAllowed(constraint)}. ${retryInstruction(constraint)}`
+        );
+      }
+    }
+  }
+
+  return undefined;
+}
+
 export function argPolicyMiddleware(): Middleware {
   return async (ctx, next) => {
     const policy = resolveArgPolicy(ctx.agentConfig, ctx.toolName);
-    const entries = Object.entries(policy);
-    if (entries.length === 0) return next();
-
-    for (const [argName, constraints] of entries) {
-      for (const constraint of constraints) {
-        const actual = resolveArgValue(ctx.args, argName, constraint.path);
-        const required = constraint.required ?? true;
-        const displayName = constraint.path ?? argName;
-
-        if (actual === MISSING) {
-          if (!required) continue;
-
-          const message =
-            `${displayName} is required by policy for ${ctx.toolName}. ` +
-            `Allowed ${displayName}: ${formatAllowed(constraint)}. ${retryInstruction(constraint)}`;
-          ctx.deps.auditLogger.log({
-            agent_id: ctx.agentId,
-            request_id: ctx.callId,
-            tool: ctx.toolName,
-            args: JSON.stringify(ctx.args),
-            result: 'arg_policy_denied',
-            error: message,
-          });
-          return violationResponse(message);
-        }
-
-        if (!passesConstraint(actual, constraint)) {
-          const message =
-            `${displayName} ${formatValue(actual)} is not permitted for ${ctx.toolName}. ` +
-            `Allowed ${displayName}: ${formatAllowed(constraint)}. ${retryInstruction(constraint)}`;
-          ctx.deps.auditLogger.log({
-            agent_id: ctx.agentId,
-            request_id: ctx.callId,
-            tool: ctx.toolName,
-            args: JSON.stringify(ctx.args),
-            result: 'arg_policy_denied',
-            error: message,
-          });
-          return violationResponse(message);
-        }
-      }
+    const violation = evaluateArgPolicy(policy, ctx.toolName, ctx.args);
+    if (violation) {
+      ctx.deps.auditLogger.log({
+        agent_id: ctx.agentId,
+        request_id: ctx.callId,
+        tool: ctx.toolName,
+        args: JSON.stringify(ctx.args),
+        result: 'arg_policy_denied',
+        error: violation,
+      });
+      return violationResponse(violation);
     }
 
     return next();

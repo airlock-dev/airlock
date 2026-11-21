@@ -29,6 +29,37 @@ export class AllowlistEngine {
     return result.decision === 'default-deny' ? 'deny' : result.decision;
   }
 
+  /** Evaluate SEP-3415 MCP event access (`events.allow` / `events.ask` / `events.deny`). */
+  evaluateEvent(agentId: string, eventName: string): Decision {
+    const result = this.evaluateEventDetailed(agentId, eventName);
+    return result.decision === 'default-deny' ? 'deny' : result.decision;
+  }
+
+  evaluateEventDetailed(agentId: string, eventName: string): AllowlistEvaluation {
+    const events = this.agents[agentId]?.events;
+    if (!events) return { decision: 'default-deny', candidates: [] };
+
+    const candidates = [
+      ...matchingPatterns(events.deny, eventName, 'deny'),
+      ...matchingPatterns(events.ask, eventName, 'ask'),
+      ...matchingPatterns(events.allow, eventName, 'allow'),
+    ];
+
+    const denySpec = bestSpecificity(events.deny, eventName);
+    const askSpec = bestSpecificity(events.ask, eventName);
+    const allowSpec = bestSpecificity(events.allow, eventName);
+
+    const best = Math.max(denySpec, askSpec, allowSpec);
+    if (best < 0) return { decision: 'default-deny', candidates };
+
+    const winningSource = denySpec === best ? 'deny' : askSpec === best ? 'ask' : 'allow';
+    const match = candidates
+      .filter((candidate) => candidate.source === winningSource && candidate.specificity === best)
+      .sort((a, b) => b.pattern.length - a.pattern.length)[0];
+
+    return { decision: winningSource, match, candidates };
+  }
+
   evaluateDetailed(agentId: string, toolName: string): AllowlistEvaluation {
     const agent = this.agents[agentId];
     if (!agent) return { decision: 'default-deny', candidates: [] };
@@ -98,6 +129,7 @@ function matchingPatterns(
 function canNeedApproval(agent: AgentConfig): boolean {
   return (
     agent.ask.length > 0 ||
+    (agent.events?.ask.length ?? 0) > 0 ||
     (agent.exec?.ask.length ?? 0) > 0 ||
     agent.command_policy !== undefined ||
     (agent.middleware ?? []).some(

@@ -1,9 +1,13 @@
 import { randomUUID } from 'crypto';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { ClientPool } from './pool/pool.js';
-import { requiredMcpsForAgent } from './pool/required-mcps.js';
+import { eventEnabledProviders, requiredMcpsForAgent } from './pool/required-mcps.js';
 import { ToolRegistry } from './registry/registry.js';
 import { AllowlistEngine } from './allowlist/engine.js';
+import { EventRegistry } from './events/registry.js';
+import { EventStreamManager } from './events/stream-manager.js';
+import { EventService } from './events/service.js';
+import { resolveLimits } from './transport/session-limiter.js';
 import { HitlEngine } from './hitl/engine.js';
 import { HitlBatcher } from './hitl/batcher.js';
 import { createGrantStore, engineOptionsFromConfig, wireBatcher } from './hitl/runtime.js';
@@ -132,7 +136,9 @@ export async function runStdioMode(
     'Connecting to required MCPs only'
   );
 
-  const pool = new ClientPool(filteredMcps);
+  const pool = new ClientPool(filteredMcps, {
+    eventsProviders: eventEnabledProviders({ [agentId]: agentConfig }),
+  });
   await pool.initialize();
 
   const allowlist = new AllowlistEngine(config.agents);
@@ -161,15 +167,49 @@ export async function runStdioMode(
   );
   registryRef.current = registry;
 
-  // Register callback for late-connecting MCPs (after registry exists)
+  const eventRegistry = new EventRegistry(pool, allowlist);
+  const eventStreamManager = new EventStreamManager((profileId) => {
+    const resolved = resolveLimits(
+      activeConfig.agents[profileId]?.limits,
+      activeConfig.security.limits
+    );
+    const globalLimits = resolveLimits(undefined, activeConfig.security.limits);
+    return {
+      maxEventStreamsPerAgent: resolved.maxEventStreamsPerAgent,
+      maxEventStreamsGlobal: globalLimits.maxEventStreamsGlobal,
+    };
+  });
+  const eventService = new EventService({
+    pool,
+    registry: eventRegistry,
+    allowlist,
+    streamManager: eventStreamManager,
+    hitlEngine,
+    hitlBatcher,
+    auditLogger,
+    getAgentConfig: (profileId) => activeConfig.agents[profileId],
+  });
+  eventRegistry.onRefresh(() => eventService.reconcileAfterReload());
+
+  // Register callback for late-connecting MCPs and dynamic event list changes
   pool.onClientReady((id) => {
-    log.info({ id }, 'MCP became ready, refreshing tool registry');
+    log.info({ id }, 'MCP became ready, refreshing tool and event registries');
     registry
       .refresh()
       .catch((err) => log.error({ err }, 'Failed to refresh registry after MCP ready'));
+    eventRegistry
+      .refresh()
+      .catch((err) => log.error({ err }, 'Failed to refresh event registry after MCP ready'));
+  });
+  pool.onEventsListChanged((id) => {
+    log.info({ id }, 'MCP emitted notifications/events/list_changed, refreshing event registry');
+    eventRegistry
+      .refresh()
+      .catch((err) => log.error({ err }, 'Failed to refresh event registry after list_changed'));
   });
 
   await registry.refresh();
+  await eventRegistry.refresh();
 
   const managementRequestSecurity: RequestSecurityOptions = {};
   updateManagementRequestSecurity(config, managementRequestSecurity);
@@ -198,18 +238,22 @@ export async function runStdioMode(
       hitlEngine.setTimeoutMs(newConfig.approvals.timeout_ms);
       hitlEngine.configure(engineOptionsFromConfig(newConfig, getConfig));
       updateManagementRequestSecurity(newConfig, managementRequestSecurity);
+      // Apply allowlist + revoke disallowed event streams immediately before waiting on pool reload.
+      allowlist.reload(newConfig.agents);
+      void eventService
+        .reconcileAfterReload()
+        .catch((err) => log.error({ err }, 'Failed to reconcile event streams on reload'));
       // Filtered like the initial pool: the unfiltered map would connect every configured provider.
       const newMcpConfigs = selectMcps(newConfig, currentAgentConfig);
       pool
-        .reload(newMcpConfigs)
+        .reload(newMcpConfigs, eventEnabledProviders({ [agentId]: currentAgentConfig }))
         .then(() => {
-          allowlist.reload(newConfig.agents);
           registry.reloadAgents(newConfig.agents, getProviderInstructions(newConfig.providers));
           const newAdapters = buildAdapters(newConfig, pool, {
             airlock: airlockDeps(),
           });
           registry.setAdapters(newAdapters);
-          return registry.refresh();
+          return Promise.all([registry.refresh(), eventRegistry.refresh()]);
         })
         .then(() => {
           log.info('Config reloaded: providers, allowlist, agent config, security');
@@ -230,7 +274,8 @@ export async function runStdioMode(
     if (cleanedUp) return;
     cleanedUp = true;
     watcher.stop();
-    // Open approval streams never go idle; end them or the listener's close() waits forever.
+    // Open push event streams and approval streams never go idle; end them before closing.
+    await eventStreamManager.closeAll();
     await approvalStream.stop();
     await managementApp?.close().catch(() => {});
     await pool.stop();
@@ -282,6 +327,7 @@ export async function runStdioMode(
       hitlProvider,
       auditLogger,
       securityConfig: config.security,
+      eventService,
     });
   } finally {
     process.off('SIGTERM', handleSigterm);

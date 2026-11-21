@@ -29,6 +29,8 @@ export interface ResolvedLimits {
   newSessionWindowMs: number;
   maxConcurrentCallsPerAgent: number;
   callExecutionTimeoutMs: number;
+  maxEventStreamsPerAgent: number;
+  maxEventStreamsGlobal: number;
 }
 
 // Generous defaults: high enough that a healthy fleet never notices them, low enough that the
@@ -43,6 +45,8 @@ export const DEFAULT_LIMITS: ResolvedLimits = {
   newSessionWindowMs: 10_000, // 30 new sessions / 10s per agent
   maxConcurrentCallsPerAgent: 8,
   callExecutionTimeoutMs: 0, // disabled by default — async downstream calls can be long
+  maxEventStreamsPerAgent: 16,
+  maxEventStreamsGlobal: 256,
 };
 
 /** Merge per-agent limits over global limits over built-in defaults, field by field. */
@@ -74,6 +78,14 @@ export function resolveLimits(agent?: LimitsConfig, global?: LimitsConfig): Reso
       agent?.call_execution_timeout_ms ??
       global?.call_execution_timeout_ms ??
       DEFAULT_LIMITS.callExecutionTimeoutMs,
+    maxEventStreamsPerAgent:
+      agent?.max_event_streams_per_agent ??
+      global?.max_event_streams_per_agent ??
+      DEFAULT_LIMITS.maxEventStreamsPerAgent,
+    maxEventStreamsGlobal:
+      agent?.max_event_streams_global ??
+      global?.max_event_streams_global ??
+      DEFAULT_LIMITS.maxEventStreamsGlobal,
   };
 }
 

@@ -290,6 +290,10 @@ export class GrantStore {
       return scope.tool === subject.tool && scope.fingerprint === subject.fingerprint;
     }
     if (subject.escalated) return false;
+    // Event subscriptions (`event:<provider>/<name>`) must never be implicitly authorized by
+    // tool-level provider, tier, or profile grants — only an exact `call` or exact `tool` grant
+    // scoped to `event:<name>` may cover them.
+    if (subject.tool.startsWith('event:') && scope.kind !== 'tool') return false;
 
     switch (scope.kind) {
       case 'tool':

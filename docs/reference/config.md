@@ -444,6 +444,18 @@ agents:
     arg_scope: # Reusable argument constraints via arg_dimensions
       github_repo: airlock_repos
 
+    events: # MCP Events (SEP-3415, io.modelcontextprotocol/events) — default-deny, poll + push
+      allow:
+        - 'github/*'
+      ask:
+        - 'pagerduty/incident.created'
+      deny:
+        - 'github/repository.deleted'
+      arg_policy:
+        pagerduty/incident.created:
+          severity:
+            allow: [P1, P2]
+
     command_policy: # Route a CLI-dispatcher tool's command arg (allow/ask/deny, deny > ask > allow)
       posthog/exec:
         command:
@@ -701,10 +713,12 @@ security:
 | `new_session_window_ms`          | `10000`  | Window for `new_session_max`                                                                                  |
 | `max_concurrent_calls_per_agent` | `8`      | Tool calls executing at once for one agent; calls waiting on approval do not count                            |
 | `call_execution_timeout_ms`      | `0`      | Deadline for one downstream execution, excluding any approval wait (`0` = none)                               |
+| `max_event_streams_per_agent`    | `16`     | Concurrent SEP-3415 `events/stream` push subscriptions one agent may hold                                     |
+| `max_event_streams_global`       | `256`    | Concurrent SEP-3415 `events/stream` push subscriptions across all agents                                      |
 
 The session fields apply only to the legacy SSE endpoint (`/agents/:agentId/sse`).
 Streamable HTTP (`/agents/:agentId/mcp`) is stateless and holds no sessions; only
-`max_concurrent_calls_per_agent` and `call_execution_timeout_ms` affect it.
+`max_concurrent_calls_per_agent`, `call_execution_timeout_ms`, and the `max_event_streams_*` caps affect it.
 
 ## `audit`
 
