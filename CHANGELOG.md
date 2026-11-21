@@ -1,5 +1,39 @@
 # Changelog
 
+## [0.4.0](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.3.2...airlock-bot-v0.4.0) (2026-11-21)
+
+
+### ⚠ BREAKING CHANGES
+
+* the streamable HTTP endpoint no longer issues MCP sessions. HTTP agents that relied on implicit per-session grants must now send a session id (X-Airlock-Session-Id header or ?session=). The SSE endpoint is unchanged.
+
+### Features
+
+* **companion:** make window resizable and taller ([6a87d3d](https://github.com/airlock-dev/airlock/commit/6a87d3dc8e9d7c166b3e0bc94e84bbc839e3ae1b))
+* **companion:** make window resizable and taller ([437d53d](https://github.com/airlock-dev/airlock/commit/437d53dd2f566ccdfc10bf1bf03786d559c5a7ac))
+* **dashboard:** redesigned command center with agent composer, one-time keys and policy assistant ([4a8dd74](https://github.com/airlock-dev/airlock/commit/4a8dd744c938fe0881387b5efe189146424cf431))
+* **dashboard:** redesigned command center with agent composer, one-time keys and policy assistant ([0604f56](https://github.com/airlock-dev/airlock/commit/0604f5635173b5a12d59bf9405535b744bf7af1d))
+* **events:** add MCP Events (SEP-3415) poll and push gateway support ([#197](https://github.com/airlock-dev/airlock/issues/197)) ([ce1f095](https://github.com/airlock-dev/airlock/commit/ce1f095ee9137028add0b45214830c415dcb3d8a))
+* **health:** report gateway memory and session mappings ([25896df](https://github.com/airlock-dev/airlock/commit/25896df8c0986e56a4ffe7f039b22c08bdea5213))
+* **health:** report gateway memory and session mappings ([54b136a](https://github.com/airlock-dev/airlock/commit/54b136a45b02a368495c295bc3df25755e4c896e))
+* stateless streamable HTTP on MCP 2026-07-28 (SDK v2) ([950bcb9](https://github.com/airlock-dev/airlock/commit/950bcb97ef5d8daad3d3d805f76ed53d16e46406))
+
+
+### Bug Fixes
+
+* address review findings on response rewriting and policy merging ([8cda659](https://github.com/airlock-dev/airlock/commit/8cda65998c15160f395e53a32e1d6c64232bfc6f))
+* **companion:** stabilise pending approvals in macOS and iOS apps ([85e0a59](https://github.com/airlock-dev/airlock/commit/85e0a59ef59b99b6374fd12b80793646a341f502))
+* **config:** keep YAML comments when approvals remember an allow ([6df92c8](https://github.com/airlock-dev/airlock/commit/6df92c8b88705053ec6bfa202ecb44231c2febcd))
+* correct gateway, CLI and dashboard defects found in project audit ([95d7362](https://github.com/airlock-dev/airlock/commit/95d73623c9512681cbf7d680836649fdc4b41e2a))
+* **dashboard:** keep shortcuts on visible requests and secrets away from the assistant ([28f0ae0](https://github.com/airlock-dev/airlock/commit/28f0ae042ec192f6f1e62f53c8a9b60e65683360))
+* **dashboard:** keep shortcuts on visible requests and secrets away from the assistant ([a3f1cc1](https://github.com/airlock-dev/airlock/commit/a3f1cc18175f4c1245662fc4d9fb2e71d2bb046e))
+* **ios:** skip external review for internal TestFlight releases ([ec42883](https://github.com/airlock-dev/airlock/commit/ec4288347ca7db4e503020eefcba25683bc43c14))
+* **mcp:** stream responses so proxies keep parked approval calls open ([89d9e97](https://github.com/airlock-dev/airlock/commit/89d9e97a7ca15dd32bf98d236cd2a8653f779665))
+* **mcp:** stream responses so proxies keep parked approval calls open ([13c5a31](https://github.com/airlock-dev/airlock/commit/13c5a31aa48803d276de65058e465010da186662))
+* preserve the newest tool catalog during overlapping refreshes ([7eabb11](https://github.com/airlock-dev/airlock/commit/7eabb114afd062f72eb7c1a9efc7f8e102b8f702))
+* prevent stale catalog refreshes from overwriting recovery ([bba5ba0](https://github.com/airlock-dev/airlock/commit/bba5ba0166038b095c9881e55d1f196db399458e))
+* project audit fixes across gateway, CLIs, dashboard, companions and docs ([aac8fc1](https://github.com/airlock-dev/airlock/commit/aac8fc1b94823e4e2093ca184229ad0e2420bac3))
+
 ## [0.3.2](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.3.1...airlock-bot-v0.3.2) (2026-10-27)
 
 
