@@ -1,4 +1,5 @@
 import { homedir } from 'os';
+import { isAbsolute } from 'path';
 import { z } from 'zod';
 
 // Env var substitution helper
@@ -149,6 +150,7 @@ export const McpServerConfig = z.discriminatedUnion('type', [
       enabled: z.boolean().default(true),
       url: z.string().url(),
       headers: z.record(z.string(), EnvString).optional(),
+      bearer_token_file: z.string().refine(isAbsolute, 'Expected an absolute path').optional(),
       oauth: z.boolean().default(false),
       oauth_callback_port: z.number().int().min(1).max(65535).default(18432),
       oauth_callback_url: z.string().url().optional(),

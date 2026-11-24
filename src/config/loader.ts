@@ -1,4 +1,4 @@
-import { readFileSync } from 'fs';
+import { readFileSync, statSync } from 'fs';
 import { isIP } from 'net';
 import { parse as parseYaml } from 'yaml';
 import { hasAgentCredential } from '../security/request.js';
@@ -114,11 +114,34 @@ export function loadConfigDetailed(
     diagnostics.push(...validateEffectiveArgRestrictions(rawConfig, result.data));
   }
 
+  if (resolveEnv && !diagnostics.some((diagnostic) => diagnostic.level === 'error')) {
+    resolveProviderBearerFiles(result.data, diagnostics);
+  }
+
   return {
     config: result.data,
     rawConfig,
     diagnostics: dedupeDiagnostics(diagnostics),
   };
+}
+
+function resolveProviderBearerFiles(config: Config, diagnostics: ConfigDiagnostic[]): void {
+  for (const [id, provider] of Object.entries(getMcpConfigs(config.providers))) {
+    if (provider.type !== 'http' || !provider.bearer_token_file) continue;
+    try {
+      if (!statSync(provider.bearer_token_file).isFile()) throw new Error('Expected a file');
+      const token = readFileSync(provider.bearer_token_file, 'utf8').trim();
+      if (!/^[A-Za-z0-9._~+/-]+=*$/.test(token)) throw new Error('Expected a bearer token');
+      // Resolve into the ordinary connection settings after taking the raw config snapshot.
+      provider.headers = { ...provider.headers, Authorization: `Bearer ${token}` };
+      delete provider.bearer_token_file;
+    } catch {
+      diagnostics.push({
+        level: 'error',
+        message: `Provider "${id}" bearer_token_file must be a readable file containing one bearer token.`,
+      });
+    }
+  }
 }
 
 export function loadConfig(path: string, options: LoadConfigOptions = {}): Config {
@@ -376,6 +399,19 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
   // rather than let whichever code path runs first decide silently.
   for (const [providerId, provider] of Object.entries(config.providers)) {
     if (provider === 'builtin' || provider.type !== 'http') continue;
+    if (
+      provider.bearer_token_file &&
+      (provider.oauth ||
+        provider.client_credentials ||
+        Object.keys(provider.headers ?? {}).some((name) => name.toLowerCase() === 'authorization'))
+    ) {
+      diagnostics.push({
+        level: 'error',
+        message: `Provider "${providerId}" sets bearer_token_file with another Authorization source.`,
+        suggestion:
+          'Use one source: bearer_token_file, an Authorization header, OAuth or client_credentials.',
+      });
+    }
     if (provider.oauth && provider.client_credentials) {
       diagnostics.push({
         level: 'error',

@@ -9,6 +9,33 @@ import { rememberAllow } from '../src/config/mutator.js';
 // --- Schema / env var substitution ---
 
 describe('GatewayConfig schema', () => {
+  it('accepts a file-backed HTTP bearer as the single authorization source', () => {
+    const provider = {
+      type: 'http',
+      url: 'https://mcp.example.com',
+      bearer_token_file: join(tmpdir(), 'provider-token'),
+    };
+    const native = GatewayConfig.parse({ providers: { native: provider } });
+    expect(validateConfig(native).filter((diagnostic) => diagnostic.level === 'error')).toEqual([]);
+
+    const conflicting = GatewayConfig.parse({
+      providers: { native: { ...provider, headers: { aUtHoRiZaTiOn: 'Bearer other' } } },
+    });
+    expect(validateConfig(conflicting)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          level: 'error',
+          message: expect.stringContaining('bearer_token_file'),
+        }),
+      ])
+    );
+    expect(
+      GatewayConfig.safeParse({
+        providers: { native: { ...provider, bearer_token_file: 'relative-token' } },
+      }).success
+    ).toBe(false);
+  });
+
   it('parses a minimal valid config with all defaults', () => {
     const result = GatewayConfig.safeParse({});
     expect(result.success).toBe(true);

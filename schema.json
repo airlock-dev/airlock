@@ -232,6 +232,9 @@
                       "type": "string"
                     }
                   },
+                  "bearer_token_file": {
+                    "type": "string"
+                  },
                   "oauth": {
                     "default": false,
                     "type": "boolean"
