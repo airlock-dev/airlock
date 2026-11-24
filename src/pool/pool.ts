@@ -16,6 +16,7 @@ import type {
   UpstreamEventStreamHandle,
   UpstreamEventStreamOptions,
 } from '../events/upstream-client.js';
+import type { OAuthCallbackRouter } from './oauth-callback-router.js';
 import { childLogger } from '../util/logger.js';
 
 const log = childLogger('pool');
@@ -57,6 +58,11 @@ interface ClientPoolOptions {
   retryFailedConnections?: boolean;
   /** Provider IDs that should probe MCP 2026-07-28 (`server/discover`) even over stdio. */
   eventsProviders?: Set<string>;
+  /**
+   * Receives browser callbacks for providers with `oauth_callback_mode: gateway`. Only the
+   * gateway supplies one, because only the gateway serves the callback route.
+   */
+  oauthCallbackRouter?: OAuthCallbackRouter;
 }
 
 export class ClientPool {
@@ -150,7 +156,9 @@ export class ClientPool {
           cfg.client_secret,
           cfg.oauth_callback_url,
           cfg.client_credentials,
-          cfg.request_timeout_ms
+          cfg.request_timeout_ms,
+          cfg.oauth_callback_mode,
+          this.options?.oauthCallbackRouter
         );
     }
   }

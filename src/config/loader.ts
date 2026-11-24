@@ -402,6 +402,9 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
           'Use one source: bearer_token_file, an Authorization header, OAuth or client_credentials.',
       });
     }
+    if (provider.oauth_callback_mode === 'gateway') {
+      diagnostics.push(...gatewayOAuthCallbackDiagnostics(providerId, provider));
+    }
     if (provider.oauth && provider.client_credentials) {
       diagnostics.push({
         level: 'error',
@@ -1111,6 +1114,51 @@ function unknownKeySuggestion(key: string, path: string[]): string | undefined {
   if (key === 'hitl')
     return 'Use "ask" for agent tool routing or "approvals" for approval providers.';
   return undefined;
+}
+
+/**
+ * `oauth_callback_mode: gateway` makes the gateway itself the browser redirect target, so the
+ * advertised redirect URI must be a real HTTPS address (loopback HTTP is allowed for local testing)
+ * that reaches the gateway's data-plane `GET /oauth/callback` route.
+ */
+function gatewayOAuthCallbackDiagnostics(
+  providerId: string,
+  provider: { oauth: boolean; oauth_callback_url?: string }
+): ConfigDiagnostic[] {
+  const diagnostics: ConfigDiagnostic[] = [];
+  if (!provider.oauth) {
+    diagnostics.push({
+      level: 'warn',
+      message: `Provider "${providerId}" sets oauth_callback_mode: gateway without oauth: true.`,
+      suggestion: 'Set oauth: true, or remove oauth_callback_mode; it only affects browser OAuth.',
+    });
+  }
+  if (!provider.oauth_callback_url) {
+    diagnostics.push({
+      level: 'error',
+      message: `Provider "${providerId}" sets oauth_callback_mode: gateway without oauth_callback_url.`,
+      suggestion:
+        "Set oauth_callback_url to the public HTTPS address that reaches the gateway's /oauth/callback route, e.g. https://airlock.example.com/oauth/callback.",
+    });
+    return diagnostics;
+  }
+  const url = new URL(provider.oauth_callback_url);
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && isLoopbackHost(url.hostname))) {
+    diagnostics.push({
+      level: 'error',
+      message: `Provider "${providerId}" uses oauth_callback_mode: gateway with a non-HTTPS oauth_callback_url.`,
+      suggestion:
+        'Serve the callback over HTTPS (for example behind your reverse proxy); plain HTTP is only accepted for loopback hosts.',
+    });
+  }
+  if (url.search || url.hash) {
+    diagnostics.push({
+      level: 'error',
+      message: `Provider "${providerId}" oauth_callback_url must not contain a query or fragment.`,
+      suggestion: 'Use a plain URL; the authorization server appends code and state itself.',
+    });
+  }
+  return diagnostics;
 }
 
 function isLoopbackHost(host: string): boolean {

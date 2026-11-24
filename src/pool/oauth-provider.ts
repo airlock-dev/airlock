@@ -1,7 +1,7 @@
 import { readFile } from 'fs/promises';
 import { join } from 'path';
 import { execFile } from 'child_process';
-import { createHash } from 'crypto';
+import { createHash, randomBytes } from 'crypto';
 import { createServer, type Server as HttpServer } from 'http';
 import type {
   OAuthClientProvider,
@@ -12,6 +12,7 @@ import type {
 import { childLogger } from '../util/logger.js';
 import { atomicWritePrivateFile } from '../util/atomic-file.js';
 import { adaptiveExpiryBuffer } from './oauth-timing.js';
+import type { OAuthCallbackRouter } from './oauth-callback-router.js';
 
 const log = childLogger('oauth');
 const PERSIST_RETRY_MS = 30 * 1000;
@@ -25,6 +26,27 @@ interface PersistedData {
   // should be proactively refreshed (obtainedAt + expires_in). Persisted so the schedule survives
   // restarts; absent for tokens saved before this field existed (treated as "refresh promptly").
   obtainedAt?: number;
+}
+
+/**
+ * Where the browser's authorization redirect is received.
+ * - `loopback`: a temporary listener on 127.0.0.1:<oauth_callback_port>. With `oauth_callback_url`
+ *   set, an external relay forwards the callback there (the state carries the port).
+ * - `gateway`: the running gateway's own data-plane listener serves `GET /oauth/callback` at the
+ *   public `oauth_callback_url`, and an {@link OAuthCallbackRouter} hands the code to this provider.
+ */
+export type OAuthCallbackMode = 'loopback' | 'gateway';
+
+export interface FileOAuthProviderOptions {
+  callbackMode?: OAuthCallbackMode;
+  /** Required for `gateway` mode; supplied by the gateway that serves the callback route. */
+  callbackRouter?: OAuthCallbackRouter;
+}
+
+interface GatewayCallbackWait {
+  promise: Promise<string>;
+  resolve: (code: string) => void;
+  reject: (err: Error) => void;
 }
 
 /**
@@ -43,17 +65,39 @@ export class FileOAuthProvider implements OAuthClientProvider {
   private persistenceRetryTimer?: NodeJS.Timeout;
   /** Serializes atomic replacements so an older save can never land after a newer one. */
   private saveQueue: Promise<void> = Promise.resolve();
+  private readonly callbackMode: OAuthCallbackMode;
+  private readonly callbackRouter?: OAuthCallbackRouter;
+  /** Gateway mode: the code the pending authorization is waiting for. */
+  private gatewayWait?: GatewayCallbackWait;
+  private withdrawGatewayCallback?: () => void;
+  /**
+   * Gateway mode only. The SDK sends this as the authorize request's `state`; the gateway routes
+   * the browser callback by it, so it must be present and unguessable for every authorization.
+   * Left undefined in loopback mode so existing flows keep the SDK's own behavior.
+   */
+  state?: () => string;
 
   constructor(
     private serverId: string,
     private callbackPort: number,
     private preregisteredClientId?: string,
     private preregisteredClientSecret?: string,
-    private relayCallbackUrl?: string
+    private relayCallbackUrl?: string,
+    options: FileOAuthProviderOptions = {}
   ) {
     const home = process.env.HOME ?? process.env.USERPROFILE ?? '.';
     const dir = join(home, '.airlock', 'oauth');
     this.storePath = join(dir, `${serverId}.json`);
+    this.callbackMode = options.callbackMode ?? 'loopback';
+    this.callbackRouter = options.callbackRouter;
+    if (this.callbackMode === 'gateway') {
+      if (!this.relayCallbackUrl) {
+        throw new Error(
+          `Provider "${serverId}" uses oauth_callback_mode: gateway without oauth_callback_url`
+        );
+      }
+      this.state = () => randomBytes(32).toString('base64url');
+    }
   }
 
   get redirectUrl(): string {
@@ -202,6 +246,15 @@ export class FileOAuthProvider implements OAuthClientProvider {
   }
 
   redirectToAuthorization(url: URL): Promise<void> {
+    if (this.callbackMode === 'gateway') {
+      // Arm the callback for every prepared authorization, even when the browser open below is
+      // debounced: the SDK has just stored this request's PKCE verifier, so only its state may
+      // complete the exchange. Any earlier authorization for this provider is superseded.
+      const state = url.searchParams.get('state') ?? '';
+      this.expectedState = state;
+      this.armGatewayCallback(state);
+    }
+
     const now = Date.now();
     if (now - this.browserOpenedAt < 30_000) {
       log.debug({ serverId: this.serverId }, 'Skipping duplicate browser open (debounced)');
@@ -209,12 +262,14 @@ export class FileOAuthProvider implements OAuthClientProvider {
     }
     this.browserOpenedAt = now;
 
-    // When using an HTTPS relay, wrap the state parameter with the local port
-    // so the relay can redirect back to localhost after the OAuth provider responds.
-    const originalState = url.searchParams.get('state') ?? '';
-    this.expectedState = originalState;
-    if (this.relayCallbackUrl) {
-      url.searchParams.set('state', `${this.callbackPort}.${originalState}`);
+    if (this.callbackMode === 'loopback') {
+      // When using an HTTPS relay, wrap the state parameter with the local port
+      // so the relay can redirect back to localhost after the OAuth provider responds.
+      const originalState = url.searchParams.get('state') ?? '';
+      this.expectedState = originalState;
+      if (this.relayCallbackUrl) {
+        url.searchParams.set('state', `${this.callbackPort}.${originalState}`);
+      }
     }
 
     log.info(
@@ -237,10 +292,21 @@ export class FileOAuthProvider implements OAuthClientProvider {
   }
 
   /**
-   * Starts a temporary HTTP server to listen for the OAuth callback.
-   * Returns a promise that resolves with the authorization code.
+   * Resolves with the authorization code from the browser callback. In loopback mode this starts a
+   * temporary HTTP listener; in gateway mode it waits for the gateway's callback route to deliver
+   * the code for this provider's pending state.
    */
   waitForAuthCode(): Promise<string> {
+    if (this.callbackMode === 'gateway') {
+      if (!this.callbackRouter) {
+        return Promise.reject(
+          new Error(
+            `Provider "${this.serverId}" uses oauth_callback_mode: gateway, which needs the Airlock gateway's HTTP listener`
+          )
+        );
+      }
+      return this.gatewayCallbackWait().promise;
+    }
     return new Promise((resolve, reject) => {
       this.authCodeResolve = resolve;
 
@@ -301,6 +367,49 @@ export class FileOAuthProvider implements OAuthClientProvider {
   stopCallbackServer(): void {
     this.callbackServer?.close();
     this.callbackServer = undefined;
+    // Gateway mode: withdraw the pending state so a late callback for an abandoned authorization
+    // is rejected rather than completing a flow nobody is waiting on.
+    this.withdrawGatewayCallback?.();
+    this.withdrawGatewayCallback = undefined;
+    this.gatewayWait = undefined;
+  }
+
+  private gatewayCallbackWait(): GatewayCallbackWait {
+    if (!this.gatewayWait) {
+      let resolve!: (code: string) => void;
+      let reject!: (err: Error) => void;
+      const promise = new Promise<string>((res, rej) => {
+        resolve = res;
+        reject = rej;
+      });
+      // A refusal can arrive before anyone awaits the code; never let that surface as an unhandled
+      // rejection. Callers awaiting `promise` still observe it.
+      promise.catch(() => {});
+      this.gatewayWait = { promise, resolve, reject };
+    }
+    return this.gatewayWait;
+  }
+
+  private armGatewayCallback(state: string): void {
+    this.withdrawGatewayCallback?.();
+    this.withdrawGatewayCallback = undefined;
+    const wait = this.gatewayCallbackWait();
+    if (!this.callbackRouter) return; // waitForAuthCode reports the missing gateway listener.
+    if (!state) {
+      this.gatewayWait = undefined;
+      wait.reject(new Error('OAuth authorization request carried no state to route the callback'));
+      return;
+    }
+    this.withdrawGatewayCallback = this.callbackRouter.register(state, this.serverId, (outcome) => {
+      this.withdrawGatewayCallback = undefined;
+      const current = this.gatewayWait;
+      this.gatewayWait = undefined;
+      if ('code' in outcome) {
+        current?.resolve(outcome.code);
+      } else {
+        current?.reject(new Error(`OAuth error: ${outcome.error}`));
+      }
+    });
   }
 
   private isExpectedState(state: string | null): boolean {

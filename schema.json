@@ -249,6 +249,14 @@
                     "type": "string",
                     "format": "uri"
                   },
+                  "oauth_callback_mode": {
+                    "default": "loopback",
+                    "type": "string",
+                    "enum": [
+                      "loopback",
+                      "gateway"
+                    ]
+                  },
                   "client_id": {
                     "type": "string"
                   },

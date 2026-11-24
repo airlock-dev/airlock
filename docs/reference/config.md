@@ -82,6 +82,7 @@ providers:
 | `oauth`                       | `http`                 | `false`    | Run the browser authorization-code flow                                      |
 | `oauth_callback_port`         | `http`                 | `18432`    | Local port for the OAuth callback listener                                   |
 | `oauth_callback_url`          | `http`                 | —          | Public callback URL when the callback is relayed (remote or tunneled setups) |
+| `oauth_callback_mode`         | `http`                 | `loopback` | `gateway` receives the callback on the gateway's own `/oauth/callback` route |
 | `client_id` / `client_secret` | `http`                 | —          | Pre-registered OAuth client credentials                                      |
 | `request_timeout_ms`          | `http`                 | `60000`    | Per-request MCP deadline                                                     |
 | `instructions`                | all object forms       | —          | Operator notes added to the gateway's instructions (see below)               |

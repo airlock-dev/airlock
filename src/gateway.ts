@@ -27,6 +27,8 @@ import { sseServerPlugin } from './transport/sse-server.js';
 import { httpServerPlugin } from './transport/http-server.js';
 import { SessionLimiter, resolveLimits } from './transport/session-limiter.js';
 import { enableTcpKeepAlive } from './transport/keepalive.js';
+import { oauthCallbackPlugin } from './transport/oauth-callback.js';
+import { OAuthCallbackRouter } from './pool/oauth-callback-router.js';
 import type { AgentServerDeps } from './transport/agent-server.js';
 import type { Config } from './config/loader.js';
 import type { HitlProvider, ApprovalApi } from './hitl/providers/types.js';
@@ -79,6 +81,8 @@ export class Gateway {
   private unsubscribeActivityNotifications?: () => void;
   private startTime = Date.now();
   private dataPlaneRequestSecurity: RequestSecurityOptions = {};
+  /** Browser OAuth callbacks for providers with `oauth_callback_mode: gateway`. */
+  private oauthCallbackRouter = new OAuthCallbackRouter();
   private managementRequestSecurity: RequestSecurityOptions = {};
 
   constructor(
@@ -148,6 +152,7 @@ export class Gateway {
     const mcpConfigs = getMcpConfigs(this.config.providers);
     this.pool = new ClientPool(mcpConfigs, {
       eventsProviders: eventEnabledProviders(this.config.agents),
+      oauthCallbackRouter: this.oauthCallbackRouter,
     });
     await this.pool.initialize();
 
@@ -249,6 +254,12 @@ export class Gateway {
       resolveSessionId: (agentId: string, sessionId: string) =>
         this.downstreamSessionIdFor(agentId, `${agentId}:${sessionId}`),
       getRequestSecurity: getDataPlaneRequestSecurity,
+    });
+    // Browser OAuth redirect target for providers that opt into oauth_callback_mode: gateway.
+    // Always mounted (provider config hot-reloads), but answers 404 until a provider opts in.
+    await this.app.register(oauthCallbackPlugin, {
+      router: this.oauthCallbackRouter,
+      isEnabled: () => usesGatewayOAuthCallback(this.config),
     });
     // Mount the HTTP tools API unless it's globally off ('none'). Registration depends ONLY on
     // the server mode, which is restart-guarded (assertReloadCompatible), so a hot-reload of
@@ -673,6 +684,17 @@ function withoutDashboardProvider(
     return filtered.length === 1 ? filtered[0] : filtered;
   }
   return provider.type === 'dashboard' ? undefined : provider;
+}
+
+function usesGatewayOAuthCallback(config: Config): boolean {
+  return Object.values(config.providers).some(
+    (provider) =>
+      provider !== 'builtin' &&
+      provider.type === 'http' &&
+      provider.enabled &&
+      provider.oauth &&
+      provider.oauth_callback_mode === 'gateway'
+  );
 }
 
 function isLoopbackHost(host: string): boolean {

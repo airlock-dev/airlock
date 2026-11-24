@@ -17,7 +17,8 @@ import type {
   EventsPollResult,
   EventsStreamParams,
 } from '../events/protocol.js';
-import { FileOAuthProvider } from './oauth-provider.js';
+import { FileOAuthProvider, type OAuthCallbackMode } from './oauth-provider.js';
+import type { OAuthCallbackRouter } from './oauth-callback-router.js';
 import { ClientCredentialsTokenSource } from './client-credentials.js';
 import type { ClientCredentialsConfig } from '../config/schema.js';
 import type { ProviderConnectionStatus } from './status.js';
@@ -112,7 +113,9 @@ export class HttpMcpClient {
     private clientSecret?: string,
     private oauthCallbackUrl?: string,
     clientCredentials?: ClientCredentialsConfig,
-    private requestTimeoutMs = 60_000
+    private requestTimeoutMs = 60_000,
+    oauthCallbackMode: OAuthCallbackMode = 'loopback',
+    oauthCallbackRouter?: OAuthCallbackRouter
   ) {
     if (this.oauth) {
       this.oauthProvider = new FileOAuthProvider(
@@ -120,7 +123,8 @@ export class HttpMcpClient {
         this.oauthCallbackPort,
         this.clientId,
         this.clientSecret,
-        this.oauthCallbackUrl
+        this.oauthCallbackUrl,
+        { callbackMode: oauthCallbackMode, callbackRouter: oauthCallbackRouter }
       );
     }
     // App-identity auth. Mutually exclusive with `oauth` (the loader rejects both together), so
