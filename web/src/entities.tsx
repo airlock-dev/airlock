@@ -1,172 +1,260 @@
 import { useEffect, useMemo, useState } from 'preact/hooks';
+import { Bot, ChevronRight, Ellipsis, Layers, Plus, Sparkles } from 'lucide-preact';
 import { draftFromAgent, draftFromProfile, updateAgentSpec, updateProfileSpec } from './drafts';
 import { effectiveRules, inheritedRules, tally } from './policy';
 import { PolicyEditor, type Draft } from './policy-editor';
 import { ReviewSheet } from './review';
 import { go, goAfterSave, useStore, useUnsavedGuard } from './store';
 import type { Agent, ChangeOp, Kind } from './types';
-import { Button, Empty, TallyBar, cx } from './ui';
+import { AccessBar, AccessCounts, Button, Empty, Menu, SearchInput, plural } from './ui';
 
 export function Roster({ kind }: { kind: Kind }) {
-  const { state, tools, toolsLoaded, pending, setAssistantOpen, meta } = useStore();
+  const { state, tools, toolsLoaded, pending, grants, setAssistantOpen, meta } = useStore();
+  const [query, setQuery] = useState('');
   if (!state) return null;
   const isAgent = kind === 'agent';
-  const entries = Object.entries(isAgent ? state.agents : state.profiles);
+  const section = isAgent ? 'agents' : 'profiles';
   const noun = isAgent ? 'agent' : 'profile';
+  const all = Object.entries(isAgent ? state.agents : state.profiles);
+  const q = query.trim().toLowerCase();
+  const entries = q
+    ? all.filter(([id, entity]) =>
+        `${id} ${entity.extends.join(' ')} ${entity.allow.join(' ')} ${entity.ask.join(' ')}`
+          .toLowerCase()
+          .includes(q)
+      )
+    : all;
 
   return (
-    <div class="page">
-      <header class="page-head">
-        <div>
-          <h1 class="page-title">{isAgent ? 'Agents' : 'Profiles'}</h1>
-          <p class="lede">
-            {isAgent
-              ? 'Each agent is a client with its own key and rules.'
-              : 'Reusable rule sets that agents build on.'}
-          </p>
+    <>
+      <header class="topbar">
+        <div class="topbar-title">
+          <h1>{isAgent ? 'Agents' : 'Profiles'}</h1>
+          <span class="topbar-meta">{all.length || ''}</span>
         </div>
-        <div class="page-actions">
+        <div class="topbar-actions">
           {meta?.assistant.enabled && (
-            <Button variant="quiet" onClick={() => setAssistantOpen(true)}>
-              Describe one instead
+            <Button variant="ghost" onClick={() => setAssistantOpen(true)}>
+              <Sparkles size={14} aria-hidden="true" />
+              Describe it
             </Button>
           )}
-          <Button variant="primary" onClick={() => go(isAgent ? 'agents' : 'profiles', 'new')}>
+          <Button variant="primary" onClick={() => go(section, 'new')}>
+            <Plus size={14} aria-hidden="true" />
             New {noun}
           </Button>
         </div>
       </header>
 
-      {entries.length === 0 ? (
-        <Empty title={`No ${noun}s yet`}>
-          <p>
-            {isAgent
-              ? 'Create one for each client that should reach your tools through Airlock.'
-              : 'Profiles save you repeating the same rules across agents.'}
-          </p>
-          <Button variant="primary" onClick={() => go(isAgent ? 'agents' : 'profiles', 'new')}>
-            New {noun}
-          </Button>
-        </Empty>
-      ) : (
-        <table class="roster">
-          <thead>
-            <tr>
-              <th scope="col">Name</th>
-              <th scope="col">Builds on</th>
-              <th scope="col" class="col-access">
-                Access
-              </th>
-              {isAgent && <th scope="col">Key</th>}
-              {isAgent && (
-                <th scope="col" class="col-num">
-                  Waiting
-                </th>
-              )}
-            </tr>
-          </thead>
-          <tbody>
-            {entries.map(([id, entity]) => {
-              const rules = isAgent
-                ? effectiveRules(
-                    entity,
-                    state.profiles,
-                    'inheritDefault' in entity && entity.inheritDefault
-                      ? state.defaultProfile
-                      : undefined
-                  )
-                : {
-                    allow: [
-                      ...inheritedRules(entity.extends, state.profiles).allow,
-                      ...entity.allow,
-                    ],
-                    ask: [...inheritedRules(entity.extends, state.profiles).ask, ...entity.ask],
-                    deny: [...inheritedRules(entity.extends, state.profiles).deny, ...entity.deny],
-                  };
-              const counts = tally(rules, tools);
-              const waiting = pending.filter((p) => p.agentId === id).length;
-              const href = `#/${isAgent ? 'agents' : 'profiles'}/${encodeURIComponent(id)}`;
-              return (
-                <tr key={id} onClick={() => (window.location.hash = href.slice(1))}>
-                  <th scope="row">
-                    <a href={href} class="roster-name">
-                      {id}
-                    </a>
-                  </th>
-                  <td class="roster-extends">
-                    {entity.extends.length ? (
-                      entity.extends.join(', ')
-                    ) : (
-                      <span class="dim">Nothing</span>
-                    )}
-                  </td>
-                  <td class="col-access">
-                    {toolsLoaded ? (
-                      <div class="roster-access">
-                        <TallyBar counts={counts} total={tools.length} />
-                        <span class="roster-counts">
-                          <span class="c-allow">{counts.allow}</span> allow,{' '}
-                          <span class="c-ask">{counts.ask}</span> ask
-                        </span>
-                      </div>
-                    ) : (
-                      <span class="dim">Loading</span>
-                    )}
-                  </td>
-                  {isAgent && (
-                    <td>
-                      {'hasToken' in entity && entity.hasToken ? (
-                        <span class="key-state is-set">Set</span>
-                      ) : (
-                        <span class="key-state is-missing">None</span>
+      <div class="page">
+        <p class="lede" style={{ marginBottom: '20px' }}>
+          {isAgent
+            ? 'Each agent is one client with its own key, approval mode, and tool policy.'
+            : 'Reusable rule sets that agents and other profiles inherit.'}
+        </p>
+
+        {all.length === 0 ? (
+          <Empty
+            title={`No ${noun}s yet`}
+            icon={
+              isAgent ? (
+                <Bot size={22} aria-hidden="true" />
+              ) : (
+                <Layers size={22} aria-hidden="true" />
+              )
+            }
+          >
+            <p>
+              {isAgent
+                ? 'Create one for each client that should reach your tools through Airlock.'
+                : 'Profiles save you repeating the same rules across agents.'}
+            </p>
+            <Button variant="primary" onClick={() => go(section, 'new')}>
+              New {noun}
+            </Button>
+          </Empty>
+        ) : (
+          <>
+            {all.length > 5 && (
+              <div class="toolbar">
+                <SearchInput
+                  value={query}
+                  onInput={setQuery}
+                  placeholder={`Search ${noun}s`}
+                  label={`Search ${noun}s`}
+                />
+              </div>
+            )}
+            {entries.length === 0 ? (
+              <Empty title={`No ${noun}s match “${query}”`}>
+                <Button size="sm" onClick={() => setQuery('')}>
+                  Clear search
+                </Button>
+              </Empty>
+            ) : (
+              <div class="table-scroll">
+                <table class="table">
+                  <thead>
+                    <tr>
+                      <th scope="col">Name</th>
+                      <th scope="col" class="hide-sm">
+                        Inherits
+                      </th>
+                      <th scope="col" style={{ width: '34%' }}>
+                        Access
+                      </th>
+                      {isAgent && (
+                        <th scope="col" class="hide-sm">
+                          Key
+                        </th>
                       )}
-                    </td>
-                  )}
-                  {isAgent && (
-                    <td class="col-num">
-                      {waiting ? (
-                        <span class="waiting">{waiting}</span>
-                      ) : (
-                        <span class="dim">0</span>
-                      )}
-                    </td>
-                  )}
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      )}
-    </div>
+                      <th scope="col" class="col-actions">
+                        <span class="visually-hidden">Open</span>
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {entries.map(([id, entity]) => {
+                      const rules = isAgent
+                        ? effectiveRules(
+                            entity,
+                            state.profiles,
+                            (entity as Agent).inheritDefault ? state.defaultProfile : undefined
+                          )
+                        : (() => {
+                            const inherited = inheritedRules(entity.extends, state.profiles);
+                            return {
+                              allow: [...inherited.allow, ...entity.allow],
+                              ask: [...inherited.ask, ...entity.ask],
+                              deny: [...inherited.deny, ...entity.deny],
+                            };
+                          })();
+                      const counts = tally(rules, tools);
+                      const waiting = pending.filter((p) => p.agentId === id).length;
+                      const agentGrants = grants.filter((g) => g.agentId === id).length;
+                      const usedBy = !isAgent
+                        ? Object.values(state.agents).filter((a) => a.extends.includes(id)).length +
+                          Object.values(state.profiles).filter((p) => p.extends.includes(id)).length
+                        : 0;
+                      const href = `#/${section}/${encodeURIComponent(id)}`;
+                      const sub = isAgent
+                        ? [
+                            waiting > 0 && `${waiting} waiting`,
+                            agentGrants > 0 && plural(agentGrants, 'grant'),
+                            (entity as Agent).approvalMode &&
+                              ((entity as Agent).approvalMode === 'async'
+                                ? 'Answers right away'
+                                : 'Holds calls'),
+                          ]
+                            .filter(Boolean)
+                            .join(' · ')
+                        : [
+                            state.defaultProfile === id && 'Default',
+                            usedBy > 0 ? `Used by ${usedBy}` : 'Not used yet',
+                          ]
+                            .filter(Boolean)
+                            .join(' · ');
+                      return (
+                        <tr
+                          key={id}
+                          class="is-clickable"
+                          onClick={(e) => {
+                            if ((e.target as HTMLElement).closest('a')) return;
+                            window.location.hash = href.slice(1);
+                          }}
+                        >
+                          <th scope="row">
+                            <a href={href} class="cell-title">
+                              {id}
+                            </a>
+                            {sub && (
+                              <span class="cell-sub">
+                                {waiting > 0 && (
+                                  <span
+                                    class="dot is-ask"
+                                    style={{ marginRight: '6px' }}
+                                    aria-hidden="true"
+                                  />
+                                )}
+                                {sub}
+                              </span>
+                            )}
+                          </th>
+                          <td class="hide-sm ink-2">
+                            {entity.extends.length ? (
+                              entity.extends.join(', ')
+                            ) : (
+                              <span class="ink-3">—</span>
+                            )}
+                          </td>
+                          <td>
+                            {toolsLoaded ? (
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                                <AccessCounts counts={counts} />
+                                <AccessBar counts={counts} total={tools.length} />
+                              </div>
+                            ) : (
+                              <span class="skeleton" style={{ width: '70%' }} />
+                            )}
+                          </td>
+                          {isAgent && (
+                            <td class="hide-sm">
+                              {(entity as Agent).hasToken ? (
+                                <span class="ink-2">Own key</span>
+                              ) : (
+                                <span class="ink-3">Gateway secret</span>
+                              )}
+                            </td>
+                          )}
+                          <td class="col-actions ink-3">
+                            <ChevronRight size={14} aria-hidden="true" />
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </>
   );
 }
 
+interface PendingReview {
+  ops: ChangeOp[];
+  title: string;
+  label: string;
+  danger?: boolean;
+  successMessage?: string;
+}
+
 export function EntityPage({ kind, id }: { kind: Kind; id: string }) {
-  const { state, tools, toast } = useStore();
+  const { state, pending, grants } = useStore();
   const entity = kind === 'agent' ? state?.agents[id] : state?.profiles[id];
   const original = useMemo<Draft | null>(() => {
     if (!entity) return null;
     return kind === 'agent' ? draftFromAgent(entity as Agent) : draftFromProfile(entity);
   }, [entity, kind]);
   const [draft, setDraft] = useState<Draft | null>(original);
-  const [review, setReview] = useState<{
-    ops: ChangeOp[];
-    title: string;
-    label: string;
-    danger?: boolean;
-    successMessage?: string;
-  } | null>(null);
+  const [review, setReview] = useState<PendingReview | null>(null);
 
   useEffect(() => setDraft(original), [original]);
   const dirty = Boolean(draft && original) && JSON.stringify(draft) !== JSON.stringify(original);
   useUnsavedGuard(dirty);
+
+  const section = kind === 'agent' ? 'agents' : 'profiles';
 
   if (!state) return null;
   if (!entity || !draft || !original) {
     return (
       <div class="page">
         <Empty title={`No ${kind} called ${id}`}>
-          <a href={kind === 'agent' ? '#/agents' : '#/profiles'}>Back to the list</a>
+          <a class="link" href={`#/${section}`}>
+            Back to {section}
+          </a>
         </Empty>
       </div>
     );
@@ -183,15 +271,9 @@ export function EntityPage({ kind, id }: { kind: Kind; id: string }) {
             .map(([p]) => `${p} (profile)`),
         ]
       : [];
-  const hasKey = kind === 'agent' && 'hasToken' in entity && entity.hasToken;
-  const counts = tally(
-    effectiveRules(
-      draft,
-      state.profiles,
-      kind === 'agent' && draft.inheritDefault ? state.defaultProfile : undefined
-    ),
-    tools
-  );
+  const hasKey = kind === 'agent' && (entity as Agent).hasToken;
+  const waiting = pending.filter((p) => p.agentId === id).length;
+  const agentGrants = grants.filter((g) => g.agentId === id).length;
 
   const saveOps = (): ChangeOp[] =>
     kind === 'agent'
@@ -199,43 +281,22 @@ export function EntityPage({ kind, id }: { kind: Kind; id: string }) {
       : [{ op: 'update_profile', id, profile: updateProfileSpec(original, draft) }];
 
   return (
-    <div class="page entity">
-      <a class="back" href={kind === 'agent' ? '#/agents' : '#/profiles'}>
-        {kind === 'agent' ? 'Agents' : 'Profiles'}
-      </a>
-      <header class="page-head">
-        <div>
-          <h1 class="page-title">{id}</h1>
-          <div class="entity-facts">
-            {kind === 'agent' && (
-              <span class={cx('key-state', hasKey ? 'is-set' : 'is-missing')}>
-                {hasKey ? 'Key set' : 'No key. It falls back to the gateway secret.'}
-              </span>
-            )}
-            {kind === 'agent' && (
-              <span class="fact">
-                <code>/agents/{id}/mcp</code>
-              </span>
-            )}
-            {kind === 'profile' && (
-              <span class="fact">
-                {usedBy.length ? `Used by ${usedBy.join(', ')}` : 'Not used yet'}
-              </span>
-            )}
-            {tools.length > 0 && (
-              <span class="fact">
-                {counts.allow} allow, {counts.ask} ask, {counts.deny + counts.none} blocked
-              </span>
-            )}
-          </div>
-        </div>
-        <div class="page-actions">
+    <>
+      <header class="topbar">
+        <nav class="crumb" aria-label="Breadcrumb">
+          <a href={`#/${section}`}>{kind === 'agent' ? 'Agents' : 'Profiles'}</a>
+          <ChevronRight size={13} aria-hidden="true" />
+          <span class="current" aria-current="page">
+            {id}
+          </span>
+        </nav>
+        <div class="topbar-actions">
           {kind === 'agent' && (
             <Button
               onClick={() =>
                 setReview({
                   ops: [{ op: 'rotate_agent_key', id }],
-                  title: hasKey ? `Rotate the key for ${id}` : `Give ${id} a key`,
+                  title: hasKey ? `Rotate the key for ${id}` : `Give ${id} its own key`,
                   label: hasKey ? 'Rotate key' : 'Create key',
                 })
               }
@@ -243,45 +304,98 @@ export function EntityPage({ kind, id }: { kind: Kind; id: string }) {
               {hasKey ? 'Rotate key' : 'Create key'}
             </Button>
           )}
-          <Button
-            variant="quiet"
-            onClick={() => go(kind === 'agent' ? 'agents' : 'profiles', 'new', id)}
-            title={`New ${kind} with the same rules`}
-          >
-            Duplicate
-          </Button>
-          <Button
-            variant="danger"
-            onClick={() =>
-              setReview({
-                ops: [{ op: kind === 'agent' ? 'delete_agent' : 'delete_profile', id }],
-                title: `Delete ${id}`,
+          <Menu
+            label={`${id} actions`}
+            trigger={(props) => (
+              <Button {...props} icon aria-label={`More actions for ${id}`}>
+                <Ellipsis size={15} aria-hidden="true" />
+              </Button>
+            )}
+            items={[
+              {
+                id: 'duplicate',
+                label: `Duplicate ${kind}`,
+                sub: 'Start a new one with the same rules',
+                onSelect: () => go(section, 'new', id),
+              },
+              {
+                id: 'delete',
                 label: `Delete ${kind}`,
                 danger: true,
-                successMessage: `Deleted ${id}.`,
-              })
-            }
-          >
-            Delete
-          </Button>
+                separatorBefore: true,
+                onSelect: () =>
+                  setReview({
+                    ops: [{ op: kind === 'agent' ? 'delete_agent' : 'delete_profile', id }],
+                    title: `Delete ${id}`,
+                    label: `Delete ${kind}`,
+                    danger: true,
+                    successMessage: `Deleted ${id}`,
+                  }),
+              },
+            ]}
+          />
         </div>
       </header>
 
-      <PolicyEditor kind={kind} selfId={id} draft={draft} onChange={setDraft} />
+      <div class="page">
+        <div class="entity-head">
+          <div>
+            <h1>{id}</h1>
+            <p class="entity-meta">
+              {kind === 'agent' ? (
+                <>
+                  <code>/agents/{id}/mcp</code>
+                  <span class="sep">·</span>
+                  <span class="key-state">
+                    <span class={hasKey ? 'dot is-ok' : 'dot is-ask'} aria-hidden="true" />
+                    {hasKey ? 'Own key' : 'No key, uses the gateway secret'}
+                  </span>
+                  {waiting > 0 && (
+                    <>
+                      <span class="sep">·</span>
+                      <a class="link" href="#/inbox">
+                        {waiting} waiting
+                      </a>
+                    </>
+                  )}
+                  {agentGrants > 0 && (
+                    <>
+                      <span class="sep">·</span>
+                      <a class="link" href="#/grants">
+                        {plural(agentGrants, 'active grant')}
+                      </a>
+                    </>
+                  )}
+                </>
+              ) : (
+                <span>
+                  {usedBy.length ? `Used by ${usedBy.join(', ')}` : 'Not inherited by anything yet'}
+                  {state.defaultProfile === id && ' · Default for every agent'}
+                </span>
+              )}
+            </p>
+          </div>
+        </div>
 
-      <div class={cx('savebar', dirty && 'is-visible')} aria-hidden={!dirty}>
-        <span>Unsaved changes to {id}</span>
-        <Button variant="quiet" onClick={() => setDraft(original)} tabIndex={dirty ? 0 : -1}>
-          Discard
-        </Button>
-        <Button
-          variant="primary"
-          tabIndex={dirty ? 0 : -1}
-          onClick={() => setReview({ ops: saveOps(), title: `Save ${id}`, label: 'Save changes' })}
-        >
-          Review and save
-        </Button>
+        <PolicyEditor kind={kind} selfId={id} draft={draft} onChange={setDraft} />
       </div>
+
+      {dirty && (
+        <div class="savebar" role="region" aria-label="Unsaved changes">
+          <span class="savebar-text">Unsaved changes</span>
+          <Button variant="ghost" onClick={() => setDraft(original)}>
+            Discard
+          </Button>
+          <Button
+            variant="primary"
+            onClick={() =>
+              setReview({ ops: saveOps(), title: `Save ${id}`, label: 'Save to airlock.yaml' })
+            }
+          >
+            Review changes
+          </Button>
+        </div>
+      )}
 
       {review && (
         <ReviewSheet
@@ -300,11 +414,10 @@ export function EntityPage({ kind, id }: { kind: Kind; id: string }) {
           }
           onClose={() => setReview(null)}
           onApplied={() => {
-            if (review.ops[0].op.startsWith('delete'))
-              goAfterSave(kind === 'agent' ? 'agents' : 'profiles');
+            if (review.ops[0].op.startsWith('delete')) goAfterSave(section);
           }}
         />
       )}
-    </div>
+    </>
   );
 }

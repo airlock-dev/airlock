@@ -795,6 +795,7 @@ export class HitlEngine implements ApprovalApi {
       createdAt: req.createdAt,
       ...(req.expiresAt ? { expiresAt: req.expiresAt } : {}),
       kind: req.kind,
+      mode: req.mode,
       ...(req.subject
         ? {
             tier: req.subject.tier,

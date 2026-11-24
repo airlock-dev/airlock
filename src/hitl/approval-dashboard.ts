@@ -6,7 +6,7 @@ import type { ApprovalStreamHub } from './approval-stream.js';
 import type { ApprovalApi, HitlNotification } from './providers/types.js';
 import type { ApprovalPreviewReader } from './preview.js';
 import { GrantSpecError } from './engine.js';
-import { parseGrantSpecInput, rememberToGrantSpec } from './grant-api.js';
+import { parseGrantSpecInput, rememberToGrantSpec, serializeGrant } from './grant-api.js';
 
 const log = childLogger('hitl-dashboard');
 
@@ -24,9 +24,38 @@ export class ApprovalDashboardRoutes {
     app.get('/events', (request, reply) => this.handleEvents(request, reply));
     app.post('/approve', async (request, reply) => this.handleApprove(request, reply, configPath));
     app.post('/deny', (request, reply) => this.handleDeny(request, reply));
+    this.registerGrantRoutes(app);
     this.registerPreviewRoute(app);
     app.get('/version', () => ({ version: VERSION }));
     app.get('/version/latest', async (_request, reply) => this.handleLatestVersion(reply));
+  }
+
+  private registerGrantRoutes(app: FastifyInstance): void {
+    app.get('/api/grants', (request) => {
+      if (!this.approvalApi.listGrants) {
+        return { grants: [], canRevoke: false };
+      }
+      const { agent } = request.query as { agent?: string };
+      const agentFilter = typeof agent === 'string' && agent.trim() ? agent.trim() : undefined;
+      return {
+        grants: this.approvalApi.listGrants(agentFilter).map(serializeGrant),
+        canRevoke: this.approvalApi.revokeGrant !== undefined,
+      };
+    });
+
+    app.delete('/api/grants/:id', (request, reply) => {
+      if (!this.approvalApi.revokeGrant) {
+        reply.code(501);
+        return { error: 'Grant revocation is not available' };
+      }
+      const { id } = request.params as { id: string };
+      if (!this.approvalApi.revokeGrant(id)) {
+        reply.code(404);
+        return { error: 'No active grant found' };
+      }
+      log.info({ id }, 'Revoked grant via dashboard');
+      return { ok: true };
+    });
   }
 
   registerPreviewRoute(app: FastifyInstance): void {

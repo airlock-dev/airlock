@@ -1,7 +1,7 @@
 import type { SandboxDisplayInfo } from '../../sandbox/index.js';
 import type { AirlockCallContext } from '../../airlock/context.js';
 import type { AirlockActivityEvent } from '../../activity/stream.js';
-import type { GrantOption, GrantSpec, ToolTier } from '../grants.js';
+import type { Grant, GrantOption, GrantSpec, ToolTier } from '../grants.js';
 
 export interface HitlNotification {
   id: string;
@@ -19,6 +19,8 @@ export interface HitlNotification {
   context?: AirlockCallContext;
   /** call (default) = one gated tool call; plan = several calls approved together; question = ask_user. */
   kind?: 'call' | 'plan' | 'question';
+  /** sync = caller waits for decision; async = caller got immediate pending response and retries. */
+  mode?: 'sync' | 'async';
   tier?: ToolTier;
   provider?: string;
   /** Flagged by a detector or command policy: excluded from approve-all and grants. */
@@ -55,4 +57,6 @@ export interface ApprovalApi {
   deny(id: string, reason?: string): void;
   approveByCode(code: string, options?: { grant?: GrantSpec }): void;
   denyByCode(code: string, reason?: string): void;
+  listGrants?(agentId?: string): Grant[];
+  revokeGrant?(id: string): boolean;
 }

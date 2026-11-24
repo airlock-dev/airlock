@@ -1,6 +1,8 @@
 export type Decision = 'allow' | 'ask' | 'deny';
 export type Resolved = Decision | 'none';
 export type Kind = 'agent' | 'profile';
+export type ToolTier = 'read' | 'write' | 'destructive';
+export type ThemePreference = 'system' | 'light' | 'dark';
 
 export interface Rules {
   extends: string[];
@@ -24,7 +26,9 @@ export interface Provider {
   enabled: boolean;
   command?: string;
   args?: string[];
+  env?: Record<string, string>;
   url?: string;
+  headers?: Record<string, string>;
   oauth?: boolean;
 }
 
@@ -132,6 +136,40 @@ export interface AuditEntry {
   result: string;
   duration_ms?: number;
   error?: string;
+  hitl_code?: string;
+  request_id?: string;
+}
+
+export interface GrantOption {
+  scope: 'tool' | 'tier' | 'provider' | 'profile';
+  label: string;
+  tier?: 'read' | 'write';
+  profile?: string;
+}
+
+export type GrantScope =
+  | { kind: 'call'; tool: string; fingerprint: string }
+  | { kind: 'tool'; tool: string }
+  | { kind: 'tier'; tier: 'read' | 'write'; provider?: string }
+  | { kind: 'provider'; provider: string }
+  | { kind: 'profile'; profile: string };
+
+export interface Grant {
+  id: string;
+  agentId: string;
+  scope: GrantScope;
+  source: 'approval' | 'operator' | 'plan' | 'async' | string;
+  label?: string;
+  sessionId?: string;
+  approvalId?: string;
+  createdAt: string;
+  expiresAt?: string;
+  usesRemaining?: number;
+}
+
+export interface PlanCall {
+  tool: string;
+  args: Record<string, unknown>;
 }
 
 export interface PendingApproval {
@@ -143,8 +181,27 @@ export interface PendingApproval {
   reason?: string;
   note?: string;
   createdAt: string;
+  expiresAt?: string;
   timeoutMs: number;
-  tier?: 'read' | 'write' | 'destructive';
+  kind: 'call' | 'plan' | 'question';
+  mode?: 'sync' | 'async';
+  tier?: ToolTier;
+  provider?: string;
+  escalated?: boolean;
+  plan?: PlanCall[];
+  grantOptions?: GrantOption[];
+  batchId?: string;
+  batchCode?: string;
+  batchSize?: number;
+}
+
+export interface DecideOptions {
+  remember?: 'always' | 'temporary';
+  grantScope?: 'tool' | 'tier' | 'provider' | 'profile';
+  grantTier?: 'read' | 'write';
+  grantProfile?: string;
+  durationMs?: number;
+  maxUses?: number;
 }
 
 export interface ActivityEvent {
