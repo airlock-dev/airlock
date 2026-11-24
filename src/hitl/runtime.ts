@@ -38,7 +38,9 @@ export function engineOptionsFromConfig(
   // Optional chaining tolerates hand-built configs (tests, embedders) that skipped schema defaults.
   const grants = config.approvals.grants as Config['approvals']['grants'] | undefined;
   return {
-    defaultMode: config.approvals.mode ?? 'sync',
+    defaultMode: config.approvals.mode ?? 'hybrid',
+    syncWaitMs: config.approvals.sync_wait_ms,
+    executeOnApprove: config.approvals.execute_on_approve,
     asyncGrantTtlMs: grants?.async_ttl_ms,
     planGrantTtlMs: grants?.plan_ttl_ms,
     defaultGrantDurationMs: grants?.default_duration_ms,

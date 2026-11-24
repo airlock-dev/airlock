@@ -53,9 +53,9 @@ export interface HitlProvider {
 }
 
 export interface ApprovalApi {
-  approve(id: string, options?: { grant?: GrantSpec }): void;
+  approve(id: string, options?: { grant?: GrantSpec; answer?: string }): void;
   deny(id: string, reason?: string): void;
-  approveByCode(code: string, options?: { grant?: GrantSpec }): void;
+  approveByCode(code: string, options?: { grant?: GrantSpec; answer?: string }): void;
   denyByCode(code: string, reason?: string): void;
   listGrants?(agentId?: string): Grant[];
   revokeGrant?(id: string): boolean;

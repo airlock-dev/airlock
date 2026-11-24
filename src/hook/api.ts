@@ -1,6 +1,11 @@
 import type { FastifyInstance } from 'fastify';
 import type { AllowlistEngine } from '../allowlist/engine.js';
-import type { ApprovalMode, HitlEngine } from '../hitl/engine.js';
+import type {
+  ApprovalMode,
+  ApprovalPolicyOverrides,
+  HitlEngine,
+  HitlResult,
+} from '../hitl/engine.js';
 import { fingerprintCall, type ApprovalSubject, type ToolTier } from '../hitl/grants.js';
 import type { HitlBatcher } from '../hitl/batcher.js';
 import type { AuditLogger } from '../audit/logger.js';
@@ -16,8 +21,8 @@ export interface HookApiOpts {
   hitlEngine: HitlEngine;
   hitlBatcher: HitlBatcher;
   auditLogger: AuditLogger;
-  /** Per-agent approval mode override (falls back to the engine default). */
-  getApprovalMode?: (agentId: string) => ApprovalMode | undefined;
+  /** Per-agent approval settings (`approval_mode`, `sync_wait_ms`); engine defaults otherwise. */
+  getApprovalOverrides?: (agentId: string) => ApprovalPolicyOverrides | undefined;
   /** Safety tier for tier-scoped grants. Unknown tools are treated as destructive. */
   getToolTier?: (agentId: string, tool: string) => ToolTier;
   secret?: string;
@@ -105,21 +110,11 @@ export async function hookApiPlugin(app: FastifyInstance, opts: HookApiOpts): Pr
       return reply.send({ decision: 'allow', tool: normalized.name });
     }
 
-    const mode = opts.getApprovalMode?.(agentId) ?? hitlEngine.defaultMode;
-    if (mode === 'async') {
-      // Hooks have short client-side timeouts. Answer at once: the deny reason tells the model the
-      // approval is pending, and once approved its retry of the same call is let through.
-      if (hitlEngine.wasRecentlyDenied(agentId, subject.fingerprint)) {
-        return reply.send({
-          decision: 'deny',
-          tool: normalized.name,
-          reason: 'Denied by operator',
-        });
-      }
-      if (!hitlEngine.findPendingCall(agentId, subject.fingerprint)) {
-        createTicket(hitlEngine, hitlBatcher, agentId, normalized.name, input, subject, 'async');
-      }
-      return reply.send({
+    // The client runs the tool itself, so a hook never executes on approve: a "pending" answer is
+    // followed by the model's retry, which the single-use grant lets through.
+    const policy = hitlEngine.policyFor(opts.getApprovalOverrides?.(agentId));
+    const pendingReply = () =>
+      reply.send({
         decision: 'deny',
         tool: normalized.name,
         reason:
@@ -127,6 +122,15 @@ export async function hookApiPlugin(app: FastifyInstance, opts: HookApiOpts): Pr
           'Approval pending in Airlock. Nothing was executed. ' +
           'Wait for the user to approve, then retry this exact call with identical input.',
       });
+    if (policy.mode !== 'sync') {
+      if (hitlEngine.wasRecentlyDenied(agentId, subject.fingerprint)) {
+        return reply.send({
+          decision: 'deny',
+          tool: normalized.name,
+          reason: 'Denied by operator',
+        });
+      }
+      if (hitlEngine.findPendingCall(agentId, subject.fingerprint)) return pendingReply();
     }
 
     const ticket = createTicket(
@@ -136,12 +140,34 @@ export async function hookApiPlugin(app: FastifyInstance, opts: HookApiOpts): Pr
       normalized.name,
       input,
       subject,
-      'sync'
+      policy.mode
     );
 
     log.info({ ticket: ticket.id, code: ticket.code }, 'Hook waiting for HITL approval');
 
-    const result = await ticket.result;
+    // Hooks have short client-side timeouts: hold for at most the inline wait (async: none), then
+    // answer "pending" and keep the request live.
+    let result: HitlResult | 'pending';
+    if (policy.mode === 'sync') {
+      result = await ticket.result;
+    } else {
+      let timer: NodeJS.Timeout | undefined;
+      result =
+        policy.waitMs > 0
+          ? await Promise.race([
+              ticket.result,
+              new Promise<'pending'>((resolve) => {
+                timer = setTimeout(() => resolve('pending'), policy.waitMs);
+                timer.unref();
+              }),
+            ])
+          : 'pending';
+      clearTimeout(timer);
+      if (result === 'pending') {
+        if (hitlEngine.spill(ticket.id)) return pendingReply();
+        result = await ticket.result;
+      }
+    }
 
     if (result === 'approved') {
       return reply.send({ decision: 'allow', tool: normalized.name });

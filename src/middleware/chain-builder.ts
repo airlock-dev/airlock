@@ -1,5 +1,6 @@
 import type { AgentConfig } from '../config/schema.js';
-import type { Middleware } from './types.js';
+import type { Middleware, ToolCallResponse } from './types.js';
+import { isFinalResponse } from './response.js';
 import { compose } from './compose.js';
 import { allowlistMiddleware } from './core/allowlist.js';
 import { execPolicyMiddleware } from './core/exec-policy.js';
@@ -32,6 +33,24 @@ function withToolFilter(mw: Middleware, item: MiddlewareItemConfig): Middleware 
   return (ctx, next) => {
     if (!shouldRunForTool(ctx.toolName, item.tools, item.exclude)) return next();
     return mw(ctx, next);
+  };
+}
+
+/**
+ * Post middlewares never touch a response the gateway already finalized: an "approval pending"
+ * notice, or the result of a call that ran on approval (already enveloped and scanned when it ran).
+ * The middleware works on a copy, and the original is returned unchanged.
+ */
+function bypassFinal(mw: Middleware): Middleware {
+  return async (ctx, next) => {
+    let final: ToolCallResponse | undefined;
+    const out = await mw(ctx, async () => {
+      const response = await next();
+      if (!isFinalResponse(response)) return response;
+      final = response;
+      return { ...response };
+    });
+    return final ?? out;
   };
 }
 
@@ -154,7 +173,7 @@ export function buildMiddlewareChain(agentConfig: AgentConfig): Middleware {
 
   // Post zone: user-configurable
   const postMiddlewares: Middleware[] = postUserMiddleware.map((m) =>
-    withToolFilter(resolveMiddleware(m), m)
+    bypassFinal(withToolFilter(resolveMiddleware(m), m))
   );
 
   // Post middlewares wrap the core chain

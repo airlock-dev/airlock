@@ -115,7 +115,7 @@ describe('configure-web change sets', () => {
           {
             op: 'update_agent',
             id: 'legacy',
-            agent: { deny: ['exec/run'], approval_mode: 'async' },
+            agent: { deny: ['exec/run'], approval_mode: 'hybrid' },
           },
         ],
       })
@@ -123,7 +123,7 @@ describe('configure-web change sets', () => {
 
     const legacy = agentsOf(configPath).legacy;
     expect(legacy.deny).toEqual(['exec/run']);
-    expect(legacy.approval_mode).toBe('async');
+    expect(legacy.approval_mode).toBe('hybrid');
     expect(legacy.token).toBe('legacy-plaintext-token');
     expect(legacy.extends).toEqual(['readonly']);
     expect(legacy.tool_overrides).toBeTruthy();

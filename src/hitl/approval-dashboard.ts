@@ -123,7 +123,11 @@ export class ApprovalDashboardRoutes {
     // Approve (validating any grant) before persisting an "always" rule, so a rejected grant never
     // leaves a permanent config change behind.
     try {
-      this.approvalApi.approveByCode(code, grant.spec ? { grant: grant.spec } : undefined);
+      const answer = typeof query.answer === 'string' ? query.answer : undefined;
+      this.approvalApi.approveByCode(code, {
+        ...(grant.spec ? { grant: grant.spec } : {}),
+        ...(answer !== undefined ? { answer } : {}),
+      });
     } catch (err) {
       if (err instanceof GrantSpecError) {
         reply.code(400);

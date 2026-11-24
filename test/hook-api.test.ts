@@ -755,7 +755,7 @@ describe('hookApiPlugin async mode', () => {
       hitlEngine,
       hitlBatcher: new HitlBatcher(0),
       auditLogger: makeMockAuditLogger(),
-      getApprovalMode: () => 'async',
+      getApprovalOverrides: () => ({ approval_mode: 'async' }),
     });
     await app.ready();
     const call = () =>

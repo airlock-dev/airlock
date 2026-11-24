@@ -28,7 +28,7 @@ import {
 
 export interface Draft extends Rules {
   inheritDefault: boolean;
-  approvalMode: 'sync' | 'async' | null;
+  approvalMode: 'hybrid' | 'sync' | 'async' | null;
   exec: { allow: string[]; ask: string[]; deny: string[] };
   http: { domainAllowlist: string[] };
 }
@@ -261,11 +261,16 @@ export function PolicyEditor({
               {(
                 [
                   [null, 'Gateway default', 'Follow approvals.mode in the config.'],
+                  [
+                    'hybrid',
+                    'Wait, then pending',
+                    'Waits briefly. If you haven’t decided, the agent hears “approval pending” and the call runs once you approve.',
+                  ],
                   ['sync', 'Hold the call', 'The tool call waits until you approve or deny it.'],
                   [
                     'async',
                     'Answer right away',
-                    'Returns “approval pending” at once so the agent can retry later.',
+                    'Returns “approval pending” at once. The call runs once you approve.',
                   ],
                 ] as const
               ).map(([value, title, body]) => (

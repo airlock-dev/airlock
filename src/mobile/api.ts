@@ -45,6 +45,8 @@ interface DecisionBody {
   reason?: string;
   /** Also allow similar calls for a while: { scope, tier?, profile?, duration_ms?, max_uses? }. */
   grant?: unknown;
+  /** The answer to an airlock/ask_user question (one of its choices, if it offered any). */
+  answer?: unknown;
 }
 
 interface MobileApproval {
@@ -273,7 +275,7 @@ export function mobileApiPlugin(app: FastifyInstance, opts: MobileApiOptions): v
       }
       // Approve (validating any grant) before persisting an "always" rule, so a rejected grant
       // never leaves a permanent config change behind.
-      const result = approveWithGrant(engine, id, grant.spec, reply);
+      const result = approveWithGrant(engine, id, grant.spec, reply, body.answer);
       if ('error' in result || body.remember !== 'always') return result;
       const rememberResult = rememberAlways(opts.configPath, row);
       if (rememberResult.error) {

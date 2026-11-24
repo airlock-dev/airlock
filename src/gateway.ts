@@ -332,7 +332,7 @@ export class Gateway {
         hitlEngine: this.hitlEngine,
         hitlBatcher: this.hitlBatcher,
         auditLogger: this.auditLogger,
-        getApprovalMode: (agentId) => this.config.agents[agentId]?.approval_mode,
+        getApprovalOverrides: (agentId) => this.config.agents[agentId],
         getToolTier: (agentId, tool) => this.registry.toolTier(agentId, tool),
         getRequestSecurity,
       });

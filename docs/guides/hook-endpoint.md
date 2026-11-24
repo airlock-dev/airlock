@@ -52,7 +52,11 @@ The normalized name is what gets evaluated against the agent's policy.
 3. Policy is evaluated against the agent's allow/ask/deny lists
 4. If **allow**: returns immediately with permission granted
 5. If **deny**: returns immediately with permission denied
-6. If **ask**: creates a HITL approval request, blocks until approved or denied, then returns the outcome
+6. If **ask**: creates a HITL approval request and waits for the decision according to the agent's
+   [approval mode](/concepts/approvals-and-audit#hybrid-sync-and-async-approvals). In `sync` it
+   blocks until approved or denied. In `hybrid` (the default) it waits up to `sync_wait_ms`, and in
+   `async` not at all; if you haven't decided by then it returns `deny` with a "pending approval"
+   reason, and the client's retry of the identical call is allowed once you approve
 
 ## Authentication
 

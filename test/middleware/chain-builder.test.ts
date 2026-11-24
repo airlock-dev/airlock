@@ -20,6 +20,8 @@ function makeDeps(): MiddlewareDeps {
       buildNotification: vi.fn(),
       timeoutMs: 5000,
       defaultMode: 'sync',
+      policyFor: () => ({ mode: 'sync', waitMs: Infinity, executeOnApprove: true }),
+      deferred: { claimRetry: vi.fn() },
     } as any,
     hitlBatcher: { add: vi.fn() } as any,
     auditLogger: { log: vi.fn() } as any,

@@ -28,13 +28,13 @@ export async function hitlApiPlugin(
       reply.code(404);
       return { error: 'No pending approval found for id' };
     }
-    const body = request.body as { grant?: unknown } | undefined;
+    const body = request.body as { grant?: unknown; answer?: unknown } | undefined;
     const grant = parseGrantSpecInput(body?.grant);
     if (grant.error) {
       reply.code(400);
       return { error: grant.error };
     }
-    return approveWithGrant(engine, id, grant.spec, reply);
+    return approveWithGrant(engine, id, grant.spec, reply, body?.answer);
   });
 
   app.post('/hitl/deny/:id', async (request, reply) => {

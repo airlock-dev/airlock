@@ -2314,9 +2314,18 @@
           "approval_mode": {
             "type": "string",
             "enum": [
+              "hybrid",
               "sync",
               "async"
             ]
+          },
+          "sync_wait_ms": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "execute_on_approve": {
+            "type": "boolean"
           }
         },
         "additionalProperties": false
@@ -2746,12 +2755,23 @@
           "maximum": 9007199254740991
         },
         "mode": {
-          "default": "sync",
+          "default": "hybrid",
           "type": "string",
           "enum": [
+            "hybrid",
             "sync",
             "async"
           ]
+        },
+        "sync_wait_ms": {
+          "default": 25000,
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "execute_on_approve": {
+          "default": true,
+          "type": "boolean"
         },
         "grants": {
           "default": {},

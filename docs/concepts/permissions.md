@@ -280,7 +280,7 @@ agents:
             allow: [P1, P2]
 ```
 
-- **Default-deny & capability hiding:** Agents with no `events` permissions do not see `io.modelcontextprotocol/events` advertised.
+- **Default-deny & capability hiding:** Agents with no `events` permissions do not see `io.modelcontextprotocol/events` advertised, unless they can hit an approval: those agents always get the built-in [`airlock/approval_decided`](/concepts/approvals-and-audit#waking-agents-up-airlock-approval-decided) event for their own approvals.
 - **Schema & argument policy:** Subscription arguments are validated against the event type's `inputSchema` and constrained via `events.arg_policy` (including `value_sets`).
 - **Untrusted payload protection:** Delivered event payloads are inspected for prompt injection (using the agent's `output-injection-detector` settings), audited, and stamped with `_meta["dev.airlock/untrusted"] = true` without breaking `payloadSchema`.
 - **Live revocation:** If a config reload revokes an agent's access or tightens `events.arg_policy`, Airlock immediately terminates open `events/stream` subscriptions with `notifications/events/terminated` (`-32024 Forbidden`).

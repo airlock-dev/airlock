@@ -9,13 +9,15 @@ When an agent calls a tool in its `ask` list:
 1. Airlock creates a pending approval request with a unique code
 2. The request is persisted to SQLite immediately (crash recovery)
 3. The approval provider presents or sends a notification (Telegram, dashboard, Slack webhook, etc.)
-4. The MCP connection stays open — the agent blocks, experiencing a slow tool call
-5. You approve or deny (by code or by ID)
-6. The tool executes or the agent receives a denial
+4. The tool call is held open for up to `sync_wait_ms` (25 seconds by default)
+5. If you decide in that time, the tool executes (or the agent receives a denial) as if it were a
+   slow tool call
+6. If you don't, the agent gets a structured "pending" answer and the request stays live. When you
+   approve, Airlock runs the call and keeps the result for the agent
 7. The outcome is logged to the audit trail
 
-No special client support is needed. The agent just sees a tool call that takes longer to respond.
-If your client times out long tool calls, use [async mode](#async-approvals).
+No special client support is needed: a quick decision looks like a slow tool call, and a slow one
+never runs into the client's request timeout. See [Hybrid, sync and async approvals](#hybrid-sync-and-async-approvals).
 
 ## Approval providers
 
@@ -165,35 +167,133 @@ Batching only helps with **parallel** calls. An agent that calls tools one after
 send call #2 until call #1 is decided. For sequential work, grants and plans are what reduce the
 number of prompts.
 
-### Async approvals
+### Hybrid, sync and async approvals
 
-By default (`mode: sync`), a gated call is held open until you decide. Many MCP clients give up
-on a tool call after a minute or so. In async mode, Airlock answers straight away:
+`approvals.mode` (or an agent's `approval_mode`) decides how a gated call waits:
 
-> Approval pending: Airlock asked the user to approve gmail/send_email (approval id …, code K7Q2XZ8M).
-> Nothing was executed. Call airlock_await_approval with {"id": "…"} to wait for the decision,
-> then retry this exact call with identical arguments once approved.
-
-When you approve, Airlock creates a single-use grant for that exact call, valid for
-`approvals.grants.async_ttl_ms` (30 min). The agent's retry goes through even if it reconnected
-in between. Retrying while the request is still pending doesn't create a second request. Retrying
-right after a denial gets the denial back without prompting you again.
-
-`airlock_await_approval` waits up to ~50 seconds per call, which keeps it under client timeouts.
+| Mode               | While you decide                                                                           |
+| ------------------ | ------------------------------------------------------------------------------------------ |
+| `hybrid` (default) | The call is held open for up to `sync_wait_ms` (25s), then the agent is answered "pending" |
+| `sync`             | The call is held open until you decide (or `timeout_ms`)                                   |
+| `async`            | The agent is answered "pending" at once (the same as `hybrid` with `sync_wait_ms: 0`)      |
 
 ```yaml
 approvals:
-  mode: async # default for all agents
+  mode: hybrid # default
+  sync_wait_ms: 25000 # how long hybrid holds the call open
+  execute_on_approve: true # default
 agents:
   long-runner:
-    approval_mode: async # or per agent
+    approval_mode: async # per agent; also sync_wait_ms and execute_on_approve
 ```
 
-In sync mode, Airlock also sends MCP progress notifications every 15s while a call waits, if the
-client asked for progress. Clients that reset their timeout on progress then keep waiting.
+While a call is held open, Airlock sends MCP progress notifications every 15s if the client asked
+for progress, so clients that reset their timeout on progress keep waiting.
 
-The [hook endpoint](/guides/hook-endpoint) supports async mode too. It answers `deny` with a
-"pending approval, retry once approved" reason, and the retry succeeds after you approve.
+**The "pending" answer is not an error.** It is a normal result (`isError: false`) with a JSON
+body (also sent as `structuredContent`). It never contains the approval code, since that is what
+you type to approve:
+
+```json
+{
+  "status": "pending",
+  "approval_id": "550e8400-e29b-41d4-a716-446655440000",
+  "tool": "gmail_send_email",
+  "expires_at": "2026-11-23T20:05:00.000Z",
+  "execute_on_approve": true,
+  "message": "Waiting for the user to approve gmail_send_email. Nothing has run yet; Airlock runs it automatically once approved, so do not call it again. ..."
+}
+```
+
+The message tells the agent to carry on with other independent work and call
+`airlock_await_approval` when it needs the result, or otherwise to call it once or pause and tell
+you it is waiting, rather than polling in a loop.
+
+**A dropped connection is not a "no".** In `hybrid` mode, if the client gives up or the connection
+drops during the inline wait, the request spills to "pending" and stays live. Only an explicit MCP
+cancellation (`notifications/cancelled`) withdraws it. In `sync` mode any disconnect cancels the
+request, as before.
+
+#### Execute on approve
+
+With `execute_on_approve: true` (the default), approving a request the agent was answered
+"pending" for **runs the call right away**, through the agent's full pipeline: policy is
+re-checked against the live config, then the call executes and its result goes through the
+configured response middleware (untrusted envelope, injection detector, size limiter, summarizer)
+and the audit log, as an inline call would. It doesn't matter where you approve it: a single
+approval, a grant that sweeps pending requests, "approve all" on a batch, the dashboard, a
+companion app or a chat channel.
+
+The result is kept in memory for `approvals.grants.async_ttl_ms` (30 min), size-capped, and
+`airlock_await_approval` returns it directly (`status: "completed"` with `result`, or
+`status: "failed"` with `error`). The agent never has to repeat the call. If it does repeat the
+exact call anyway, it gets that same result back once instead of the tool running twice.
+
+The call's raw arguments live only in memory for this. Nothing unredacted goes to SQLite. If
+Airlock restarts before you approve, or `execute_on_approve` is `false`, approval instead leaves a
+single-use grant for that exact call, valid for `async_ttl_ms`, and the agent's retry with
+identical arguments goes through. Retrying while the request is still pending waits on the same
+request instead of creating a second one. Retrying right after a denial gets the denial back
+without prompting you again.
+
+#### `airlock_await_approval`
+
+```json
+{ "id": "550e…", "wait_seconds": 30 }
+{ "ids": ["550e…", "7c1d…"], "wait_for": "all", "wait_seconds": 50 }
+```
+
+- `id` or `ids` (up to 50). With `ids` the answer is `{ "wait_for", "done", "approvals": [...] }`.
+- `wait_for`: `any` (default) returns as soon as one is decided; `all` waits for every one.
+- `wait_seconds`: default 30, max 50 (under typical client timeouts). `0` checks without waiting.
+
+Each approval reports `status`: `pending`, `executing`, `completed` (with `result.text`),
+`failed` (with `error`), `approved` (nothing ran: a plan, a question, or a retry-grant call),
+`denied`, `timeout` or `cancelled`. An answered question also reports `answer`.
+
+#### `airlock_ask_user`
+
+`airlock_ask_user` follows the same mode. In `hybrid`, if you don't answer within `sync_wait_ms`
+the agent gets `{ "status": "pending", "approval_id": … }` and reads your answer later with
+`airlock_await_approval`. In `sync` it waits until you answer.
+
+A question is yes/no (approve/deny), or the agent can offer `choices`:
+
+```json
+{ "question": "Deploy to which environment?", "choices": ["staging", "production"] }
+```
+
+You answer by approving with `answer` set to one of the choices: `POST /hitl/approve/:id` or the
+mobile decision endpoint with `{"answer": "staging"}`, or `POST /approve?code=…&answer=staging` on
+the dashboard. Approving without an answer still reads as "yes".
+
+#### Waking agents up: `airlock/approval_decided`
+
+Agents on the [MCP Events](/concepts/permissions#mcp-events-sep-3415) protocol era see a built-in
+event, `airlock/approval_decided`, as soon as they can hit an approval at all. It fires when one
+of the agent's "pending" approvals reaches a final state, so the agent can wait for it instead of
+polling `airlock_await_approval`:
+
+```json
+{
+  "approvalId": "550e…",
+  "tool": "gmail_send_email",
+  "kind": "call",
+  "status": "completed",
+  "executed": true,
+  "decidedAt": "2026-11-23T20:01:12.000Z"
+}
+```
+
+It supports `poll` (`events/poll`, with a cursor over a bounded buffer of recent decisions; the
+first poll without a cursor returns what is still buffered) and `push` (`events/stream`). It takes
+no arguments, needs no `events` rule, and only ever carries the requesting agent's own approvals,
+never an approval code. Decisions made while the call was still held open aren't emitted: the
+agent already has those results.
+
+The [hook endpoint](/guides/hook-endpoint) follows the mode too, except that it can't run the
+call itself (the client does): in `hybrid` and `async` it answers `deny` with a "pending approval,
+retry once approved" reason, and the retry succeeds after you approve.
 
 ## Timeout and recovery
 

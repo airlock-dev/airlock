@@ -510,7 +510,9 @@ Other agent fields and their defaults:
 | `sandbox.enabled`                | `false`         | Wrap `exec/run` (and its aliases) in the OS sandbox                                  |
 | `sandbox.filesystem.allow_write` | `['.', '/tmp']` | Writable paths when the sandbox is enabled                                           |
 | `expose_tools_api`               | `false`         | Opt this agent into the REST tools API when `server.expose_tools_api` is `per-agent` |
-| `approval_mode`                  | —               | `sync` or `async`; overrides `approvals.mode` for this agent                         |
+| `approval_mode`                  | —               | `hybrid`, `sync` or `async`; overrides `approvals.mode` for this agent               |
+| `sync_wait_ms`                   | —               | Overrides `approvals.sync_wait_ms` for this agent                                    |
+| `execute_on_approve`             | —               | Overrides `approvals.execute_on_approve` for this agent                              |
 | `limits`                         | —               | Per-agent resource limits; same fields as [`security.limits`](#security-limits)      |
 
 ## `approvals`
@@ -525,20 +527,25 @@ approvals:
     chat_id: '${TELEGRAM_CHAT_ID}'
   timeout_ms: 300000
   batch_window_ms: 250 # group parallel calls into one notification (0 = off)
-  mode: sync # or async: answer "pending" at once; the agent retries once approved
+  mode: hybrid # hold up to sync_wait_ms, then answer "pending"; or sync / async
+  sync_wait_ms: 25000 # how long hybrid holds a gated call open
+  execute_on_approve: true # run a "pending" call as soon as it is approved
   grants:
     default_duration_ms: 900000 # "approve & allow…" grants default to 15 minutes
     max_duration_ms: 86400000 # hard cap for any grant
     plan_ttl_ms: 1800000 # how long an approved airlock_request_approval plan is redeemable
-    async_ttl_ms: 1800000 # how long an approved async call is redeemable by the retry
+    async_ttl_ms: 1800000 # how long a "pending" call's result (or retry grant) stays available
 ```
 
 If `approvals.provider` is omitted it defaults to `{ type: stdio }`. Defaults:
-`timeout_ms: 300000` (`0` = no timeout), `batch_window_ms: 250`, `mode: sync`.
+`timeout_ms: 300000` (`0` = no timeout), `batch_window_ms: 250`, `mode: hybrid`,
+`sync_wait_ms: 25000`, `execute_on_approve: true`. See
+[Hybrid, sync and async approvals](/concepts/approvals-and-audit#hybrid-sync-and-async-approvals).
 The `macos` provider also accepts an optional `sound` (a macOS sound name such as
 `Glass` or `Submarine`).
 
-Agents can override the mode with `approval_mode: sync | async`, and `tool_overrides.<tool>.tier`
+Agents can override the mode with `approval_mode: hybrid | sync | async` (plus `sync_wait_ms` and
+`execute_on_approve`), and `tool_overrides.<tool>.tier`
 (`read` / `write` / `destructive`) sets the safety tier used by tier-scoped grants. See
 [Reducing approval fatigue](/concepts/approvals-and-audit#reducing-approval-fatigue).
 

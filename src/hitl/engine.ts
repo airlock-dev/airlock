@@ -14,11 +14,16 @@ import {
   type GrantSpec,
 } from './grants.js';
 import { childLogger } from '../util/logger.js';
+import { DeferredExecutionStore, type DeferredRunner } from './deferred.js';
 
 const log = childLogger('hitl-engine');
 
 export type HitlResult = 'approved' | 'denied' | 'timeout' | 'cancelled';
-export type ApprovalMode = 'sync' | 'async';
+/**
+ * hybrid: hold the call open for up to `syncWaitMs`, then answer "pending" (spill) and keep the
+ * approval live. sync: hold the call open until decided. async: answer "pending" at once.
+ */
+export type ApprovalMode = 'hybrid' | 'sync' | 'async';
 /** call = a gated tool call; plan = several calls approved up front; question = airlock/ask_user. */
 export type ApprovalKind = 'call' | 'plan' | 'question';
 
@@ -38,7 +43,27 @@ export interface PlanEntry {
 export interface ApproveOptions {
   /** Turn this approval into a grant that also covers future (and currently pending) calls. */
   grant?: GrantSpec;
+  /** The operator's answer to an airlock/ask_user question (one of its `choices`, if it has any). */
+  answer?: string;
 }
+
+/** How one agent's gated calls wait for a decision. */
+export interface ApprovalPolicy {
+  mode: ApprovalMode;
+  /** How long to hold the call open before answering "pending" (0 for async, unbounded for sync). */
+  waitMs: number;
+  /** Run a call that was answered "pending" as soon as it is approved. */
+  executeOnApprove: boolean;
+}
+
+/** Per-agent overrides, as in the agent config. */
+export interface ApprovalPolicyOverrides {
+  approval_mode?: ApprovalMode;
+  sync_wait_ms?: number;
+  execute_on_approve?: boolean;
+}
+
+const MAX_ANSWER_LENGTH = 2_000;
 
 export interface ApproveOutcome {
   approved: string[];
@@ -90,6 +115,10 @@ export interface HitlEngineOptions {
   asyncGrantTtlMs?: number;
   /** Lifetime of the grants a plan approval creates. */
   planGrantTtlMs?: number;
+  /** How long a hybrid approval holds the call open before answering "pending". */
+  syncWaitMs?: number;
+  /** Run a "pending" call as soon as it is approved instead of leaving a retry grant. */
+  executeOnApprove?: boolean;
   /** Duration used when an operator grant doesn't specify one. */
   defaultGrantDurationMs?: number;
   /** Hard cap on any operator grant's duration. */
@@ -110,6 +139,8 @@ export interface ApprovalStatusInfo {
 }
 
 const DEFAULTS = {
+  syncWaitMs: 25_000,
+  executeOnApprove: true,
   asyncGrantTtlMs: 30 * 60_000,
   planGrantTtlMs: 30 * 60_000,
   defaultGrantDurationMs: 15 * 60_000,
@@ -135,6 +166,8 @@ export class HitlEngine implements ApprovalApi {
   private batchByCode = new Map<string, string>(); // batch code → batchId
   private recentDenials = new Map<string, number>(); // agentId\0fingerprint → expiry ms
   readonly grants: GrantStore;
+  /** In-memory runners and results for calls answered "pending", plus question answers. */
+  readonly deferred: DeferredExecutionStore;
   private opts: Required<Omit<HitlEngineOptions, 'grants' | 'profilesForTool'>> &
     Pick<HitlEngineOptions, 'profilesForTool'>;
 
@@ -146,7 +179,9 @@ export class HitlEngine implements ApprovalApi {
   ) {
     this.grants = options.grants ?? new GrantStore(undefined);
     this.opts = {
-      defaultMode: options.defaultMode ?? 'sync',
+      defaultMode: options.defaultMode ?? 'hybrid',
+      syncWaitMs: options.syncWaitMs ?? DEFAULTS.syncWaitMs,
+      executeOnApprove: options.executeOnApprove ?? DEFAULTS.executeOnApprove,
       asyncGrantTtlMs: options.asyncGrantTtlMs ?? DEFAULTS.asyncGrantTtlMs,
       planGrantTtlMs: options.planGrantTtlMs ?? DEFAULTS.planGrantTtlMs,
       defaultGrantDurationMs: options.defaultGrantDurationMs ?? DEFAULTS.defaultGrantDurationMs,
@@ -154,6 +189,7 @@ export class HitlEngine implements ApprovalApi {
       denialMemoryMs: options.denialMemoryMs ?? DEFAULTS.denialMemoryMs,
       profilesForTool: options.profilesForTool,
     };
+    this.deferred = new DeferredExecutionStore({ ttlMs: () => this.opts.asyncGrantTtlMs });
   }
 
   get timeoutMs(): number {
@@ -166,6 +202,22 @@ export class HitlEngine implements ApprovalApi {
 
   get defaultMode(): ApprovalMode {
     return this.opts.defaultMode;
+  }
+
+  /** The effective approval mode, inline wait and execute-on-approve setting for an agent. */
+  policyFor(overrides?: ApprovalPolicyOverrides): ApprovalPolicy {
+    const mode = overrides?.approval_mode ?? this.opts.defaultMode;
+    const waitMs =
+      mode === 'async'
+        ? 0
+        : mode === 'sync'
+          ? Number.POSITIVE_INFINITY
+          : Math.max(0, overrides?.sync_wait_ms ?? this.opts.syncWaitMs);
+    return {
+      mode,
+      waitMs,
+      executeOnApprove: overrides?.execute_on_approve ?? this.opts.executeOnApprove,
+    };
   }
 
   configure(options: Omit<HitlEngineOptions, 'grants'>): void {
@@ -229,6 +281,15 @@ export class HitlEngine implements ApprovalApi {
       resolve,
     };
     this.track(req, this.timeoutMs);
+    this.deferred.open({
+      id,
+      agentId: params.agentId,
+      tool: params.tool,
+      kind,
+      ...(params.subject
+        ? { fingerprint: params.subject.fingerprint, sessionId: params.subject.sessionId }
+        : {}),
+    });
 
     log.info(
       { id, code, agent: params.agentId, tool: params.tool, kind, mode },
@@ -282,6 +343,21 @@ export class HitlEngine implements ApprovalApi {
     if (!req) return;
     this.finish(req, 'cancelled');
     log.info({ id: req.id, code: req.code }, 'HITL cancelled (session disconnected)');
+  }
+
+  /**
+   * The agent is being answered "pending" for this request (async, or a hybrid wait that ran out).
+   * From now on it behaves as async: denial is remembered against retries and, unless a runner is
+   * given, approval leaves a single-use grant for the retry. With a runner, approval runs the call
+   * at once instead (execute-on-approve). Returns false if the request was already decided.
+   */
+  spill(id: string, runner?: DeferredRunner): boolean {
+    const req = this.pending.get(id);
+    if (!req) return false;
+    req.mode = 'async';
+    this.deferred.detach(id, runner);
+    log.info({ id: req.id, code: req.code, tool: req.tool }, 'HITL request answered pending');
+    return true;
   }
 
   deny(id: string, reason?: string): void {
@@ -430,6 +506,11 @@ export class HitlEngine implements ApprovalApi {
     return this.pending.has(id);
   }
 
+  /** When a pending request times out, if it does. */
+  expiresAt(id: string): string | undefined {
+    return this.pending.get(id)?.expiresAt;
+  }
+
   getPreviewRequest(
     id: string
   ): Pick<PendingRequest, 'id' | 'agentId' | 'tool' | 'args'> | undefined {
@@ -479,15 +560,23 @@ export class HitlEngine implements ApprovalApi {
 
   // ── Async support ─────────────────────────────────────────────────────────
 
-  /** A pending async request for the same exact call, so retries don't create duplicates. */
-  findPendingCall(agentId: string, fingerprint: string): { id: string; code: string } | undefined {
+  /**
+   * A request for the same exact call that the agent was already answered "pending" for, so its
+   * retries don't create duplicates. Requests still inside a hybrid caller's inline wait don't
+   * count: parallel identical calls each get their own request, as in sync mode.
+   */
+  findPendingCall(
+    agentId: string,
+    fingerprint: string
+  ): { id: string; code: string; result: Promise<HitlResult> } | undefined {
     for (const req of this.pending.values()) {
       if (
         req.agentId === agentId &&
         req.subject?.fingerprint === fingerprint &&
-        req.kind === 'call'
+        req.kind === 'call' &&
+        req.mode === 'async'
       ) {
-        return { id: req.id, code: req.code };
+        return { id: req.id, code: req.code, result: req.result };
       }
     }
     return undefined;
@@ -524,27 +613,6 @@ export class HitlEngine implements ApprovalApi {
       kind: meta.kind ?? 'call',
       status: row.status,
     };
-  }
-
-  /** Wait up to `waitMs` for an approval to resolve. */
-  async waitFor(
-    id: string,
-    agentId: string,
-    waitMs: number
-  ): Promise<ApprovalStatusInfo | undefined> {
-    const req = this.pending.get(id);
-    if (req && req.agentId === agentId && waitMs > 0) {
-      let timer: NodeJS.Timeout | undefined;
-      await Promise.race([
-        req.result,
-        new Promise<void>((resolve) => {
-          timer = setTimeout(resolve, waitMs);
-          timer.unref();
-        }),
-      ]);
-      clearTimeout(timer);
-    }
-    return this.getStatus(id, agentId);
   }
 
   // ── Internals ─────────────────────────────────────────────────────────────
@@ -585,7 +653,8 @@ export class HitlEngine implements ApprovalApi {
       // Never silently widen a session-only grant to every session of the agent.
       throw new GrantSpecError('This request has no session to bind a session-only grant to');
     }
-    this.approveRequest(req);
+    const answer = this.validateAnswer(req, options?.answer);
+    this.approveRequest(req, answer);
     if (!scope || !spec) return { approved: [req.id], skipped: [] };
 
     // The approval that creates the grant counts as its first use.
@@ -700,13 +769,35 @@ export class HitlEngine implements ApprovalApi {
     return Math.min(requested, this.opts.maxGrantDurationMs);
   }
 
-  private approveRequest(req: PendingRequest): void {
+  /** An answer is only for questions, and must be one of the question's choices if it has any. */
+  private validateAnswer(req: PendingRequest, answer: string | undefined): string | undefined {
+    if (answer === undefined) return undefined;
+    if (req.kind !== 'question') {
+      throw new GrantSpecError('Only airlock/ask_user questions take an answer');
+    }
+    const trimmed = answer.trim();
+    if (!trimmed) return undefined;
+    if (trimmed.length > MAX_ANSWER_LENGTH) {
+      throw new GrantSpecError(`answer must be at most ${MAX_ANSWER_LENGTH} characters`);
+    }
+    const choices = questionChoices(req.args);
+    if (choices && !choices.includes(trimmed)) {
+      throw new GrantSpecError(`answer must be one of: ${choices.join(', ')}`);
+    }
+    return trimmed;
+  }
+
+  private approveRequest(req: PendingRequest, answer?: string): void {
     this.finish(req, 'approved');
     log.info({ id: req.id, code: req.code }, 'HITL approved');
 
-    if (req.kind === 'call' && req.mode === 'async' && req.subject) {
-      // The agent got an immediate "pending" answer; leave a single-use grant so its retry of the
-      // exact same call goes through.
+    // Execute-on-approve: a held runner runs the call now, so no retry grant is needed.
+    const executing = this.deferred.approve(req.id, answer) === 'executing';
+
+    if (!executing && req.kind === 'call' && req.mode === 'async' && req.subject) {
+      // The agent got a "pending" answer and nothing is running the call for it (no runner, e.g.
+      // after a restart, or execute_on_approve is off); leave a single-use grant so its retry of
+      // the exact same call goes through.
       this.grants.create({
         agentId: req.agentId,
         scope: { kind: 'call', tool: req.subject.tool, fingerprint: req.subject.fingerprint },
@@ -761,6 +852,8 @@ export class HitlEngine implements ApprovalApi {
     if (req.timer) clearTimeout(req.timer);
     this.pending.delete(req.id);
     this.byCode.delete(req.code);
+    // Approval is recorded by approveRequest, which may also start the held call.
+    if (result !== 'approved') this.deferred.settle(req.id, result);
     if (reason === undefined) this.auditLogger.updateHitlStatus(req.id, result);
     else this.auditLogger.updateHitlStatus(req.id, result, reason);
     // Also releases the batch once its last member resolves.
@@ -820,7 +913,10 @@ export class HitlEngine implements ApprovalApi {
     for (const row of rows) {
       const meta = parseMeta(row.meta);
       const kind = meta.kind ?? 'call';
-      const mode = meta.mode ?? 'sync';
+      const storedMode = meta.mode ?? 'sync';
+      // A hybrid caller that was still inside its inline wait lost that call with the old process;
+      // recover it like async so the agent's retry (or await) still gets the decision.
+      const mode: ApprovalMode = storedMode === 'hybrid' ? 'async' : storedMode;
       let args: Record<string, unknown> = {};
       try {
         args = JSON.parse(row.args) as Record<string, unknown>;
@@ -873,6 +969,18 @@ export class HitlEngine implements ApprovalApi {
         resolve,
       };
       this.track(req, remaining);
+      // No runner survives a restart (raw args are never persisted): approval falls back to the
+      // single-use retry grant.
+      this.deferred.open({
+        id: req.id,
+        agentId: req.agentId,
+        tool: req.tool,
+        kind,
+        ...(req.subject
+          ? { fingerprint: req.subject.fingerprint, sessionId: req.subject.sessionId }
+          : {}),
+        detached: true,
+      });
 
       // Notify again so operator sees recovered requests
       void this.provider
@@ -908,6 +1016,14 @@ function argsSummary(args: Record<string, unknown>): string {
     .map(([key, value]) => `${key}: ${typeof value === 'string' ? value : JSON.stringify(value)}`)
     .join(', ');
   return text.length > 60 ? `${text.slice(0, 57)}...` : text;
+}
+
+/** The choices an airlock/ask_user question offered, if any. */
+function questionChoices(args: Record<string, unknown>): string[] | undefined {
+  const choices = args.choices;
+  if (!Array.isArray(choices)) return undefined;
+  const strings = choices.filter((choice): choice is string => typeof choice === 'string');
+  return strings.length > 0 ? strings : undefined;
 }
 
 function parseMeta(raw: string | null | undefined): StoredMeta {

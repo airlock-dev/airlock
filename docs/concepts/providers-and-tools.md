@@ -57,8 +57,10 @@ rejects configs that route `airlock/ask_user`, `airlock/notify_user`, or
 `airlock/log` through `ask`, because those tools are themselves notification
 and approval surfaces.
 `airlock/request_approval` (approve several calls up front) and
-`airlock/await_approval` (wait for an [async approval](/concepts/approvals-and-audit#async-approvals))
-are available to every agent with at least one `ask` rule, unless you deny them. They only create
+`airlock/await_approval` (wait for a [pending approval](/concepts/approvals-and-audit#hybrid-sync-and-async-approvals)
+and get the result of the call it ran) are available to every agent that can hit an approval (an
+`ask` rule, an exec or command policy, an escalating detector, or an allowed `airlock/ask_user`),
+unless you deny them. They only create
 or read approvals, so they don't need an explicit allow. The `airlock` provider is on by default
 for that reason. Set `airlock: { type: builtin, enabled: false }` to remove it.
 

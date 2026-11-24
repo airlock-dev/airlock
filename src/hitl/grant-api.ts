@@ -146,10 +146,18 @@ export function approveWithGrant(
   engine: HitlEngine,
   id: string,
   spec: GrantSpec | undefined,
-  reply: FastifyReply
+  reply: FastifyReply,
+  answer?: unknown
 ): Record<string, unknown> {
+  if (answer !== undefined && typeof answer !== 'string') {
+    reply.code(400);
+    return { error: 'answer must be a string' };
+  }
   try {
-    const outcome = engine.approve(id, spec ? { grant: spec } : undefined);
+    const outcome = engine.approve(id, {
+      ...(spec ? { grant: spec } : {}),
+      ...(answer !== undefined ? { answer } : {}),
+    });
     return {
       ok: true,
       approved: outcome?.approved ?? [id],

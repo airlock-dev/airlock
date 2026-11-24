@@ -373,11 +373,11 @@ describe('HitlEngine grants and batches', () => {
     expect(engine.consumeGrant(s('3'))).toBeUndefined();
   });
 
-  it('waitFor returns pending, then the decision, and hides other agents approvals', async () => {
+  it('getStatus returns pending, then the decision, and hides other agents approvals', () => {
     const ticket = createCall(engine, subject());
-    expect((await engine.waitFor(ticket.id, 'agent1', 10))?.status).toBe('pending');
-    expect(await engine.waitFor(ticket.id, 'intruder', 10)).toBeUndefined();
-    setTimeout(() => engine.approve(ticket.id), 5);
+    expect(engine.getStatus(ticket.id, 'agent1')?.status).toBe('pending');
+    expect(engine.getStatus(ticket.id, 'intruder')).toBeUndefined();
+    engine.approve(ticket.id);
     const auditLogger = (
       engine as unknown as { auditLogger: { getHitlById: ReturnType<typeof vi.fn> } }
     ).auditLogger;
@@ -388,7 +388,8 @@ describe('HitlEngine grants and batches', () => {
       tool: 'gmail/read_email',
       status: 'approved',
     });
-    expect((await engine.waitFor(ticket.id, 'agent1', 1000))?.status).toBe('approved');
+    expect(engine.getStatus(ticket.id, 'agent1')?.status).toBe('approved');
+    expect(engine.getStatus(ticket.id, 'intruder')).toBeUndefined();
   });
 
   it('does not notify requests resolved while they waited in the batch window', async () => {
@@ -513,14 +514,20 @@ describe('hitl gate with grants and async mode', () => {
     await pending;
   });
 
+  const isPending = (response: ToolCallResponse) =>
+    (JSON.parse(response.text) as { status: string }).status === 'pending';
+
   it('async mode returns pending at once, dedupes retries, and runs the retry after approval', async () => {
+    // No ctx.reenter here, so approval falls back to the single-use retry grant.
     const engine = new HitlEngine(makeAuditLogger(), makeProvider(), 60_000, {
       defaultMode: 'async',
     });
     const next = vi.fn().mockResolvedValue(okResponse);
 
     const first = await hitlGateMiddleware()(makeCtx(engine), next);
-    expect(first.text).toMatch(/^Approval pending/);
+    expect(isPending(first)).toBe(true);
+    // Pending is normal control flow, not an error.
+    expect((first.result as { isError?: boolean }).isError).toBe(false);
     expect(next).not.toHaveBeenCalled();
     expect(engine.getPending()).toHaveLength(1);
     // The agent gets the opaque id to wait on, never the code the operator types to approve.
@@ -528,7 +535,7 @@ describe('hitl gate with grants and async mode', () => {
     expect(first.text).not.toContain(engine.getPending()[0].code);
 
     const retry = await hitlGateMiddleware()(makeCtx(engine), next);
-    expect(retry.text).toMatch(/^Approval pending/);
+    expect(isPending(retry)).toBe(true);
     expect(engine.getPending()).toHaveLength(1);
 
     engine.approve(engine.getPending()[0].id);
@@ -536,7 +543,7 @@ describe('hitl gate with grants and async mode', () => {
 
     // The single-use grant is spent: the next identical call asks again.
     const again = await hitlGateMiddleware()(makeCtx(engine), next);
-    expect(again.text).toMatch(/^Approval pending/);
+    expect(isPending(again)).toBe(true);
   });
 
   it('per-agent approval_mode overrides the default', async () => {
@@ -547,13 +554,13 @@ describe('hitl gate with grants and async mode', () => {
       makeCtx(engine, { approval_mode: 'async' }),
       vi.fn()
     );
-    expect(response.text).toMatch(/^Approval pending/);
+    expect(isPending(response)).toBe(true);
   });
 
   it('sends progress while a sync call waits', async () => {
     vi.useFakeTimers();
     try {
-      const engine = new HitlEngine(makeAuditLogger(), makeProvider(), 0);
+      const engine = new HitlEngine(makeAuditLogger(), makeProvider(), 0, { defaultMode: 'sync' });
       const ctx = makeCtx(engine);
       ctx.sendProgress = vi.fn();
       const pending = hitlGateMiddleware()(ctx, vi.fn().mockResolvedValue(okResponse));

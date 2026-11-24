@@ -637,6 +637,10 @@ export const LimitsConfig = z
   .strict();
 export type LimitsConfig = z.infer<typeof LimitsConfig>;
 
+/** How a gated tool call waits for its human decision (see ApprovalsConfig.mode). */
+export const ApprovalMode = z.enum(['hybrid', 'sync', 'async']);
+export type ApprovalMode = z.infer<typeof ApprovalMode>;
+
 export const AgentConfig = z
   .object({
     token: EnvString.optional(),
@@ -674,9 +678,12 @@ export const AgentConfig = z
     expose_tools_api: z.boolean().default(false),
     // Per-agent resource safeties; unset fields inherit from `security.limits` then defaults.
     limits: LimitsConfig.optional(),
-    // Overrides `approvals.mode` for this agent. `async` returns "approval pending" immediately
-    // instead of holding the tool call open, for clients that time out long calls.
-    approval_mode: z.enum(['sync', 'async']).optional(),
+    // Overrides `approvals.mode` for this agent (hybrid, sync or async; see ApprovalsConfig).
+    approval_mode: ApprovalMode.optional(),
+    // Overrides `approvals.sync_wait_ms` for this agent's hybrid approvals.
+    sync_wait_ms: z.number().int().min(0).optional(),
+    // Overrides `approvals.execute_on_approve` for this agent.
+    execute_on_approve: z.boolean().optional(),
   })
   .strict();
 export type AgentConfig = z.infer<typeof AgentConfig>;
@@ -839,9 +846,16 @@ export const ApprovalsConfig = z
     // approved with one "approve all". Parallel tool calls land within milliseconds of each other,
     // so a short window catches them while adding little latency to a lone sequential call.
     batch_window_ms: z.number().int().min(0).default(250),
-    // sync: hold the tool call open until decided. async: answer "pending" immediately; the agent
-    // retries (or calls airlock/await_approval) once approved. Per-agent `approval_mode` overrides.
-    mode: z.enum(['sync', 'async']).default('sync'),
+    // hybrid: hold the call open for up to `sync_wait_ms`, then answer "pending" and keep the
+    // approval live. sync: hold the call open until decided. async: answer "pending" immediately.
+    // Per-agent `approval_mode` overrides.
+    mode: ApprovalMode.default('hybrid'),
+    // How long a hybrid approval holds the tool call open before answering "pending".
+    sync_wait_ms: z.number().int().min(0).default(25_000),
+    // Run a call that was answered "pending" as soon as it is approved, and hand its result to
+    // airlock/await_approval (or the agent's identical retry). Off: approval leaves a single-use
+    // grant the agent's retry consumes instead.
+    execute_on_approve: z.boolean().default(true),
     grants: ApprovalGrantsConfig.prefault({}),
     previews: z.record(PreviewToolName, ApprovalPreviewConfig).prefault({}),
   })

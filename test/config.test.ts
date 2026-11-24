@@ -102,6 +102,28 @@ describe('GatewayConfig schema', () => {
     expect(result.data.approvals.provider.type).toBe('stdio');
   });
 
+  it('defaults approvals to hybrid mode with a 25s inline wait and execute-on-approve', () => {
+    const result = GatewayConfig.safeParse({
+      agents: {
+        a: { approval_mode: 'sync', sync_wait_ms: 0, execute_on_approve: false },
+      },
+    });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.approvals).toMatchObject({
+      mode: 'hybrid',
+      sync_wait_ms: 25_000,
+      execute_on_approve: true,
+    });
+    expect(result.data.agents.a).toMatchObject({
+      approval_mode: 'sync',
+      sync_wait_ms: 0,
+      execute_on_approve: false,
+    });
+    expect(GatewayConfig.safeParse({ approvals: { mode: 'later' } }).success).toBe(false);
+    expect(GatewayConfig.safeParse({ approvals: { sync_wait_ms: -1 } }).success).toBe(false);
+  });
+
   it('accepts an empty approval provider set', () => {
     const result = GatewayConfig.safeParse({
       approvals: { provider: [] },

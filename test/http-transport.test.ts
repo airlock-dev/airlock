@@ -859,9 +859,11 @@ describe('http-transport: HITL approval gate', () => {
 });
 
 describe('http-transport: client disconnect', () => {
-  it('cancels a call parked on approval when the client drops the request', async () => {
+  it('strict sync: cancels a call parked on approval when the client drops the request', async () => {
     // Without a session, the request's own connection is the only disconnect signal.
-    const srv = await buildServer({ agentConfig: { allow: [], ask: ['tools/*'], deny: [] } });
+    const srv = await buildServer({
+      agentConfig: { allow: [], ask: ['tools/*'], deny: [], approval_mode: 'sync' },
+    });
     try {
       const ac = new AbortController();
       const req = fetch(`http://127.0.0.1:${srv.port}/agents/test/mcp`, {
@@ -884,6 +886,103 @@ describe('http-transport: client disconnect', () => {
       ac.abort();
       await req;
       await vi.waitFor(() => expect(srv.hitlEngine.getPending().length).toBe(0), { timeout: 5000 });
+    } finally {
+      await srv.teardown();
+    }
+  });
+});
+
+describe('http-transport: hybrid approvals', () => {
+  async function callTool(port: number, message: string, signal?: AbortSignal): Promise<Response> {
+    return fetch(`http://127.0.0.1:${port}/agents/test/mcp`, {
+      method: 'POST',
+      ...(signal ? { signal } : {}),
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json, text/event-stream',
+        'MCP-Protocol-Version': '2025-06-18',
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name: 'tools_echo', arguments: withReason({ message }) },
+      }),
+    });
+  }
+
+  /** The JSON-RPC result from an SSE (or JSON) tools/call response. */
+  async function rpcResult(response: Response): Promise<Record<string, unknown>> {
+    const body = await response.text();
+    const data = body
+      .split('\n')
+      .filter((line) => line.startsWith('data: '))
+      .map((line) => JSON.parse(line.slice(6)) as { id?: unknown; result?: unknown })
+      .find((message) => message.id === 1);
+    return ((data ?? JSON.parse(body)) as { result: Record<string, unknown> }).result;
+  }
+
+  it('keeps the approval live when the client drops during the inline wait, then runs it on approval', async () => {
+    const srv = await buildServer({ agentConfig: { allow: [], ask: ['tools/*'], deny: [] } });
+    try {
+      const ac = new AbortController();
+      const req = callTool(srv.port, 'dropped', ac.signal).catch(() => undefined);
+      await vi.waitFor(() => expect(srv.hitlEngine.getPending().length).toBe(1), { timeout: 5000 });
+      ac.abort();
+      await req;
+      // A transport drop is not a "no": the request spills to async instead of being cancelled.
+      await vi.waitFor(() => expect(srv.hitlEngine.getPending()[0]?.mode).toBe('async'), {
+        timeout: 5000,
+      });
+      const [pending] = srv.hitlEngine.getPending();
+      srv.hitlEngine.approve(pending.id);
+      await vi.waitFor(
+        () => expect(srv.hitlEngine.deferred.get(pending.id)?.status).toBe('completed'),
+        { timeout: 5000 }
+      );
+      expect(srv.hitlEngine.deferred.get(pending.id)?.response?.text).toContain('dropped');
+    } finally {
+      await srv.teardown();
+    }
+  });
+
+  it('answers a non-error pending result after sync_wait_ms and runs the call on approval', async () => {
+    const srv = await buildServer({
+      agentConfig: {
+        allow: [],
+        ask: ['tools/*'],
+        deny: [],
+        sync_wait_ms: 50,
+        middleware: [{ name: 'untrusted-envelope', enabled: true }],
+      },
+    });
+    try {
+      const result = await rpcResult(await callTool(srv.port, 'later'));
+      expect(result.isError).toBeUndefined();
+      const payload = result.structuredContent as Record<string, unknown>;
+      expect(payload).toMatchObject({ status: 'pending', execute_on_approve: true });
+      const [pending] = srv.hitlEngine.getPending();
+      expect(payload.approval_id).toBe(pending.id);
+      expect(JSON.stringify(result)).not.toContain(pending.code);
+
+      srv.hitlEngine.approve(pending.id);
+      await vi.waitFor(
+        () => expect(srv.hitlEngine.deferred.get(pending.id)?.status).toBe('completed'),
+        { timeout: 5000 }
+      );
+      // The run went through the post-middleware pipeline (default untrusted envelope).
+      const text = srv.hitlEngine.deferred.get(pending.id)?.response?.text ?? '';
+      expect(text).toContain('later');
+      expect(text).toContain('<untrusted-output-');
+
+      // An identical retry gets that one execution's result instead of running again.
+      const retry = await rpcResult(await callTool(srv.port, 'later'));
+      const retryText = (retry.content as Array<{ text: string }>)[0].text;
+      expect(retryText).toBe(text); // delivered as-is: not enveloped a second time
+      expect(srv.hitlEngine.getPending()).toHaveLength(0);
+      // ...and only once: the next identical call asks again.
+      const again = await rpcResult(await callTool(srv.port, 'later'));
+      expect((again.structuredContent as Record<string, unknown>).status).toBe('pending');
     } finally {
       await srv.teardown();
     }

@@ -12,6 +12,7 @@ import {
   type RequestSecurityOptions,
 } from '../security/request.js';
 import type { SessionLimiter } from './session-limiter.js';
+import { connectionClosedReason } from '../util/abort.js';
 
 const log = childLogger('sse-server');
 
@@ -95,7 +96,9 @@ export async function sseServerPlugin(
 
     const transport = new SSEServerTransport('/agents/' + profileId + '/messages', reply.raw);
     sessions.set(transport.sessionId, { transport, profileId });
-    limiter?.register(transport.sessionId, profileId, () => sessionAc.abort());
+    limiter?.register(transport.sessionId, profileId, () =>
+      sessionAc.abort(connectionClosedReason('SSE session reaped'))
+    );
     // An SSE channel is long-lived by design (kept alive by pings; ended only by socket close),
     // so mark it persistently in-flight — it counts toward caps/ceilings but the idle reaper
     // must never sever an agent that is merely holding an open channel without recent activity.
@@ -127,7 +130,8 @@ export async function sseServerPlugin(
     // once the body is consumed (which is instant for GET requests).
     reply.raw.on('close', () => {
       clearInterval(pingTimer);
-      sessionAc.abort();
+      // A dropped connection, not a cancellation: hybrid approvals keep the request live.
+      sessionAc.abort(connectionClosedReason('SSE session closed'));
       sessions.delete(transport.sessionId);
       limiter?.close(transport.sessionId);
       transport.close().catch(() => {});

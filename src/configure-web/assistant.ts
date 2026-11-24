@@ -110,7 +110,7 @@ const OP_SCHEMA = {
           type: 'boolean',
           description: 'false opts the agent out of the top-level default_profile',
         },
-        approval_mode: { type: 'string', enum: ['sync', 'async'] },
+        approval_mode: { type: 'string', enum: ['hybrid', 'sync', 'async'] },
         exec: {
           type: 'object',
           properties: {

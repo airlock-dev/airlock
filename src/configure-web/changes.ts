@@ -34,7 +34,7 @@ export type PermissionSpec = z.infer<typeof PermissionSpec>;
 
 export const AgentSpec = PermissionSpec.extend({
   inherit_default: z.boolean().optional(),
-  approval_mode: z.enum(['sync', 'async']).nullable().optional(),
+  approval_mode: z.enum(['hybrid', 'sync', 'async']).nullable().optional(),
   exec: z
     .object({ allow: Patterns.optional(), ask: Patterns.optional(), deny: Patterns.optional() })
     .strict()

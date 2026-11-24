@@ -72,7 +72,7 @@ interface EditableAgent {
   deny: string[];
   hasToken: boolean;
   inheritDefault: boolean;
-  approvalMode?: 'sync' | 'async';
+  approvalMode?: 'hybrid' | 'sync' | 'async';
   exec: { allow: string[]; ask: string[]; deny: string[] };
   http: { domainAllowlist: string[] };
 }
@@ -1649,7 +1649,9 @@ function toEditableAgents(input: Record<string, unknown>): Record<string, Editab
             (typeof agent.token_sha256 === 'string' && agent.token_sha256.length > 0),
           inheritDefault: agent.inherit_default !== false,
           approvalMode:
-            agent.approval_mode === 'sync' || agent.approval_mode === 'async'
+            agent.approval_mode === 'hybrid' ||
+            agent.approval_mode === 'sync' ||
+            agent.approval_mode === 'async'
               ? agent.approval_mode
               : undefined,
           exec: {

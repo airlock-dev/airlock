@@ -12,6 +12,12 @@ import { stableStringify } from '../util/stable-json.js';
 import { providerIdForTool } from '../util/tool-name.js';
 import { childLogger } from '../util/logger.js';
 import { inspectEventOccurrence } from './payload-inspector.js';
+import { AIRLOCK_AWAIT_APPROVAL_TOOL } from '../airlock/tools.js';
+import {
+  APPROVAL_DECIDED_DESCRIPTOR,
+  APPROVAL_DECIDED_EVENT,
+  ApprovalDecisionFeed,
+} from './approval-events.js';
 import { formatValidationErrors } from './schema-validator.js';
 import type { EventRegistry, RegisteredEvent } from './registry.js';
 import type { EventStreamManager } from './stream-manager.js';
@@ -45,6 +51,7 @@ const POLL_APPROVAL_MAX_LIFETIME_MS = 24 * 60 * 60_000;
 const POLL_APPROVAL_MAX_ENTRIES = 10_000;
 const MAX_HTTP_EVENT_BODY_BYTES = 4 * 1024 * 1024;
 const MODERN_PROTOCOL_MIN_VERSION = '2026-07-28';
+const DEFAULT_APPROVAL_HEARTBEAT_MS = 30_000;
 
 interface PollApprovalLease {
   agentId: string;
@@ -113,14 +120,27 @@ export class EventService {
   private readonly pollLeases = new Map<string, PollApprovalLease>();
   private readonly inFlightLeaseTokens = new Set<string>();
   private policyGeneration = 0;
+  /** Built-in `airlock/approval_decided` occurrences, per agent. */
+  readonly approvalFeed = new ApprovalDecisionFeed();
 
-  constructor(private readonly deps: EventServiceDeps) {}
+  constructor(private readonly deps: EventServiceDeps) {
+    deps.hitlEngine.deferred.onDecision((decision) => this.approvalFeed.record(decision));
+  }
+
+  /**
+   * Agents that can hit an approval (and so can use airlock/await_approval) see the built-in
+   * `airlock/approval_decided` event, scoped to their own approvals.
+   */
+  private canSeeApprovals(agentId: string): boolean {
+    return this.deps.allowlist.evaluate(agentId, AIRLOCK_AWAIT_APPROVAL_TOOL) === 'allow';
+  }
 
   /**
    * Whether `io.modelcontextprotocol/events` should be advertised for this agent.
    */
   shouldAdvertiseFor(agentId: string, agentConfig: AgentConfig): boolean {
     if (this.deps.registry.hasEventsFor(agentId)) return true;
+    if (this.canSeeApprovals(agentId)) return true;
     const ev = agentConfig.events;
     return Boolean(ev && (ev.allow.length > 0 || ev.ask.length > 0));
   }
@@ -133,12 +153,16 @@ export class EventService {
     agentId: string,
     eventName: string
   ): Record<string, unknown> | undefined {
+    if (eventName === APPROVAL_DECIDED_EVENT) {
+      return this.canSeeApprovals(agentId) ? APPROVAL_DECIDED_DESCRIPTOR.inputSchema : undefined;
+    }
     if (this.deps.allowlist.evaluateEvent(agentId, eventName) === 'deny') return undefined;
     return this.deps.registry.getByName(eventName)?.descriptor.inputSchema;
   }
 
   handleList(agentId: string, _params: EventsListParams): EventsListResult {
     const events = this.deps.registry.getFiltered(agentId);
+    if (this.canSeeApprovals(agentId)) events.push(APPROVAL_DECIDED_DESCRIPTOR);
     return {
       resultType: 'complete',
       events,
@@ -146,6 +170,7 @@ export class EventService {
   }
 
   async handlePoll(ctx: EventRequestContext, params: EventsPollParams): Promise<EventsPollResult> {
+    if (params.name === APPROVAL_DECIDED_EVENT) return this.pollApprovals(ctx, params);
     const callId = generateId();
     const args = params.arguments ?? {};
     let { registered, decision } = this.authorizeAndValidate(
@@ -345,6 +370,7 @@ export class EventService {
     ctx: EventRequestContext,
     params: EventsStreamParams
   ): Promise<EventsStreamResult> {
+    if (params.name === APPROVAL_DECIDED_EVENT) return this.streamApprovals(ctx, params);
     const callId = generateId();
     const args = params.arguments ?? {};
     const initial = this.authorizeAndValidate(ctx, callId, params.name, args, 'push');
@@ -669,9 +695,137 @@ export class EventService {
       }
     }
 
-    await this.deps.streamManager.revokeDisallowed(({ agentId, eventName, args, approved }) =>
-      this.checkLiveAccess(agentId, eventName, args, 'push', approved)
+    await this.deps.streamManager.revokeDisallowed(({ agentId, eventName, args, approved }) => {
+      if (eventName !== APPROVAL_DECIDED_EVENT) {
+        return this.checkLiveAccess(agentId, eventName, args, 'push', approved);
+      }
+      if (this.deps.getAgentConfig(agentId) && this.canSeeApprovals(agentId)) return undefined;
+      return {
+        code: EVENTS_ERROR_CODES.Forbidden,
+        message: 'Forbidden',
+        data: { reason: 'Access revoked' },
+      };
+    });
+  }
+
+  // ── Built-in airlock/approval_decided ────────────────────────────────────
+
+  private authorizeApprovals(ctx: EventRequestContext, args: Record<string, unknown>): void {
+    const visible = this.canSeeApprovals(ctx.agentId);
+    validateEventRoutingHeaders(
+      ctx.httpReq,
+      APPROVAL_DECIDED_EVENT,
+      args,
+      visible ? APPROVAL_DECIDED_DESCRIPTOR.inputSchema : undefined
     );
+    if (!visible) {
+      throw createEventsError(
+        EVENTS_ERROR_CODES.Forbidden,
+        `Event not allowed: ${APPROVAL_DECIDED_EVENT}`,
+        { reason: 'Agent has no approvals' }
+      );
+    }
+    if (Object.keys(args).length > 0) {
+      throw createEventsError(
+        EVENTS_ERROR_CODES.InvalidParams,
+        `${APPROVAL_DECIDED_EVENT} takes no arguments`
+      );
+    }
+  }
+
+  private pollApprovals(ctx: EventRequestContext, params: EventsPollParams): EventsPollResult {
+    this.authorizeApprovals(ctx, params.arguments ?? {});
+    const polled = this.approvalFeed.poll(ctx.agentId, params.cursor, {
+      ...(params.maxEvents !== undefined ? { maxEvents: params.maxEvents } : {}),
+      ...(params.maxAgeMs !== undefined ? { maxAgeMs: params.maxAgeMs } : {}),
+    });
+    return { resultType: 'complete', ...polled };
+  }
+
+  /** Push decisions for this agent until the caller goes away (or the gateway closes the stream). */
+  private async streamApprovals(
+    ctx: EventRequestContext,
+    params: EventsStreamParams
+  ): Promise<EventsStreamResult> {
+    const args = params.arguments ?? {};
+    this.authorizeApprovals(ctx, args);
+    if (ctx.signal?.aborted) {
+      throw createEventsError(EVENTS_ERROR_CODES.Forbidden, 'Stream aborted before opening');
+    }
+    const id = generateId();
+    const subscriptionMeta = { [SUBSCRIPTION_ID_META_KEY]: ctx.requestId };
+    const done = new AbortController();
+    let terminated = false;
+    // Notifications go out strictly in order: active, the backlog after `cursor`, then live events.
+    let queue = Promise.resolve();
+    const send = (method: string, notifParams: Record<string, unknown>) => {
+      queue = queue
+        .then(() =>
+          ctx.notify({
+            method,
+            params: { ...notifParams, _meta: subscriptionMeta },
+          } as Notification)
+        )
+        .catch(() => done.abort());
+    };
+
+    this.deps.streamManager.reserve({
+      id,
+      agentId: ctx.agentId,
+      eventName: APPROVAL_DECIDED_EVENT,
+      args,
+      approved: false,
+      terminate: (error: EventStreamErrorObject) => {
+        if (!terminated) {
+          terminated = true;
+          send(EVENT_NOTIFICATIONS.terminated, { error });
+        }
+        done.abort();
+        return queue;
+      },
+      closeGracefully: () => {
+        done.abort();
+        return Promise.resolve();
+      },
+    });
+
+    let cursor = this.approvalFeed.latestCursor(ctx.agentId);
+    const backlog =
+      params.cursor !== undefined && params.cursor !== null
+        ? this.approvalFeed.poll(ctx.agentId, params.cursor)
+        : undefined;
+    const unsubscribe = this.approvalFeed.subscribe((agentId, occurrence) => {
+      if (agentId !== ctx.agentId || done.signal.aborted) return;
+      cursor = occurrence.cursor ?? cursor;
+      send(EVENT_NOTIFICATIONS.event, occurrence);
+    });
+    const heartbeat = setInterval(
+      () => send(EVENT_NOTIFICATIONS.heartbeat, { cursor }),
+      params.heartbeatMs ?? DEFAULT_APPROVAL_HEARTBEAT_MS
+    );
+    heartbeat.unref();
+    const onCallerAbort = () => done.abort();
+    ctx.signal?.addEventListener('abort', onCallerAbort, { once: true });
+
+    try {
+      send(EVENT_NOTIFICATIONS.active, {
+        cursor: backlog ? (params.cursor ?? cursor) : cursor,
+        ...(backlog?.truncated ? { truncated: true } : {}),
+        heartbeatMs: params.heartbeatMs ?? DEFAULT_APPROVAL_HEARTBEAT_MS,
+      });
+      for (const occurrence of backlog?.events ?? []) send(EVENT_NOTIFICATIONS.event, occurrence);
+      await new Promise<void>((resolve) => {
+        if (done.signal.aborted) resolve();
+        else done.signal.addEventListener('abort', () => resolve(), { once: true });
+      });
+      await queue;
+      return { resultType: 'complete', _meta: subscriptionMeta };
+    } finally {
+      unsubscribe();
+      clearInterval(heartbeat);
+      ctx.signal?.removeEventListener('abort', onCallerAbort);
+      this.deps.streamManager.release(id);
+    }
   }
 
   private withLiveAgentConfig(ctx: EventRequestContext): EventRequestContext {

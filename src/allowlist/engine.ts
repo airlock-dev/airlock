@@ -1,5 +1,5 @@
 import { bestSpecificity, specificity } from './pattern.js';
-import { isAirlockApprovalTool } from '../airlock/tools.js';
+import { AIRLOCK_ASK_USER_TOOL, isAirlockApprovalTool } from '../airlock/tools.js';
 import type { AgentConfig } from '../config/schema.js';
 
 export type Decision = 'allow' | 'ask' | 'deny';
@@ -124,10 +124,13 @@ function matchingPatterns(
 
 /**
  * Whether anything in the agent's config can route a call to human approval: an ask rule, an exec
- * or command policy ask, or a detector in escalate mode.
+ * or command policy ask, a detector in escalate mode, or airlock/ask_user (whose question can be
+ * answered "pending" and then awaited).
  */
 function canNeedApproval(agent: AgentConfig): boolean {
+  const askUser = bestSpecificity(agent.allow, AIRLOCK_ASK_USER_TOOL);
   return (
+    (askUser >= 0 && askUser > bestSpecificity(agent.deny, AIRLOCK_ASK_USER_TOOL)) ||
     agent.ask.length > 0 ||
     (agent.events?.ask.length ?? 0) > 0 ||
     (agent.exec?.ask.length ?? 0) > 0 ||

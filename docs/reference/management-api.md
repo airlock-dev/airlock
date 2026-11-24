@@ -265,7 +265,8 @@ Lists all pending approval requests.
 ]
 ```
 
-`kind` is `call`, `plan`, or `question`; `mode` is `sync` or `async`. Optional
+`kind` is `call`, `plan`, or `question`; `mode` is `hybrid`, `sync` or `async` (a `hybrid`
+request reports `async` once the agent has been answered "pending"). Optional
 fields appear only when they apply: `context` (the agent's stated `reason` and `note`),
 `sandbox` (resolved sandbox summary), `tier` / `provider` / `escalated` (the
 grant subject), `plan` (the calls listed in an `airlock/request_approval` plan),
@@ -295,6 +296,17 @@ curl -X POST http://localhost:4113/hitl/approve/550e8400-e29b-41d4-a716-44665544
 `scope` is `tool`, `tier` (with `tier: read|write`), `provider` or `profile` (with `profile`).
 Optional: `duration_ms`, `max_uses`, `session_only`. Requests flagged by a security check can't
 be widened into a grant; trying returns `400`.
+
+To answer an `airlock/ask_user` question, pass `answer` (one of the question's `choices`, if it
+offered any; otherwise free text). An answer on anything but a question, or one that isn't among
+the choices, returns `400`:
+
+```bash
+curl -X POST http://localhost:4113/hitl/approve/550e8400-e29b-41d4-a716-446655440000 \
+  -H "Authorization: Bearer $MANAGEMENT_API_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{"answer": "staging"}'
+```
 
 `session_only` binds the grant to the agent session that made the request, so other agents sharing
 the same profile aren't covered. Over streamable HTTP the session is the id the agent sends
@@ -420,6 +432,9 @@ curl -X POST \
   -H "Authorization: Bearer $MANAGEMENT_API_SECRET" \
   "http://localhost:4113/approve?code=ABC123"
 ```
+
+Add `&answer=…` to answer an `airlock/ask_user` question (see
+[`POST /hitl/approve/:id`](#post-hitl-approve-id)).
 
 ### `POST /deny?code=ABC123`
 

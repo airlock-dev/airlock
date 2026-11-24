@@ -2,6 +2,8 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { AgentServerDeps } from '../transport/agent-server.js';
 import type { ToolCallContext } from '../middleware/types.js';
 import { buildMiddlewareChain } from '../middleware/chain-builder.js';
+import { attachReentry } from '../middleware/reentry.js';
+import { connectionClosedReason } from '../util/abort.js';
 import { deliveredResult } from '../middleware/response.js';
 import { generateId } from '../util/id.js';
 import { childLogger } from '../util/logger.js';
@@ -119,7 +121,8 @@ export async function toolsApiPlugin(app: FastifyInstance, opts: ToolsApiOpts): 
     const getConfig = deps.getAgentConfig ?? (() => deps.agentConfig);
     const agentConfig = getConfig();
     const ac = new AbortController();
-    const abort = () => ac.abort();
+    // A dropped client connection, not a cancellation: hybrid approvals keep the request live.
+    const abort = () => ac.abort(connectionClosedReason());
     request.raw.once('aborted', abort);
     reply.raw.once('close', abort);
 
@@ -144,6 +147,7 @@ export async function toolsApiPlugin(app: FastifyInstance, opts: ToolsApiOpts): 
       startedAt: Date.now(),
       signal: ac.signal,
     };
+    attachReentry(ctx, { getAgentConfig: getConfig });
 
     // Lifecycle audit: request entered the pipeline (see agent-server for the rationale).
     ctx.deps.auditLogger.log({

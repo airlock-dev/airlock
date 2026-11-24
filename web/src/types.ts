@@ -14,7 +14,7 @@ export interface Rules {
 export interface Agent extends Rules {
   hasToken: boolean;
   inheritDefault: boolean;
-  approvalMode?: 'sync' | 'async';
+  approvalMode?: 'hybrid' | 'sync' | 'async';
   exec: { allow: string[]; ask: string[]; deny: string[] };
   http: { domainAllowlist: string[] };
 }
@@ -90,7 +90,7 @@ export interface AgentSpec {
   ask?: string[];
   deny?: string[];
   inherit_default?: boolean;
-  approval_mode?: 'sync' | 'async' | null;
+  approval_mode?: 'hybrid' | 'sync' | 'async' | null;
   exec?: { allow?: string[]; ask?: string[]; deny?: string[] };
   http?: { domain_allowlist?: string[] };
 }

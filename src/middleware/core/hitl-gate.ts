@@ -1,10 +1,14 @@
 import { ProtocolError, ProtocolErrorCode } from '@modelcontextprotocol/server';
 import type { AirlockCallContext } from '../../airlock/context.js';
+import { AIRLOCK_AWAIT_APPROVAL_TOOL } from '../../airlock/tools.js';
 import type { SandboxDisplayInfo } from '../../sandbox/index.js';
+import type { HitlResult } from '../../hitl/engine.js';
 import type { Middleware, ToolCallContext, ToolCallResponse } from '../types.js';
 import { serializeAuditArgs } from '../audit-args.js';
+import { markFinal } from '../response.js';
 import { fingerprintCall, type ApprovalSubject } from '../../hitl/grants.js';
-import { providerIdForTool } from '../../util/tool-name.js';
+import { isConnectionDrop } from '../../util/abort.js';
+import { providerIdForTool, sanitizeToolName } from '../../util/tool-name.js';
 
 function errorResponse(message: string): ToolCallResponse {
   return {
@@ -12,6 +16,9 @@ function errorResponse(message: string): ToolCallResponse {
     text: message,
   };
 }
+
+const DENIED_RETRY_MESSAGE =
+  'Request denied by operator. Do not retry this call; ask the user how to proceed.';
 
 /** What the grant store and approval UIs need to know about this call. */
 export function approvalSubjectFor(ctx: ToolCallContext): ApprovalSubject {
@@ -27,19 +34,56 @@ export function approvalSubjectFor(ctx: ToolCallContext): ApprovalSubject {
   };
 }
 
+interface PendingInfo {
+  id: string;
+  status: 'pending' | 'executing';
+  expiresAt?: string;
+  /** Airlock will run the call itself on approval (otherwise the agent retries it). */
+  executeOnApprove: boolean;
+}
+
 /**
- * What an agent learns about a pending approval. Never the approval code: that is what the operator
- * types to approve ("approve ABC123"), and an agent that can post into the approval chat would be
- * able to approve itself. The opaque id is only good for airlock_await_approval.
+ * What an agent learns about a pending approval. Pending is normal control flow, not an error, so
+ * this is never `isError`. Never the approval code: that is what the operator types to approve
+ * ("approve ABC123"), and an agent that can post into the approval chat would be able to approve
+ * itself. The opaque id is only good for airlock_await_approval.
  */
-function pendingResponse(tool: string, ticket: { id: string }): ToolCallResponse {
-  const text =
-    `Approval pending: Airlock asked the user to approve ${tool} (approval id ${ticket.id}). ` +
-    'Nothing was executed. Once the user approves, retry this exact call with identical arguments. ' +
-    'To wait for the decision, call airlock_await_approval with {"id": "' +
-    ticket.id +
-    '"} if that tool is available. Do not re-request it in the meantime.';
-  return { result: { content: [{ type: 'text', text }], isError: true }, text };
+export function pendingResponse(toolName: string, info: PendingInfo): ToolCallResponse {
+  const tool = sanitizeToolName(toolName);
+  const awaitTool = sanitizeToolName(AIRLOCK_AWAIT_APPROVAL_TOOL);
+  const awaitCall = `${awaitTool} with {"id": "${info.id}"}`;
+  let message: string;
+  if (info.status === 'executing') {
+    message =
+      `Approved: Airlock is running ${tool} now. Do not call it again. ` +
+      `Call ${awaitCall} to get its result.`;
+  } else if (info.executeOnApprove) {
+    message =
+      `Waiting for the user to approve ${tool}. Nothing has run yet; Airlock runs it ` +
+      'automatically once approved, so do not call it again. If you have other independent work, ' +
+      `continue with it and call ${awaitCall} when you need this result. Otherwise call ` +
+      `${awaitTool} once, or pause and tell the user you are waiting for their approval. ` +
+      'Do not poll in a loop.';
+  } else {
+    message =
+      `Waiting for the user to approve ${tool}. Nothing has run yet. Once approved, retry this ` +
+      `exact call with identical arguments. To wait for the decision, call ${awaitCall}; ` +
+      'otherwise continue with other independent work, or pause and tell the user you are ' +
+      'waiting for their approval. Do not poll in a loop.';
+  }
+  const payload = {
+    status: info.status,
+    approval_id: info.id,
+    tool,
+    ...(info.expiresAt ? { expires_at: info.expiresAt } : {}),
+    execute_on_approve: info.executeOnApprove,
+    message,
+  };
+  const text = JSON.stringify(payload, null, 2);
+  return markFinal({
+    result: { content: [{ type: 'text', text }], structuredContent: payload, isError: false },
+    text,
+  });
 }
 
 const PROGRESS_INTERVAL_MS = 15_000;
@@ -62,44 +106,174 @@ function startProgressKeepalive(ctx: ToolCallContext): () => void {
   return () => clearInterval(timer);
 }
 
+type WaitOutcome = HitlResult | 'aborted' | 'elapsed';
+
+/** Wait for a decision, the request's abort signal, or `waitMs` (Infinity = no limit). */
+async function waitForDecision(
+  result: Promise<HitlResult>,
+  signal: AbortSignal | undefined,
+  waitMs: number
+): Promise<WaitOutcome> {
+  if (waitMs <= 0) return 'elapsed';
+  if (signal?.aborted) return 'aborted';
+  let timer: NodeJS.Timeout | undefined;
+  let onAbort: (() => void) | undefined;
+  try {
+    const racers: Array<Promise<WaitOutcome>> = [result];
+    if (signal) {
+      racers.push(
+        new Promise<'aborted'>((resolve) => {
+          onAbort = () => resolve('aborted');
+          signal.addEventListener('abort', onAbort, { once: true });
+        })
+      );
+    }
+    if (Number.isFinite(waitMs)) {
+      racers.push(
+        new Promise<'elapsed'>((resolve) => {
+          timer = setTimeout(() => resolve('elapsed'), waitMs);
+          timer.unref();
+        })
+      );
+    }
+    return await Promise.race(racers);
+  } finally {
+    if (timer) clearTimeout(timer);
+    if (onAbort) signal?.removeEventListener('abort', onAbort);
+  }
+}
+
+/** Wait (bounded) for a promise, giving up early if the request goes away. */
+async function waitBounded(
+  promise: Promise<void>,
+  signal: AbortSignal | undefined,
+  waitMs: number
+): Promise<void> {
+  await waitForDecision(
+    promise.then(() => 'approved' as const),
+    signal,
+    waitMs
+  );
+}
+
+// Contexts re-entering the pipeline to run a call that was approved after the agent was answered
+// "pending". Kept out of ctx.meta, which is forwarded to the provider and could not be trusted.
+const preApproved = new WeakMap<ToolCallContext, string>();
+
 export function hitlGateMiddleware(): Middleware {
   return async (ctx, next) => {
     if (!ctx.meta.needsApproval && !ctx.meta.policyAsk) return next();
+    // Execute-on-approve: the operator already approved exactly this call.
+    if (preApproved.has(ctx)) return next();
 
     const { hitlEngine, hitlBatcher, auditLogger } = ctx.deps;
     const sandboxInfo = ctx.meta.sandbox_info as SandboxDisplayInfo | undefined;
     const airlockContext = ctx.meta.airlockContext as AirlockCallContext | undefined;
     const subject = approvalSubjectFor(ctx);
+    const policy = hitlEngine.policyFor(ctx.agentConfig);
 
-    const grant = hitlEngine.consumeGrant(subject);
-    if (grant) {
-      ctx.meta.approvalGrantId = grant.id;
+    const audit = (result: string, extra: { hitl_code?: string } = {}) =>
       auditLogger.log({
         agent_id: ctx.agentId,
         request_id: ctx.callId,
         tool: ctx.toolName,
         args: serializeAuditArgs(ctx.args, ctx.meta),
-        result: 'hitl_granted',
+        result,
+        ...extra,
       });
+
+    /** Hand an identical retry the result of the run that happened on approval. */
+    const deliverDeferred = async (id: string, waitMs: number): Promise<ToolCallResponse> => {
+      const settled = hitlEngine.deferred.settled(id);
+      if (settled && waitMs > 0) {
+        const stop = startProgressKeepalive(ctx);
+        try {
+          await waitBounded(settled, ctx.signal, waitMs);
+        } finally {
+          stop();
+        }
+      }
+      const done = hitlEngine.deferred.get(id);
+      if (done?.response) return markFinal({ ...done.response });
+      if (done?.status === 'failed') {
+        return errorResponse(`The approved call failed: ${done.error ?? 'unknown error'}`);
+      }
+      return pendingResponse(ctx.toolName, { id, status: 'executing', executeOnApprove: true });
+    };
+
+    // This exact call already ran (or is running) because it was approved after the agent was
+    // answered "pending": never run a destructive call twice for one approval.
+    const prior = hitlEngine.deferred.claimRetry(
+      subject.agentId,
+      subject.fingerprint,
+      subject.sessionId
+    );
+    if (prior) {
+      audit('hitl_deduplicated');
+      return deliverDeferred(prior.id, Number.isFinite(policy.waitMs) ? policy.waitMs : 0);
+    }
+
+    const grant = hitlEngine.consumeGrant(subject);
+    if (grant) {
+      ctx.meta.approvalGrantId = grant.id;
+      audit('hitl_granted');
       return next();
     }
 
-    const mode = ctx.agentConfig.approval_mode ?? hitlEngine.defaultMode;
-    if (mode === 'async') {
+    if (policy.mode !== 'sync') {
       if (hitlEngine.wasRecentlyDenied(subject.agentId, subject.fingerprint)) {
-        auditLogger.log({
-          agent_id: ctx.agentId,
-          request_id: ctx.callId,
-          tool: ctx.toolName,
-          args: serializeAuditArgs(ctx.args, ctx.meta),
-          result: 'hitl_denied',
-        });
-        return errorResponse(
-          'Request denied by operator. Do not retry this call; ask the user how to proceed.'
-        );
+        audit('hitl_denied');
+        return errorResponse(DENIED_RETRY_MESSAGE);
       }
       const existing = hitlEngine.findPendingCall(subject.agentId, subject.fingerprint);
-      if (existing) return pendingResponse(ctx.toolName, existing);
+      if (existing) {
+        // A retry of a call the agent was already answered "pending" for: wait on that request
+        // (within this call's own inline budget) instead of creating a duplicate.
+        const startedWaiting = Date.now();
+        const stop = startProgressKeepalive(ctx);
+        let outcome: WaitOutcome;
+        try {
+          outcome = await waitForDecision(existing.result, ctx.signal, policy.waitMs);
+        } finally {
+          stop();
+        }
+        if (outcome === 'aborted' && !isConnectionDrop(ctx.signal)) {
+          // Explicit cancellation of this retry. The request belongs to the earlier call: keep it.
+          throw new ProtocolError(ProtocolErrorCode.InvalidRequest, 'Request cancelled');
+        }
+        if (outcome === 'aborted' || outcome === 'elapsed') {
+          const info = hitlEngine.deferred.get(existing.id);
+          return pendingResponse(ctx.toolName, {
+            id: existing.id,
+            status: 'pending',
+            expiresAt: hitlEngine.expiresAt(existing.id),
+            executeOnApprove: info?.willExecute ?? false,
+          });
+        }
+        if (outcome !== 'approved') return decided(outcome);
+        const ran = hitlEngine.deferred.claimRetry(
+          subject.agentId,
+          subject.fingerprint,
+          subject.sessionId
+        );
+        if (ran) {
+          audit('hitl_deduplicated');
+          return deliverDeferred(
+            ran.id,
+            Math.max(0, policy.waitMs - (Date.now() - startedWaiting))
+          );
+        }
+        const retryGrant = hitlEngine.consumeGrant(subject);
+        if (retryGrant) {
+          ctx.meta.approvalGrantId = retryGrant.id;
+          audit('hitl_granted');
+          return next();
+        }
+        // Approved, but another identical retry already took the single run it allowed.
+        return errorResponse(
+          'This approval was already used by another identical call. Call again to request a new approval.'
+        );
+      }
     }
 
     // The engine redacts args before they are stored or shown to the operator.
@@ -110,94 +284,83 @@ export function hitlGateMiddleware(): Middleware {
       ...(airlockContext ? { context: airlockContext } : {}),
       sandbox: sandboxInfo,
       kind: 'call',
-      mode,
+      mode: policy.mode,
       subject,
     });
 
     const notification = hitlEngine.buildNotification(ticket.id);
     if (notification) hitlBatcher.add(notification);
 
-    if (mode === 'async') {
-      // The approval outlives this call: on approval the engine leaves a single-use grant that the
-      // agent's retry consumes, so neither a client timeout nor a reconnect loses the decision.
-      auditLogger.log({
-        agent_id: ctx.agentId,
-        request_id: ctx.callId,
-        tool: ctx.toolName,
-        args: serializeAuditArgs(ctx.args, ctx.meta),
-        result: 'hitl_pending',
-        hitl_code: ticket.code,
+    /**
+     * Answer "pending" and keep the request live on every approval channel. The approval outlives
+     * this call: with execute-on-approve the engine runs the call the moment it is approved and keeps
+     * the result for airlock_await_approval (or an identical retry); otherwise approval leaves a
+     * single-use grant that the agent's retry consumes. Returns undefined if the request was decided
+     * in the meantime.
+     */
+    const spill = (): ToolCallResponse | undefined => {
+      const reenter = ctx.reenter;
+      const runner =
+        policy.executeOnApprove && reenter
+          ? () => reenter((fresh) => preApproved.set(fresh, ticket.id))
+          : undefined;
+      if (!hitlEngine.spill(ticket.id, runner)) return undefined;
+      audit('hitl_pending', { hitl_code: ticket.code });
+      return pendingResponse(ctx.toolName, {
+        id: ticket.id,
+        status: 'pending',
+        expiresAt: hitlEngine.expiresAt(ticket.id),
+        executeOnApprove: hitlEngine.deferred.get(ticket.id)?.willExecute ?? false,
       });
-      return pendingResponse(ctx.toolName, ticket);
+    };
+
+    function decided(result: HitlResult): Promise<ToolCallResponse> | ToolCallResponse {
+      switch (result) {
+        case 'approved':
+          return next();
+        case 'denied':
+          audit('hitl_denied');
+          return errorResponse('Request denied by operator');
+        case 'timeout':
+          audit('hitl_timeout');
+          return errorResponse('Approval timed out. Re-request when operator is available.');
+        default:
+          audit('hitl_cancelled');
+          return errorResponse('The approval request was cancelled.');
+      }
     }
 
     const stopKeepalive = startProgressKeepalive(ctx);
-
-    // If the transport provides an abort signal, race the HITL promise against it
-    // so we don't execute a tool on a dead session.
-    let result: Awaited<typeof ticket.result> | 'disconnected';
+    let outcome: WaitOutcome;
     try {
-      if (ctx.signal && !ctx.signal.aborted) {
-        result = await Promise.race([
-          ticket.result,
-          new Promise<'disconnected'>((resolve) => {
-            if (ctx.signal!.aborted) {
-              resolve('disconnected');
-            } else {
-              ctx.signal!.addEventListener('abort', () => resolve('disconnected'), { once: true });
-            }
-          }),
-        ]);
-      } else if (ctx.signal?.aborted) {
-        // Already disconnected before we even started waiting
-        result = 'disconnected';
-      } else {
-        result = await ticket.result;
-      }
+      outcome = await waitForDecision(ticket.result, ctx.signal, policy.waitMs);
     } finally {
       stopKeepalive();
     }
 
-    if (result === 'disconnected') {
+    if (outcome === 'elapsed') {
+      return spill() ?? decided(await ticket.result);
+    }
+
+    if (outcome === 'aborted') {
+      // Hybrid: a dropped connection (client timeout, socket close) is not a "no". Keep the request
+      // live so the approval — and, with execute-on-approve, the call — still happen. Only an
+      // explicit MCP cancellation, or strict sync mode, withdraws it.
+      if (policy.mode === 'hybrid' && isConnectionDrop(ctx.signal)) {
+        return spill() ?? decided(await ticket.result);
+      }
       // With a zero/small batch window the notification timer may not have fired yet. Remove the
       // dead request first so operators never receive an approval push for a ticket that the
       // engine is about to mark cancelled and that no companion can open.
       hitlBatcher.remove(ticket.id);
       hitlEngine.cancel(ticket.id);
-      auditLogger.log({
-        agent_id: ctx.agentId,
-        request_id: ctx.callId,
-        tool: ctx.toolName,
-        args: serializeAuditArgs(ctx.args, ctx.meta),
-        result: 'hitl_disconnected',
-      });
+      audit('hitl_disconnected');
       throw new ProtocolError(
         ProtocolErrorCode.InvalidRequest,
         'Session disconnected while awaiting approval'
       );
     }
 
-    if (result === 'denied') {
-      auditLogger.log({
-        agent_id: ctx.agentId,
-        request_id: ctx.callId,
-        tool: ctx.toolName,
-        args: serializeAuditArgs(ctx.args, ctx.meta),
-        result: 'hitl_denied',
-      });
-      return errorResponse('Request denied by operator');
-    }
-    if (result === 'timeout') {
-      auditLogger.log({
-        agent_id: ctx.agentId,
-        request_id: ctx.callId,
-        tool: ctx.toolName,
-        args: serializeAuditArgs(ctx.args, ctx.meta),
-        result: 'hitl_timeout',
-      });
-      return errorResponse('Approval timed out. Re-request when operator is available.');
-    }
-
-    return next();
+    return decided(outcome);
   };
 }

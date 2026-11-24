@@ -9,6 +9,7 @@ import type { AuditLogger } from '../audit/logger.js';
 import type { AgentConfig, SecurityConfig } from '../config/schema.js';
 import type { Middleware, ToolCallContext } from '../middleware/types.js';
 import { buildMiddlewareChain } from '../middleware/chain-builder.js';
+import { attachReentry } from '../middleware/reentry.js';
 import { deliveredResult } from '../middleware/response.js';
 import type { EventService } from '../events/service.js';
 import {
@@ -185,6 +186,10 @@ export function createAgentServer(deps: AgentServerDeps): Server {
       signal: anySignal(deps.signal, reqCtx.mcpReq.signal),
       ...progressSender(requestMeta, reqCtx.mcpReq.notify),
     };
+    attachReentry(ctx, {
+      getAgentConfig: getConfig,
+      ...(staticChain ? { chain: staticChain } : {}),
+    });
 
     // Lifecycle audit: the request has entered the pipeline. Emitted BEFORE any middleware so even
     // a call that is denied/parked/hung has a 'received' row; the terminal row shares its request_id.

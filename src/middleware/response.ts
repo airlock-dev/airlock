@@ -1,5 +1,19 @@
 import type { ToolCallResponse } from './types.js';
 
+// Responses the gateway already finalized: "approval pending" notices and results of calls that ran
+// on approval (which went through the post-middleware pipeline when they ran). Post middlewares pass
+// them through untouched, so nothing is enveloped, scanned or summarized twice.
+const finalResponses = new WeakSet<ToolCallResponse>();
+
+export function markFinal(response: ToolCallResponse): ToolCallResponse {
+  finalResponses.add(response);
+  return response;
+}
+
+export function isFinalResponse(response: ToolCallResponse): boolean {
+  return finalResponses.has(response);
+}
+
 interface TextBlock {
   type: 'text';
   text: string;

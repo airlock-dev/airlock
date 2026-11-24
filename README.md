@@ -24,7 +24,7 @@ Airlock  ←→  HITL (Telegram / Slack / webhook / TUI / macOS / iOS / dashboar
 ## Features
 
 - **Per-agent policy** — each agent sees only the tools it can use, with `allow`, `ask`, and `deny` decisions over namespaced tools (`github/create_pr`, `filesystem/read_file`)
-- **HITL approval** — flag sensitive tools as requiring human sign-off; the agent blocks until you approve or deny
+- **HITL approval** — flag sensitive tools as requiring human sign-off; a quick decision looks like a slow tool call, and a slow one gets a "pending" answer while Airlock runs the call the moment you approve
 - **Composable profiles** — define reusable permission sets (`readonly`, `developer`) that agents inherit via `extends`
 - **Backend adapters** — unified interface for MCP servers, CLI tools, REST APIs, HTTP, and exec
 - **CLI tool discovery** — auto-generate config from `--help` output or [Fig autocomplete specs](https://github.com/withfig/autocomplete)
