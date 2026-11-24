@@ -1462,6 +1462,11 @@ input[type='radio'] {
   margin-left: auto;
 }
 
+.answer-input {
+  width: 100%;
+  max-width: 68ch;
+}
+
 .reason {
   max-width: 68ch;
   color: var(--ink);

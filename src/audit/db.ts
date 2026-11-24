@@ -65,6 +65,7 @@ export class AuditDb {
     insertAudit: Database.Statement;
     insertHitl: Database.Statement;
     updateHitlStatus: Database.Statement;
+    updateHitlMeta: Database.Statement;
     getHitlById: Database.Statement;
     getPendingHitl: Database.Statement;
     getHitlHistory: Database.Statement;
@@ -190,6 +191,9 @@ export class AuditDb {
       updateHitlStatus: this.db.prepare(`
         UPDATE hitl_queue SET status = @status, reason = @reason, resolved_at = @resolved_at WHERE id = @id
       `),
+      updateHitlMeta: this.db.prepare(
+        `UPDATE hitl_queue SET meta = @meta WHERE id = @id AND status = 'pending'`
+      ),
       getHitlById: this.db.prepare('SELECT * FROM hitl_queue WHERE id = ?'),
       getPendingHitl: this.db.prepare(
         "SELECT * FROM hitl_queue WHERE status = 'pending' ORDER BY created_at ASC"
@@ -348,6 +352,10 @@ export class AuditDb {
       reason: reason ?? null,
       resolved_at: new Date().toISOString(),
     });
+  }
+
+  updateHitlMeta(id: string, meta: string): void {
+    this.stmts.updateHitlMeta.run({ id, meta });
   }
 
   getHitlById(id: string): HitlQueueEntry | undefined {

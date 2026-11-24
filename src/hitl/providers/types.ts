@@ -20,7 +20,7 @@ export interface HitlNotification {
   /** call (default) = one gated tool call; plan = several calls approved together; question = ask_user. */
   kind?: 'call' | 'plan' | 'question';
   /** sync = caller waits for decision; async = caller got immediate pending response and retries. */
-  mode?: 'sync' | 'async';
+  mode?: 'hybrid' | 'sync' | 'async';
   tier?: ToolTier;
   provider?: string;
   /** Flagged by a detector or command policy: excluded from approve-all and grants. */

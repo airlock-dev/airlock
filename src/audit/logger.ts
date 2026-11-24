@@ -46,6 +46,10 @@ export class AuditLogger {
   updateHitlStatus(id: string, status: HitlQueueEntry['status'], reason?: string): void {
     this.db.updateHitlStatus(id, status, reason);
   }
+  /** Rewrite a still-pending request's stored meta (e.g. when the agent is answered "pending"). */
+  updateHitlMeta(id: string, meta: string): void {
+    this.db.updateHitlMeta(id, meta);
+  }
   getHitlById(id: string): HitlQueueEntry | undefined {
     return this.db.getHitlById(id);
   }

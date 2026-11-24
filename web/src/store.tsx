@@ -408,7 +408,9 @@ export function normalizePending(raw: unknown): PendingApproval {
           : 'call';
 
   const rawMode = text(request.mode) ?? text(meta.mode);
-  const mode = rawMode === 'sync' || rawMode === 'async' ? rawMode : undefined;
+  const mode =
+    rawMode === 'hybrid' || rawMode === 'sync' || rawMode === 'async' ? rawMode : undefined;
+  const executeOnApprove = request.executeOnApprove === true || meta.executeOnApprove === true;
 
   const rawTier = text(request.tier) ?? text(subject.tier);
   const tier =
@@ -465,6 +467,7 @@ export function normalizePending(raw: unknown): PendingApproval {
     timeoutMs,
     kind,
     mode,
+    ...(executeOnApprove ? { executeOnApprove } : {}),
     tier,
     provider,
     escalated,

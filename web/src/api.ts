@@ -86,6 +86,7 @@ export const api = {
     if (options.grantProfile) params.set('grant_profile', options.grantProfile);
     if (options.durationMs) params.set('duration_ms', String(options.durationMs));
     if (options.maxUses) params.set('max_uses', String(options.maxUses));
+    if (options.answer) params.set('answer', options.answer);
     return post<unknown>(`/${action}?${params}`);
   },
   approvalPreview: (id: string) =>

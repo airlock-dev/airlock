@@ -44,6 +44,21 @@ export function questionText(p: PendingApproval): string {
   return typeof value === 'string' && value.trim() ? value.trim() : 'Question from agent';
 }
 
+/** The answers an airlock/ask_user question offers; empty for a yes/no question. */
+export function questionChoices(p: PendingApproval): string[] {
+  const choices = p.args.choices;
+  if (!Array.isArray(choices)) return [];
+  return choices.filter((c): c is string => typeof c === 'string' && c.trim() !== '');
+}
+
+/** What the agent is doing while the operator decides. */
+function waitingLabel(p: PendingApproval): string | undefined {
+  if (!p.mode) return undefined;
+  if (p.mode !== 'async') return 'Call is held open';
+  if (p.kind !== 'call') return 'Agent will check back';
+  return p.executeOnApprove ? 'Runs when approved' : 'Agent will retry';
+}
+
 function providerOf(p: PendingApproval): string | undefined {
   return p.provider ?? (p.tool.includes('/') ? p.tool.split('/')[0] : undefined);
 }
@@ -129,8 +144,8 @@ export function buildGrantChoices(p: PendingApproval): GrantChoice[] {
   return choices;
 }
 
-function approveLabel(p: PendingApproval): string {
-  if (isQuestion(p)) return 'Confirm';
+function approveLabel(p: PendingApproval, answer: string): string {
+  if (isQuestion(p)) return questionChoices(p).length || answer.trim() ? 'Answer' : 'Confirm';
   if (isPlan(p)) return 'Approve plan';
   return 'Approve once';
 }
@@ -227,6 +242,8 @@ export function Inbox() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  // Draft answers to ask_user questions, per request.
+  const [answers, setAnswers] = useState<Record<string, string>>({});
   const listRef = useRef<HTMLDivElement>(null);
 
   const ordered = useMemo(
@@ -292,7 +309,10 @@ export function Inbox() {
       } else if (canDecide && selected && busyId !== selected.id) {
         if (e.key === 'a') {
           e.preventDefault();
-          void run(selected, 'approve');
+          const answer = answers[selected.id]?.trim() ?? '';
+          // A question with choices needs one picked; approving it bare would mean nothing.
+          if (isQuestion(selected) && questionChoices(selected).length > 0 && !answer) return;
+          void run(selected, 'approve', answer ? { answer } : undefined);
         } else if (e.key === 'd') {
           e.preventDefault();
           void run(selected, 'deny');
@@ -466,6 +486,8 @@ export function Inbox() {
             canDecide={canDecide}
             busy={busyId === selected.id}
             onDecide={run}
+            answer={answers[selected.id] ?? ''}
+            onAnswer={(value) => setAnswers((prev) => ({ ...prev, [selected.id]: value }))}
           />
         ) : null}
       </section>
@@ -510,6 +532,8 @@ function Inspector({
   canDecide,
   busy,
   onDecide,
+  answer,
+  onAnswer,
 }: {
   request: PendingApproval;
   now: number;
@@ -521,6 +545,8 @@ function Inspector({
     options?: DecideOptions,
     label?: string
   ) => void;
+  answer: string;
+  onAnswer: (value: string) => void;
 }) {
   const [preview, setPreview] = useState<Record<string, unknown> | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
@@ -528,6 +554,17 @@ function Inspector({
   const question = isQuestion(request);
   const countdown = formatCountdown(request.expiresAt, now);
   const choices = canDecide ? buildGrantChoices(request) : [];
+  const answerChoices = question ? questionChoices(request) : [];
+  const trimmedAnswer = answer.trim();
+  const needsChoice = answerChoices.length > 0 && !trimmedAnswer;
+  const approve = () =>
+    onDecide(
+      request,
+      'approve',
+      trimmedAnswer ? { answer: trimmedAnswer } : undefined,
+      question && trimmedAnswer ? `Answered “${trimmedAnswer}”` : undefined
+    );
+  const waiting = waitingLabel(request);
 
   useEffect(() => {
     if (question || plan || !canDecide) return;
@@ -585,10 +622,10 @@ function Inspector({
                 </span>
               </>
             )}
-            {request.mode && (
+            {waiting && (
               <>
                 <span class="sep">·</span>
-                <span>{request.mode === 'sync' ? 'Call is held open' : 'Agent will retry'}</span>
+                <span>{waiting}</span>
               </>
             )}
             {request.tier && !plan && !question && request.tier !== 'destructive' && (
@@ -627,6 +664,47 @@ function Inspector({
             <section>
               <h3 class="block-title">Context</h3>
               <p class="reason">{request.args.context}</p>
+            </section>
+          )}
+
+          {question && (answerChoices.length > 0 || canDecide) && (
+            <section>
+              <h3 class="block-title">
+                Answer
+                {answerChoices.length === 0 && <span class="ink-3">optional</span>}
+              </h3>
+              {answerChoices.length > 0 ? (
+                <div class="radio-list" role="radiogroup" aria-label="Answer">
+                  {answerChoices.map((choice) => (
+                    <label class="radio-option" key={choice}>
+                      <input
+                        type="radio"
+                        name={`answer-${request.id}`}
+                        checked={answer === choice}
+                        disabled={!canDecide}
+                        onChange={() => onAnswer(choice)}
+                      />
+                      <strong>{choice}</strong>
+                    </label>
+                  ))}
+                </div>
+              ) : (
+                <input
+                  type="text"
+                  class="input answer-input"
+                  value={answer}
+                  maxLength={2000}
+                  placeholder="Reply in your own words, or just confirm"
+                  aria-label="Answer"
+                  onInput={(e) => onAnswer(e.currentTarget.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !busy) {
+                      e.preventDefault();
+                      approve();
+                    }
+                  }}
+                />
+              )}
             </section>
           )}
 
@@ -682,9 +760,10 @@ function Inspector({
             </Button>
             <span class="spacer" />
             {plan && <span class="ink-3 hint-keys">Each call gets a single-use grant</span>}
+            {needsChoice && <span class="ink-3 hint-keys">Pick an answer</span>}
             <div class="btn-group">
-              <Button variant="primary" busy={busy} onClick={() => onDecide(request, 'approve')}>
-                {approveLabel(request)}
+              <Button variant="primary" busy={busy} disabled={needsChoice} onClick={approve}>
+                {approveLabel(request, answer)}
                 <Kbd>A</Kbd>
               </Button>
               {menuItems.length > 0 && (

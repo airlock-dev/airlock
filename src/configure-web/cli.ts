@@ -907,7 +907,8 @@ interface RemotePendingApproval {
   args: Record<string, unknown>;
   context?: { reason?: string; note?: string };
   kind?: 'call' | 'plan' | 'question';
-  mode?: 'sync' | 'async';
+  mode?: 'hybrid' | 'sync' | 'async';
+  executeOnApprove?: boolean;
   tier?: 'read' | 'write' | 'destructive';
   provider?: string;
   escalated?: boolean;
@@ -1007,6 +1008,7 @@ async function readRemoteAuditLogs(
       created_at: entry.created_at ?? entry.createdAt ?? new Date().toISOString(),
       ...(entry.kind ||
       entry.mode ||
+      entry.executeOnApprove ||
       entry.tier ||
       entry.provider ||
       entry.escalated ||
@@ -1018,6 +1020,7 @@ async function readRemoteAuditLogs(
             meta: JSON.stringify({
               ...(entry.kind ? { kind: entry.kind } : {}),
               ...(entry.mode ? { mode: entry.mode } : {}),
+              ...(entry.executeOnApprove ? { executeOnApprove: true } : {}),
               ...(entry.tier || entry.provider || entry.escalated !== undefined
                 ? {
                     subject: {

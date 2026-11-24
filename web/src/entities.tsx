@@ -142,9 +142,11 @@ export function Roster({ kind }: { kind: Kind }) {
                             waiting > 0 && `${waiting} waiting`,
                             agentGrants > 0 && plural(agentGrants, 'grant'),
                             (entity as Agent).approvalMode &&
-                              ((entity as Agent).approvalMode === 'async'
-                                ? 'Answers right away'
-                                : 'Holds calls'),
+                              {
+                                hybrid: 'Waits, then pending',
+                                sync: 'Holds calls',
+                                async: 'Answers right away',
+                              }[(entity as Agent).approvalMode!],
                           ]
                             .filter(Boolean)
                             .join(' · ')

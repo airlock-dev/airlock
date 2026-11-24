@@ -153,7 +153,14 @@ closes. Flagged and destructive requests are marked in red.
 
 Selecting a request opens its details beside the list (or full screen on a
 phone): the reason, any fetched preview, and the arguments as a key/value table
-with a JSON view. Plans list each step with its own arguments.
+with a JSON view. Plans list each step with its own arguments. The header says
+what the agent is doing meanwhile: **Call is held open** (it is still waiting
+on the call), **Runs when approved** (it was answered "pending" and approving
+runs the call right away), or **Agent will retry** / **Agent will check back**.
+
+A question from `airlock_ask_user` shows its choices: pick one and **Answer**.
+A yes/no question takes an optional reply; **Confirm** alone means yes and
+**Decline** means no.
 
 **Approve once** releases just this call. The menu next to it approves and
 grants a time-boxed permission for this tool, the provider's read-only or

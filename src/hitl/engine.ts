@@ -97,6 +97,8 @@ interface PendingRequest {
 interface StoredMeta {
   kind?: ApprovalKind;
   mode?: ApprovalMode;
+  /** Approving runs the call right away (only while this process holds its runner). */
+  executeOnApprove?: boolean;
   subject?: ApprovalSubject;
   plan?: PlanEntry[];
 }
@@ -355,7 +357,9 @@ export class HitlEngine implements ApprovalApi {
     const req = this.pending.get(id);
     if (!req) return false;
     req.mode = 'async';
-    this.deferred.detach(id, runner);
+    const executeOnApprove = this.deferred.detach(id, runner);
+    // Dashboards that read pending requests from the database see the switch too.
+    this.storeMeta(req, executeOnApprove);
     log.info({ id: req.id, code: req.code, tool: req.tool }, 'HITL request answered pending');
     return true;
   }
@@ -462,6 +466,8 @@ export class HitlEngine implements ApprovalApi {
     context?: AirlockCallContext;
     kind: ApprovalKind;
     mode: ApprovalMode;
+    /** The agent was answered "pending" and approving runs the call right away. */
+    executeOnApprove?: boolean;
     tier?: string;
     provider?: string;
     escalated?: boolean;
@@ -485,6 +491,7 @@ export class HitlEngine implements ApprovalApi {
         ...(r.sandbox ? { sandbox: r.sandbox } : {}),
         kind: r.kind,
         mode: r.mode,
+        ...(this.deferred.hasRunner(r.id) ? { executeOnApprove: true } : {}),
         ...(r.subject
           ? { tier: r.subject.tier, provider: r.subject.provider, escalated: r.subject.escalated }
           : {}),
@@ -591,6 +598,20 @@ export class HitlEngine implements ApprovalApi {
       return false;
     }
     return true;
+  }
+
+  private storeMeta(req: PendingRequest, executeOnApprove = false): void {
+    const meta: StoredMeta = {
+      kind: req.kind,
+      mode: req.mode,
+      ...(executeOnApprove ? { executeOnApprove: true } : {}),
+      ...(req.subject ? { subject: req.subject } : {}),
+      ...(req.plan ? { plan: req.plan } : {}),
+    };
+    (this.auditLogger as { updateHitlMeta?: AuditLogger['updateHitlMeta'] }).updateHitlMeta?.(
+      req.id,
+      JSON.stringify(meta)
+    );
   }
 
   /** Status of an approval the given agent owns, or undefined if it isn't theirs / doesn't exist. */
@@ -969,6 +990,8 @@ export class HitlEngine implements ApprovalApi {
         resolve,
       };
       this.track(req, remaining);
+      // The runner (if any) died with the old process; don't advertise execute-on-approve.
+      if (meta.executeOnApprove || storedMode !== mode) this.storeMeta(req);
       // No runner survives a restart (raw args are never persisted): approval falls back to the
       // single-use retry grant.
       this.deferred.open({

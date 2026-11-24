@@ -10,6 +10,12 @@ import { DeferredExecutionStore } from '../src/hitl/deferred.js';
 import { fingerprintCall } from '../src/hitl/grants.js';
 import { hitlApiPlugin } from '../src/hitl/api.js';
 import { hitlGateMiddleware } from '../src/middleware/core/hitl-gate.js';
+import {
+  rateLimiterMiddleware,
+  resetRateLimiterState,
+} from '../src/middleware/core/rate-limiter.js';
+import { markDispatched } from '../src/middleware/core/execute.js';
+import { compose } from '../src/middleware/compose.js';
 import { AirlockBackendAdapter } from '../src/backend/airlock-adapter.js';
 import { AllowlistEngine } from '../src/allowlist/engine.js';
 import { EventService, type EventRequestContext } from '../src/events/service.js';
@@ -259,6 +265,8 @@ describe('execute-on-approve', () => {
     const execute = vi.fn().mockResolvedValue(okResponse('delivered'));
     const { id } = await spillCall(engine, { execute });
     expect(engine.deferred.get(id)).toMatchObject({ status: 'pending', willExecute: true });
+    // Operators see that approving runs the call right away.
+    expect(engine.getPending()[0]).toMatchObject({ mode: 'async', executeOnApprove: true });
 
     engine.approve(id);
     expect(engine.deferred.get(id)?.status).toBe('executing');
@@ -397,6 +405,30 @@ describe('execute-on-approve', () => {
     expect(execute).toHaveBeenCalledTimes(1);
   });
 
+  it('persists the spill so dashboards reading the database see it, and drops it on restart', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'airlock-hybrid-meta-'));
+    const logger = new AuditLogger({
+      db_path: join(dir, 'audit.db'),
+      redact_fields: [],
+      retention_days: 30,
+    });
+    try {
+      const engine = new HitlEngine(logger, makeProvider(), 60_000);
+      const { id } = await spillCall(engine);
+      const meta = () => JSON.parse(logger.getHitlById(id)!.meta!) as Record<string, unknown>;
+      expect(meta()).toMatchObject({ kind: 'call', mode: 'async', executeOnApprove: true });
+
+      // After a restart no runner exists, so the row must stop advertising execute-on-approve.
+      const restarted = new HitlEngine(logger, makeProvider(), 60_000);
+      await restarted.recoverPending();
+      expect(meta().executeOnApprove).toBeUndefined();
+      expect(restarted.getPending()[0].executeOnApprove).toBeUndefined();
+    } finally {
+      logger.stop();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('recovers a hybrid request after restart as async, approving it with a retry grant', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'airlock-hybrid-recovery-'));
     const logger = new AuditLogger({
@@ -438,6 +470,69 @@ describe('execute-on-approve', () => {
       logger.stop();
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('execute-on-approve and the rate limiter', () => {
+  afterEach(() => resetRateLimiterState());
+
+  it('a call answered "pending" keeps its slot, and its approved run is not throttled again', async () => {
+    const { engine } = makeEngine();
+    const downstream = vi.fn((ctx: ToolCallContext) => {
+      markDispatched(ctx);
+      return Promise.resolve(okResponse(String(ctx.args.to)));
+    });
+    const chain = compose([
+      rateLimiterMiddleware({ max_requests: 1, window_ms: 60_000 }),
+      hitlGateMiddleware(),
+      (ctx) => downstream(ctx),
+    ]);
+    const call = (args: Record<string, unknown>, ask: boolean) => {
+      const ctx = makeCtx(engine, { args, agentConfig: { sync_wait_ms: 0 }, reentry: false });
+      ctx.meta = ask ? { policyAsk: true } : {};
+      ctx.reenter = (prepare) => {
+        const fresh: ToolCallContext = { ...ctx, meta: { policyAsk: true }, startedAt: Date.now() };
+        prepare(fresh);
+        return chain(fresh, () => Promise.reject(new Error('unterminated')));
+      };
+      return chain(ctx, () => Promise.reject(new Error('unterminated')));
+    };
+
+    const pending = await call({ to: 'approved-later' }, true);
+    const id = payloadOf(pending).approval_id as string;
+    // The pending call holds the agent's only slot, so an unrelated allowed call is throttled...
+    await expect(call({ to: 'other' }, false)).rejects.toThrow(/Rate limit exceeded/);
+
+    // ...and the approved run goes through without being counted (or throttled) a second time.
+    engine.approve(id);
+    await engine.deferred.settled(id);
+    expect(engine.deferred.get(id)).toMatchObject({
+      status: 'completed',
+      response: { text: 'approved-later' },
+    });
+    expect(downstream).toHaveBeenCalledTimes(1);
+  });
+
+  it('a call that only waits for a retry grant is refunded as before', async () => {
+    const { engine } = makeEngine();
+    const chain = compose([
+      rateLimiterMiddleware({ max_requests: 1, window_ms: 60_000 }),
+      hitlGateMiddleware(),
+      (ctx) => {
+        markDispatched(ctx);
+        return Promise.resolve(okResponse());
+      },
+    ]);
+    const ctx = makeCtx(engine, {
+      agentConfig: { sync_wait_ms: 0, execute_on_approve: false },
+      reentry: false,
+    });
+    await chain(ctx, () => Promise.reject(new Error('unterminated')));
+    const allowed = makeCtx(engine, { args: { to: 'other' }, reentry: false });
+    allowed.meta = {};
+    await expect(chain(allowed, () => Promise.reject(new Error('x')))).resolves.toMatchObject({
+      text: 'sent',
+    });
   });
 });
 

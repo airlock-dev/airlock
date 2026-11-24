@@ -184,7 +184,10 @@ export interface PendingApproval {
   expiresAt?: string;
   timeoutMs: number;
   kind: 'call' | 'plan' | 'question';
-  mode?: 'sync' | 'async';
+  /** `hybrid` while the call is held open; `async` once the agent was answered "pending". */
+  mode?: 'hybrid' | 'sync' | 'async';
+  /** Approving runs the call right away (the agent was answered "pending"). */
+  executeOnApprove?: boolean;
   tier?: ToolTier;
   provider?: string;
   escalated?: boolean;
@@ -202,6 +205,8 @@ export interface DecideOptions {
   grantProfile?: string;
   durationMs?: number;
   maxUses?: number;
+  /** The answer to an airlock/ask_user question. */
+  answer?: string;
 }
 
 export interface ActivityEvent {

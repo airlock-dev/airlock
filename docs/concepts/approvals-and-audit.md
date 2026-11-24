@@ -224,6 +224,9 @@ and the audit log, as an inline call would. It doesn't matter where you approve 
 approval, a grant that sweeps pending requests, "approve all" on a batch, the dashboard, a
 companion app or a chat channel.
 
+A call answered "pending" that will run on approval keeps the `rate-limiter` slot it was admitted
+with, and its approved run is not counted or throttled again.
+
 The result is kept in memory for `approvals.grants.async_ttl_ms` (30 min), size-capped, and
 `airlock_await_approval` returns it directly (`status: "completed"` with `result`, or
 `status: "failed"` with `error`). The agent never has to repeat the call. If it does repeat the
