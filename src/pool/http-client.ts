@@ -97,6 +97,7 @@ export class HttpMcpClient {
   private eventsListChangedListeners = new Set<() => void>();
 
   private awaitingAuth = false;
+  private oauthTokenChangeAbort?: AbortController;
   private connecting = false;
   private reconnectExhausted = false;
   private lastError?: string;
@@ -143,6 +144,7 @@ export class HttpMcpClient {
   }
 
   async connect(): Promise<void> {
+    if (this.stopped) return;
     // Don't reconnect while waiting for the user to complete the browser OAuth flow
     if (this.awaitingAuth) {
       log.debug({ id: this.id }, 'Skipping connect — already awaiting OAuth');
@@ -298,10 +300,11 @@ export class HttpMcpClient {
    * browser, finish the auth exchange, then reconnect with fresh tokens.
    */
   private async runOAuthFlow(authorizationPrepared: boolean): Promise<void> {
-    this.awaitingAuth = true;
+    const provider = this.oauthProvider!;
     try {
       if (!authorizationPrepared) {
-        const result = await auth(this.oauthProvider!, { serverUrl: this.url });
+        const result = await auth(provider, { serverUrl: this.url });
+        if (this.stopped) return;
         if (result === 'AUTHORIZED') {
           // The reactive 401 raced a usable refresh token. Reconnect without asking the operator
           // to complete a browser flow that is no longer necessary.
@@ -321,24 +324,27 @@ export class HttpMcpClient {
       // previously this client waited forever until Airlock was restarted.
       while (true) {
         log.info({ id: this.id }, 'OAuth authorization required, waiting for browser flow');
-        const previousTokenVersion = await this.oauthProvider!.tokenVersion();
+        const previousTokenVersion = await provider.tokenVersion();
+        if (this.stopped) return;
         const tokenChangeAbort = new AbortController();
+        this.oauthTokenChangeAbort = tokenChangeAbort;
         const outcome = await Promise.race([
-          this.oauthProvider!.waitForAuthCode().then((code) => ({ code })),
-          this.oauthProvider!.waitForTokenChange(
-            previousTokenVersion,
-            tokenChangeAbort.signal
-          ).then(() => ({ credentialsChanged: true as const })),
-        ]);
-        tokenChangeAbort.abort();
+          provider.waitForAuthCode().then((code) => ({ code })),
+          provider.waitForTokenChange(previousTokenVersion, tokenChangeAbort.signal),
+        ]).finally(() => {
+          this.oauthTokenChangeAbort = undefined;
+          tokenChangeAbort.abort();
+          provider.stopCallbackServer();
+        });
+        if (this.stopped) return;
 
-        if ('code' in outcome) {
+        if (outcome) {
           await this.transport!.finishAuth(outcome.code);
           break;
         }
 
-        this.oauthProvider!.stopCallbackServer();
-        const result = await auth(this.oauthProvider!, { serverUrl: this.url });
+        const result = await auth(provider, { serverUrl: this.url });
+        if (this.stopped) return;
         if (result === 'AUTHORIZED') {
           this.client?.closeEventStreams?.('events/stream: upstream reconnecting after OAuth');
           const oldTransport = this.transport;
@@ -351,6 +357,7 @@ export class HttpMcpClient {
         // that callback (or another external replacement) without latching stale state.
       }
     } catch (err) {
+      if (this.stopped) return;
       this.lastError = friendlyError(err);
       throw err;
     } finally {
@@ -595,6 +602,7 @@ export class HttpMcpClient {
 
   async stop(): Promise<void> {
     this.stopped = true;
+    this.oauthTokenChangeAbort?.abort();
     this.client?.closeEventStreams?.('events/stream: upstream client stopped');
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
@@ -604,7 +612,7 @@ export class HttpMcpClient {
       clearTimeout(this.refreshTimer);
       this.refreshTimer = undefined;
     }
-    this.oauthProvider?.stopCallbackServer();
+    this.oauthProvider?.stop();
     // Release the session server-side before closing locally. transport.close() only tears down
     // OUR end; without the DELETE that terminateSession() sends, the server keeps the session in
     // memory forever. Servers that bound their session table then leak a slot on every gateway

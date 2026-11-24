@@ -74,14 +74,19 @@ vi.mock('@modelcontextprotocol/client', async (importOriginal) => ({
 
 // FileOAuthProvider: waitForAuthCode resolves immediately; no file I/O, no browser.
 let waitForAuthCodeImpl: () => Promise<string> = () => Promise.resolve('mock-auth-code');
-let waitForTokenChangeImpl: () => Promise<void> = () => new Promise(() => {});
+let waitForTokenChangeImpl: (signal: AbortSignal) => Promise<void> = () => new Promise(() => {});
 vi.mock('../src/pool/oauth-provider.js', () => {
   return {
     FileOAuthProvider: vi.fn().mockImplementation(() => ({
       waitForAuthCode: vi.fn().mockImplementation(() => waitForAuthCodeImpl()),
       stopCallbackServer: vi.fn(),
+      stop: vi.fn(),
       tokenVersion: vi.fn().mockResolvedValue(undefined),
-      waitForTokenChange: vi.fn().mockImplementation(() => waitForTokenChangeImpl()),
+      waitForTokenChange: vi
+        .fn()
+        .mockImplementation((_previous: unknown, signal: AbortSignal) =>
+          waitForTokenChangeImpl(signal)
+        ),
       // No refresh_token/expiry in these tests → proactive-refresh scheduling no-ops.
       msUntilRefresh: vi.fn().mockResolvedValue(undefined),
     })),
@@ -202,6 +207,50 @@ describe('HttpMcpClient — OAuth reconnect', () => {
     expect(client.isReady()).toBe(true);
     expect(client.getConnectionStatus()).toEqual({ status: 'up' });
     expect(transportInstances).toHaveLength(2);
+  });
+
+  it('cancels credential polling when the callback fails', async () => {
+    const pollAborted = vi.fn();
+    waitForTokenChangeImpl = (signal) =>
+      new Promise<void>((resolve) => {
+        signal.addEventListener('abort', () => {
+          pollAborted();
+          resolve();
+        });
+      });
+    waitForAuthCodeImpl = () => Promise.reject(new Error('OAuth error: access_denied'));
+
+    const client = new HttpMcpClient('spliit', 'https://mcp.example.com/mcp', undefined, true);
+    await client.connect();
+    await flushOAuthFlow();
+
+    expect(pollAborted).toHaveBeenCalledOnce();
+    expect(authMock).not.toHaveBeenCalled();
+    expect(client.getConnectionStatus()).toEqual({
+      status: 'auth_required',
+      reason: 'OAuth error: access_denied',
+    });
+  });
+
+  it('cancels credential polling on stop and ignores a concurrent credential update', async () => {
+    let pollSignal!: AbortSignal;
+    let credentialsChanged!: () => void;
+    waitForAuthCodeImpl = () => new Promise(() => {});
+    waitForTokenChangeImpl = (signal) => {
+      pollSignal = signal;
+      return new Promise<void>((resolve) => (credentialsChanged = resolve));
+    };
+
+    const client = new HttpMcpClient('spliit', 'https://mcp.example.com/mcp', undefined, true);
+    await client.connect();
+    credentialsChanged();
+    await client.stop();
+    await flushOAuthFlow();
+
+    expect(pollSignal.aborted).toBe(true);
+    expect(authMock).not.toHaveBeenCalled();
+    expect(transportInstances[0].finishAuth).not.toHaveBeenCalled();
+    expect(transportInstances).toHaveLength(1);
   });
 });
 

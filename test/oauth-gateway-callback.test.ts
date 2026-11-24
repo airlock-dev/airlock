@@ -1,4 +1,5 @@
 import { mkdtemp, rm } from 'fs/promises';
+import { execFile } from 'child_process';
 import { createConnection } from 'net';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -90,6 +91,7 @@ describe('OAuth gateway callback mode', () => {
     tempHome = await mkdtemp(join(tmpdir(), 'airlock-oauth-gw-'));
     process.env.HOME = tempHome;
     logged.length = 0;
+    vi.mocked(execFile).mockClear();
     router = new OAuthCallbackRouter();
     app = await buildApp(router);
   });
@@ -125,6 +127,18 @@ describe('OAuth gateway callback mode', () => {
     expect(res.body).not.toContain(state);
     await expect(code).resolves.toBe('auth-code-123');
     expect(router.pendingCount()).toBe(0);
+  });
+
+  it('preserves a callback that arrives before the client starts waiting', async () => {
+    const provider = gatewayProvider('spliit', router);
+    const state = await startAuthorization(provider);
+
+    expect((await callback(app, { code: 'early-code', state })).statusCode).toBe(200);
+    await expect(provider.waitForAuthCode()).resolves.toBe('early-code');
+
+    const retry = await startAuthorization(provider);
+    expect((await callback(app, { error: 'access_denied', state: retry })).statusCode).toBe(200);
+    await expect(provider.waitForAuthCode()).rejects.toThrow('OAuth error: access_denied');
   });
 
   it('does not bind a loopback listener in gateway mode', async () => {
@@ -226,12 +240,15 @@ describe('OAuth gateway callback mode', () => {
     await expect(spliitCode).resolves.toBe('spliit-code');
   });
 
-  it('supersedes an earlier authorization when the provider prepares a new one', async () => {
+  it('opens the replacement sign-in link when the provider supersedes an authorization', async () => {
     const provider = gatewayProvider('spliit', router);
     const stale = await startAuthorization(provider);
     const code = provider.waitForAuthCode();
     const fresh = await startAuthorization(provider);
     expect(router.pendingCount()).toBe(1);
+    expect(execFile).toHaveBeenCalledTimes(2);
+    const replacementUrl = vi.mocked(execFile).mock.lastCall?.[1] as string[];
+    expect(new URL(replacementUrl[0]).searchParams.get('state')).toBe(fresh);
 
     expect((await callback(app, { code: 'old', state: stale })).statusCode).toBe(400);
     expect((await callback(app, { code: 'new', state: fresh })).statusCode).toBe(200);
@@ -242,11 +259,21 @@ describe('OAuth gateway callback mode', () => {
   it('withdraws the pending state when the flow is abandoned', async () => {
     const provider = gatewayProvider('spliit', router);
     const state = await startAuthorization(provider);
-    void provider.waitForAuthCode();
+    const code = provider.waitForAuthCode();
     provider.stopCallbackServer();
 
+    await expect(code).rejects.toThrow('OAuth callback cancelled');
     expect(router.pendingCount()).toBe(0);
     expect((await callback(app, { code: 'late', state })).statusCode).toBe(400);
+  });
+
+  it('does not register or open a sign-in link after the provider stops', async () => {
+    const provider = gatewayProvider('spliit', router);
+    provider.stop();
+    await startAuthorization(provider);
+
+    expect(execFile).not.toHaveBeenCalled();
+    expect(router.pendingCount()).toBe(0);
   });
 
   it('never logs authorization codes, states or callback query strings', async () => {
