@@ -1,7 +1,9 @@
 import { StdioMcpClient } from './stdio-client.js';
 import { SseMcpClient } from './sse-client.js';
 import { HttpMcpClient } from './http-client.js';
-import type { ProviderConnectionStatus } from './status.js';
+import type { OAuthGrantHealth, ProviderConnectionStatus } from './status.js';
+import type { OAuthStorageMode } from './oauth-store.js';
+import { releaseAllWriterLocks } from './oauth-lock.js';
 import type { McpServerConfig } from '../config/schema.js';
 import { resolveProviderBearerFile } from '../config/provider-credentials.js';
 import type { Tool } from '@modelcontextprotocol/server';
@@ -57,6 +59,12 @@ interface ClientPoolOptions {
   retryFailedConnections?: boolean;
   /** Provider IDs that should probe MCP 2026-07-28 (`server/discover`) even over stdio. */
   eventsProviders?: Set<string>;
+  /**
+   * OAuth grant storage access. `writer` (gateway, stdio agent, configure-agent) refreshes and
+   * persists grants while holding the store's writer lock. `readonly` (default; `airlock tools`,
+   * `lint`, dashboard probes) never refreshes, writes, or invalidates a grant.
+   */
+  oauthStorage?: OAuthStorageMode;
 }
 
 export class ClientPool {
@@ -150,7 +158,8 @@ export class ClientPool {
           cfg.client_secret,
           cfg.oauth_callback_url,
           cfg.client_credentials,
-          cfg.request_timeout_ms
+          cfg.request_timeout_ms,
+          { oauthStorage: this.options?.oauthStorage ?? 'readonly' }
         );
     }
   }
@@ -167,6 +176,17 @@ export class ClientPool {
 
   getProviderConnectionStatus(mcpId: string): ProviderConnectionStatus | undefined {
     return this.clients.get(mcpId)?.getConnectionStatus();
+  }
+
+  /** Grant health of every Airlock-held OAuth provider (for /health). */
+  oauthHealth(): Record<string, OAuthGrantHealth> {
+    const result: Record<string, OAuthGrantHealth> = {};
+    for (const [id, client] of this.clients) {
+      if (!(client instanceof HttpMcpClient)) continue;
+      const health = client.getOAuthHealth();
+      if (health) result[id] = health;
+    }
+    return result;
   }
 
   /** Whether Airlock owns an authorization-code OAuth credential for this provider. */
@@ -323,6 +343,7 @@ export class ClientPool {
     clearInterval(this.healthTimer);
     this.disableReconnect();
     await Promise.allSettled(Array.from(this.clients.values()).map((c) => c.stop()));
+    if (this.options?.oauthStorage === 'writer') await releaseAllWriterLocks();
   }
 
   /** SIGKILL any stdio child processes that survived graceful stop. */

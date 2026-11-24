@@ -1,5 +1,3 @@
-import { readFile } from 'fs/promises';
-import { join } from 'path';
 import { execFile } from 'child_process';
 import { createHash } from 'crypto';
 import { createServer, type Server as HttpServer } from 'http';
@@ -7,33 +5,71 @@ import type {
   OAuthClientProvider,
   OAuthClientMetadata,
   OAuthClientInformationFull,
+  OAuthDiscoveryState,
   OAuthTokens,
 } from '@modelcontextprotocol/client';
 import { childLogger } from '../util/logger.js';
-import { atomicWritePrivateFile } from '../util/atomic-file.js';
 import { adaptiveExpiryBuffer } from './oauth-timing.js';
+import {
+  OAuthGrantStore,
+  grantIssuer,
+  type OAuthStorageMode,
+  type PersistedGrant,
+} from './oauth-store.js';
 
 const log = childLogger('oauth');
 const PERSIST_RETRY_MS = 30 * 1000;
 const TOKEN_CHANGE_POLL_MS = 2 * 1000;
 
-interface PersistedData {
-  clientInfo?: OAuthClientInformationFull;
+export interface FileOAuthProviderOptions {
+  /** `readonly` for CLI commands that must never refresh/write/invalidate. Default `writer`. */
+  storage?: OAuthStorageMode;
+  /** Override `~/.airlock/oauth` (tests). */
+  storeDir?: string;
+}
+
+/** Everything the refresh engine needs, read from the stored grant. */
+export interface GrantSnapshot {
   tokens?: OAuthTokens;
-  codeVerifier?: string;
-  // Wall-clock (ms) when the current tokens were obtained. Used to compute when the access token
-  // should be proactively refreshed (obtainedAt + expires_in). Persisted so the schedule survives
-  // restarts; absent for tokens saved before this field existed (treated as "refresh promptly").
+  clientInfo?: OAuthClientInformationFull;
+  issuer?: string;
+  discovery?: OAuthDiscoveryState;
+  resource?: string;
   obtainedAt?: number;
 }
 
+export interface RefreshCommit {
+  /** Issuer of the AS that issued these tokens. */
+  issuer?: string;
+  /** Discovery state that produced a successful refresh (becomes the known-good state). */
+  discovery?: OAuthDiscoveryState;
+  /** Resource indicator that was sent; recorded when the grant had none recorded yet. */
+  resource?: string;
+}
+
+type StampedTokens = OAuthTokens & { issuer?: string };
+type StampedClient = OAuthClientInformationFull & { issuer?: string };
+
 /**
- * File-backed OAuthClientProvider that persists tokens to ~/.airlock/oauth/<server-id>.json
- * and opens the browser for authorization.
+ * File-backed OAuth credential store for one provider (`~/.airlock/oauth/<server-id>.json`).
+ *
+ * It plays two roles:
+ *
+ * 1. The SDK-facing {@link OAuthClientProvider} used ONLY for interactive authorization (preparing
+ *    a browser URL and exchanging the callback code). Everything an authorization attempt produces
+ *    — a new client registration, PKCE verifier, discovery state, resource — is staged under
+ *    `pending` and only replaces the stored grant when the code exchange succeeds. Starting a
+ *    browser flow therefore never clobbers a grant that may still be refreshable.
+ * 2. The grant store for Airlock's own refresh engine (`oauth-refresh.ts`), which never goes
+ *    through the SDK's `auth()` and so never triggers its credential invalidation.
+ *
+ * Invariant: nothing in here deletes a grant. `invalidateCredentials()` only discards staged
+ * pending state; an operator restore (`airlock oauth restore`) or a successful new authorization
+ * are the only ways a stored grant is replaced, and every replacement is backed up first.
  */
 export class FileOAuthProvider implements OAuthClientProvider {
-  private storePath: string;
-  private data: PersistedData = {};
+  readonly store: OAuthGrantStore;
+  private data: PersistedGrant = {};
   private callbackServer?: HttpServer;
   private authCodeResolve?: (code: string) => void;
   private browserOpenedAt = 0;
@@ -41,19 +77,25 @@ export class FileOAuthProvider implements OAuthClientProvider {
   /** A rotated token that is usable in memory but could not yet be committed to disk. */
   private persistenceDirty = false;
   private persistenceRetryTimer?: NodeJS.Timeout;
-  /** Serializes atomic replacements so an older save can never land after a newer one. */
-  private saveQueue: Promise<void> = Promise.resolve();
 
   constructor(
     private serverId: string,
     private callbackPort: number,
     private preregisteredClientId?: string,
     private preregisteredClientSecret?: string,
-    private relayCallbackUrl?: string
+    private relayCallbackUrl?: string,
+    options: FileOAuthProviderOptions = {}
   ) {
-    const home = process.env.HOME ?? process.env.USERPROFILE ?? '.';
-    const dir = join(home, '.airlock', 'oauth');
-    this.storePath = join(dir, `${serverId}.json`);
+    this.store = new OAuthGrantStore(serverId, options.storage ?? 'writer', options.storeDir);
+  }
+
+  get storageMode(): OAuthStorageMode {
+    return this.store.mode;
+  }
+
+  /** Whether this process may refresh/write this grant right now (holds the writer lock). */
+  canWrite(): Promise<boolean> {
+    return this.store.canWrite();
   }
 
   get redirectUrl(): string {
@@ -73,39 +115,54 @@ export class FileOAuthProvider implements OAuthClientProvider {
     };
   }
 
+  private preregisteredClient(): OAuthClientInformationFull | undefined {
+    if (!this.preregisteredClientId) return undefined;
+    return {
+      client_id: this.preregisteredClientId,
+      redirect_uris: [this.redirectUrl],
+      ...(this.preregisteredClientSecret && {
+        client_secret: this.preregisteredClientSecret,
+      }),
+    };
+  }
+
+  // ─── SDK-facing (interactive authorization only) ──────────────────────────────────────────────
+
   async clientInformation(): Promise<OAuthClientInformationFull | undefined> {
-    // If pre-registered credentials were provided, use them directly
-    // (skips dynamic client registration)
-    if (this.preregisteredClientId) {
-      return {
-        client_id: this.preregisteredClientId,
-        redirect_uris: [this.redirectUrl],
-        ...(this.preregisteredClientSecret && {
-          client_secret: this.preregisteredClientSecret,
-        }),
-      };
-    }
+    // Pre-registered credentials skip dynamic client registration.
+    const preregistered = this.preregisteredClient();
+    if (preregistered) return preregistered;
     await this.load();
-    const info = this.data.clientInfo;
+    const info = this.data.pending?.clientInfo ?? this.data.clientInfo;
     if (info?.redirect_uris?.length && !info.redirect_uris.includes(this.redirectUrl)) {
+      // Register a new client for the next authorization, but keep the stored registration: the
+      // stored refresh token is bound to it and refresh does not involve a redirect URI.
       log.info(
         {
           serverId: this.serverId,
           redirectUrl: this.redirectUrl,
           cachedRedirectUris: info.redirect_uris,
         },
-        'Invalidating OAuth client registration because redirect URI changed'
+        'Cached OAuth client registration uses a different redirect URI; the next authorization registers a new client (stored grant kept)'
       );
-      this.data = {};
-      await this.save();
       return undefined;
     }
-    return this.data.clientInfo;
+    return info;
   }
 
   async saveClientInformation(info: OAuthClientInformationFull): Promise<void> {
-    this.data.clientInfo = info;
-    await this.save();
+    if (this.preregisteredClientId) return;
+    await this.load();
+    if (this.data.pending?.clientInfo?.client_id === info.client_id) {
+      this.data.pending.clientInfo = info;
+    } else if (this.data.clientInfo?.client_id === info.client_id || !this.data.tokens) {
+      // Same registration (e.g. the SDK back-stamping its issuer) or no grant to protect yet.
+      this.data.clientInfo = info;
+    } else {
+      // A new registration while a grant exists: stage it until the new authorization succeeds.
+      this.data.pending = { startedAt: Date.now(), ...this.data.pending, clientInfo: info };
+    }
+    await this.save('client-registration');
   }
 
   async tokens(): Promise<OAuthTokens | undefined> {
@@ -113,92 +170,83 @@ export class FileOAuthProvider implements OAuthClientProvider {
     return this.data.tokens;
   }
 
+  /**
+   * Called by the SDK when an authorization-code exchange succeeds (or to back-stamp an issuer on
+   * the stored tokens). With an authorization attempt pending this commits the new grant — the
+   * only automatic way a stored grant is replaced. Without one, it behaves like a refresh commit.
+   */
   async saveTokens(tokens: OAuthTokens): Promise<void> {
-    // A fresh provider instance must load the persisted refresh token before handling a refresh
-    // response that may omit it.
     await this.load();
-    // Preserve an existing refresh_token when a refresh response omits one.
-    // Many OAuth providers return refresh_token only on the initial authorization
-    // (or rotate it and expect the client to retain the prior value until it is
-    // replaced). Blindly overwriting would drop the refresh_token, so the next
-    // access-token expiry would fail to refresh and force a full interactive
-    // re-authorization — the exact failure that silently takes headless MCPs down.
-    if (!tokens.refresh_token && this.data.tokens?.refresh_token) {
-      tokens = { ...tokens, refresh_token: this.data.tokens.refresh_token };
+    const stamped = tokens as StampedTokens;
+    const current = this.data.tokens as StampedTokens | undefined;
+    if (current && current.access_token === stamped.access_token) {
+      // Same token; the SDK is only stamping the issuer (SEP-2352).
+      if (stamped.issuer && current.issuer !== stamped.issuer) {
+        this.data.tokens = { ...current, issuer: stamped.issuer } as OAuthTokens;
+        this.data.issuer ??= stamped.issuer;
+        await this.persistGrant('issuer-stamp');
+      }
+      return;
     }
-    this.data.tokens = tokens;
-    this.data.obtainedAt = Date.now();
-    this.persistenceDirty = true;
-    try {
-      await this.save();
-    } catch (err) {
-      // The freshly rotated token still works in this process. Do not make the SDK retry the token
-      // endpoint: that can invalidate this token too. Hold it in memory and retry only the disk
-      // commit until storage recovers.
-      log.warn(
-        { serverId: this.serverId, reason: err instanceof Error ? err.message : String(err) },
-        'Could not persist OAuth tokens; holding them in memory and retrying storage'
+    const pending = this.data.pending;
+    if (pending) {
+      const previous = this.data;
+      const issuer = stamped.issuer ?? pending.issuer;
+      let clientInfo = pending.clientInfo ?? previous.clientInfo;
+      if (clientInfo && issuer && (clientInfo as StampedClient).issuer !== issuer) {
+        clientInfo = { ...clientInfo, issuer } as OAuthClientInformationFull;
+      }
+      this.data = {
+        clientInfo,
+        tokens,
+        obtainedAt: Date.now(),
+        ...(issuer ? { issuer } : {}),
+        ...(pending.discovery ? { discovery: pending.discovery } : {}),
+        ...(pending.resource ? { resource: pending.resource } : {}),
+      };
+      log.info(
+        {
+          serverId: this.serverId,
+          issuer,
+          previousIssuer: grantIssuer(previous),
+          replacedGrant: Boolean(previous.tokens),
+          refreshTokenPresent: Boolean(tokens.refresh_token),
+          resource: pending.resource,
+        },
+        'OAuth authorization completed; stored the new grant (previous grant kept in history)'
       );
-      this.schedulePersistenceRetry();
+      await this.persistGrant('authorization');
+      return;
     }
+    await this.commitRefresh(tokens, stamped.issuer ? { issuer: stamped.issuer } : {});
   }
 
   /**
-   * How long (ms) until the access token should be proactively refreshed — i.e. `bufferMs` before it
-   * expires. Returns `undefined` when there is nothing to schedule (no refresh_token, so a refresh is
-   * impossible, or no `expires_in`, so the lifetime is unknown). Never negative. Tokens persisted
-   * before `obtainedAt` existed report `0` (refresh promptly) rather than trusting a stale baseline.
-   *
-   * The caller drives proactive refresh: many OAuth servers signal access-token expiry with an
-   * application-level error rather than HTTP 401, so the reactive on-401 refresh never fires and the
-   * connection silently rots. Refreshing ahead of expiry avoids that entirely.
+   * The SDK calls this on invalid_grant / invalid_client / unauthorized_client. Airlock never lets
+   * that delete a grant: an issuer outage, a clock problem, a second process racing a rotation, or
+   * a misrouted request (wrong AS, missing `resource`) all produce those errors for grants that
+   * are still good. Only staged authorization state is discarded.
    */
-  async msUntilRefresh(bufferMs: number): Promise<number | undefined> {
+  async invalidateCredentials(
+    scope: 'all' | 'client' | 'tokens' | 'verifier' | 'discovery'
+  ): Promise<void> {
     await this.load();
-    const tokens = this.data.tokens;
-    if (!tokens?.refresh_token || !tokens.expires_in) return undefined;
-    const obtainedAt = this.data.obtainedAt ?? 0;
-    const lifetimeMs = tokens.expires_in * 1000;
-    const expiresAt = obtainedAt + lifetimeMs;
-    const effectiveBufferMs = adaptiveExpiryBuffer(lifetimeMs, bufferMs);
-    return Math.max(0, expiresAt - effectiveBufferMs - Date.now());
-  }
-
-  /** Opaque marker used to notice credentials completed by another Airlock process/tool. */
-  async tokenVersion(): Promise<string | undefined> {
-    await this.load();
-    if (!this.data.tokens) return undefined;
-    return createHash('sha256').update(JSON.stringify(this.data.tokens)).digest('hex');
-  }
-
-  /** Wait until an out-of-band OAuth helper replaces the token file. */
-  async waitForTokenChange(previous: string | undefined, signal: AbortSignal): Promise<void> {
-    while (!signal.aborted) {
-      await new Promise<void>((resolve) => {
-        const timer = setTimeout(resolve, TOKEN_CHANGE_POLL_MS);
-        timer.unref?.();
-        signal.addEventListener(
-          'abort',
-          () => {
-            clearTimeout(timer);
-            resolve();
-          },
-          { once: true }
-        );
-      });
-      if (signal.aborted) return;
-      if ((await this.tokenVersion()) !== previous) return;
-    }
-  }
-
-  async invalidateCredentials(scope: 'all' | 'tokens'): Promise<void> {
-    log.info({ serverId: this.serverId, scope }, 'Invalidating OAuth credentials');
-    if (scope === 'all') {
-      this.data = {};
-    } else {
-      delete this.data.tokens;
-    }
-    await this.save();
+    log.warn(
+      {
+        serverId: this.serverId,
+        scope,
+        refreshTokenPresent: Boolean(this.data.tokens?.refresh_token),
+      },
+      'OAuth SDK requested credential invalidation; keeping the stored grant (only staged authorization state is discarded)'
+    );
+    const pending = this.data.pending;
+    if (!pending) return;
+    if (scope === 'all') delete this.data.pending;
+    if (scope === 'client') delete pending.clientInfo;
+    if (scope === 'verifier') delete pending.codeVerifier;
+    if (scope === 'discovery') delete pending.discovery;
+    if (scope === 'tokens') return;
+    await this.save('authorization-reset').catch(() => {});
   }
 
   redirectToAuthorization(url: URL): Promise<void> {
@@ -226,14 +274,157 @@ export class FileOAuthProvider implements OAuthClientProvider {
     return Promise.resolve();
   }
 
+  /** Stage the PKCE verifier for a new authorization. The stored grant is not touched. */
   async saveCodeVerifier(verifier: string): Promise<void> {
-    this.data.codeVerifier = verifier;
-    await this.save();
+    await this.load();
+    this.data.pending = { startedAt: Date.now(), ...this.data.pending, codeVerifier: verifier };
+    delete this.data.codeVerifier;
+    await this.save('authorization-start');
   }
 
   async codeVerifier(): Promise<string> {
     await this.load();
-    return this.data.codeVerifier ?? '';
+    return this.data.pending?.codeVerifier ?? this.data.codeVerifier ?? '';
+  }
+
+  /** Discovery state of the authorization attempt in progress (binds the callback leg's issuer). */
+  async discoveryState(): Promise<OAuthDiscoveryState | undefined> {
+    await this.load();
+    return this.data.pending?.discovery;
+  }
+
+  async saveDiscoveryState(state: OAuthDiscoveryState): Promise<void> {
+    await this.load();
+    this.data.pending = { startedAt: Date.now(), ...this.data.pending, discovery: state };
+    await this.save('authorization-discovery');
+  }
+
+  async saveResourceUrl(resourceUrl: string): Promise<void> {
+    await this.load();
+    if (this.data.pending?.resource === resourceUrl) return;
+    this.data.pending = { startedAt: Date.now(), ...this.data.pending, resource: resourceUrl };
+    await this.save('authorization-resource');
+  }
+
+  async saveAuthorizationServerUrl(issuer: string): Promise<void> {
+    await this.load();
+    if (this.data.pending?.issuer === issuer) return;
+    this.data.pending = { startedAt: Date.now(), ...this.data.pending, issuer };
+    await this.save('authorization-issuer');
+  }
+
+  /** Start a fresh authorization attempt: discard stale staged state, keep the stored grant. */
+  async beginAuthorization(): Promise<void> {
+    await this.load();
+    this.data.pending = { startedAt: Date.now() };
+    delete this.data.codeVerifier;
+    await this.save('authorization-start');
+  }
+
+  // ─── Refresh-engine facing ────────────────────────────────────────────────────────────────────
+
+  async grant(): Promise<GrantSnapshot> {
+    await this.load();
+    return {
+      tokens: this.data.tokens,
+      clientInfo: this.preregisteredClient() ?? this.data.clientInfo,
+      issuer: grantIssuer(this.data),
+      discovery: this.data.discovery,
+      resource: this.data.resource,
+      obtainedAt: this.data.obtainedAt,
+    };
+  }
+
+  /** Persist tokens obtained by refreshing the stored grant. */
+  async commitRefresh(tokens: OAuthTokens, meta: RefreshCommit = {}): Promise<void> {
+    // A fresh provider instance must load the persisted refresh token before handling a refresh
+    // response that may omit it.
+    await this.load();
+    const previous = this.data.tokens;
+    const previousObtainedAt = this.data.obtainedAt;
+    const refreshTokenReturned = Boolean(tokens.refresh_token);
+    const refreshTokenRotated = Boolean(
+      tokens.refresh_token &&
+      previous?.refresh_token &&
+      tokens.refresh_token !== previous.refresh_token
+    );
+    // Preserve an existing refresh_token when a refresh response omits one. Many OAuth providers
+    // return refresh_token only on the initial authorization; overwriting would drop it.
+    if (!tokens.refresh_token && previous?.refresh_token) {
+      tokens = { ...tokens, refresh_token: previous.refresh_token };
+    }
+    const issuer = meta.issuer ?? (previous as StampedTokens | undefined)?.issuer;
+    this.data.tokens = issuer ? { ...tokens, issuer } : tokens;
+    this.data.obtainedAt = Date.now();
+    if (meta.issuer) {
+      this.data.issuer = meta.issuer;
+      const client = this.data.clientInfo as StampedClient | undefined;
+      if (client && client.issuer && client.issuer !== meta.issuer) {
+        this.data.clientInfo = { ...client, issuer: meta.issuer } as OAuthClientInformationFull;
+      }
+    }
+    if (meta.discovery) this.data.discovery = meta.discovery;
+    if (meta.resource && !this.data.resource) this.data.resource = meta.resource;
+    await this.persistGrant('refresh', {
+      refreshTokenReturned,
+      refreshTokenRotated,
+      accessExpiresInSec: tokens.expires_in,
+      previousTokenAgeSec: previousObtainedAt
+        ? Math.floor((this.data.obtainedAt - previousObtainedAt) / 1000)
+        : undefined,
+    });
+  }
+
+  /**
+   * How long (ms) until the access token should be proactively refreshed — i.e. `bufferMs` before it
+   * expires. Returns `undefined` when there is nothing to schedule (no refresh_token, so a refresh is
+   * impossible, or no `expires_in`, so the lifetime is unknown). Never negative. Tokens persisted
+   * before `obtainedAt` existed report `0` (refresh promptly) rather than trusting a stale baseline.
+   */
+  async msUntilRefresh(bufferMs: number): Promise<number | undefined> {
+    await this.load();
+    const tokens = this.data.tokens;
+    if (!tokens?.refresh_token || !tokens.expires_in) return undefined;
+    const obtainedAt = this.data.obtainedAt ?? 0;
+    const lifetimeMs = tokens.expires_in * 1000;
+    const expiresAt = obtainedAt + lifetimeMs;
+    const effectiveBufferMs = adaptiveExpiryBuffer(lifetimeMs, bufferMs);
+    return Math.max(0, expiresAt - effectiveBufferMs - Date.now());
+  }
+
+  /** Whether the stored access token is past its declared expiry (unknown lifetime → false). */
+  async accessTokenExpired(): Promise<boolean> {
+    await this.load();
+    const tokens = this.data.tokens;
+    if (!tokens?.expires_in || !this.data.obtainedAt) return false;
+    return Date.now() >= this.data.obtainedAt + tokens.expires_in * 1000;
+  }
+
+  /** Opaque marker used to notice credentials completed by another Airlock process/tool. */
+  async tokenVersion(): Promise<string | undefined> {
+    await this.load();
+    if (!this.data.tokens) return undefined;
+    return createHash('sha256').update(JSON.stringify(this.data.tokens)).digest('hex');
+  }
+
+  /** Wait until the token file changes (another process, an operator restore, or our refresh). */
+  async waitForTokenChange(previous: string | undefined, signal: AbortSignal): Promise<void> {
+    while (!signal.aborted) {
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, TOKEN_CHANGE_POLL_MS);
+        timer.unref?.();
+        signal.addEventListener(
+          'abort',
+          () => {
+            clearTimeout(timer);
+            resolve();
+          },
+          { once: true }
+        );
+      });
+      if (signal.aborted) return;
+      if ((await this.tokenVersion()) !== previous) return;
+    }
   }
 
   /**
@@ -322,22 +513,28 @@ export class FileOAuthProvider implements OAuthClientProvider {
     // because the previous disk commit failed.
     if (this.persistenceDirty) return;
     try {
-      const data = await readFile(this.storePath, 'utf-8');
-      this.data = JSON.parse(data) as PersistedData;
-    } catch {
-      this.data = {};
+      const { data, corrupt } = await this.store.read();
+      if (corrupt) {
+        log.error(
+          { serverId: this.serverId, path: this.store.path },
+          'OAuth grant file is not valid JSON; leaving it untouched (it is backed up before any replacement)'
+        );
+      }
+      this.data = data;
+    } catch (err) {
+      log.warn(
+        { serverId: this.serverId, reason: err instanceof Error ? err.message : String(err) },
+        'Could not read OAuth grant file; using the last state held in memory'
+      );
     }
   }
 
-  private async save(): Promise<void> {
-    const snapshot = JSON.stringify(this.data, null, 2);
-    const write = this.saveQueue.then(() => atomicWritePrivateFile(this.storePath, snapshot));
-    this.saveQueue = write.catch(() => {});
-    await write;
-
-    // A newer mutation may have arrived while this snapshot waited on the queue. Only declare the
-    // store clean when the file we just committed still represents current memory.
-    if (snapshot === JSON.stringify(this.data, null, 2)) {
+  private async save(reason: string): Promise<void> {
+    const snapshot = JSON.stringify(this.data);
+    await this.store.write(this.data, reason);
+    // A newer mutation may have arrived while this snapshot waited on the write queue. Only
+    // declare the store clean when the file we just committed still represents current memory.
+    if (snapshot === JSON.stringify(this.data)) {
       this.persistenceDirty = false;
       if (this.persistenceRetryTimer) {
         clearTimeout(this.persistenceRetryTimer);
@@ -346,11 +543,43 @@ export class FileOAuthProvider implements OAuthClientProvider {
     }
   }
 
+  /** Commit a token change; on storage failure hold it in memory and retry only the disk write. */
+  private async persistGrant(reason: string, fields: Record<string, unknown> = {}): Promise<void> {
+    this.persistenceDirty = true;
+    try {
+      await this.save(reason);
+      // Record the refresh chain without logging token values or token-derived fingerprints.
+      log.info(
+        {
+          serverId: this.serverId,
+          reason,
+          refreshTokenPresent: Boolean(this.data.tokens?.refresh_token),
+          ...fields,
+          persisted: true,
+        },
+        'OAuth tokens saved'
+      );
+    } catch (err) {
+      // The fresh token still works in this process. Do not make anyone re-run the token request:
+      // with rotating refresh tokens that would spend the new token too. Retry only the disk write.
+      log.warn(
+        {
+          serverId: this.serverId,
+          reason,
+          ...fields,
+          error: err instanceof Error ? err.message : String(err),
+        },
+        'Could not persist OAuth tokens; holding them in memory and retrying storage'
+      );
+      this.schedulePersistenceRetry();
+    }
+  }
+
   private schedulePersistenceRetry(): void {
     if (this.persistenceRetryTimer) return;
     this.persistenceRetryTimer = setTimeout(() => {
       this.persistenceRetryTimer = undefined;
-      void this.save().catch((err) => {
+      void this.save('persistence-retry').catch((err) => {
         log.warn(
           { serverId: this.serverId, reason: err instanceof Error ? err.message : String(err) },
           'OAuth token persistence still unavailable; retrying'

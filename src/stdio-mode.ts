@@ -138,6 +138,8 @@ export async function runStdioMode(
 
   const pool = new ClientPool(filteredMcps, {
     eventsProviders: eventEnabledProviders({ [agentId]: agentConfig }),
+    // Writes only while holding the store's writer lock; alongside a running gateway it reads.
+    oauthStorage: 'writer',
   });
   await pool.initialize();
 

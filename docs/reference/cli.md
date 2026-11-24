@@ -134,6 +134,11 @@ airlock tools --provider github --grep pull --json
 
 This command may start provider clients. Static commands such as `config check`, `explain` without `--expand`, `who-can`, and `lint` do not.
 
+Provider clients started by `tools`, `lint`, `explain --expand` and the dashboard probes open OAuth
+token storage **read-only**: they use the stored access token but never refresh, rewrite, or
+invalidate a grant. Only the process holding the OAuth writer lock (the gateway, or a stdio agent
+when no gateway runs) refreshes tokens.
+
 ## Lint config hygiene
 
 Run static hygiene checks over a valid resolved config:
@@ -302,6 +307,28 @@ It accepts the same `--config`, `--port` (default 4177), `--host`,
 This editor updates the local YAML file and writes a backup before saving. Use
 `airlock run` when you also want live provider health, MCP status, and tool
 discovery in the same local command center.
+
+## Inspect and restore OAuth grants
+
+Airlock-held OAuth grants (`oauth: true`) live in `~/.airlock/oauth/<provider>.json`. Every
+replacement of a grant — a refresh rotation, a new authorization, a restore — first copies the
+previous version to `~/.airlock/oauth/.history/<provider>/` (last 10 kept, owner-only permissions).
+
+```bash
+airlock oauth status [provider]            # what is stored + who holds the writer lock
+airlock oauth history <provider>           # backups, newest first
+airlock oauth restore <provider> <version> # put a backup back (the replaced grant is backed up too)
+```
+
+None of these print token values. A running gateway picks up a restored grant on its next token
+read or refresh retry.
+
+Airlock never deletes a grant on its own. An issuer answering `invalid_grant`, an issuer URL change,
+or a metadata outage leaves the stored grant in place; refresh is retried with exponential backoff
+(1 minute, doubling to 30 minutes, forever) and the state is reported under `oauthHealth` in
+`/health` and on the provider status (`refresh_failing`, `grant_rejected`, `issuerChanged`). When the
+access token is no longer usable a browser authorization is also prepared; it only replaces the
+stored grant once it completes.
 
 ## Setup OpenClaw integration
 

@@ -10,6 +10,7 @@ import { runCommandCenter, runConfigureWeb, runDashboard } from './configure-web
 import { runConfigureCli } from './configure-cli/cli.js';
 import { runIntrospection } from './introspect/cli.js';
 import { runSetupOpenclaw } from './setup-openclaw/cli.js';
+import { runOAuthCli } from './pool/oauth-cli.js';
 import { logger } from './util/logger.js';
 
 // Handle subcommands before parseArgs
@@ -45,6 +46,11 @@ if (subcommand === 'discover') {
   runGateway(process.argv.slice(3));
 } else if (subcommand === 'configure-cli') {
   runConfigureCli(process.argv.slice(3)).catch((err) => {
+    console.error(err instanceof Error ? err.message : String(err));
+    process.exit(1);
+  });
+} else if (subcommand === 'oauth') {
+  runOAuthCli(process.argv.slice(3)).catch((err) => {
     console.error(err instanceof Error ? err.message : String(err));
     process.exit(1);
   });
@@ -102,6 +108,7 @@ Usage:
   airlock who-can <tool-or-glob> [options]
   airlock tools [options]
   airlock lint [options]
+  airlock oauth <status|history|restore> [...]
 
 Options:
   -c, --config <path>    Config file path (default: ./airlock.yaml)
@@ -125,6 +132,7 @@ Subcommands:
   who-can                Reverse-lookup which agents can use a tool
   tools                  Enumerate live provider tools
   lint                   Static config hygiene warnings
+  oauth                  Inspect OAuth grants; list/restore grant backups (no secrets printed)
 
 Examples:
   # Start full gateway server
