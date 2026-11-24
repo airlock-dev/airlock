@@ -159,6 +159,19 @@ async function waitBounded(
 // Contexts re-entering the pipeline to run a call that was approved after the agent was answered
 // "pending". Kept out of ctx.meta, which is forwarded to the provider and could not be trusted.
 const preApproved = new WeakMap<ToolCallContext, string>();
+// Calls answered "pending" whose run on approval Airlock holds. Their admission (e.g. a rate-limit
+// slot) stands for that later run.
+const heldForApproval = new WeakSet<ToolCallContext>();
+
+/** This context is the run of a call the operator approved after it was answered "pending". */
+export function isApprovedRerun(ctx: ToolCallContext): boolean {
+  return preApproved.has(ctx);
+}
+
+/** This call was answered "pending" and will run on approval in a later context. */
+export function isHeldForApproval(ctx: ToolCallContext): boolean {
+  return heldForApproval.has(ctx);
+}
 
 export function hitlGateMiddleware(): Middleware {
   return async (ctx, next) => {
@@ -305,12 +318,14 @@ export function hitlGateMiddleware(): Middleware {
           ? () => reenter((fresh) => preApproved.set(fresh, ticket.id))
           : undefined;
       if (!hitlEngine.spill(ticket.id, runner)) return undefined;
+      const willExecute = hitlEngine.deferred.get(ticket.id)?.willExecute ?? false;
+      if (willExecute) heldForApproval.add(ctx);
       audit('hitl_pending', { hitl_code: ticket.code });
       return pendingResponse(ctx.toolName, {
         id: ticket.id,
         status: 'pending',
         expiresAt: hitlEngine.expiresAt(ticket.id),
-        executeOnApprove: hitlEngine.deferred.get(ticket.id)?.willExecute ?? false,
+        executeOnApprove: willExecute,
       });
     };
 

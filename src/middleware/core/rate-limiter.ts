@@ -1,6 +1,7 @@
 import { ProtocolError, ProtocolErrorCode } from '@modelcontextprotocol/server';
 import type { Middleware } from '../types.js';
 import { wasDispatched } from './execute.js';
+import { isApprovedRerun, isHeldForApproval } from './hitl-gate.js';
 
 export interface RateLimiterOptions {
   max_requests: number;
@@ -31,6 +32,9 @@ export function rateLimiterMiddleware(opts: RateLimiterOptions): Middleware {
   const { max_requests, window_ms, per = 'agent' } = opts;
 
   return async (ctx, next) => {
+    // The approved run of a call answered "pending" was admitted (and counted) when the agent made
+    // it; the operator's approval must not then be undone by a budget spent in the meantime.
+    if (isApprovedRerun(ctx)) return next();
     const key = getKey(ctx.agentId, ctx.toolName, per);
     const now = Date.now();
     const timestamps = pruneWindow(windows.get(key) ?? [], window_ms, now);
@@ -47,12 +51,13 @@ export function rateLimiterMiddleware(opts: RateLimiterOptions): Middleware {
     // Count the call when it is admitted, not when it finishes: otherwise concurrent calls (or calls
     // parked on an approval) all see an empty window. A call that never reaches the downstream
     // (denied by policy or at approval, rejected by schema validation) is refunded once it settles,
-    // so retrying a denied tool cannot use up the budget for allowed ones.
+    // so retrying a denied tool cannot use up the budget for allowed ones. A call answered
+    // "pending" that will run on approval keeps its slot: that slot is its later run's.
     timestamps.push(now);
     try {
       return await next();
     } finally {
-      if (!wasDispatched(ctx)) refund(key, now);
+      if (!wasDispatched(ctx) && !isHeldForApproval(ctx)) refund(key, now);
     }
   };
 }
