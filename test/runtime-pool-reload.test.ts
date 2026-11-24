@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadConfig, loadConfigDetailed } from '../src/config/loader.js';
+import { discoverTools } from '../src/configure-web/cli.js';
 import { ClientPool } from '../src/pool/pool.js';
 import { HttpMcpClient } from '../src/pool/http-client.js';
 import { getMcpConfigs, McpServerConfig } from '../src/config/schema.js';
@@ -64,8 +65,52 @@ describe('ClientPool.reload', () => {
       expect(stop).not.toHaveBeenCalled();
       finishCall('completed');
       await expect(inFlight).resolves.toBe('completed');
+
+      writeFileSync(tokenFile, 'rotated-bearer\n');
+      await pool.reload(getMcpConfigs(loadConfig(configFile).providers));
+      expect(connected).toHaveLength(3);
+      expect(connected[2]).toEqual({
+        url: 'https://added.example.com',
+        headers: { Authorization: 'Bearer rotated-bearer' },
+      });
+      expect(stop).toHaveBeenCalledTimes(1);
     } finally {
       await pool.stop();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('uses the bearer file for tool discovery from raw config', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'airlock-discovery-'));
+    const configFile = join(directory, 'airlock.yaml');
+    const tokenFile = join(directory, 'bearer');
+    writeFileSync(tokenFile, 'fixture-discovery\n', { mode: 0o600 });
+    writeFileSync(
+      configFile,
+      `providers:
+  workspace:
+    type: http
+    url: https://workspace.example.com
+    bearer_token_file: ${JSON.stringify(tokenFile)}
+`
+    );
+    const connect = vi.spyOn(HttpMcpClient.prototype, 'connect').mockImplementation(async function (
+      this: HttpMcpClient
+    ) {
+      const { headers } = this as unknown as { headers?: Record<string, string> };
+      expect(headers?.Authorization).toBe('Bearer fixture-discovery');
+    });
+    vi.spyOn(HttpMcpClient.prototype, 'isReady').mockReturnValue(true);
+    vi.spyOn(HttpMcpClient.prototype, 'listTools').mockResolvedValue([
+      { name: 'list_items', inputSchema: { type: 'object' } },
+    ]);
+    vi.spyOn(HttpMcpClient.prototype, 'stop').mockResolvedValue();
+    try {
+      const result = await discoverTools(configFile);
+      expect(connect).toHaveBeenCalledOnce();
+      expect(result.errors).toEqual([]);
+      expect(result.tools.map((tool) => tool.name)).toContain('workspace/list_items');
+    } finally {
       rmSync(directory, { recursive: true, force: true });
     }
   });

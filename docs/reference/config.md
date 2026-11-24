@@ -106,10 +106,16 @@ providers:
 
 Airlock reads the token during config load. On a successful reload it connects
 the new provider while existing provider connections keep serving requests.
-The file contains one bearer token and can end with a newline. Use a single
-authorization source for the provider. A missing or invalid token file causes
-Airlock to keep the previous configuration on reload. After replacing a token
-file, save the configuration file to trigger a reload.
+The file contains one bearer token and can end with a newline. The file size
+limit is 16 KiB. Use a single authorization source for the provider. A missing
+or invalid token file fails startup config validation or preserves the previous
+configuration during a reload. `config lint` and `config check --no-resolve`
+validate the configuration structure without opening credential files.
+
+After replacing a token file, save the configuration file to trigger a reload.
+Airlock reconnects the provider whose credential changed. Requests already in
+flight to that provider may be interrupted, while other providers keep their
+connections.
 
 ### App identity: `client_credentials`
 

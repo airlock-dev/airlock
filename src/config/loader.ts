@@ -1,4 +1,4 @@
-import { readFileSync, statSync } from 'fs';
+import { readFileSync } from 'fs';
 import { isIP } from 'net';
 import { parse as parseYaml } from 'yaml';
 import { hasAgentCredential } from '../security/request.js';
@@ -9,6 +9,7 @@ import {
   withEnvVarResolution,
 } from './schema.js';
 import { applyProfiles } from './profiles.js';
+import { hasConflictingBearerAuth, resolveProviderBearerFile } from './provider-credentials.js';
 import { matches } from '../allowlist/pattern.js';
 import { AIRLOCK_APPROVAL_TOOLS, AIRLOCK_NON_ASK_TOOLS } from '../airlock/tools.js';
 import { childLogger } from '../util/logger.js';
@@ -127,18 +128,12 @@ export function loadConfigDetailed(
 
 function resolveProviderBearerFiles(config: Config, diagnostics: ConfigDiagnostic[]): void {
   for (const [id, provider] of Object.entries(getMcpConfigs(config.providers))) {
-    if (provider.type !== 'http' || !provider.bearer_token_file) continue;
     try {
-      if (!statSync(provider.bearer_token_file).isFile()) throw new Error('Expected a file');
-      const token = readFileSync(provider.bearer_token_file, 'utf8').trim();
-      if (!/^[A-Za-z0-9._~+/-]+=*$/.test(token)) throw new Error('Expected a bearer token');
-      // Resolve into the ordinary connection settings after taking the raw config snapshot.
-      provider.headers = { ...provider.headers, Authorization: `Bearer ${token}` };
-      delete provider.bearer_token_file;
-    } catch {
+      config.providers[id] = resolveProviderBearerFile(provider);
+    } catch (error) {
       diagnostics.push({
         level: 'error',
-        message: `Provider "${id}" bearer_token_file must be a readable file containing one bearer token.`,
+        message: `Provider "${id}": ${error instanceof Error ? error.message : 'Invalid bearer token file.'}`,
       });
     }
   }
@@ -399,12 +394,7 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
   // rather than let whichever code path runs first decide silently.
   for (const [providerId, provider] of Object.entries(config.providers)) {
     if (provider === 'builtin' || provider.type !== 'http') continue;
-    if (
-      provider.bearer_token_file &&
-      (provider.oauth ||
-        provider.client_credentials ||
-        Object.keys(provider.headers ?? {}).some((name) => name.toLowerCase() === 'authorization'))
-    ) {
+    if (hasConflictingBearerAuth(provider)) {
       diagnostics.push({
         level: 'error',
         message: `Provider "${providerId}" sets bearer_token_file with another Authorization source.`,

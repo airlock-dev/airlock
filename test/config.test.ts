@@ -389,6 +389,29 @@ describe('loadConfig()', () => {
     rmSync(dir, { recursive: true });
   });
 
+  it.each([
+    ['empty file', ''],
+    ['multiple tokens', 'first\nsecond\n'],
+    ['oversized file', 'x'.repeat(16 * 1024 + 1)],
+    ['directory', null],
+  ])('rejects a bearer credential that is a %s', (_description, contents) => {
+    const tokenPath = contents === null ? dir : join(dir, 'bearer');
+    if (contents !== null) writeFileSync(tokenPath, contents, { mode: 0o600 });
+    const path = join(dir, 'gateway.yaml');
+    writeFileSync(
+      path,
+      `providers:
+  workspace:
+    type: http
+    url: https://workspace.example.com
+    bearer_token_file: ${JSON.stringify(tokenPath)}
+`
+    );
+    expect(() => loadConfig(path)).toThrow(
+      'readable file containing one bearer token up to 16 KiB'
+    );
+  });
+
   it('loads a valid YAML config file', () => {
     const yaml = `
 server:
