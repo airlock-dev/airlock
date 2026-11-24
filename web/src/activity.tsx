@@ -1,230 +1,307 @@
-import { useEffect, useState } from 'preact/hooks';
+import { useEffect, useMemo, useState } from 'preact/hooks';
+import { Activity as ActivityIcon, Bell, BellOff, RotateCw } from 'lucide-preact';
 import { api } from './api';
 import { useStore } from './store';
-import type { AuditEntry, PendingApproval } from './types';
-import { Button, Empty, Sheet, cx, relativeTime } from './ui';
+import type { AuditEntry } from './types';
+import {
+  ArgsTable,
+  Button,
+  Empty,
+  SearchInput,
+  ToolCode,
+  clockTime,
+  cx,
+  formatDuration,
+  fullTime,
+  plural,
+  relativeTime,
+} from './ui';
 
-function isQuestion(p: PendingApproval) {
-  return p.tool === 'airlock/ask_user';
+type Bucket = 'all' | 'allowed' | 'approval' | 'denied' | 'error';
+
+export function auditBucket(result: string): Exclude<Bucket, 'all'> {
+  const lower = result.toLowerCase();
+  if (/error|timeout|disconnected|canary/.test(lower)) return 'error';
+  if (/denied|injection|blocked/.test(lower)) return 'denied';
+  if (/hitl|ask|pending|plan/.test(lower)) return 'approval';
+  return 'allowed';
 }
 
-function questionText(p: PendingApproval) {
-  const value = p.args.question ?? p.args.title ?? p.args.message;
-  return typeof value === 'string' && value.trim() ? value.trim() : 'Question from agent';
-}
+const BUCKETS: Array<{ id: Bucket; label: string }> = [
+  { id: 'all', label: 'All' },
+  { id: 'allowed', label: 'Allowed' },
+  { id: 'approval', label: 'Approvals' },
+  { id: 'denied', label: 'Denied' },
+  { id: 'error', label: 'Errors' },
+];
 
-function pretty(value: unknown): string {
-  if (value && typeof value === 'object') return JSON.stringify(value, null, 2);
-  try {
-    return JSON.stringify(JSON.parse(String(value)), null, 2);
-  } catch {
-    return String(value ?? '');
-  }
+const DOT: Record<Exclude<Bucket, 'all'>, string> = {
+  allowed: 'is-allow',
+  approval: 'is-ask',
+  denied: 'is-deny',
+  error: 'is-deny',
+};
+
+const RESULT_LABEL: Record<string, string> = {
+  allowed: 'Allowed',
+  denied: 'Denied',
+  hitl_approved: 'Approved',
+  hitl_denied: 'Rejected',
+  injection_blocked: 'Injection blocked',
+  error: 'Error',
+};
+
+function resultLabel(result: string): string {
+  if (RESULT_LABEL[result]) return RESULT_LABEL[result];
+  const text = result.replace(/_/g, ' ').trim();
+  return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
 export function Activity() {
-  const { state, meta, pending, activity, refreshPending, refreshStatus, toast } = useStore();
-  // `airlock run` and `configure-web` see pending requests in the audit DB but have no approval
-  // routes; deciding happens in the gateway's own dashboard or a companion app.
-  const canDecide = meta?.approvals === true;
+  const { state, pending, activity, eventTick } = useStore();
   const [entries, setEntries] = useState<AuditEntry[]>([]);
   const [dbPath, setDbPath] = useState('');
+  const [loaded, setLoaded] = useState(false);
   const [auditError, setAuditError] = useState<string | null>(null);
   const [agent, setAgent] = useState('');
-  const [tool, setTool] = useState('');
-  const [open, setOpen] = useState<PendingApproval | null>(null);
+  const [query, setQuery] = useState('');
+  const [bucket, setBucket] = useState<Bucket>('all');
+  const [loading, setLoading] = useState(false);
+  const [allNotes, setAllNotes] = useState(false);
 
-  const load = () =>
-    api
-      .logs({ agent, tool, limit: '100' })
+  const load = () => {
+    setLoading(true);
+    return api
+      .logs({ agent, limit: '250' })
       .then((result) => {
         setEntries(result.entries ?? []);
         setDbPath(result.dbPath);
         setAuditError(result.error ?? null);
       })
-      .catch((e) => setAuditError(e.message));
-
-  useEffect(() => {
-    const timer = setTimeout(load, 200);
-    return () => clearTimeout(timer);
-  }, [agent, tool, pending.length]);
-
-  const decide = async (
-    p: PendingApproval,
-    action: 'approve' | 'deny',
-    remember?: string,
-    durationMs?: number
-  ) => {
-    try {
-      await api.decide(action, p.code, remember, durationMs);
-      setOpen(null);
-      toast(action === 'approve' ? `Approved ${p.tool}` : `Denied ${p.tool}`);
-      await Promise.all([refreshPending(), refreshStatus()]);
-    } catch (e) {
-      toast((e as Error).message, 'error');
-    }
+      .catch((e) => setAuditError(e.message))
+      .finally(() => {
+        setLoading(false);
+        setLoaded(true);
+      });
   };
 
-  // Oldest first, whatever order the initial load and live events arrived in, so the top row is
-  // always the one the keyboard shortcuts act on.
-  const visiblePending = pending
-    .filter((p) => !agent || p.agentId === agent)
-    .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
-
-  // a / d act on the open request, or the oldest one shown. Never a request hidden by the filter.
+  // Reload when the agent filter changes or a live event arrives.
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (!canDecide || e.metaKey || e.ctrlKey || e.altKey) return;
-      const target = e.target as HTMLElement;
-      if (['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) return;
-      const subject = open ?? visiblePending[0];
-      if (!subject) return;
-      if (e.key === 'a') decide(subject, 'approve');
-      if (e.key === 'd') decide(subject, 'deny');
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  });
+    const timer = setTimeout(() => void load(), 120);
+    return () => clearTimeout(timer);
+  }, [agent, eventTick, pending.length]);
 
-  const notes = activity.filter((e) => !agent || e.agentId === agent).slice(0, 20);
+  const q = query.trim().toLowerCase();
+  const searched = useMemo(() => {
+    if (!q) return entries;
+    return entries.filter((entry) =>
+      `${entry.tool} ${entry.agent_id} ${entry.result} ${entry.hitl_code ?? ''} ${entry.error ?? ''} ${
+        typeof entry.args === 'string' ? entry.args : JSON.stringify(entry.args ?? '')
+      }`
+        .toLowerCase()
+        .includes(q)
+    );
+  }, [entries, q]);
+
+  const counts = useMemo(() => {
+    const c: Record<Bucket, number> = {
+      all: searched.length,
+      allowed: 0,
+      approval: 0,
+      denied: 0,
+      error: 0,
+    };
+    for (const entry of searched) c[auditBucket(entry.result)] += 1;
+    return c;
+  }, [searched]);
+
+  const visible =
+    bucket === 'all' ? searched : searched.filter((e) => auditBucket(e.result) === bucket);
+  const notes = activity.filter((e) => !agent || e.agentId === agent);
+  const shownNotes = allNotes ? notes.slice(0, 20) : notes.slice(0, 3);
+  const agentOptions = Array.from(
+    new Set([...Object.keys(state?.agents ?? {}), ...entries.map((e) => e.agent_id)])
+  ).sort();
+  const waiting = pending.filter((p) => !agent || p.agentId === agent).length;
 
   return (
-    <div class="page">
-      <header class="page-head">
-        <div>
-          <h1 class="page-title">Activity</h1>
-          <p class="lede">Requests waiting for you, and everything agents did recently.</p>
+    <>
+      <header class="topbar">
+        <div class="topbar-title">
+          <h1>Activity</h1>
+          <span class="topbar-meta">
+            {loaded ? plural(entries.length, 'call') : 'Loading…'}
+            {waiting > 0 && (
+              <>
+                <span class="sep">·</span>
+                <a class="link" href="#/inbox">
+                  {waiting} waiting in Inbox
+                </a>
+              </>
+            )}
+          </span>
         </div>
-        <div class="page-actions filters">
+        <div class="topbar-actions">
           <NotifyToggle />
-          <select
-            value={agent}
-            onChange={(e) => setAgent(e.currentTarget.value)}
-            aria-label="Agent"
+          <Button
+            variant="ghost"
+            icon
+            busy={loading}
+            aria-label="Refresh activity"
+            title="Refresh"
+            onClick={() => void load()}
           >
-            <option value="">All agents</option>
-            {Object.keys(state?.agents ?? {}).map((id) => (
-              <option value={id}>{id}</option>
-            ))}
-          </select>
-          <input
-            type="search"
-            class="search"
-            placeholder="Filter by tool"
-            value={tool}
-            onInput={(e) => setTool(e.currentTarget.value)}
-            aria-label="Filter by tool"
-          />
+            <RotateCw size={14} aria-hidden="true" />
+          </Button>
         </div>
       </header>
 
-      <section class="waiting-section">
-        <h2 class="section-title">
-          Waiting for you{' '}
-          <span class={cx('count', visiblePending.length > 0 && 'is-hot')}>
-            {visiblePending.length}
-          </span>
-        </h2>
-        {visiblePending.length === 0 ? (
-          <p class="hint">Nothing is waiting. New requests appear here the moment an agent asks.</p>
-        ) : (
-          <ul class="requests">
-            {visiblePending.map((p) => (
-              <li class="request" key={p.id}>
-                <button type="button" class="request-body" onClick={() => setOpen(p)}>
-                  <span class="request-agent">{p.agentId}</span>
-                  <code class="request-tool">{isQuestion(p) ? questionText(p) : p.tool}</code>
-                  {p.tier && p.tier !== 'read' && (
-                    <span class={cx('tag', `tag-tier-${p.tier}`)}>{p.tier}</span>
-                  )}
-                  {p.reason && <span class="request-reason">{p.reason}</span>}
-                  <span class="request-time">{relativeTime(p.createdAt)}</span>
-                </button>
-                {canDecide && (
-                  <div class="request-actions">
-                    <Button size="sm" variant="primary" onClick={() => decide(p, 'approve')}>
-                      {isQuestion(p) ? 'Confirm' : 'Approve'}
-                    </Button>
-                    {!isQuestion(p) && (
-                      <Button
-                        size="sm"
-                        onClick={() => decide(p, 'approve', 'temporary', 3_600_000)}
-                      >
-                        Allow for 1 hour
-                      </Button>
+      <div class="page">
+        {notes.length > 0 && (
+          <section aria-label="Agent notes">
+            <h2 class="section-label">
+              Agent notes <span class="ink-3">{notes.length}</span>
+            </h2>
+            <ul class="notes">
+              {shownNotes.map((n) => (
+                <li key={n.id} class="note">
+                  <span
+                    class={cx(
+                      'dot',
+                      n.severity === 'error'
+                        ? 'is-deny'
+                        : n.severity === 'warning'
+                          ? 'is-ask'
+                          : n.severity === 'success'
+                            ? 'is-allow'
+                            : ''
                     )}
-                    <Button size="sm" variant="danger" onClick={() => decide(p, 'deny')}>
-                      Deny
-                    </Button>
-                  </div>
-                )}
-              </li>
-            ))}
-          </ul>
-        )}
-        {visiblePending.length > 0 &&
-          (canDecide ? (
-            <p class="kbd-hint">
-              <kbd>A</kbd> approves and <kbd>D</kbd> denies the oldest request
-            </p>
-          ) : (
-            <p class="hint">
-              This command center can't approve or deny. Decide in the gateway's dashboard or a
-              companion app.
-            </p>
-          ))}
-      </section>
-
-      {notes.length > 0 && (
-        <section>
-          <h2 class="section-title">Notes from agents</h2>
-          <ul class="notes">
-            {notes.map((n) => (
-              <li key={n.id} class={cx('note', `is-${n.severity}`)}>
-                <strong>{n.title}</strong>
-                <span>{n.body}</span>
-                <span class="dim">
-                  {n.agentId}, {relativeTime(n.createdAt)}
-                </span>
-              </li>
-            ))}
-          </ul>
-        </section>
-      )}
-
-      <section>
-        <h2 class="section-title">History</h2>
-        {auditError && <p class="notice notice-warn">{auditError}</p>}
-        {entries.length === 0 ? (
-          <Empty title="No calls yet">{dbPath && <p class="dim">Reading {dbPath}</p>}</Empty>
-        ) : (
-          <table class="audit">
-            <thead>
-              <tr>
-                <th scope="col">When</th>
-                <th scope="col">Agent</th>
-                <th scope="col">Tool</th>
-                <th scope="col">Result</th>
-              </tr>
-            </thead>
-            <tbody>
-              {entries.map((entry, i) => (
-                <AuditRow key={entry.id ?? i} entry={entry} />
+                    aria-hidden="true"
+                  />
+                  <span class="note-title">{n.title}</span>
+                  <span class="note-meta" title={fullTime(n.createdAt)}>
+                    {n.agentId} · {relativeTime(n.createdAt)}
+                  </span>
+                  {n.body && <span class="note-body">{n.body}</span>}
+                </li>
               ))}
-            </tbody>
-          </table>
+            </ul>
+            {notes.length > 3 && (
+              <button
+                type="button"
+                class="text-btn"
+                style={{ margin: '-18px 0 28px' }}
+                onClick={() => setAllNotes(!allNotes)}
+              >
+                {allNotes ? 'Show fewer notes' : `Show ${notes.length - 3} more`}
+              </button>
+            )}
+          </section>
         )}
-      </section>
 
-      {open && (
-        <ApprovalSheet
-          request={open}
-          canDecide={canDecide}
-          onClose={() => setOpen(null)}
-          onDecide={decide}
-        />
-      )}
-    </div>
+        <div class="toolbar">
+          <div class="segmented" role="tablist" aria-label="Filter by result">
+            {BUCKETS.map((b) => (
+              <button
+                key={b.id}
+                type="button"
+                role="tab"
+                aria-selected={bucket === b.id}
+                onClick={() => setBucket(b.id)}
+              >
+                {b.label}
+                <span class="seg-count">{counts[b.id]}</span>
+              </button>
+            ))}
+          </div>
+          <span class="toolbar-spacer" />
+          {agentOptions.length > 1 && (
+            <select
+              class="select"
+              value={agent}
+              onChange={(e) => setAgent(e.currentTarget.value)}
+              aria-label="Filter by agent"
+            >
+              <option value="">All agents</option>
+              {agentOptions.map((id) => (
+                <option key={id} value={id}>
+                  {id}
+                </option>
+              ))}
+            </select>
+          )}
+          <SearchInput
+            value={query}
+            onInput={setQuery}
+            placeholder="Search tool, args, code"
+            label="Search activity"
+          />
+        </div>
+
+        {auditError && (
+          <p class="notice is-warn" style={{ marginBottom: '16px' }}>
+            {auditError}
+          </p>
+        )}
+
+        {!loaded ? (
+          <div aria-busy="true">
+            {[0, 1, 2, 3, 4].map((i) => (
+              <div key={i} style={{ padding: '12px 4px', borderBottom: '1px solid var(--line)' }}>
+                <span class="skeleton" style={{ width: `${60 - i * 7}%` }} />
+              </div>
+            ))}
+          </div>
+        ) : visible.length === 0 ? (
+          <Empty
+            title={entries.length === 0 ? 'No tool calls yet' : 'No calls match these filters'}
+            icon={<ActivityIcon size={22} aria-hidden="true" />}
+          >
+            {entries.length > 0 ? (
+              <Button
+                size="sm"
+                onClick={() => {
+                  setQuery('');
+                  setBucket('all');
+                  setAgent('');
+                }}
+              >
+                Clear filters
+              </Button>
+            ) : (
+              dbPath && (
+                <p>
+                  Reading <code>{dbPath}</code>
+                </p>
+              )
+            )}
+          </Empty>
+        ) : (
+          <div class="table-scroll">
+            <table class="log">
+              <thead>
+                <tr>
+                  <th scope="col">Time</th>
+                  <th scope="col">Result</th>
+                  <th scope="col" class="hide-sm">
+                    Agent
+                  </th>
+                  <th scope="col">Tool</th>
+                  <th scope="col" class="col-num hide-sm">
+                    Duration
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {visible.map((entry, i) => (
+                  <LogRow key={entry.id ?? `${entry.ts}-${i}`} entry={entry} />
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </>
   );
 }
 
@@ -243,169 +320,96 @@ function NotifyToggle() {
   const [on, setOn] = useState(read);
   if (!('Notification' in window)) return null;
   return (
-    <label class="check notify-toggle">
-      <input
-        type="checkbox"
-        checked={on}
-        onChange={async (e) => {
-          const want = e.currentTarget.checked;
-          const granted = want && (await Notification.requestPermission()) === 'granted';
-          try {
-            localStorage.setItem('airlock:notifs', String(granted));
-          } catch {
-            // Without storage the toggle lasts for this page only.
-          }
-          setOn(granted);
-        }}
-      />
-      Notify me
-    </label>
+    <Button
+      variant="ghost"
+      size="sm"
+      aria-pressed={on}
+      title={on ? 'Desktop alerts are on' : 'Get a desktop alert for new requests'}
+      onClick={async () => {
+        const want = !on;
+        const granted = want && (await Notification.requestPermission()) === 'granted';
+        try {
+          localStorage.setItem('airlock:notifs', String(granted));
+        } catch {
+          // Without storage the toggle lasts for this page only.
+        }
+        setOn(granted);
+      }}
+    >
+      {on ? <Bell size={14} aria-hidden="true" /> : <BellOff size={14} aria-hidden="true" />}
+      {on ? 'Alerts on' : 'Alerts off'}
+    </Button>
   );
 }
 
-function AuditRow({ entry }: { entry: AuditEntry }) {
-  const [expanded, setExpanded] = useState(false);
-  const tone = /denied|error|timeout|injection|canary/.test(entry.result)
-    ? 'bad'
-    : /hitl|ask/.test(entry.result)
-      ? 'warn'
-      : 'good';
+function LogRow({ entry }: { entry: AuditEntry }) {
+  const [open, setOpen] = useState(false);
+  const bucket = auditBucket(entry.result);
+  const tone = bucket === 'error' || /injection/.test(entry.result) ? 'is-bad' : '';
+  const toggle = () => setOpen(!open);
   return (
     <>
-      <tr class={cx('audit-row', expanded && 'is-open')} onClick={() => setExpanded(!expanded)}>
-        <td title={new Date(entry.ts).toLocaleString()}>{relativeTime(entry.ts)}</td>
-        <td>{entry.agent_id}</td>
-        <td>
-          <code>{entry.tool}</code>
+      <tr
+        class={cx('row', open && 'is-open')}
+        tabIndex={0}
+        aria-expanded={open}
+        onClick={toggle}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            toggle();
+          }
+        }}
+      >
+        <td class="col-time" title={fullTime(entry.ts)}>
+          {clockTime(entry.ts)}
         </td>
-        <td>
-          <span class={cx('result', `is-${tone}`)}>{entry.result.replace(/_/g, ' ')}</span>
-          {entry.duration_ms ? <span class="dim"> {entry.duration_ms} ms</span> : null}
+        <td class="col-result">
+          <span class={cx('result', tone)}>
+            <span class={cx('dot', DOT[bucket])} aria-hidden="true" />
+            {resultLabel(entry.result)}
+          </span>
+        </td>
+        <td class="col-agent hide-sm">{entry.agent_id}</td>
+        <td class="col-tool">
+          <ToolCode tool={entry.tool} />
+          {entry.error && !open && <span class="err">{entry.error}</span>}
+        </td>
+        <td class="col-num hide-sm">
+          {entry.duration_ms != null ? formatDuration(entry.duration_ms) : '—'}
         </td>
       </tr>
-      {expanded && (
-        <tr class="audit-detail">
-          <td colSpan={4}>
-            <pre>{pretty(entry.args)}</pre>
-            {entry.error && <p class="notice notice-error">{entry.error}</p>}
+      {open && (
+        <tr class="log-detail">
+          <td colSpan={5}>
+            <div class="log-detail-inner">
+              <div class="log-facts">
+                <span>{fullTime(entry.ts)}</span>
+                <span>
+                  Agent <code>{entry.agent_id}</code>
+                </span>
+                {entry.hitl_code && (
+                  <span>
+                    Approval <code>{entry.hitl_code}</code>
+                  </span>
+                )}
+                {entry.request_id && (
+                  <span>
+                    Request <code>{entry.request_id}</code>
+                  </span>
+                )}
+                {entry.duration_ms != null && (
+                  <span>
+                    Took <code>{formatDuration(entry.duration_ms)}</code>
+                  </span>
+                )}
+              </div>
+              {entry.error && <p class="notice is-error">{entry.error}</p>}
+              <ArgsTable value={entry.args} />
+            </div>
           </td>
         </tr>
       )}
     </>
-  );
-}
-
-function ApprovalSheet({
-  request,
-  canDecide,
-  onClose,
-  onDecide,
-}: {
-  request: PendingApproval;
-  canDecide: boolean;
-  onClose: () => void;
-  onDecide: (
-    p: PendingApproval,
-    action: 'approve' | 'deny',
-    remember?: string,
-    durationMs?: number
-  ) => void;
-}) {
-  const [preview, setPreview] = useState<Record<string, unknown> | null>(null);
-  const [previewError, setPreviewError] = useState<string | null>(null);
-  const question = isQuestion(request);
-
-  useEffect(() => {
-    // The preview route lives next to the approval routes.
-    if (question || !canDecide) return;
-    let live = true;
-    api.approvalPreview(request.id).then(
-      (result) => live && setPreview(result),
-      (e) =>
-        live &&
-        !String(e.message).includes('Not Found') &&
-        e.status !== 404 &&
-        setPreviewError(e.message)
-    );
-    return () => {
-      live = false;
-    };
-  }, [request.id]);
-
-  const fields = Array.isArray(preview?.fields)
-    ? (preview!.fields as { label: string; value: string; primary?: boolean }[])
-    : [];
-
-  return (
-    <Sheet
-      open
-      onClose={onClose}
-      title={question ? questionText(request) : <code>{request.tool}</code>}
-      footer={
-        canDecide && (
-          <>
-            <Button variant="danger" onClick={() => onDecide(request, 'deny')}>
-              Deny
-            </Button>
-            {!question && (
-              <Button onClick={() => onDecide(request, 'approve', 'always')}>Always allow</Button>
-            )}
-            {!question && (
-              <Button onClick={() => onDecide(request, 'approve', 'temporary', 3_600_000)}>
-                Allow for 1 hour
-              </Button>
-            )}
-            <Button variant="primary" onClick={() => onDecide(request, 'approve')}>
-              {question ? 'Confirm' : 'Approve'}
-            </Button>
-          </>
-        )
-      }
-    >
-      <dl class="facts">
-        <dt>Agent</dt>
-        <dd>{request.agentId}</dd>
-        <dt>Asked</dt>
-        <dd>{new Date(request.createdAt).toLocaleString()}</dd>
-        {request.reason && (
-          <>
-            <dt>Reason given</dt>
-            <dd>{request.reason}</dd>
-          </>
-        )}
-        {request.note && (
-          <>
-            <dt>Note</dt>
-            <dd>{request.note}</dd>
-          </>
-        )}
-      </dl>
-      {preview?.status === 'ready' && (
-        <section class="fetched">
-          {fields.length ? (
-            <dl class="facts">
-              {fields.map((f) => (
-                <>
-                  <dt>{f.label}</dt>
-                  <dd class={cx(f.primary && 'is-primary')}>{f.value}</dd>
-                </>
-              ))}
-            </dl>
-          ) : (
-            <pre class="fetched-text">{String(preview.text ?? '')}</pre>
-          )}
-          <p class="dim">
-            Fetched with {String(preview.tool)}
-            {preview.truncated ? ', truncated' : ''}
-          </p>
-        </section>
-      )}
-      {preview && preview.status !== 'ready' && preview.status !== 'unavailable' && (
-        <p class="notice notice-warn">{String(preview.message ?? 'Preview unavailable.')}</p>
-      )}
-      {previewError && <p class="notice notice-warn">{previewError}</p>}
-      <h3 class="sub-title">Arguments</h3>
-      <pre class="args">{pretty(request.args)}</pre>
-    </Sheet>
   );
 }

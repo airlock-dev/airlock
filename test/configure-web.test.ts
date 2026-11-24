@@ -191,6 +191,32 @@ approvals:
     });
   });
 
+  it('saves and updates env vars and HTTP headers on providers including env placeholders', () => {
+    const stdioState = upsertProvider(configPath, {
+      id: 'gh',
+      type: 'stdio',
+      enabled: true,
+      command: 'npx',
+      args: ['-y', '@modelcontextprotocol/server-github'],
+      env: { GITHUB_TOKEN: '${UNSET_GITHUB_TOKEN_FOR_TEST}' },
+    });
+    expect(stdioState.providers.gh.env).toEqual({
+      GITHUB_TOKEN: '${UNSET_GITHUB_TOKEN_FOR_TEST}',
+    });
+
+    const httpState = upsertProvider(configPath, {
+      id: 'linear',
+      type: 'http',
+      enabled: true,
+      url: 'https://mcp.linear.app/mcp',
+      headers: { Authorization: 'Bearer ${UNSET_LINEAR_KEY_FOR_TEST}' },
+      oauth: false,
+    });
+    expect(httpState.providers.linear.headers).toEqual({
+      Authorization: 'Bearer ${UNSET_LINEAR_KEY_FOR_TEST}',
+    });
+  });
+
   it('deletes providers', () => {
     const state = deleteProvider(configPath, 'old');
 

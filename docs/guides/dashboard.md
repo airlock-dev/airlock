@@ -143,16 +143,35 @@ disconnects are visible without opening the provider list.
 
 The dashboard uses Server-Sent Events to push new approval requests and resolution updates in real time. No polling. Open the page and requests appear instantly as the agent makes them.
 
-### Approval cards
+### Inbox
 
-Each pending request is displayed as a card showing:
+The Inbox is the dashboard's home view. Pending tool calls, multi-step plans,
+and agent questions are listed oldest-expiring first. Each row shows the agent,
+the tool (or plan and question), the agent's reason, and the time left before
+the request expires, with a thin line under the row that drains as the window
+closes. Flagged and destructive requests are marked in red.
 
-- Tool name (highlighted)
-- Agent name
-- Approval code
-- Tool arguments (truncated preview)
+Selecting a request opens its details beside the list (or full screen on a
+phone): the reason, any fetched preview, and the arguments as a key/value table
+with a JSON view. Plans list each step with its own arguments.
 
-Click a card to open a detail modal with full argument inspection.
+**Approve once** releases just this call. The menu next to it approves and
+grants a time-boxed permission for this tool, the provider's read-only or
+non-destructive tools, every tool on the provider, or a profile, and
+**Always allow** writes an allow rule to `airlock.yaml`. Plans, questions, and
+calls flagged by a detector only ever get a single approval.
+
+### Grants
+
+The Grants view lists every active temporary grant with its scope, agent,
+source, remaining uses, and time left. **Revoke** removes it immediately.
+
+### Activity
+
+The Activity view is the audit log: one row per tool call with time, result,
+agent, tool, and duration. Filter by result, agent, or text, and click a row
+for its arguments, error, approval code, and request ID. Notes that agents
+send with `airlock_notify_user` or `airlock_log` appear above the log.
 
 ### Fetched approval previews
 
@@ -194,25 +213,19 @@ its approve/deny routes, so keep it behind your existing operator access boundar
 This separates MCP agent access from operator review; it does not isolate a
 same-machine process that can already access the dashboard or management secret.
 
-### Detail modal
-
-The modal shows:
-
-- Agent name
-- Approval code
-- Timeout remaining
-- Full tool arguments with syntax highlighting (via highlight.js)
-- Multiline strings are displayed as code blocks
-- Objects and arrays are pretty-printed as JSON
-
 ### Keyboard shortcuts
 
-- **A** — approve the focused request (or the request in the open modal)
-- **D** — deny the focused request
+- **J** / **K** — next and previous request in the Inbox
+- **A** — approve the selected request once
+- **D** — deny the selected request
+- **/** — search the current view
+- **N** — new agent, profile, or provider
+- **G** then **I**, **L**, **A**, **P**, or **V** — go to Inbox, Activity, Agents, Profiles, or Providers
+- **?** — show every shortcut
 
 ### Browser notifications
 
-Toggle browser notifications in the settings panel. When enabled, you get a system notification for each new approval request — useful when the dashboard tab is in the background.
+Turn on **Alerts** in the Activity view. When enabled, you get a system notification for each new approval request — useful when the dashboard tab is in the background.
 
 ### Sound alerts
 

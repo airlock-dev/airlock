@@ -1,16 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { ChevronRight } from 'lucide-preact';
 import { ApiError, api } from './api';
 import { createAgentSpec, draftFromAgent, draftFromProfile, profileSpec } from './drafts';
-import { ID_PATTERN, resolve, tally } from './policy';
+import { ID_PATTERN, resolve } from './policy';
 import { PolicyEditor, emptyDraft, useEffective, type Draft } from './policy-editor';
 import { PreviewNotes } from './review';
 import { goAfterSave, useStore, useUnsavedGuard } from './store';
 import type { ChangeOp, ChangePreview, Kind, Tool } from './types';
-import { Button, Chip, TallyBar, YamlDiff, cx } from './ui';
+import { Button, Chip, Kbd, Notice, YamlDiff, cx } from './ui';
 
 export function Composer({ kind, baseId }: { kind: Kind; baseId?: string }) {
   const { state, tools, setState, reveal, toast } = useStore();
   const section = kind === 'agent' ? state?.agents : state?.profiles;
+  const sectionPath = kind === 'agent' ? 'agents' : 'profiles';
   const [id, setId] = useState(() => (baseId ? copyName(baseId) : ''));
   const [base, setBase] = useState<string | undefined>(baseId);
   const [draft, setDraft] = useState<Draft>(() => initialDraft(kind, baseId));
@@ -34,13 +36,15 @@ export function Composer({ kind, baseId }: { kind: Kind; baseId?: string }) {
     return emptyDraft();
   }
 
-  useEffect(() => nameRef.current?.focus(), []);
+  useEffect(() => {
+    if (window.matchMedia('(pointer: fine)').matches) nameRef.current?.focus();
+  }, []);
 
   const trimmed = id.trim();
   const idProblem = !trimmed
     ? null
     : !ID_PATTERN.test(trimmed)
-      ? 'Use letters, numbers, dots, dashes or underscores.'
+      ? 'Use letters, numbers, dots, dashes, or underscores.'
       : section?.[trimmed]
         ? `There is already ${kind === 'agent' ? 'an agent' : 'a profile'} called ${trimmed}.`
         : null;
@@ -76,8 +80,8 @@ export function Composer({ kind, baseId }: { kind: Kind; baseId?: string }) {
       const result = await api.apply(ops, preview?.version);
       setState(result.state);
       if (result.createdKeys.length) reveal(result.createdKeys);
-      else toast(`Created ${kind} ${trimmed}.`);
-      goAfterSave(kind === 'agent' ? 'agents' : 'profiles', trimmed);
+      else toast(`Created ${kind} ${trimmed}`);
+      goAfterSave(sectionPath, trimmed);
     } catch (e) {
       setError(
         e instanceof ApiError && e.status === 409
@@ -105,28 +109,35 @@ export function Composer({ kind, baseId }: { kind: Kind; baseId?: string }) {
   const noun = kind === 'agent' ? 'agent' : 'profile';
 
   return (
-    <div class="composer">
-      <div class="composer-main">
-        <a class="back" href={kind === 'agent' ? '#/agents' : '#/profiles'}>
-          {kind === 'agent' ? 'Agents' : 'Profiles'}
-        </a>
-        <h1 class="page-title">New {noun}</h1>
-        <p class="lede">
-          {kind === 'agent'
-            ? 'An agent is one client, like Claude Code on your laptop or Codex on a server. It gets its own key and its own rules.'
-            : 'A profile is a reusable set of rules. Agents and other profiles build on it.'}
-        </p>
+    <>
+      <header class="topbar">
+        <nav class="crumb" aria-label="Breadcrumb">
+          <a href={`#/${sectionPath}`}>{kind === 'agent' ? 'Agents' : 'Profiles'}</a>
+          <ChevronRight size={13} aria-hidden="true" />
+          <span class="current" aria-current="page">
+            New {noun}
+          </span>
+        </nav>
+        <div class="topbar-actions">
+          <Button variant="primary" busy={busy} onClick={create}>
+            Create {noun}
+            <Kbd>⌘&nbsp;↵</Kbd>
+          </Button>
+        </div>
+      </header>
 
-        <section class="name-block">
+      <div class="page">
+        <section class="composer-name">
           <label for="entity-name" class="field-label">
             Name
           </label>
           <input
             id="entity-name"
             ref={nameRef}
-            class={cx('name-input', idProblem && 'has-error')}
+            class="input name-input"
+            name={`${noun}-name`}
             value={id}
-            placeholder={kind === 'agent' ? 'codex-ci' : 'github-read'}
+            placeholder={kind === 'agent' ? 'codex-ci…' : 'github-read…'}
             autocomplete="off"
             spellcheck={false}
             onInput={(e) => {
@@ -140,122 +151,100 @@ export function Composer({ kind, baseId }: { kind: Kind; baseId?: string }) {
             {idProblem ??
               (kind === 'agent' ? (
                 <>
-                  Connects at <code>/agents/{trimmed || 'name'}/mcp</code>
+                  One client, like Claude Code on your laptop. It connects at{' '}
+                  <code>/agents/{trimmed || 'name'}/mcp</code>
                 </>
               ) : (
-                'Agents refer to it by this name.'
+                'A reusable rule set. Agents refer to it by this name.'
               ))}
           </p>
           {others.length > 0 && (
-            <div class="copy-from">
-              <span class="field-label">Copy rules from</span>
-              <div class="chips">
+            <div class="copy-from" role="group" aria-label="Copy rules from">
+              <span class="label">Start from</span>
+              <Chip
+                selected={!base}
+                onClick={() => {
+                  setBase(undefined);
+                  setDraft(emptyDraft());
+                }}
+              >
+                Empty
+              </Chip>
+              {others.map((other) => (
                 <Chip
-                  selected={!base}
+                  key={other}
+                  selected={base === other}
                   onClick={() => {
-                    setBase(undefined);
-                    setDraft(emptyDraft());
+                    setBase(other);
+                    setDraft(initialDraft(kind, other));
                   }}
                 >
-                  Start empty
+                  {other}
                 </Chip>
-                {others.map((other) => (
-                  <Chip
-                    key={other}
-                    selected={base === other}
-                    onClick={() => {
-                      setBase(other);
-                      setDraft(initialDraft(kind, other));
-                    }}
-                  >
-                    {other}
-                  </Chip>
-                ))}
-              </div>
+              ))}
+            </div>
+          )}
+          {error && (
+            <div style={{ marginTop: '8px' }}>
+              <Notice tone="error">{error}</Notice>
             </div>
           )}
         </section>
 
-        <PolicyEditor kind={kind} draft={draft} onChange={setDraft} />
+        <PolicyEditor
+          kind={kind}
+          draft={draft}
+          onChange={setDraft}
+          aside={<Outcome kind={kind} draft={draft} tools={tools} preview={preview} />}
+        />
       </div>
-
-      <aside class="composer-side">
-        <Outcome kind={kind} name={trimmed} draft={draft} tools={tools} preview={preview} />
-        {error && <p class="notice notice-error">{error}</p>}
-        <Button variant="primary" class="create-btn" busy={busy} onClick={create}>
-          Create {noun}
-        </Button>
-        <p class="kbd-hint">
-          <kbd>⌘</kbd>
-          <kbd>Enter</kbd> creates from anywhere on this page
-        </p>
-      </aside>
-    </div>
+    </>
   );
 }
 
-// The live answer to "what will this be able to do?", plus the exact YAML that will be written.
+// What the new entity will reach, plus the exact YAML that will be written.
 function Outcome({
   kind,
-  name,
   draft,
   tools,
   preview,
 }: {
   kind: Kind;
-  name: string;
   draft: Draft;
   tools: Tool[];
   preview: ChangePreview | null;
 }) {
   const { effective } = useEffective(kind, draft);
-  const counts = tally(effective, tools);
   const askTools = tools.filter((t) => resolve(effective, t.name).decision === 'ask');
   const allowTools = tools.filter((t) => resolve(effective, t.name).decision === 'allow');
   const change = preview?.changes[0];
-  const blocked = counts.deny + counts.none;
 
   return (
-    <div class="outcome">
-      <h2 class="outcome-title">
-        {name || (kind === 'agent' ? 'Your new agent' : 'Your new profile')}
-      </h2>
-      {tools.length > 0 ? (
-        <>
-          <TallyBar counts={counts} total={tools.length} />
-          <dl class="outcome-stats">
-            <div class="stat-allow">
-              <dt>Runs right away</dt>
-              <dd>{counts.allow}</dd>
-            </div>
-            <div class="stat-ask">
-              <dt>Asks you first</dt>
-              <dd>{counts.ask}</dd>
-            </div>
-            <div class="stat-none">
-              <dt>Blocked</dt>
-              <dd>{blocked}</dd>
-            </div>
-          </dl>
-          {counts.allow + counts.ask === 0 ? (
-            <p class="hint">Nothing is reachable yet. Pick a profile or allow some tools.</p>
-          ) : (
-            <>
-              <ToolPeek title="Asks you first" tools={askTools} />
-              <ToolPeek title="Runs right away" tools={allowTools} />
-            </>
-          )}
-        </>
+    <div class="aside-block peek">
+      {tools.length > 0 && allowTools.length + askTools.length === 0 ? (
+        <p class="field-help">Nothing is reachable yet. Inherit a profile or allow some tools.</p>
       ) : (
-        <p class="hint">Tool counts appear once providers report their tools.</p>
+        <>
+          <ToolPeek title="Asks you first" tools={askTools} />
+          <ToolPeek title="Runs right away" tools={allowTools} />
+        </>
       )}
       {change && (
-        <details class="yaml-peek">
-          <summary>YAML that will be written</summary>
-          <YamlDiff change={change} />
+        <details class="disclosure">
+          <summary>
+            <ChevronRight size={13} aria-hidden="true" />
+            YAML to be written
+          </summary>
+          <div class="disclosure-body">
+            <YamlDiff change={change} />
+          </div>
         </details>
       )}
-      {preview && <PreviewNotes preview={preview} />}
+      {preview && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '12px' }}>
+          <PreviewNotes preview={preview} />
+        </div>
+      )}
     </div>
   );
 }
@@ -264,8 +253,8 @@ function ToolPeek({ title, tools }: { title: string; tools: Tool[] }) {
   if (!tools.length) return null;
   const shown = tools.slice(0, 6);
   return (
-    <div class="peek">
-      <h3>{title}</h3>
+    <div>
+      <h4>{title}</h4>
       <ul>
         {shown.map((t) => (
           <li key={t.name}>
@@ -273,7 +262,9 @@ function ToolPeek({ title, tools }: { title: string; tools: Tool[] }) {
           </li>
         ))}
       </ul>
-      {tools.length > shown.length && <p class="hint">and {tools.length - shown.length} more</p>}
+      {tools.length > shown.length && (
+        <p class="field-help">and {tools.length - shown.length} more</p>
+      )}
     </div>
   );
 }

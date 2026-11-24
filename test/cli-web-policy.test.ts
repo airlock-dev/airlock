@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { resolve } from '../web/src/policy.js';
+import { explainResolution, resolve } from '../web/src/policy.js';
 
 // The dashboard's own rule resolution (it must agree with src/allowlist/engine.ts).
 describe('web policy resolve()', () => {
@@ -38,5 +38,59 @@ describe('web policy resolve()', () => {
     const rules = { allow: ['github/*'], ask: ['github/*'], deny: ['github/*'] };
     expect(resolve(rules, 'github/create_pr').decision).toBe('deny');
     expect(resolve({ ...rules, deny: [] }, 'github/create_pr').decision).toBe('ask');
+  });
+});
+
+describe('web policy explainResolution()', () => {
+  const profiles = {
+    'base-read': {
+      extends: [],
+      allow: ['github/list*', 'github/get_*'],
+      ask: ['github/*'],
+      deny: ['github/delete_repo'],
+    },
+    'default-safe': {
+      extends: [],
+      allow: ['exec/run'],
+      ask: [],
+      deny: [],
+    },
+  };
+
+  it('explains winning profile rules and specificity precedence', () => {
+    const own = {
+      extends: ['base-read'],
+      allow: [],
+      ask: ['github/create_pr'],
+      deny: [],
+    };
+    const res = explainResolution(own, profiles, 'github/list_prs', 'default-safe', 'agent "dev"');
+    expect(res.decision).toBe('allow');
+    expect(res.winner?.pattern).toBe('github/list*');
+    expect(res.winner?.source).toBe('profile "base-read"');
+    expect(res.matches.length).toBe(2);
+    expect(res.matches[0].isWinner).toBe(true);
+    expect(res.matches[1].isWinner).toBe(false);
+  });
+
+  it('explains tie-breaking deny > ask > allow across own and inherited rules', () => {
+    const own = {
+      extends: ['base-read'],
+      allow: ['github/delete_repo'],
+      ask: [],
+      deny: [],
+    };
+    const res = explainResolution(own, profiles, 'github/delete_repo', undefined, 'agent "dev"');
+    expect(res.decision).toBe('deny');
+    expect(res.winner?.source).toBe('profile "base-read"');
+    expect(res.reason).toContain('precedence');
+  });
+
+  it('reports default-deny when no rule matches', () => {
+    const own = { extends: [], allow: ['github/*'], ask: [], deny: [] };
+    const res = explainResolution(own, profiles, 'slack/post_message');
+    expect(res.decision).toBe('none');
+    expect(res.matches).toEqual([]);
+    expect(res.reason).toContain('default');
   });
 });

@@ -103,6 +103,22 @@ function mockGateway(options: {
     if (url.endsWith('/hitl/pending')) return Response.json(options.pending ?? []);
     if (url.includes('/approve?')) return options.approve?.() ?? Response.json({ ok: true });
     if (url.includes('/deny?')) return Response.json({ ok: true });
+    if (url.includes('/hitl/grants/') && init?.method === 'DELETE') {
+      return Response.json({ ok: true });
+    }
+    if (url.includes('/hitl/grants')) {
+      return Response.json({
+        grants: [
+          {
+            id: 'grant-1',
+            agentId: 'dev',
+            scope: { kind: 'provider', provider: 'exec' },
+            source: 'approval',
+            createdAt: '2026-05-24T10:00:00.000Z',
+          },
+        ],
+      });
+    }
     return Response.json({ error: 'not found' }, { status: 404 });
   });
   return calls;
@@ -210,6 +226,29 @@ describe('remote dashboard /api/status', () => {
       expect.objectContaining({ id: 'exec', toolCount: 1, toolFingerprint: 'exec/run' }),
     ]);
     expect(status.summary.tools).toBe(1);
+    await app.close();
+  });
+});
+
+describe('remote dashboard /api/grants', () => {
+  it('proxies list and revoke to the gateway /hitl/grants endpoints', async () => {
+    const calls = mockGateway({});
+    const app = await remoteApp();
+
+    const listRes = await app.inject('/api/grants?agent=dev');
+    expect(listRes.statusCode).toBe(200);
+    expect(listRes.json()).toMatchObject({
+      canRevoke: true,
+      grants: [expect.objectContaining({ id: 'grant-1', agentId: 'dev' })],
+    });
+
+    const delRes = await app.inject({ method: 'DELETE', url: '/api/grants/grant-1' });
+    expect(delRes.statusCode).toBe(200);
+    expect(calls.some((c) => c.url.endsWith('/hitl/grants?agent=dev'))).toBe(true);
+    expect(calls.some((c) => c.url.endsWith('/hitl/grants/grant-1') && c.method === 'DELETE')).toBe(
+      true
+    );
+
     await app.close();
   });
 });

@@ -3,13 +3,13 @@ import { useEffect, useState } from 'preact/hooks';
 import { ApiError, api } from './api';
 import { useStore } from './store';
 import type { ApplyResult, ChangeOp, ChangePreview, EntityChange } from './types';
-import { Button, Sheet, YamlDiff, cx } from './ui';
+import { Button, Notice, Sheet, YamlDiff, cx } from './ui';
 
 const ACTION_LABEL: Record<EntityChange['action'], string> = {
   create: 'New',
   update: 'Changed',
   delete: 'Removed',
-  rotate: 'New key',
+  rotate: 'New key for',
 };
 
 export function ChangeList({ preview }: { preview: ChangePreview }) {
@@ -18,11 +18,9 @@ export function ChangeList({ preview }: { preview: ChangePreview }) {
       {preview.changes.map((change) => (
         <section class="change" key={`${change.kind}:${change.id}`}>
           <header class="change-head">
-            <span class={cx('change-action', `is-${change.action}`)}>
-              {ACTION_LABEL[change.action]}
-            </span>
-            <span class="change-kind">{change.kind}</span>
-            <code class="change-id">{change.id}</code>
+            <span class={cx('action', `is-${change.action}`)}>{ACTION_LABEL[change.action]}</span>
+            <span class="ink-3">{change.kind}</span>
+            <code>{change.id}</code>
           </header>
           <YamlDiff change={change} />
         </section>
@@ -37,27 +35,31 @@ export function PreviewNotes({ preview }: { preview: ChangePreview }) {
   return (
     <>
       {errors.length > 0 && (
-        <ul class="notice notice-error">
-          {errors.map((d, i) => (
-            <li key={i}>
-              {d.agent ? <strong>{d.agent}: </strong> : null}
-              {d.message}
-            </li>
-          ))}
-        </ul>
+        <Notice tone="error">
+          <ul>
+            {errors.map((d, i) => (
+              <li key={i}>
+                {d.agent ? <strong>{d.agent}: </strong> : null}
+                {d.message}
+              </li>
+            ))}
+          </ul>
+        </Notice>
       )}
       {preview.warnings.length > 0 && (
-        <ul class="notice notice-warn">
-          {preview.warnings.map((w) => (
-            <li key={w}>{w}</li>
-          ))}
-        </ul>
+        <Notice tone="warn">
+          <ul>
+            {preview.warnings.map((w) => (
+              <li key={w}>{w}</li>
+            ))}
+          </ul>
+        </Notice>
       )}
     </>
   );
 }
 
-// Preview a change set, then apply it after an explicit click. Used for edits and assistant proposals.
+// Preview a change set as a YAML diff, then apply it after an explicit click.
 export function ReviewSheet({
   ops,
   title,
@@ -112,7 +114,7 @@ export function ReviewSheet({
       onClose();
     } catch (e) {
       if (e instanceof ApiError && e.status === 409) {
-        setError(e.message);
+        setError(`${e.message} The diff below is fresh; check it and apply again.`);
         api.preview(ops).then(setPreview, () => {});
       } else {
         setError((e as Error).message);
@@ -127,10 +129,11 @@ export function ReviewSheet({
       open={open}
       onClose={onClose}
       title={title}
+      subtitle="Changes to airlock.yaml. The gateway picks them up on its own."
       wide
       footer={
         <>
-          <Button variant="quiet" onClick={onClose}>
+          <Button variant="ghost" onClick={onClose}>
             Cancel
           </Button>
           <Button
@@ -144,13 +147,15 @@ export function ReviewSheet({
         </>
       }
     >
-      {note && <div class="notice notice-warn">{note}</div>}
-      {error && <p class="notice notice-error">{error}</p>}
-      {preview ? (
-        <ChangeList preview={preview} />
-      ) : (
-        !error && <p class="hint">Preparing the diff…</p>
-      )}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+        {note && <Notice tone="warn">{note}</Notice>}
+        {error && <Notice tone="error">{error}</Notice>}
+        {preview ? (
+          <ChangeList preview={preview} />
+        ) : (
+          !error && <p class="ink-3">Preparing the diff…</p>
+        )}
+      </div>
     </Sheet>
   );
 }

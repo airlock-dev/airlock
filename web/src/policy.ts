@@ -3,6 +3,8 @@ import type { Decision, Profile, Resolved, Rules, Tool } from './types';
 // Mirrors src/allowlist/pattern.ts and src/allowlist/engine.ts: the most specific matching pattern
 // wins across tiers, and ties break deny > ask > allow. Keep these in step with the gateway.
 
+const DECISION_PRIORITY: Record<Decision, number> = { deny: 3, ask: 2, allow: 1 };
+
 export function specificity(pattern: string, tool: string): number {
   if (pattern === tool) return pattern.length + 1;
   if (pattern.endsWith('/*')) {
@@ -39,6 +41,146 @@ export function resolve(rules: Pick<Rules, 'allow' | 'ask' | 'deny'>, tool: stri
   if (deny && deny.score === top) return { decision: 'deny', pattern: deny.pattern };
   if (ask && ask.score === top) return { decision: 'ask', pattern: ask.pattern };
   return { decision: 'allow', pattern: allow!.pattern };
+}
+
+export interface RuleMatch {
+  decision: Decision;
+  pattern: string;
+  score: number;
+  exact: boolean;
+  source: string;
+  isWinner: boolean;
+}
+
+export interface ResolutionExplanation {
+  tool: string;
+  decision: Resolved;
+  winner?: RuleMatch;
+  matches: RuleMatch[];
+  reason: string;
+}
+
+function collectInheritedMatches(
+  extendsIds: string[],
+  profiles: Record<string, Profile>,
+  tool: string,
+  out: Omit<RuleMatch, 'isWinner'>[],
+  seen = new Set<string>(),
+  defaultProfile?: string
+): void {
+  for (const id of extendsIds) {
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const profile = profiles[id];
+    if (!profile) continue;
+    collectInheritedMatches(profile.extends, profiles, tool, out, seen, defaultProfile);
+    const label = id === defaultProfile ? `default profile "${id}"` : `profile "${id}"`;
+    for (const decision of ['deny', 'ask', 'allow'] as const) {
+      for (const pattern of profile[decision]) {
+        const score = specificity(pattern, tool);
+        if (score >= 0) {
+          out.push({
+            decision,
+            pattern,
+            score,
+            exact: pattern === tool,
+            source: label,
+          });
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Explain exactly which rule wins for `tool` and why, including profile inheritance and tie-breaks.
+ */
+export function explainResolution(
+  own: Rules,
+  profiles: Record<string, Profile>,
+  tool: string,
+  defaultProfile?: string,
+  ownLabel = 'own rules'
+): ResolutionExplanation {
+  const trimmed = tool.trim();
+  if (!trimmed) {
+    return { tool: '', decision: 'none', matches: [], reason: 'Enter a tool name to test access.' };
+  }
+
+  const raw: Omit<RuleMatch, 'isWinner'>[] = [];
+  const chain =
+    defaultProfile && !own.extends.includes(defaultProfile)
+      ? [defaultProfile, ...own.extends]
+      : own.extends;
+  collectInheritedMatches(chain, profiles, trimmed, raw, new Set(), defaultProfile);
+
+  for (const decision of ['deny', 'ask', 'allow'] as const) {
+    for (const pattern of own[decision]) {
+      const score = specificity(pattern, trimmed);
+      if (score >= 0) {
+        raw.push({
+          decision,
+          pattern,
+          score,
+          exact: pattern === trimmed,
+          source: ownLabel,
+        });
+      }
+    }
+  }
+
+  if (raw.length === 0) {
+    return {
+      tool: trimmed,
+      decision: 'none',
+      matches: [],
+      reason: 'No allow, ask, or deny rule matched — Airlock blocks unmatched tools by default.',
+    };
+  }
+
+  // Deduplicate identical (decision, pattern, source) rows, then rank by specificity desc, then
+  // deny > ask > allow, preferring own rules over inherited on exact identical ties.
+  const deduped: Omit<RuleMatch, 'isWinner'>[] = [];
+  const keys = new Set<string>();
+  for (const item of raw) {
+    const key = `${item.decision}\0${item.pattern}\0${item.source}`;
+    if (keys.has(key)) continue;
+    keys.add(key);
+    deduped.push(item);
+  }
+
+  deduped.sort((a, b) => {
+    if (b.score !== a.score) return b.score - a.score;
+    if (DECISION_PRIORITY[b.decision] !== DECISION_PRIORITY[a.decision]) {
+      return DECISION_PRIORITY[b.decision] - DECISION_PRIORITY[a.decision];
+    }
+    if (a.source === ownLabel && b.source !== ownLabel) return -1;
+    if (b.source === ownLabel && a.source !== ownLabel) return 1;
+    return a.source.localeCompare(b.source);
+  });
+
+  const matches: RuleMatch[] = deduped.map((item, idx) => ({ ...item, isWinner: idx === 0 }));
+  const winner = matches[0];
+  const sameScoreDifferentDecision = matches.filter(
+    (m) => m.score === winner.score && m.decision !== winner.decision
+  );
+
+  const matchKind = winner.exact ? 'exact match' : `wildcard (specificity ${winner.score})`;
+  let reason = `${winner.decision.toUpperCase()} via "${winner.pattern}" (${matchKind}) from ${winner.source}.`;
+  if (sameScoreDifferentDecision.length > 0) {
+    const beaten = Array.from(new Set(sameScoreDifferentDecision.map((m) => m.decision))).join(
+      ', '
+    );
+    reason += ` Tied specificity broke by precedence (deny > ask > allow) over ${beaten}.`;
+  }
+
+  return {
+    tool: trimmed,
+    decision: winner.decision,
+    winner,
+    matches,
+    reason,
+  };
 }
 
 // Union of every profile reachable through `extends`, like applyProfiles on the server.

@@ -105,6 +105,8 @@ export class Gateway {
       deny: (id, reason) => this.hitlEngine.deny(id, reason),
       approveByCode: (code, options) => this.hitlEngine.approveByCode(code, options),
       denyByCode: (code, reason) => this.hitlEngine.denyByCode(code, reason),
+      listGrants: (agentId) => this.hitlEngine.listGrants(agentId),
+      revokeGrant: (id) => this.hitlEngine.revokeGrant(id),
     };
 
     this.approvalPreviews = new ApprovalPreviewReader({

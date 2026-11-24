@@ -1,8 +1,12 @@
 import type {
+  ActivityEvent,
   ApplyResult,
+  AuditEntry,
   ChangeOp,
   ChangePreview,
   ChatMessage,
+  DecideOptions,
+  Grant,
   Meta,
   Proposal,
   State,
@@ -54,22 +58,34 @@ export const api = {
     const params = new URLSearchParams(Object.entries(query).filter(([, v]) => v));
     return request<{
       dbPath: string;
-      entries: import('./types').AuditEntry[];
+      entries: AuditEntry[];
       pending: unknown[];
       error?: string;
     }>('/api/logs' + (params.size ? `?${params}` : ''));
   },
-  activity: () => request<{ events: import('./types').ActivityEvent[] }>('/api/activity'),
+  activity: () => request<{ events: ActivityEvent[] }>('/api/activity'),
+  grants: (agent?: string) => {
+    const suffix = agent ? `?agent=${encodeURIComponent(agent)}` : '';
+    return request<{ grants: Grant[]; canRevoke?: boolean; error?: string }>(
+      `/api/grants${suffix}`
+    );
+  },
+  revokeGrant: (id: string) =>
+    request<{ ok: boolean }>(`/api/grants/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   preview: (ops: ChangeOp[]) => post<ChangePreview>('/api/changes/preview', { ops }),
   apply: (ops: ChangeOp[], version?: string) =>
     post<ApplyResult>('/api/changes/apply', { ops, version }),
   saveProvider: (body: Record<string, unknown>) => post<State>('/api/providers', body),
   deleteProvider: (id: string) =>
     request<State>(`/api/providers/${encodeURIComponent(id)}`, { method: 'DELETE' }),
-  decide: (action: 'approve' | 'deny', code: string, remember?: string, durationMs?: number) => {
+  decide: (action: 'approve' | 'deny', code: string, options: DecideOptions = {}) => {
     const params = new URLSearchParams({ code });
-    if (remember) params.set('remember', remember);
-    if (durationMs) params.set('duration_ms', String(durationMs));
+    if (options.remember) params.set('remember', options.remember);
+    if (options.grantScope) params.set('grant_scope', options.grantScope);
+    if (options.grantTier) params.set('grant_tier', options.grantTier);
+    if (options.grantProfile) params.set('grant_profile', options.grantProfile);
+    if (options.durationMs) params.set('duration_ms', String(options.durationMs));
+    if (options.maxUses) params.set('max_uses', String(options.maxUses));
     return post<unknown>(`/${action}?${params}`);
   },
   approvalPreview: (id: string) =>

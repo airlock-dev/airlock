@@ -14,6 +14,7 @@ import {
   McpServerConfig,
   ProviderConfig,
   getMcpConfigs,
+  withEnvVarResolution,
   type GatewayConfig as ParsedGatewayConfig,
 } from '../config/schema.js';
 import { rememberAllow } from '../config/mutator.js';
@@ -58,7 +59,9 @@ interface EditableProvider {
   enabled: boolean;
   command?: string;
   args?: string[];
+  env?: Record<string, string>;
   url?: string;
+  headers?: Record<string, string>;
   oauth?: boolean;
 }
 
@@ -103,7 +106,9 @@ interface ProviderBody {
   enabled?: unknown;
   command?: unknown;
   args?: unknown;
+  env?: unknown;
   url?: unknown;
+  headers?: unknown;
   oauth?: unknown;
 }
 
@@ -531,8 +536,38 @@ export function createConfigureWebApp(configPath: string, options: ConfigureWebO
 
   if (options.remoteGateway) {
     registerRemoteGatewayRoutes(app, configPath, options.remoteGateway);
+  } else if (options.approvals) {
+    options.approvals.registerRoutes(app, configPath);
   } else {
-    options.approvals?.registerRoutes(app, configPath);
+    app.get('/api/grants', (request, reply) => {
+      try {
+        const { agent } = request.query as { agent?: string };
+        const agentFilter = typeof agent === 'string' && agent.trim() ? agent.trim() : undefined;
+        return readAuditGrants(configPath, agentFilter);
+      } catch (err) {
+        reply.code(500);
+        return {
+          grants: [],
+          canRevoke: false,
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+    });
+
+    app.delete('/api/grants/:id', (request, reply) => {
+      try {
+        const { id } = request.params as { id: string };
+        const revoked = revokeAuditGrant(configPath, id);
+        if (!revoked) {
+          reply.code(404);
+          return { error: 'No active grant found' };
+        }
+        return { ok: true };
+      } catch (err) {
+        reply.code(500);
+        return { error: err instanceof Error ? err.message : String(err) };
+      }
+    });
   }
 
   app.post('/api/rules', async (request, reply) => {
@@ -803,6 +838,61 @@ export function readAuditLogs(configPath: string, query: AuditLogQuery = {}): Au
   }
 }
 
+export function readAuditGrants(
+  configPath: string,
+  agent?: string
+): { grants: Record<string, unknown>[]; canRevoke: boolean } {
+  const parsed = readConfigObject(configPath);
+  const auditConfig = AuditConfig.parse(parsed.audit ?? {});
+  const dbPath = auditConfig.db_path;
+  if (dbPath === ':memory:' || !existsSync(dbPath)) {
+    return { grants: [], canRevoke: true };
+  }
+  const db = new AuditDb(dbPath);
+  try {
+    const rows = db.getActiveGrants().filter((row) => !agent || row.agent_id === agent);
+    const grants: Record<string, unknown>[] = [];
+    for (const row of rows) {
+      try {
+        const scope = JSON.parse(row.scope) as Record<string, unknown>;
+        grants.push({
+          id: row.id,
+          agentId: row.agent_id,
+          scope,
+          source: row.source,
+          ...(row.label ? { label: row.label } : {}),
+          ...(row.session_id ? { sessionId: row.session_id } : {}),
+          ...(row.approval_id ? { approvalId: row.approval_id } : {}),
+          createdAt: row.created_at,
+          ...(row.expires_at ? { expiresAt: row.expires_at } : {}),
+          ...(row.uses_remaining !== null ? { usesRemaining: row.uses_remaining } : {}),
+        });
+      } catch {
+        // skip unreadable grant row
+      }
+    }
+    return { grants, canRevoke: true };
+  } finally {
+    db.close();
+  }
+}
+
+export function revokeAuditGrant(configPath: string, id: string): boolean {
+  const parsed = readConfigObject(configPath);
+  const auditConfig = AuditConfig.parse(parsed.audit ?? {});
+  const dbPath = auditConfig.db_path;
+  if (dbPath === ':memory:' || !existsSync(dbPath)) return false;
+  const db = new AuditDb(dbPath);
+  try {
+    const existing = db.getGrantById(id);
+    if (!existing || existing.revoked_at) return false;
+    db.revokeGrant(id);
+    return true;
+  } finally {
+    db.close();
+  }
+}
+
 interface RemoteHealth {
   mcpHealth?: Record<string, 'ok' | 'down'>;
   pendingApprovals?: number;
@@ -817,10 +907,23 @@ interface RemotePendingApproval {
   args: Record<string, unknown>;
   context?: { reason?: string; note?: string };
   kind?: 'call' | 'plan' | 'question';
+  mode?: 'sync' | 'async';
+  tier?: 'read' | 'write' | 'destructive';
+  provider?: string;
   escalated?: boolean;
+  plan?: Array<{ tool: string; args: Record<string, unknown> }>;
+  grantOptions?: Array<{
+    scope: 'tool' | 'tier' | 'provider' | 'profile';
+    label: string;
+    tier?: 'read' | 'write';
+    profile?: string;
+  }>;
+  batchId?: string;
+  batchCode?: string;
   status?: string;
   created_at?: string;
   createdAt?: string;
+  expiresAt?: string;
 }
 
 async function readRemoteCommandCenterStatus(
@@ -902,6 +1005,36 @@ async function readRemoteAuditLogs(
       }),
       status: 'pending' as const,
       created_at: entry.created_at ?? entry.createdAt ?? new Date().toISOString(),
+      ...(entry.kind ||
+      entry.mode ||
+      entry.tier ||
+      entry.provider ||
+      entry.escalated ||
+      entry.plan ||
+      entry.grantOptions ||
+      entry.expiresAt ||
+      entry.batchCode
+        ? {
+            meta: JSON.stringify({
+              ...(entry.kind ? { kind: entry.kind } : {}),
+              ...(entry.mode ? { mode: entry.mode } : {}),
+              ...(entry.tier || entry.provider || entry.escalated !== undefined
+                ? {
+                    subject: {
+                      ...(entry.tier ? { tier: entry.tier } : {}),
+                      ...(entry.provider ? { provider: entry.provider } : {}),
+                      ...(entry.escalated !== undefined ? { escalated: entry.escalated } : {}),
+                    },
+                  }
+                : {}),
+              ...(entry.plan ? { plan: entry.plan } : {}),
+              ...(entry.grantOptions ? { grantOptions: entry.grantOptions } : {}),
+              ...(entry.expiresAt ? { expiresAt: entry.expiresAt } : {}),
+              ...(entry.batchCode ? { batchCode: entry.batchCode } : {}),
+              ...(entry.batchId ? { batchId: entry.batchId } : {}),
+            }),
+          }
+        : {}),
     })),
   };
 }
@@ -1019,6 +1152,42 @@ function registerRemoteGatewayRoutes(
     );
     if (forwarded.error) return reply.code(forwarded.status).send({ error: forwarded.error });
     return reply.send({ ok: true });
+  });
+
+  app.get('/api/grants', async (request, reply) => {
+    try {
+      const { agent } = request.query as { agent?: string };
+      const suffix = agent && agent.trim() ? `?agent=${encodeURIComponent(agent.trim())}` : '';
+      const result = await remoteGatewayJson<{ grants?: Record<string, unknown>[] }>(
+        remoteGateway,
+        `/hitl/grants${suffix}`
+      );
+      return { grants: result.grants ?? [], canRevoke: true };
+    } catch (err) {
+      reply.code(502);
+      return {
+        grants: [],
+        canRevoke: false,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+  });
+
+  app.delete('/api/grants/:id', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    try {
+      const response = await remoteGatewayFetch(
+        remoteGateway,
+        `/hitl/grants/${encodeURIComponent(id)}`,
+        { method: 'DELETE' }
+      );
+      if (!response.ok) {
+        return reply.code(response.status).send({ error: await remoteGatewayError(response) });
+      }
+      return reply.send({ ok: true });
+    } catch (err) {
+      return reply.code(502).send({ error: err instanceof Error ? err.message : String(err) });
+    }
   });
 
   app.get('/version', () => ({ version: VERSION }));
@@ -1217,12 +1386,19 @@ export function upsertProvider(configPath: string, body: ProviderBody): WebState
           ? existing.command
           : '';
     if (!command) throw new Error('stdio providers require command');
+    const env = parseOptionalStringMap(body.env, 'env');
+    const resolvedEnv =
+      env !== undefined ? (Object.keys(env).length > 0 ? env : undefined) : stringMap(existing.env);
     providers[id] = removeUndefined({
       ...existing,
       type,
       enabled: enabled ? undefined : false,
       command,
       args: parseOptionalStringArray(body.args, 'args') ?? stringArray(existing.args),
+      env: resolvedEnv,
+      url: undefined,
+      headers: undefined,
+      oauth: undefined,
     });
   } else {
     const url =
@@ -1232,11 +1408,22 @@ export function upsertProvider(configPath: string, body: ProviderBody): WebState
           ? existing.url
           : '';
     if (!url) throw new Error(`${type} providers require url`);
+    const headers = parseOptionalStringMap(body.headers, 'headers');
+    const resolvedHeaders =
+      headers !== undefined
+        ? Object.keys(headers).length > 0
+          ? headers
+          : undefined
+        : stringMap(existing.headers);
     providers[id] = removeUndefined({
       ...existing,
       type,
       enabled: enabled ? undefined : false,
       url,
+      headers: resolvedHeaders,
+      command: undefined,
+      args: undefined,
+      env: undefined,
       oauth:
         type === 'http' ? (parseOptionalBoolean(body.oauth) ?? Boolean(existing.oauth)) : undefined,
     });
@@ -1426,7 +1613,7 @@ function parseGatewayConfig(doc: Record<string, unknown>): {
   diagnostics: ConfigDiagnostic[];
 } {
   try {
-    const result = GatewayConfig.safeParse(doc);
+    const result = withEnvVarResolution(false, () => GatewayConfig.safeParse(doc));
     if (!result.success) {
       return {
         diagnostics: [
@@ -1487,12 +1674,16 @@ function toEditableProviders(input: Record<string, unknown>): Record<string, Edi
 
     const provider = asRecord(value);
     const type = parseProviderType(provider.type);
+    const env = type === 'stdio' ? stringMap(provider.env) : undefined;
+    const headers = type === 'http' || type === 'sse' ? stringMap(provider.headers) : undefined;
     providers[id] = {
       type,
       enabled: providerEnabled(provider),
       command: typeof provider.command === 'string' ? provider.command : undefined,
       args: stringArray(provider.args),
+      ...(env ? { env } : {}),
       url: typeof provider.url === 'string' ? provider.url : undefined,
+      ...(headers ? { headers } : {}),
       oauth: typeof provider.oauth === 'boolean' ? provider.oauth : undefined,
     };
   }
@@ -1570,6 +1761,31 @@ function parseStringArray(value: unknown, name: string): string[] {
 
 function parseOptionalStringArray(value: unknown, name: string): string[] | undefined {
   return value === undefined ? undefined : parseStringArray(value, name);
+}
+
+function parseOptionalStringMap(value: unknown, name: string): Record<string, string> | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`${name} must be an object of string key/value pairs`);
+  }
+  const result: Record<string, string> = {};
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    const key = k.trim();
+    if (!key) continue;
+    if (typeof v !== 'string') {
+      throw new Error(`${name}.${key} must be a string`);
+    }
+    result[key] = v;
+  }
+  return result;
+}
+
+function stringMap(value: unknown): Record<string, string> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const entries = Object.entries(value as Record<string, unknown>).filter(
+    (entry): entry is [string, string] => typeof entry[1] === 'string'
+  );
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
 }
 
 function stringArray(value: unknown): string[] {
