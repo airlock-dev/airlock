@@ -78,6 +78,7 @@ providers:
 | `command` / `args`            | `stdio`                | `args: []` | Process to spawn (used literally; no `${VAR}` substitution)                  |
 | `env`                         | `stdio`                | —          | Extra environment for the child process (`${VAR}` supported)                 |
 | `url` / `headers`             | `sse`, `http`          | —          | Endpoint and request headers (`${VAR}` supported in `headers` only)          |
+| `bearer_token_file`           | `http`                 | —          | Absolute path to a bearer token file resolved when Airlock loads config      |
 | `oauth`                       | `http`                 | `false`    | Run the browser authorization-code flow                                      |
 | `oauth_callback_port`         | `http`                 | `18432`    | Local port for the OAuth callback listener                                   |
 | `oauth_callback_url`          | `http`                 | —          | Public callback URL when the callback is relayed (remote or tunneled setups) |
@@ -88,6 +89,33 @@ providers:
 | `credential_probe`            | `stdio`, `sse`, `http` | —          | Read-only call that proves the credential works (see below)                  |
 
 Built-ins can be written as the bare string `builtin` or as `{ type: builtin, enabled: false }`.
+
+### Add an HTTP provider with a bearer token while Airlock is running
+
+Make a directory of provider credentials readable to Airlock. For a container,
+mount the directory read-only when setting up the gateway. Add the token file
+to the mounted directory, then add the provider to the watched configuration.
+
+```yaml
+providers:
+  workspace:
+    type: http
+    url: https://mcp.example.com
+    bearer_token_file: /run/provider-secrets/workspace
+```
+
+Airlock reads the token during config load. On a successful reload it connects
+the new provider while existing provider connections keep serving requests.
+The file contains one bearer token and can end with a newline. The file size
+limit is 16 KiB. Use a single authorization source for the provider. A missing
+or invalid token file fails startup config validation or preserves the previous
+configuration during a reload. `config lint` and `config check --no-resolve`
+validate the configuration structure without opening credential files.
+
+After replacing a token file, save the configuration file to trigger a reload.
+Airlock reconnects the provider whose credential changed. Requests already in
+flight to that provider may be interrupted, while other providers keep their
+connections.
 
 ### App identity: `client_credentials`
 

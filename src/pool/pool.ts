@@ -3,6 +3,7 @@ import { SseMcpClient } from './sse-client.js';
 import { HttpMcpClient } from './http-client.js';
 import type { ProviderConnectionStatus } from './status.js';
 import type { McpServerConfig } from '../config/schema.js';
+import { resolveProviderBearerFile } from '../config/provider-credentials.js';
 import type { Tool } from '@modelcontextprotocol/server';
 import type {
   EventDescriptor,
@@ -87,7 +88,15 @@ export class ClientPool {
   }
 
   private async connectClient(id: string, cfg: McpServerConfig): Promise<void> {
-    const client = this.createClient(id, cfg);
+    let connection: McpServerConfig;
+    try {
+      // CLI and dashboard discovery can construct a pool from a structurally parsed config.
+      connection = resolveProviderBearerFile(cfg);
+    } catch (error) {
+      log.warn({ id }, error instanceof Error ? error.message : 'Invalid provider credential');
+      return;
+    }
+    const client = this.createClient(id, connection);
     this.clients.set(id, client);
     client.onReady(() => this.notifyClientReady(id));
     if (client instanceof HttpMcpClient || client instanceof StdioMcpClient) {

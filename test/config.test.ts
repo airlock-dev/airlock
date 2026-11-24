@@ -9,6 +9,33 @@ import { rememberAllow } from '../src/config/mutator.js';
 // --- Schema / env var substitution ---
 
 describe('GatewayConfig schema', () => {
+  it('accepts a file-backed HTTP bearer as the single authorization source', () => {
+    const provider = {
+      type: 'http',
+      url: 'https://mcp.example.com',
+      bearer_token_file: join(tmpdir(), 'provider-token'),
+    };
+    const native = GatewayConfig.parse({ providers: { native: provider } });
+    expect(validateConfig(native).filter((diagnostic) => diagnostic.level === 'error')).toEqual([]);
+
+    const conflicting = GatewayConfig.parse({
+      providers: { native: { ...provider, headers: { aUtHoRiZaTiOn: 'Bearer other' } } },
+    });
+    expect(validateConfig(conflicting)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          level: 'error',
+          message: expect.stringContaining('bearer_token_file'),
+        }),
+      ])
+    );
+    expect(
+      GatewayConfig.safeParse({
+        providers: { native: { ...provider, bearer_token_file: 'relative-token' } },
+      }).success
+    ).toBe(false);
+  });
+
   it('parses a minimal valid config with all defaults', () => {
     const result = GatewayConfig.safeParse({});
     expect(result.success).toBe(true);
@@ -360,6 +387,29 @@ describe('loadConfig()', () => {
 
   afterEach(() => {
     rmSync(dir, { recursive: true });
+  });
+
+  it.each([
+    ['empty file', ''],
+    ['multiple tokens', 'first\nsecond\n'],
+    ['oversized file', 'x'.repeat(16 * 1024 + 1)],
+    ['directory', null],
+  ])('rejects a bearer credential that is a %s', (_description, contents) => {
+    const tokenPath = contents === null ? dir : join(dir, 'bearer');
+    if (contents !== null) writeFileSync(tokenPath, contents, { mode: 0o600 });
+    const path = join(dir, 'gateway.yaml');
+    writeFileSync(
+      path,
+      `providers:
+  workspace:
+    type: http
+    url: https://workspace.example.com
+    bearer_token_file: ${JSON.stringify(tokenPath)}
+`
+    );
+    expect(() => loadConfig(path)).toThrow(
+      'readable file containing one bearer token up to 16 KiB'
+    );
   });
 
   it('loads a valid YAML config file', () => {
