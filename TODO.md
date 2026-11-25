@@ -5,9 +5,9 @@
 
 # Integration Testing
 
-- [ ] Test: OpenClaw integration — key use case given its MCP tool access + high prompt injection / indirect injection exposure (malicious content in docs/emails/web hijacking tool calls)
-- [ ] Test: OpenClaw native messaging integration as a HITL approval method — verify seamless end-to-end approval flow
-- [ ] Docs/Marketing: Update public site to emphasize OpenClaw compatibility and its relevance as a security layer against prompt injection + over-privileged MCP tools
+- [x] Test: OpenClaw integration — `airlock-bridge` plugin and policy/HTTP tools API integration covered in `test/openclaw-plugin.test.ts` (live indirect-injection scenarios remain manual QA)
+- [ ] Test: OpenClaw native messaging integration as a HITL approval method — verify seamless end-to-end approval flow against a live OpenClaw gateway
+- [x] Docs/Marketing: Update public site to emphasize OpenClaw compatibility and its relevance as a security layer against prompt injection + over-privileged MCP tools
 
 # Growth Enablers
 
@@ -16,12 +16,12 @@
 
 # High-value Features
 
-- [ ] Feat: use MCP tool annotations (readOnlyHint, destructiveHint, idempotentHint, openWorldHint) to drive allow/HITL/deny routing logic, rather than relying solely on tool name matching or user-defined patterns
-- [ ] Feat: middleware to deny specific queries, eg for supabase_execute_sql, deny some table or column names
+- [x] Feat: use MCP tool annotations (`readOnlyHint`, `destructiveHint`, `openWorldHint`) for safety tiers (`read` / `write` / `destructive`), tier-scoped grants, approval preview read-only checks, and Command Center / `configure-agent` recommended defaults (with explicit `tool_overrides.<tool>.tier` overrides; runtime policy still stays explicit/fail-closed)
+- [x] Feat: argument and command policies (`arg_policy`, `arg_scope` with `value_sets` + `arg_dimensions`, and `command_policy`) to constrain specific tool arguments and CLI-dispatcher commands
 
 # Later
 
-- [ ] Feat: add a "risk level" to each action that needs approval, so you can see at a glance in teh notificaiton what the risk is. Emoji in the popup etc. Could have defaults like read is basic, write is elevated, delete is critical read from the mcp tool definition tags
-- [ ] Feat: MCP wizard: will open a nice webpage or tui, help you get connected to the mcp, then go over all the tools hoswing the description and letting you set approve/hitl/deny on each one.
-- [ ] Feat: support toml of json5 configs
+- [x] Feat: risk/safety tiers (`read` / `write` / `destructive`) and flagged/escalation indicators derived from MCP tool annotations (or `tool_overrides.<tool>.tier`) and surfaced across the Command Center Inbox, iOS/macOS companions, and approval notifications
+- [x] Feat: MCP configuration wizards — `airlock configure-agent` TUI, `airlock configure-cli` TUI, and the web Command Center (`airlock run` / `airlock configure-web` / `airlock dashboard`) with Agent Composer, tool descriptions, annotation-based defaults, and Policy Assistant
+- [ ] Feat: support toml or json5 configs
 - [x] Feat: dockerize / sandbox exec tools or mcp's with presets like no network access. e.g would be nice to be able to grant blanket allow for python in a sandbox where it can only do e.g. transformations of data (json parsing etc) but not rm -rf / or exfiltrate data

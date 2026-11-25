@@ -70,11 +70,13 @@ Options:
 
 ## Run stdio mode for a specific agent
 
-Lean mode with no HTTP server. Only connects to MCP providers the agent references:
+Lean mode with no HTTP data-plane server. Only connects to MCP providers the agent references (plus any providers used by `approvals.previews`):
 
 ```bash
 airlock --agent claude-code --config airlock.yaml
 ```
+
+When `uploads.enabled: true` is configured, stdio mode opens an optional ephemeral loopback HTTP listener (`127.0.0.1:<random-port>`) serving only single-use presigned upload and download routes so staged file uploads work locally too (dynamically bound or closed on config reload). See [File Uploads](/guides/file-uploads).
 
 ## Validate local config
 
@@ -424,14 +426,20 @@ Airlock never spends a refresh token unless it could first durably record the at
 
 ## Setup OpenClaw integration
 
-Install the Airlock bridge plugin for OpenClaw:
+Install the bundled Airlock bridge plugin for OpenClaw (takes no additional flags):
 
 ```bash
 airlock setup openclaw
 ```
 
 Creates `~/.openclaw/extensions/airlock-bridge` as a symlink to the bundled
-plugin and prints next steps. See [OpenClaw Setup](/guides/openclaw).
+`extensions/openclaw` plugin, replacing an existing symlink automatically (if a
+non-symlink directory already exists at that path, the command errors rather
+than overwriting it). Because it is a symlink, upgrading `airlock-bot` updates
+the plugin without rerunning setup. After linking, it prints restart steps
+(`openclaw restart`) and the default connection environment variables
+(`AIRLOCK_URL`, `AIRLOCK_AGENT`, and `AIRLOCK_SECRET`). See
+[OpenClaw Setup](/guides/openclaw).
 
 ## Common flags
 

@@ -64,6 +64,7 @@ allowlist
   -> command-policy
   -> schema-validator
   -> arg-policy
+  -> upload-policy
   -> injection-detector / sensitivity-classifier
   -> sandbox
   -> hitl-gate
@@ -71,9 +72,15 @@ allowlist
 ```
 
 `schema-validator`, `injection-detector`, and `sensitivity-classifier` run in
-the core zone even though they are configurable. Other configurable middleware
-wraps the core pipeline, so it can inspect the request before execution and the
-response on the way back.
+the core zone even though they are configurable. `upload-policy` is part of the
+fixed core and runs after `arg-policy` and before detectors, `sandbox`, and
+`hitl-gate`. When a non-Airlock tool call carries staged file upload references
+(`airlock-upload://<id>`), `schema-validator` defers Ajv validation to
+`upload-policy` so that schema checks and a defense-in-depth `arg_policy` pass
+run against the effective substituted arguments (while keeping native
+binary/multipart handles intact). Other configurable middleware wraps the core
+pipeline, so it can inspect the request before execution and the response on the
+way back.
 
 ## Core-Zone Middleware
 
@@ -82,12 +89,29 @@ response on the way back.
 Validates tool arguments against the tool's JSON Schema using Ajv. Malformed
 calls are rejected before execution.
 
+For non-Airlock tool calls containing `airlock-upload://<id>` references,
+`schema-validator` hands off its compiled validator to `upload-policy` so Ajv
+checks the effective substituted values rather than rejecting raw upload handles
+against enum, length, or pattern constraints. Airlock's own tools (such as
+`airlock/request_approval`) validate their outer schema immediately here and
+validate planned calls individually.
+
 ```yaml
 agents:
   claude-code:
     middleware:
       - name: schema-validator
 ```
+
+### Upload Policy (Core)
+
+Always active in the core zone when staged file uploads are used (see
+[File Uploads](/guides/file-uploads)). Validates and pins referenced
+`airlock-upload://<id>` handles before pre-execution detectors and human
+approval, runs deferred Ajv validation and a defense-in-depth `arg_policy` check
+on effective arguments, feeds `:text` payloads to detectors, binds approval
+grants to the validated SHA-256 digest and delivery mode, and keeps `ctx.args`
+and SQLite audit records compact.
 
 ### Injection Detector
 

@@ -94,7 +94,7 @@ server:
   api_secret: ${AIRLOCK_API_SECRET}
   auth_required: true
   require_agent_tokens: true
-  expose_tools_api: true
+  expose_tools_api: per-agent # per-agent | all | none
   management_api:
     enabled: true
     api_secret: ${MANAGEMENT_API_SECRET}
