@@ -1,4 +1,4 @@
-import { readdir } from 'fs/promises';
+import { readdir, readFile } from 'fs/promises';
 import { join } from 'path';
 import { parseArgs } from 'util';
 import {
@@ -10,6 +10,7 @@ import {
   type GrantSummary,
 } from './oauth-store.js';
 import { writerLockFor, writerLockTimings, type OAuthWriterLock } from './oauth-lock.js';
+import { FileOAuthProvider } from './oauth-provider.js';
 
 const HELP = `airlock oauth — inspect and restore Airlock-held OAuth grants (never prints secrets)
 
@@ -164,10 +165,34 @@ export async function oauthCommand(argv: string[]): Promise<CliOutput> {
       const results: Record<string, unknown> = {};
       const lines: string[] = [];
       let failed = 0;
+      // import-legacy: read every selected legacy input first, before anything can touch it.
+      const inputs = new Map<string, string | Error>();
+      if (command === 'import-legacy') {
+        for (const id of ids) {
+          try {
+            inputs.set(id, await readFile(join(dir, `${id}.json`), 'utf-8'));
+          } catch (err) {
+            inputs.set(id, err instanceof Error ? err : new Error(String(err)));
+          }
+        }
+      }
       for (const id of ids) {
         try {
           const store = new OAuthGrantStore(id, 'writer', dir);
           if (command === 'export-legacy') {
+            // A usable successor may be parked from a restart overlap: adopt it first, so the
+            // exported token is the newest one. Anything left unclassified fails this provider.
+            const provider = new FileOAuthProvider(id, 0, undefined, undefined, undefined, {
+              storage: 'writer',
+              storeDir: dir,
+            });
+            await provider.runExclusive(() => provider.adoptOrphanedSuccessors());
+            const left = (await listDir(store.orphanDir)).filter((f) => f.endsWith('.json'));
+            if (left.length > 0) {
+              throw new Error(
+                `${left.length} parked successor(s) in ${store.orphanDir} could not be adopted or archived; not exporting a possibly spent token`
+              );
+            }
             const r = await store.exportLegacy();
             results[id] = r;
             lines.push(
@@ -176,7 +201,9 @@ export async function oauthCommand(argv: string[]): Promise<CliOutput> {
                 : `  ${id}: nothing to export (no revisions; ${id}.json is already the grant)`
             );
           } else {
-            const r = await store.importLegacy();
+            const input = inputs.get(id)!;
+            if (input instanceof Error) throw input;
+            const r = await store.importLegacy(input);
             results[id] = { imported: true, rev: r.rev };
             lines.push(
               `  ${id}: imported ${id}.json as revision ${r.rev} (the revision it replaced is in history)`

@@ -1,6 +1,7 @@
-import { isValidProviderId } from '../pool/oauth-store.js';
-import { readFileSync } from 'fs';
+import { REVISION_DIR, isValidProviderId, oauthStoreDir } from '../pool/oauth-store.js';
+import { readdirSync, readFileSync } from 'fs';
 import { isIP } from 'net';
+import { join } from 'path';
 import { parse as parseYaml } from 'yaml';
 import { hasAgentCredential } from '../security/request.js';
 import {
@@ -394,6 +395,10 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
   // is an unanswerable question about whose name an agent's writes land under, so reject it here
   // rather than let whichever code path runs first decide silently.
   const oauthIdsFolded = new Map<string, string>();
+  // Names a rename suggestion must avoid: every configured provider id and every name already
+  // present in the OAuth store (case-insensitively).
+  const takenIds = new Set(Object.keys(config.providers).map((id) => id.toLowerCase()));
+  for (const name of oauthStoreNames()) takenIds.add(name.toLowerCase());
   for (const [providerId, provider] of Object.entries(config.providers)) {
     if (provider === 'builtin' || provider.type !== 'http') continue;
     if (hasConflictingBearerAuth(provider)) {
@@ -408,7 +413,7 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
       diagnostics.push({
         level: 'error',
         message: `Provider "${providerId}" uses oauth: true but its id cannot be used for OAuth grant storage.`,
-        suggestion: `OAuth provider ids are used verbatim as file names (letters, digits, ".", "_", "-"; not starting with "."). Rename it, e.g. to "${suggestOAuthId(providerId)}"; to keep its stored grant, stop Airlock first and rename ~/.airlock/oauth/${providerId}.json (and .grants/, .history/, .successors/ entries of that name, if any) to the new id (see "Rename an OAuth provider" in docs/reference/cli.md).`,
+        suggestion: `OAuth provider ids are used verbatim as file names (letters, digits, ".", "_", "-"; not starting with "."). Rename it, e.g. to "${suggestOAuthId(providerId, takenIds)}"; to keep its stored grant, stop Airlock first and rename ~/.airlock/oauth/${providerId}.json (and .grants/, .history/, .successors/ entries of that name, if any) to the new id (see "Rename an OAuth provider" in docs/reference/cli.md).`,
       });
     }
     if (provider.oauth) {
@@ -418,7 +423,7 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
         diagnostics.push({
           level: 'error',
           message: `OAuth providers "${other}" and "${providerId}" differ only in letter case.`,
-          suggestion: `Their grant files would collide on case-insensitive filesystems. Rename one (e.g. "${providerId}" → "${providerId}-2"); to keep its stored grant, stop Airlock and rename its files as described under "Rename an OAuth provider" in docs/reference/cli.md.`,
+          suggestion: `Their grant files would collide on case-insensitive filesystems. Rename one (e.g. "${providerId}" → "${suggestOAuthId(providerId, takenIds)}"); to keep its stored grant, stop Airlock and rename its files as described under "Rename an OAuth provider" in docs/reference/cli.md.`,
         });
       } else {
         oauthIdsFolded.set(folded, providerId);
@@ -1153,8 +1158,34 @@ function isLoopbackHost(host: string): boolean {
   return firstOctet === 127;
 }
 
-/** A safe OAuth provider id close to `id` (for rename suggestions). */
-function suggestOAuthId(id: string): string {
-  const cleaned = id.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^[.]+/, '');
-  return cleaned || 'provider';
+/** A safe OAuth provider id close to `id`, not in `taken` (lower-cased), within the length limit. */
+function suggestOAuthId(id: string, taken: Set<string>): string {
+  const base = (id.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^[.]+/, '') || 'provider').slice(
+    0,
+    190
+  );
+  for (let i = 1; ; i++) {
+    const candidate = i === 1 ? base : `${base}-${i}`;
+    if (isValidProviderId(candidate) && !taken.has(candidate.toLowerCase())) {
+      taken.add(candidate.toLowerCase());
+      return candidate;
+    }
+  }
+}
+
+/** Names already used in the OAuth store (`<id>.json`, `.grants/<id>`); best-effort. */
+function oauthStoreNames(): string[] {
+  const dir = oauthStoreDir();
+  const names: string[] = [];
+  try {
+    for (const f of readdirSync(dir)) if (f.endsWith('.json')) names.push(f.slice(0, -5));
+  } catch {
+    // no store yet
+  }
+  try {
+    names.push(...readdirSync(join(dir, REVISION_DIR)));
+  } catch {
+    // no revisions yet
+  }
+  return names;
 }

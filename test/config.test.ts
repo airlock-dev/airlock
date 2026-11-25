@@ -643,6 +643,7 @@ agents:
         'work chat': base,
         work_chat: base,
         Work_Chat: base,
+        'work-chat': { type: 'http', url: 'https://mcp.example.com/mcp' }, // name already taken
         'plain id': { type: 'http', url: 'https://mcp.example.com/mcp' },
       },
       agents: { agent1: { token: 'agent-secret' } },
@@ -654,6 +655,12 @@ agents:
         'OAuth providers "work_chat" and "Work_Chat" differ only in letter case.',
       ])
     );
+    // Suggestions are safe, unique against configured ids, and name the rename procedure.
+    const unsafe = errors.find((d) => d.message.includes('"work chat"'))!;
+    expect(unsafe.suggestion).toContain('"work-chat-2"');
+    const collision = errors.find((d) => d.message.includes('letter case'))!;
+    expect(collision.suggestion).toContain('"Work_Chat-2"');
+    expect(collision.suggestion).toContain('Rename an OAuth provider');
     expect(errors.some((d) => d.message.includes('"plain id"'))).toBe(false);
   });
 

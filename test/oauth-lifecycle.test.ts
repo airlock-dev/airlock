@@ -2172,18 +2172,11 @@ describe('OAuth lifecycle — round 4', () => {
     expect(world.refreshReuseAttempts).toBe(0); // …and never consulted
     await expectUsableGrant();
 
-    // Repaired after the next publish…
+    // Repaired by the next publish of that grant (the only place mirrors are written).
     spy.mockImplementation(realMirror);
     await refreshGrant(p, world.mcpUrl);
     expect(JSON.parse(await readFile(tokenFile(), 'utf-8'))).toEqual(await readGrant());
 
-    // …and when a process acquires the lock (startup).
-    await writeFile(tokenFile(), seeded);
-    await releaseAllWriterLocks();
-    expect(await writerLockFor(dir).ensure()).toBe(true);
-    await vi.waitFor(async () =>
-      expect(JSON.parse(await readFile(tokenFile(), 'utf-8'))).toEqual(await readGrant())
-    );
     expect(await refreshGrant(p, world.mcpUrl)).toMatchObject({ kind: 'refreshed' });
     await expectUsableGrant();
   });
@@ -2271,5 +2264,136 @@ describe('OAuth lifecycle — round 4', () => {
     await expect(internals.finishAuthorization(code)).rejects.toThrow();
     expect(world.tokenRequests.some((r) => r.grantType === 'authorization_code')).toBe(false);
     await expectUsableGrant();
+  });
+});
+
+// ─── Review round 5 ────────────────────────────────────────────────────────────────────────────
+
+function providerFor(id: string) {
+  return new FileOAuthProvider(id, callbackPort, undefined, undefined, undefined, {
+    storeDir: dir,
+  });
+}
+
+describe('OAuth lifecycle — round 5 (version hand-off)', () => {
+  it('roll-forward: import-legacy promotes every one of 16 newer legacy files', async () => {
+    const ids = Array.from({ length: 16 }, (_, i) => `prov-${i}`);
+    for (const id of ids) {
+      await seedGrant({ id });
+      expect(await refreshGrant(providerFor(id), world.mcpUrl)).toMatchObject({
+        kind: 'refreshed',
+      });
+    }
+    // An older build then ran and rotated every grant in <id>.json.
+    const rotated = new Map<string, string>();
+    for (const id of ids) {
+      const g = world.issueGrant();
+      rotated.set(id, g.refresh);
+      const current = await readGrant(id);
+      await writeFile(
+        tokenFile(id),
+        JSON.stringify({ ...current, tokens: { ...current.tokens, refresh_token: g.refresh } })
+      );
+    }
+    await releaseAllWriterLocks();
+    const result = await oauthCommand(['import-legacy', '--dir', dir]);
+    expect(result.exitCode).toBe(0);
+    for (const id of ids) {
+      expect((await readGrant(id)).tokens.refresh_token).toBe(rotated.get(id));
+      await expectUsableGrant(id);
+    }
+  }, 30_000);
+
+  it('acquiring the writer lock never writes any mirror (mirrors are written only when publishing)', async () => {
+    await seedGrant();
+    await refreshGrant(provider(), world.mcpUrl);
+    const legacyNewer = JSON.stringify({ written: 'by an older build' });
+    await writeFile(tokenFile(), legacyNewer);
+    await releaseAllWriterLocks();
+    expect(await writerLockFor(dir).ensure()).toBe(true);
+    await new Promise((r) => setTimeout(r, 300)); // any acquisition hook has run by now
+    expect(await readFile(tokenFile(), 'utf-8')).toBe(legacyNewer);
+  });
+
+  it('a delayed mirror write can never put an older revision over a newer mirror', async () => {
+    await seedGrant();
+    const a = new OAuthGrantStore(ID, 'writer', dir);
+    const b = new OAuthGrantStore(ID, 'writer', dir);
+    const base = await readGrant();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    let blocked = false;
+    const realMirror = a.writeMirrorFile.bind(a);
+    vi.spyOn(a, 'writeMirrorFile').mockImplementation(async (path, raw) => {
+      blocked = true;
+      await gate; // A's mirror write for revision 1 is delayed…
+      return realMirror(path, raw);
+    });
+    const first = a.write({ ...base, tokens: { ...base.tokens, access_token: 'at-1' } }, 'one');
+    await vi.waitFor(() => expect(blocked).toBe(true), { interval: 5 });
+    // …while B publishes revision 2 and asks for its mirror.
+    const second = b.write({ ...base, tokens: { ...base.tokens, access_token: 'at-2' } }, 'two');
+    await new Promise((r) => setTimeout(r, 50));
+    release();
+    await Promise.all([first, second]);
+    expect(JSON.parse(await readFile(tokenFile(), 'utf-8')).tokens.access_token).toBe('at-2');
+    expect((await readGrant()).tokens.access_token).toBe('at-2');
+  });
+
+  it('export-legacy adopts a usable parked successor first (restart-overlap hand-off) and exports a live token', async () => {
+    await seedGrant();
+    const p = provider();
+    world.tokenDelayMs = 300;
+    const pending = refreshGrant(p, world.mcpUrl);
+    await vi.waitFor(() => expect(refreshRequests()).toHaveLength(1), { interval: 10 });
+    await writeForeignLock({ pid: 1, hostname: 'other-host', ns: 'x' }, 99); // takeover
+    expect(await pending).toMatchObject({ kind: 'read_only' }); // successor parked
+    expect((await readdir(join(dir, '.successors', ID))).length).toBe(1);
+    world.tokenDelayMs = 0;
+    // The other process released; nobody adopted yet. The operator exports for a rollback.
+    await writeForeignLock({ pid: 1, hostname: 'other-host', ns: 'x', released: true }, 99);
+    const exported = await oauthCommand(['export-legacy', '--dir', dir]);
+    expect(exported.exitCode).toBe(0);
+    const mirror = JSON.parse(await readFile(tokenFile(), 'utf-8'));
+    expect(world.validRefresh.has(mirror.tokens.refresh_token)).toBe(true); // the old build gets a live token
+    expect(await readdir(join(dir, '.successors', ID))).toEqual([]);
+  });
+
+  it('export-legacy refuses a corrupt newest revision and leaves the mirror untouched', async () => {
+    await seedGrant();
+    await refreshGrant(provider(), world.mcpUrl);
+    const revs = (await readdir(join(dir, '.grants', ID)))
+      .filter((f) => /^r\d+\.json$/.test(f))
+      .sort();
+    const next = Number(revs.at(-1)!.slice(1, 13)) + 1;
+    await writeFile(
+      join(dir, '.grants', ID, `r${String(next).padStart(12, '0')}.json`),
+      '{ broken'
+    );
+    const before = await readFile(tokenFile(), 'utf-8');
+    await releaseAllWriterLocks();
+    const exported = await oauthCommand(['export-legacy', '--dir', dir]);
+    expect(exported.exitCode).toBe(1);
+    expect(exported.text).toContain('not valid JSON');
+    expect(await readFile(tokenFile(), 'utf-8')).toBe(before);
+  });
+
+  it('export-legacy enumerates grants only after it holds the lock', async () => {
+    setWriterLockTimings({ staleMs: 300, heartbeatMs: 200, takeoverGraceMs: 100 });
+    await seedGrant();
+    await refreshGrant(provider(), world.mcpUrl);
+    await releaseAllWriterLocks();
+    await writeForeignLock({ pid: 1, hostname: 'gone-container', ns: 'gone' }, 80);
+    const run = oauthCommand(['export-legacy', '--dir', dir, '--json']);
+    // While the CLI waits for the crashed holder's lock, another grant appears.
+    await new Promise((r) => setTimeout(r, 100));
+    const late = await readGrant();
+    await mkdir(join(dir, '.grants', 'late'), { recursive: true });
+    await writeFile(join(dir, '.grants', 'late', 'r000000000001.json'), JSON.stringify(late));
+    const result = await run;
+    expect(result.exitCode).toBe(0);
+    const data = result.data as { 'export-legacy': Record<string, { exported?: boolean }> };
+    expect(data['export-legacy'].late).toMatchObject({ exported: true });
+    expect(JSON.parse(await readFile(join(dir, 'late.json'), 'utf-8'))).toEqual(late);
   });
 });
