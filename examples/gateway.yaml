@@ -8,7 +8,7 @@ server:
   # api_secret: ${AIRLOCK_API_SECRET}
   # auth_required: true
   # require_agent_tokens: true
-  # expose_tools_api: true
+  # expose_tools_api: per-agent
   # allowed_origins:
   #   - https://airlock.example.com
   # management_api:

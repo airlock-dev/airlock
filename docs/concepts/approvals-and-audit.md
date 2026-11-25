@@ -170,9 +170,14 @@ number of prompts.
 By default (`mode: sync`), a gated call is held open until you decide. Many MCP clients give up
 on a tool call after a minute or so. In async mode, Airlock answers straight away:
 
-> Approval pending: Airlock asked the user to approve gmail/send_email (approval id …, code K7Q2XZ8M).
-> Nothing was executed. Call airlock_await_approval with {"id": "…"} to wait for the decision,
-> then retry this exact call with identical arguments once approved.
+> Approval pending: Airlock asked the user to approve gmail/send_email (approval id …).
+> Nothing was executed. Once the user approves, retry this exact call with identical arguments.
+> To wait for the decision, call airlock_await_approval with {"id": "…"} if that tool is available.
+> Do not re-request it in the meantime.
+
+Approval codes are intentionally never shown to the agent — only the opaque approval `id` (used
+exclusively with `airlock_await_approval`) is returned, so an agent with messaging tools cannot
+post an approval code into your chat channel and approve itself.
 
 When you approve, Airlock creates a single-use grant for that exact call, valid for
 `approvals.grants.async_ttl_ms` (30 min). The agent's retry goes through even if it reconnected

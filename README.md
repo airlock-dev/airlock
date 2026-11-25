@@ -23,21 +23,21 @@ Airlock  ←→  HITL (Telegram / Slack / webhook / TUI / macOS / iOS / dashboar
 
 ## Features
 
-- **Per-agent policy** — each agent sees only the tools it can use, with `allow`, `ask`, and `deny` decisions over namespaced tools (`github/create_pr`, `filesystem/read_file`)
-- **HITL approval** — flag sensitive tools as requiring human sign-off; the agent blocks until you approve or deny
-- **Composable profiles** — define reusable permission sets (`readonly`, `developer`) that agents inherit via `extends`
-- **Backend adapters** — unified interface for MCP servers, CLI tools, REST APIs, HTTP, and exec
-- **CLI tool discovery** — auto-generate config from `--help` output or [Fig autocomplete specs](https://github.com/withfig/autocomplete)
-- **API discovery** — auto-generate config from OpenAPI 3.x specs
-- **Configure agent TUI** — interactive terminal UI to assign allow/ask/deny per tool
-- **Browser command center** — inspect provider health and tools, then edit profiles, agents, and permissions locally
-- **Policy introspection** — validate and lint config, explain effective permissions, and reverse-lookup which agents can call a tool
-- **Batched notifications** — requests arriving within a time window are bundled into a single message
-- **Multiple HITL providers** — Telegram, Slack webhook, generic webhook, OpenClaw, TUI, macOS dialog, iOS push, dashboard, or stdio
-- **Security defaults** — localhost and RFC-1918 ranges blocked for HTTP tools; per-agent domain allowlists; shell injection prevention
-- **Audit log** — every tool call logged to SQLite with agent, tool, args, result, duration, and HITL outcome
-- **Hot reload** — edit config and allowlist/HITL config updates without restarting
-- **Leaner stdio mode** — `--agent` flag runs with no HTTP server and only connects to MCPs the agent actually uses
+- **Per-agent policy** — each agent sees only the tools it can use, with `allow`, `ask`, `deny`, and `remember_allow` over namespaced tools (`github/create_pr`, `filesystem/read_file`), plus `arg_policy` / `arg_scope` (`value_sets` + `arg_dimensions`) and `command_policy` for CLI-dispatcher tools
+- **HITL approvals, grants, plans, async & previews** — gate sensitive calls with time-limited grants (`tool`, `tier`, `provider`, `profile`), multi-step plans (`airlock_request_approval`), non-blocking async approvals (`airlock_await_approval`), batched notifications, and operator-only structured approval previews (`approvals.previews`)
+- **Native iOS & macOS companions + HITL providers** — native iOS Companion (APNs push, interactive actions, TestFlight, cross-device dismissal) and macOS Companion alongside Command Center dashboard, Telegram, Slack webhook, generic webhook, OpenClaw, TUI, macOS dialog, and stdio
+- **Rebuilt Command Center & Policy Assistant** — browser Approvals Inbox, active Grants view, Activity audit log, Agent Composer with one-time `token_sha256` keys, Policy Assistant, and Provider Health
+- **Composable profiles & sandboxing** — reusable permission sets (`extends` + top-level `default_profile`) and OS-level `sandbox_presets` with tool variants (`alias_of`)
+- **Middleware pipeline** — schema validation, staged `upload-policy`, prompt injection detection, canary tokens, PII classification, output scanning, rate limiting, and output size limiting / summarization
+- **Stateless Streamable HTTP (MCP 2026-07-28)** — sessionless `/agents/:agentId/mcp` with `X-Airlock-Session-Id` scoping alongside legacy SSE and lean stdio mode
+- **MCP Events (SEP-3415) & MCP Apps** — default-deny `events/poll` and `events/stream` push subscriptions with `events.arg_policy`, untrusted payload scanning, and live reload revocation, plus opt-in `mcp_apps: true` inline view proxying (`io.modelcontextprotocol/ui`) with namespaced `ui://` URIs and audited `resources/read`
+- **Staged File Uploads (`uploads.enabled: true`)** — push binary and large files from disk through single-use presigned URLs to OpenAPI, built-in HTTP, upstream MCP, and CLI tools without passing raw bytes through LLM context
+- **Resilient OAuth, `client_credentials` & hot-add HTTP providers** — browser OAuth2 (with native gateway callbacks via `oauth_callback_mode: gateway`, single-writer revisioned grant storage, and `airlock oauth status|history|restore`), machine-to-machine `client_credentials` with disk-cached tokens, and zero-downtime hot-add HTTP providers using `bearer_token_file`
+- **Credential Health & Catalog Drift** — active `credential_probe` verification and order-independent SHA-256 `toolCatalog` / `eventCatalog` contract fingerprints on `/health`
+- **Backend adapters & auto-discovery** — unified gateway for MCP servers, CLI tools (`--help`, shell completions, [Fig specs](https://github.com/withfig/autocomplete)), OpenAPI 3.x REST APIs, built-in HTTP, and exec
+- **Policy introspection CLI & interactive TUIs** — `config check`, `explain`, `who-can`, `tools`, and `lint`, plus `configure-agent` and `configure-cli` TUIs
+- **Security defaults & audit trail** — localhost and RFC-1918 blocking, per-agent domain allowlists, shell injection prevention, SQLite audit log with secret redaction, and hot reload
+- **Leaner stdio mode** — `--agent` runs with no HTTP data-plane server and connects only to providers the agent references (opening an ephemeral loopback listener on `127.0.0.1` only when `uploads.enabled: true`)
 
 ## Install
 
@@ -265,8 +265,9 @@ approvals:
 ```
 
 Precedence: **the most specific matching pattern wins** — an exact tool name beats
-`provider/prefix*`, which beats `provider/*`. Equally specific matches break ties
-**deny > ask > allow**, and anything unmatched is default-denied.
+`provider/prefix*`, which beats `provider/*` (longer prefixes beat shorter ones). Equally specific
+matches break ties **deny > remember_allow > ask > allow**, and anything unmatched is
+default-denied.
 
 See [`examples/gateway.yaml`](examples/gateway.yaml) for a fully annotated reference config and [`examples/profiles.yaml`](examples/profiles.yaml) for composable profile examples.
 

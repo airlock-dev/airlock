@@ -820,7 +820,7 @@ server:
   api_secret: '${AIRLOCK_API_SECRET}'
   auth_required: true
   require_agent_tokens: true
-  expose_tools_api: true
+  expose_tools_api: per-agent # per-agent | all | none
   allowed_origins:
     - https://airlock.example.com
   management_api:
@@ -902,7 +902,7 @@ server:
   host: 127.0.0.1
   auth_required: true
   require_agent_tokens: true
-  expose_tools_api: false
+  expose_tools_api: none
   allowed_origins:
     - https://airlock.example.com
   management_api:
