@@ -2045,4 +2045,127 @@ describe('End-to-end MCP Events gateway (poll + push + revocation)', () => {
       diags.some((d) => d.level === 'warn' && d.message.includes('profiles.unused_ev_profile'))
     ).toBe(true);
   });
+
+  it('enforces maxUses:1 and sweepPending grant provenance, recovers expired poll cursors, and expands wildcard eventEnabledProviders', async () => {
+    const auditLogger = makeMockAuditLogger();
+
+    // 1) Wildcard eventEnabledProviders expands "*" and prefix globs against available MCP IDs.
+    const wildcardAgents = {
+      a1: makeAgentConfig({ events: { allow: ['gh-*/*'] } }),
+      a2: makeAgentConfig({ events: { ask: ['*'] } }),
+    };
+    expect(
+      Array.from(eventEnabledProviders({ a1: wildcardAgents.a1 }, ['gh-work', 'slack']))
+    ).toEqual(['gh-work']);
+    expect(
+      Array.from(eventEnabledProviders({ a2: wildcardAgents.a2 }, ['gh-work', 'slack'])).sort()
+    ).toEqual(['gh-work', 'slack']);
+
+    // 2) maxUses: 1 and sweepPending grants must NOT mint unbounded 24h continuation leases,
+    //    and expired/revoked poll leases must preserve the upstream cursor after re-approval.
+    const seenCursors: Array<string | null | undefined> = [];
+    let pollCounter = 0;
+    const pool = {
+      getMcpIds: () => ['pd'],
+      isReady: () => true,
+      supportsEvents: () => true,
+      listEvents: async () => [
+        {
+          name: 'incident.created',
+          inputSchema: { type: 'object', properties: {} },
+          delivery: ['poll'],
+        },
+      ],
+      pollEvents: async (_mcpId: string, params: { cursor?: string | null }) => {
+        seenCursors.push(params.cursor);
+        pollCounter += 1;
+        return { events: [], cursor: `up-cursor-${pollCounter}` };
+      },
+    };
+    const agents = {
+      a1: makeAgentConfig({
+        events: { allow: [], ask: ['pd/incident.created'], deny: [], arg_policy: {} },
+      }),
+    };
+    const allowlist = new AllowlistEngine(agents);
+    const registry = new EventRegistry(pool as never, allowlist);
+    await registry.refresh();
+    const hitlProvider = makeMockProvider();
+    const hitlEngine = new HitlEngine(auditLogger, hitlProvider, 5000);
+    const hitlBatcher = new HitlBatcher(5);
+    const streamManager = new EventStreamManager(() => ({
+      maxEventStreamsPerAgent: 4,
+      maxEventStreamsGlobal: 16,
+    }));
+    const service = new EventService({
+      pool: pool as never,
+      registry,
+      allowlist,
+      streamManager,
+      hitlEngine,
+      hitlBatcher,
+      auditLogger,
+      getAgentConfig: (id) => agents[id as keyof typeof agents],
+    });
+
+    // maxUses: 1 must NOT mint a continuation lease (returns raw upstream cursor; next poll asks again).
+    const poll1Promise = service.handlePoll(
+      { agentId: 'a1', agentConfig: agents.a1, downstreamSessionId: 's1' },
+      { name: 'pd/incident.created', cursor: null }
+    );
+    await new Promise((r) => setTimeout(r, 20));
+    const pending1 = hitlEngine.getPending();
+    expect(pending1).toHaveLength(1);
+    hitlEngine.approve(pending1[0].id, {
+      grant: { scope: 'tool', maxUses: 1, durationMs: 60_000 },
+    });
+    const res1 = await poll1Promise;
+    expect(res1.cursor).toBe('up-cursor-1'); // No al_evt_* continuation lease minted!
+
+    // Concurrent polls approved via sweepPending under maxUses: 2 must ALSO not mint a lease.
+    const concA = service.handlePoll(
+      { agentId: 'a1', agentConfig: agents.a1, downstreamSessionId: 's1' },
+      { name: 'pd/incident.created', cursor: res1.cursor }
+    );
+    const concB = service.handlePoll(
+      { agentId: 'a1', agentConfig: agents.a1, downstreamSessionId: 's1' },
+      { name: 'pd/incident.created', cursor: res1.cursor }
+    );
+    await new Promise((r) => setTimeout(r, 20));
+    const pendingConc = hitlEngine.getPending();
+    expect(pendingConc).toHaveLength(2);
+    hitlEngine.approve(pendingConc[0].id, {
+      grant: { scope: 'tool', maxUses: 2, durationMs: 60_000 },
+    });
+    const [resA, resB] = await Promise.all([concA, concB]);
+    expect(String(resA.cursor)).not.toMatch(/^al_evt_/);
+    expect(String(resB.cursor)).not.toMatch(/^al_evt_/);
+
+    // Time-bounded grant mints an al_evt_* lease; when the grant is revoked, the next poll asks
+    // again AND preserves the upstream cursor instead of resetting it to null.
+    const pollTimed = service.handlePoll(
+      { agentId: 'a1', agentConfig: agents.a1, downstreamSessionId: 's1' },
+      { name: 'pd/incident.created', cursor: resB.cursor }
+    );
+    await new Promise((r) => setTimeout(r, 20));
+    const pTimed = hitlEngine.getPending();
+    const outcome = hitlEngine.approve(pTimed[0].id, {
+      grant: { scope: 'tool', durationMs: 60_000 },
+    });
+    const resTimed = await pollTimed;
+    expect(String(resTimed.cursor)).toMatch(/^al_evt_/);
+    expect(outcome?.grant?.id).toBeDefined();
+    hitlEngine.revokeGrant(outcome!.grant!.id);
+
+    const pollAfterRevoke = service.handlePoll(
+      { agentId: 'a1', agentConfig: agents.a1, downstreamSessionId: 's1' },
+      { name: 'pd/incident.created', cursor: resTimed.cursor }
+    );
+    await new Promise((r) => setTimeout(r, 20));
+    const pAfterRevoke = hitlEngine.getPending();
+    expect(pAfterRevoke).toHaveLength(1);
+    hitlEngine.approve(pAfterRevoke[0].id);
+    await pollAfterRevoke;
+    expect(seenCursors[seenCursors.length - 1]).toBe('up-cursor-4');
+  });
 });

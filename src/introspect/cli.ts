@@ -465,12 +465,19 @@ export function lintConfig(rawConfig: Config, resolvedConfig?: Config): LintFind
   for (const agent of Object.values(rawConfig.agents)) {
     for (const profileName of agent.extends) visitProfile(profileName);
     collectArgRefs(agent.arg_scope, agent.arg_policy, referencedDimensions, referencedValueSets);
+    collectArgRefs(undefined, agent.events?.arg_policy, referencedDimensions, referencedValueSets);
   }
 
   for (const profile of Object.values(rawConfig.profiles)) {
     collectArgRefs(
       profile.arg_scope,
       profile.arg_policy,
+      referencedDimensions,
+      referencedValueSets
+    );
+    collectArgRefs(
+      undefined,
+      profile.events?.arg_policy,
       referencedDimensions,
       referencedValueSets
     );
@@ -510,7 +517,8 @@ export function lintConfig(rawConfig: Config, resolvedConfig?: Config): LintFind
   }
 
   for (const [agentName, agent] of Object.entries(resolvedConfig?.agents ?? {})) {
-    if (agent.allow.length === 0 && agent.ask.length === 0) {
+    const hasEvents = (agent.events?.allow.length ?? 0) > 0 || (agent.events?.ask.length ?? 0) > 0;
+    if (agent.allow.length === 0 && agent.ask.length === 0 && !hasEvents) {
       findings.push({
         rule: 'empty-agent',
         severity: DEFAULT_LINT_SEVERITY['empty-agent'],

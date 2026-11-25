@@ -2,6 +2,8 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { spawn } from 'child_process';
 import { createHash } from 'crypto';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import http from 'http';
+import type { AddressInfo } from 'net';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { Readable } from 'stream';
@@ -10,6 +12,7 @@ import { lookup } from 'dns/promises';
 import Database from 'better-sqlite3';
 import { Client } from '@modelcontextprotocol/client';
 import { SandboxManager } from '@anthropic-ai/sandbox-runtime';
+import { executeHttp } from '../src/tools/http.js';
 import {
   GatewayConfig,
   UploadsConfig,
@@ -3745,6 +3748,57 @@ describe('Config schema, profiles, and loader diagnostics for uploads', () => {
     } finally {
       await handoffStore.stop();
       rmSync(handoffDir, { recursive: true, force: true });
+    }
+  });
+
+  it('sanitizes whitespace-separated dot filenames and releases upload streams on early 401 HTTP responses', async () => {
+    expect(sanitizeFilename('. .')).toBe('upload.bin');
+    expect(sanitizeFilename('. ..')).toBe('upload.bin');
+    expect(sanitizeFilename('. .env')).toBe('env');
+
+    const localDir = mkdtempSync(join(tmpdir(), 'airlock-upload-regression-'));
+    const localStore = new UploadStore(
+      UploadsConfig.parse({ enabled: true, dir: localDir }),
+      'http://127.0.0.1:4111'
+    );
+    const localServer = http.createServer((req, res) => {
+      // Reply 401 immediately without consuming the request body stream.
+      res.writeHead(401, { 'Content-Type': 'text/plain' });
+      res.end('unauthorized');
+      req.resume();
+    });
+    await new Promise<void>((resolveListen) => localServer.listen(0, '127.0.0.1', resolveListen));
+    const port = (localServer.address() as AddressInfo).port;
+    try {
+      const prepared = localStore.prepareUpload('a1', { filename: '. ..' });
+      const committed = await localStore.completePresignedUpload(prepared.uploadToken, {
+        stream: Readable.from([Buffer.from('payload-bytes')]),
+      });
+      expect(committed.filename).toBe('upload.bin');
+
+      const agent = makeAgentConfig({
+        allow: ['http/*'],
+        http: { domain_allowlist: ['127.0.0.1'], timeout_ms: 5000, max_response_bytes: 1024 },
+      });
+      const res = await executeHttp(
+        'post',
+        {
+          url: `http://127.0.0.1:${port}/upload`,
+          headers: { 'content-length': '999999' },
+          multipart: { file: `airlock-upload://${prepared.uploadId}` },
+        },
+        agent,
+        { blocked_hosts: [], allowed_local: ['127.0.0.1'] },
+        localStore,
+        'a1'
+      );
+      expect(res.status).toBe(401);
+      // Stream must have released inFlightRefs so deletion succeeds immediately.
+      expect(localStore.deleteUpload('a1', prepared.uploadId)).toBe(true);
+    } finally {
+      await new Promise<void>((resolveClose) => localServer.close(() => resolveClose()));
+      await localStore.stop();
+      rmSync(localDir, { recursive: true, force: true });
     }
   });
 });

@@ -95,15 +95,31 @@ export async function sseServerPlugin(
 
     const transport = new SSEServerTransport('/agents/' + profileId + '/messages', reply.raw);
     sessions.set(transport.sessionId, { transport, profileId });
-    limiter?.register(transport.sessionId, profileId, () => sessionAc.abort());
+    let pingTimer: NodeJS.Timeout | undefined;
+    let cleanedUp = false;
+    const cleanup = () => {
+      if (cleanedUp) return;
+      cleanedUp = true;
+      if (pingTimer) {
+        clearInterval(pingTimer);
+        pingTimer = undefined;
+      }
+      sessionAc.abort();
+      sessions.delete(transport.sessionId);
+      limiter?.close(transport.sessionId);
+    };
+
+    limiter?.register(transport.sessionId, profileId, () => {
+      cleanup();
+      void transport.close().catch(() => {});
+    });
     // An SSE channel is long-lived by design (kept alive by pings; ended only by socket close),
     // so mark it persistently in-flight — it counts toward caps/ceilings but the idle reaper
     // must never sever an agent that is merely holding an open channel without recent activity.
     limiter?.beginRequest(transport.sessionId);
 
     transport.onclose = () => {
-      sessions.delete(transport.sessionId);
-      limiter?.close(transport.sessionId);
+      cleanup();
       log.info({ profileId, sessionId: transport.sessionId }, 'SSE session closed');
     };
 
@@ -127,9 +143,19 @@ export async function sseServerPlugin(
     });
     await connectAgentServer(server, transport);
 
+    if (reply.raw.destroyed || reply.raw.writableEnded || sessionAc.signal.aborted) {
+      cleanup();
+      void transport.close().catch(() => {});
+      return;
+    }
+
     // Send periodic SSE comments to keep the connection alive through
     // NAT gateways, firewalls, and load balancers that kill idle TCP connections.
-    const pingTimer = setInterval(() => {
+    pingTimer = setInterval(() => {
+      if (reply.raw.destroyed || reply.raw.writableEnded) {
+        cleanup();
+        return;
+      }
       reply.raw.write(': ping\n\n');
     }, PING_INTERVAL_MS);
     pingTimer.unref();
@@ -137,11 +163,8 @@ export async function sseServerPlugin(
     // Clean up when client disconnects — listen on the response socket,
     // not the request, because request 'close' fires immediately on GET
     // once the body is consumed (which is instant for GET requests).
-    reply.raw.on('close', () => {
-      clearInterval(pingTimer);
-      sessionAc.abort();
-      sessions.delete(transport.sessionId);
-      limiter?.close(transport.sessionId);
+    reply.raw.once('close', () => {
+      cleanup();
       transport.close().catch(() => {});
     });
   });
@@ -166,7 +189,10 @@ export async function sseServerPlugin(
 
     // Check auth on message posts too
     const deps = opts.getDeps(profileId);
-    if (!deps || !checkAgentAuth(request, reply, deps)) return;
+    if (!deps) {
+      return reply.status(404).send({ error: `Unknown agent profile: ${profileId}` });
+    }
+    if (!checkAgentAuth(request, reply, deps)) return;
 
     limiter?.touch(sessionId);
     await session.transport.handlePostMessage(request.raw, reply.raw);

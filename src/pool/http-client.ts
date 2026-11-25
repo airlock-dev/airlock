@@ -635,7 +635,13 @@ export class HttpMcpClient {
           : this.outcomeReason(outcome);
 
         let prepared = false;
-        if (outcome.kind !== 'read_only') {
+        if (outcome.kind !== 'read_only' && provider.canHandleAuthCallback?.() === false) {
+          this.lastError = `Provider "${this.id}" uses oauth_callback_mode: gateway, which needs the Airlock gateway's HTTP listener`;
+          log.warn(
+            { id: this.id },
+            'Skipping interactive OAuth flow: oauth_callback_mode: gateway requires the gateway HTTP listener; waiting for token update'
+          );
+        } else if (outcome.kind !== 'read_only') {
           try {
             const result = await this.prepareAuthorization();
             if (this.stopped || abort.signal.aborted) return;
@@ -1143,6 +1149,7 @@ export class HttpMcpClient {
     this.flowWake = undefined;
     this.flowAbort?.abort();
     this.oauthProvider?.stop();
+    this.tokenSource?.stop();
     if (this.refreshTimer) {
       clearTimeout(this.refreshTimer);
       this.refreshTimer = undefined;
@@ -1161,11 +1168,25 @@ export class HttpMcpClient {
     // OUR end; without the DELETE that terminateSession() sends, the server keeps the session in
     // memory forever. Servers that bound their session table then leak a slot on every gateway
     // restart and every CLI invocation, and eventually refuse all new sessions until restarted.
-    // Best-effort: a server that can't be reached (or answers 405, which the SDK treats as "not
-    // supported" per spec) must never block or fail shutdown.
-    await this.transport?.terminateSession().catch((err) => {
-      log.debug({ id: this.id, reason: friendlyError(err) }, 'HTTP MCP session terminate failed');
-    });
+    // Best-effort: a server that can't be reached (or hangs on DELETE, or answers 405 which the
+    // SDK treats as "not supported" per spec) must never block or fail shutdown/reload.
+    if (this.transport) {
+      let terminateTimer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([
+        this.transport.terminateSession().catch((err) => {
+          log.debug(
+            { id: this.id, reason: friendlyError(err) },
+            'HTTP MCP session terminate failed'
+          );
+        }),
+        new Promise<void>((resolve) => {
+          terminateTimer = setTimeout(resolve, 2500);
+          terminateTimer.unref?.();
+        }),
+      ]).finally(() => {
+        if (terminateTimer) clearTimeout(terminateTimer);
+      });
+    }
     await this.transport?.close();
   }
 }

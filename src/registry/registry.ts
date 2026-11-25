@@ -19,6 +19,7 @@ import {
   isAppOnlyTool,
   parseNamespacedUiUri,
   toolUiResourceUri,
+  viewResultMeta,
 } from '../mcp-apps/ui.js';
 
 const log = childLogger('registry');
@@ -276,10 +277,19 @@ export class ToolRegistry {
 
     const result = await adapter.readResource(parsed.upstreamUri);
     // Hand back only the view that was asked for, under the URI the host asked with. Extra items
-    // would be upstream resources the agent never had a tool reference for.
+    // would be upstream resources the agent never had a tool reference for. Strip protocol-reserved
+    // `io.modelcontextprotocol/*` keys from upstream `_meta` on both result and items.
     const contents = result.contents
       .filter((item) => item.uri === parsed.upstreamUri)
-      .map((item) => ({ ...item, uri }));
+      .map((item) => {
+        const sanitizedMeta = viewResultMeta(item._meta);
+        const { _meta: _dropped, ...rest } = item;
+        return {
+          ...rest,
+          uri,
+          ...(sanitizedMeta ? { _meta: sanitizedMeta } : {}),
+        };
+      });
     if (contents.length === 0) throw new ResourceNotFoundError(uri);
     const size = contents.reduce(
       (total, item) =>
@@ -291,7 +301,11 @@ export class ToolRegistry {
     if (size > MAX_VIEW_CHARS) {
       throw new Error(`MCP Apps view ${uri} is too large (${size} chars, limit ${MAX_VIEW_CHARS})`);
     }
-    return { ...result, contents };
+    const resultMeta = viewResultMeta(result._meta);
+    return {
+      contents,
+      ...(resultMeta ? { _meta: resultMeta } : {}),
+    };
   }
 
   getAllTools(): Tool[] {

@@ -1,4 +1,5 @@
 import { randomUUID } from 'crypto';
+import type { ServerResponse } from 'http';
 import { createMcpHandler, type McpHttpHandler } from '@modelcontextprotocol/server';
 import { toNodeHandler, type NodeMcpRequestHandler } from '@modelcontextprotocol/node';
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
@@ -49,6 +50,8 @@ export async function httpServerPlugin(
   // (only the subscriptions/listen bus), so caching it is safe across config reloads: the factory
   // reads live deps on every request.
   const handlers = new Map<string, { handler: McpHttpHandler; node: NodeMcpRequestHandler }>();
+  const shutdownAc = new AbortController();
+  const activeResponses = new Set<ServerResponse>();
 
   function handlerFor(profileId: string): NodeMcpRequestHandler {
     const existing = handlers.get(profileId);
@@ -63,6 +66,7 @@ export async function httpServerPlugin(
         return createAgentServer({
           ...deps,
           era: reqCtx.era,
+          signal: shutdownAc.signal,
           ...(resolveSessionId
             ? { resolveSessionId: (id: string) => resolveSessionId(profileId, id) }
             : {}),
@@ -103,9 +107,22 @@ export async function httpServerPlugin(
   }
 
   // preClose, not onClose: a call parked on approval holds its SSE response open, and Fastify's
-  // close() waits for in-flight responses before onClose hooks ever run.
+  // close() waits for in-flight responses before onClose hooks ever run. Abort shutdownAc first so
+  // parked 2025 legacy-stateless calls (which @modelcontextprotocol/server does not track in its
+  // inflight set) cancel immediately, then close handlers and end any remaining hijacked streams.
   app.addHook('preClose', async () => {
+    shutdownAc.abort();
     await Promise.allSettled([...handlers.values()].map(({ handler }) => handler.close()));
+    for (const res of activeResponses) {
+      if (!res.writableEnded) {
+        try {
+          res.end();
+        } catch {
+          // Best-effort during shutdown.
+        }
+      }
+    }
+    activeResponses.clear();
     handlers.clear();
   });
 
@@ -163,10 +180,12 @@ export async function httpServerPlugin(
       ...(typeof mcpMethod === 'string' ? { mcpMethod } : {}),
     };
     const startedAt = Date.now();
+    activeResponses.add(reply.raw);
     log.info(reqLog, 'MCP transport: request in');
     try {
       await node(request.raw, reply.raw);
     } finally {
+      activeResponses.delete(reply.raw);
       log.info({ ...reqLog, ms: Date.now() - startedAt }, 'MCP transport: request done');
     }
   }

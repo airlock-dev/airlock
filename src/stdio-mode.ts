@@ -53,7 +53,7 @@ export async function runStdioMode(
   if (providers.some((p) => p.type === 'stdio')) {
     throw new Error(
       'Cannot use approval provider "stdio" in stdio mode — both the MCP transport and approval ' +
-        'provider would read from stdin. Use "telegram", "slack", "webhook", or "openclaw" instead.'
+        'provider would read from stdin. Use "dashboard", "macos", "telegram", "slack", "webhook", or "openclaw" instead.'
     );
   }
 
@@ -74,6 +74,8 @@ export async function runStdioMode(
     deny: (id, reason) => hitlEngine.deny(id, reason),
     approveByCode: (code, options) => hitlEngine.approveByCode(code, options),
     denyByCode: (code, reason) => hitlEngine.denyByCode(code, reason),
+    listGrants: (filterAgentId) => hitlEngine.listGrants(filterAgentId),
+    revokeGrant: (id) => hitlEngine.revokeGrant(id),
   };
 
   const hitlBatcher = new HitlBatcher(config.approvals.batch_window_ms);
@@ -140,7 +142,7 @@ export async function runStdioMode(
   );
 
   const pool = new ClientPool(filteredMcps, {
-    eventsProviders: eventEnabledProviders({ [agentId]: agentConfig }),
+    eventsProviders: eventEnabledProviders({ [agentId]: agentConfig }, Object.keys(filteredMcps)),
     // Writes only while holding the store's writer lock; alongside a running gateway it reads.
     oauthStorage: 'writer',
   });
@@ -341,7 +343,10 @@ export async function runStdioMode(
     // Filtered like the initial pool: the unfiltered map would connect every configured provider.
     const newMcpConfigs = selectMcps(newConfig, currentAgentConfig);
     pool
-      .reload(newMcpConfigs, eventEnabledProviders({ [agentId]: currentAgentConfig }))
+      .reload(
+        newMcpConfigs,
+        eventEnabledProviders({ [agentId]: currentAgentConfig }, Object.keys(newMcpConfigs))
+      )
       .then(async () => {
         if (myEpoch !== reloadEpoch || shuttingDown || cleanedUp) return;
         registry.reloadAgents(newConfig.agents, getProviderInstructions(newConfig.providers));

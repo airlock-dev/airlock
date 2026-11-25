@@ -248,7 +248,39 @@ describe('MCP Apps through the gateway', () => {
     expect(tools).toEqual([]);
     expect((await client.listResources()).resources).toEqual([]);
     await expect(client.readResource({ uri: NAMESPACED_VIEW_URI })).rejects.toThrow();
+    // Both sanitized and raw slash tool names must be blocked for a non-UI host.
+    await expect(client.callTool({ name: 'wx_refresh', arguments: {} })).rejects.toThrow(
+      /not available/
+    );
+    await expect(client.callTool({ name: 'wx/refresh', arguments: {} })).rejects.toThrow(
+      /not available/
+    );
+    expect(pool.callTool).not.toHaveBeenCalled();
     expect(pool.readResource).not.toHaveBeenCalled();
+  });
+
+  it('strips protocol-reserved io.modelcontextprotocol/* keys from readResource _meta', async () => {
+    const { deps, pool } = await setup();
+    pool.readResource.mockResolvedValueOnce({
+      _meta: { 'io.modelcontextprotocol/spoof': true, customTop: 'ok' },
+      contents: [
+        {
+          uri: VIEW_URI,
+          mimeType: UI_MIME_TYPE,
+          text: VIEW_HTML,
+          _meta: {
+            'io.modelcontextprotocol/internal': 'drop-me',
+            ui: { csp: { connectDomains: ['https://api.weather.example'] } },
+          },
+        },
+      ],
+    });
+    const client = await connect(deps, true);
+    const result = await client.readResource({ uri: NAMESPACED_VIEW_URI });
+    expect(result._meta).toEqual({ customTop: 'ok' });
+    expect(result.contents[0]._meta).toEqual({
+      ui: { csp: { connectDomains: ['https://api.weather.example'] } },
+    });
   });
 
   it('still lists non-app-only tools for a host that does not render views', async () => {

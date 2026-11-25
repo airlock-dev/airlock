@@ -985,7 +985,7 @@ export class UploadStore {
       record,
       stream: Readable.toWeb(nodeStream) as ReadableStream<Uint8Array>,
       close: () => {
-        if (!nodeStream.destroyed) nodeStream.destroy();
+        if (!nodeStream.destroyed && !nodeStream.readableEnded) nodeStream.destroy();
       },
     };
   }
@@ -1136,7 +1136,7 @@ export class UploadStore {
       contentType: `multipart/form-data; boundary=${boundary}`,
       contentLength,
       close: () => {
-        if (!nodeStream.destroyed) nodeStream.destroy();
+        if (!nodeStream.destroyed && !nodeStream.readableEnded) nodeStream.destroy();
         cleanup();
       },
     };
@@ -1177,6 +1177,17 @@ export class UploadStore {
     }
     const token = `dl_${randomBytes(32).toString('base64url')}`;
     const expiresAt = Date.now() + this.config.download_ttl_ms;
+    const MAX_DOWNLOAD_TOKENS = 10_000;
+    if (this.downloadTokens.size >= MAX_DOWNLOAD_TOKENS) {
+      const now = Date.now();
+      for (const [k, ticket] of this.downloadTokens) {
+        if (ticket.expiresAt <= now) this.downloadTokens.delete(k);
+      }
+      if (this.downloadTokens.size >= MAX_DOWNLOAD_TOKENS) {
+        const oldest = this.downloadTokens.keys().next().value;
+        if (oldest !== undefined) this.downloadTokens.delete(oldest);
+      }
+    }
     this.downloadTokens.set(sha256Hex(token), {
       uploadId: record.id,
       agentId,
@@ -1540,8 +1551,12 @@ export class UploadStore {
   }
 
   private safeDiskPath(uploadId: string, filename: string): string {
-    const filePath = resolve(this.resolvedDir, uploadId, filename);
+    const expectedDir = resolve(this.resolvedDir, uploadId);
+    const filePath = resolve(expectedDir, filename);
     this.assertContainedPath(filePath);
+    if (dirname(filePath) !== expectedDir) {
+      throw new UploadHttpError(400, 'Invalid upload filename.');
+    }
     return filePath;
   }
 

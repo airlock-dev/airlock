@@ -28,7 +28,7 @@ first, so a restore can be undone.
 
 Writing commands (restore, export-legacy, import-legacy) take the OAuth writer lock, so they run
 only while no gateway owns the store: stop it and run them in a one-off container, e.g.
-  docker compose stop airlock && docker compose run --rm airlock airlock oauth restore …
+  docker compose stop airlock-gateway && docker compose run --rm airlock-gateway oauth restore …
 restore --force instead takes the lock over from a running gateway (it re-acquires afterwards).
 
 A lock left by a crashed gateway is waited out (up to ~2m45s); a live one is refused at once.
@@ -257,7 +257,9 @@ async function listDir(path: string): Promise<string[]> {
 async function grantIds(dir: string): Promise<string[]> {
   const ids = new Set(
     (await listDir(dir))
-      .filter((f) => f.endsWith('.json') && !f.startsWith('.'))
+      .filter(
+        (f) => f.endsWith('.json') && !f.startsWith('.') && !f.endsWith('.client-credentials.json')
+      )
       .map((f) => f.slice(0, -'.json'.length))
   );
   for (const id of await listDir(join(dir, REVISION_DIR))) ids.add(id);

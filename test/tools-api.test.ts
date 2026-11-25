@@ -682,4 +682,53 @@ describe('toolsApiPlugin per-agent gating', () => {
     });
     expect(res.statusCode).toBe(404);
   });
+
+  it('hides and blocks visibility:["app"] tools on the HTTP tools API', async () => {
+    const appOnlyTool = {
+      name: 'wx/refresh',
+      description: 'App-only refresh',
+      inputSchema: { type: 'object' as const, properties: {} },
+      _meta: { ui: { resourceUri: 'ui://airlock/wx/view.html', visibility: ['app'] } },
+    };
+    const normalTool = {
+      name: 'wx/forecast',
+      description: 'Public forecast',
+      inputSchema: { type: 'object' as const, properties: {} },
+    };
+    const deps = makeDepsFor('enabled');
+    deps.registry.getFiltered = vi.fn().mockReturnValue([normalTool, appOnlyTool]);
+
+    const uiApp = Fastify({ logger: false });
+    await uiApp.register(toolsApiPlugin, {
+      getDeps: (id) => (id === 'enabled' ? deps : undefined),
+      secret: 'test-secret',
+    });
+    await uiApp.ready();
+    try {
+      const listRes = await uiApp.inject({
+        method: 'GET',
+        url: '/agents/enabled/tools',
+        headers: { authorization: 'Bearer test-secret' },
+      });
+      expect(listRes.statusCode).toBe(200);
+      expect((listRes.json().tools as { name: string }[]).map((t) => t.name)).toEqual([
+        'wx/forecast',
+      ]);
+
+      for (const name of ['wx/refresh', 'wx_refresh']) {
+        const invokeRes = await uiApp.inject({
+          method: 'POST',
+          url: '/agents/enabled/tools/invoke',
+          headers: { 'content-type': 'application/json', authorization: 'Bearer test-secret' },
+          payload: { tool: name, args: {} },
+        });
+        expect(invokeRes.statusCode).toBe(200);
+        expect(invokeRes.json().success).toBe(false);
+        expect(invokeRes.json().error).toContain('Tool not available: wx/refresh');
+      }
+      expect(deps.registry.call).not.toHaveBeenCalled();
+    } finally {
+      await uiApp.close();
+    }
+  });
 });

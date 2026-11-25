@@ -132,7 +132,7 @@ export async function uploadsApiPlugin(app: FastifyInstance, opts: UploadsApiOpt
       return reply.status(err.statusCode).send({ error: err.message });
     }
     log.warn({ err }, 'Upload request failed');
-    return reply.status(500).send({ error: err instanceof Error ? err.message : 'Upload failed' });
+    return reply.status(500).send({ error: 'Upload failed' });
   }
 
   async function handlePresignedUpload(

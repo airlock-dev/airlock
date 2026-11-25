@@ -172,7 +172,9 @@ export class EventService {
     let allowContinuationLease = true;
 
     if (decision === 'ask') {
-      const resolvedLease = this.matchPollLease(ctx, params.name, args, params.cursor);
+      const resolvedLease = this.matchPollLease(ctx, params.name, args, params.cursor, {
+        preserveExpiredForUnwrap: true,
+      });
       if (resolvedLease) {
         consumedLeaseToken = resolvedLease.token;
         this.inFlightLeaseTokens.add(consumedLeaseToken);
@@ -392,6 +394,7 @@ export class EventService {
 
     let terminatedByGateway = false;
     let activeSent = false;
+    let activeEmitPromise: Promise<void> | undefined;
     let pendingTerminationError: EventStreamErrorObject | undefined;
 
     const emitDownstream = async (method: string, notifParams: Record<string, unknown>) => {
@@ -427,6 +430,7 @@ export class EventService {
           terminatedByGateway = true;
           pendingTerminationError = error;
           if (activeSent) {
+            await activeEmitPromise?.catch(() => {});
             await emitDownstream(EVENT_NOTIFICATIONS.terminated, { error });
           }
           streamAbort.abort(createEventsError(error.code, error.message, error.data));
@@ -462,11 +466,12 @@ export class EventService {
           onActive: async (active) => {
             if (terminatedByGateway || streamAbort.signal.aborted) return;
             activeSent = true;
-            await emitDownstream(EVENT_NOTIFICATIONS.active, {
+            activeEmitPromise = emitDownstream(EVENT_NOTIFICATIONS.active, {
               ...(active.cursor !== undefined ? { cursor: active.cursor } : {}),
               ...(active.truncated !== undefined ? { truncated: active.truncated } : {}),
               ...(active.heartbeatMs !== undefined ? { heartbeatMs: active.heartbeatMs } : {}),
             });
+            await activeEmitPromise;
           },
           onEvent: async (occurrence) => {
             if (terminatedByGateway || streamAbort.signal.aborted) return;
@@ -511,8 +516,11 @@ export class EventService {
             await emitDownstream(EVENT_NOTIFICATIONS.error, { error: errParams.error });
           },
           onTerminated: async (termParams) => {
-            if (terminatedByGateway) return;
+            // Never emit notifications/events/terminated before notifications/events/active;
+            // pre-active termination rejects openEventStream() and surfaces as a JSON-RPC error.
+            if (!activeSent || terminatedByGateway) return;
             terminatedByGateway = true;
+            await activeEmitPromise?.catch(() => {});
             await emitDownstream(EVENT_NOTIFICATIONS.terminated, { error: termParams.error });
           },
         },
@@ -547,6 +555,7 @@ export class EventService {
           terminatedByGateway = true;
           pendingTerminationError = error;
           if (activeSent) {
+            await activeEmitPromise?.catch(() => {});
             await emitDownstream(EVENT_NOTIFICATIONS.terminated, { error });
           }
           streamAbort.abort();
@@ -589,6 +598,15 @@ export class EventService {
         _meta: subscriptionMeta,
       };
     } catch (err) {
+      // Per SEP-3415, once `notifications/events/active` and `notifications/events/terminated`
+      // have been emitted, the stream RPC must resolve with `resultType: 'complete'` rather than
+      // also rejecting with a JSON-RPC error.
+      if (activeSent && terminatedByGateway) {
+        return {
+          resultType: 'complete',
+          _meta: subscriptionMeta,
+        };
+      }
       this.deps.auditLogger.log({
         agent_id: ctx.agentId,
         request_id: callId,
@@ -830,6 +848,9 @@ export class EventService {
   }
 
   private isGrantActive(agentId: string, grantId: string): boolean {
+    if (typeof this.deps.hitlEngine.isGrantActive === 'function') {
+      return this.deps.hitlEngine.isGrantActive(grantId);
+    }
     return this.deps.hitlEngine.listGrants(agentId).some((g) => g.id === grantId);
   }
 
@@ -838,7 +859,7 @@ export class EventService {
     eventName: string,
     args: Record<string, unknown>,
     cursor: string | null | undefined,
-    options?: { ignoreExpiry?: boolean }
+    options?: { ignoreExpiry?: boolean; preserveExpiredForUnwrap?: boolean }
   ): { token: string; lease: PollApprovalLease } | undefined {
     if (typeof cursor !== 'string' || !cursor.startsWith(POLL_LEASE_PREFIX)) return undefined;
     const lease = this.pollLeases.get(cursor);
@@ -856,11 +877,11 @@ export class EventService {
     if (!options?.ignoreExpiry) {
       const now = Date.now();
       if (lease.expiresAt <= now || lease.hardExpiresAt <= now) {
-        this.pollLeases.delete(cursor);
+        if (!options?.preserveExpiredForUnwrap) this.pollLeases.delete(cursor);
         return undefined;
       }
       if (lease.grantId && !this.isGrantActive(ctx.agentId, lease.grantId)) {
-        this.pollLeases.delete(cursor);
+        if (!options?.preserveExpiredForUnwrap) this.pollLeases.delete(cursor);
         return undefined;
       }
     }
@@ -1024,7 +1045,19 @@ export class EventService {
       );
     }
 
-    // If the operator approved with a time/use-bounded grant, propagate its expiry/revocation.
+    // Propagate exact grant provenance from the approved ticket (covering maxUses: 1 and
+    // sweepPending auto-approvals, where listGrants() scanning by approvalId would miss).
+    if (ticket.grantMeta) {
+      return {
+        ...(ticket.grantMeta.grantId ? { grantId: ticket.grantMeta.grantId } : {}),
+        ...(ticket.grantMeta.expiresAt
+          ? { expiresAt: Date.parse(ticket.grantMeta.expiresAt) }
+          : {}),
+        allowLease: !ticket.grantMeta.hasUseCap,
+      };
+    }
+
+    // Fallback for test mocks that resolve ticket.result without populating ticket.grantMeta.
     const createdGrant = hitlEngine.listGrants(ctx.agentId).find((g) => g.approvalId === ticket.id);
     if (createdGrant) {
       return {

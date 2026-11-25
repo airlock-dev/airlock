@@ -11,6 +11,9 @@ import {
   type JSONRPCResponse,
   type MessageExtraInfo,
 } from '@modelcontextprotocol/client';
+import { childLogger } from '../util/logger.js';
+
+const log = childLogger('events:upstream-client');
 import {
   EVENT_METHODS,
   EVENT_NOTIFICATIONS,
@@ -334,7 +337,9 @@ export class EventsAwareClient extends Client {
             if (droppingQueued) return undefined;
             return fn();
           })
-          .catch(() => {})
+          .catch((err) => {
+            log.warn({ err, streamId }, 'Upstream event stream callback failed');
+          })
           .finally(() => {
             state.queuedCount = Math.max(0, state.queuedCount - 1);
           });

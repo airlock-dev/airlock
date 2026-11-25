@@ -155,7 +155,7 @@ export class Gateway {
     // MCP pool — only connect to actual MCP servers, not builtins
     const mcpConfigs = getMcpConfigs(this.config.providers);
     this.pool = new ClientPool(mcpConfigs, {
-      eventsProviders: eventEnabledProviders(this.config.agents),
+      eventsProviders: eventEnabledProviders(this.config.agents, Object.keys(mcpConfigs)),
       oauthStorage: 'writer',
       oauthCallbackRouter: this.oauthCallbackRouter,
     });
@@ -243,10 +243,20 @@ export class Gateway {
     const getManagementRequestSecurity = () => this.managementRequestSecurity;
 
     // Per-agent session bulkheads for the legacy SSE plane — the only plane that still holds sessions. getLimits reads live
-    // config so hot-reloaded limit changes take effect without a restart.
+    // config so hot-reloaded limit changes take effect without a restart. Gateway-wide ceiling stays
+    // pinned to global limits so a per-agent override cannot raise it.
     this.sessionLimiter = new SessionLimiter({
-      getLimits: (profileId) =>
-        resolveLimits(this.config.agents[profileId]?.limits, this.config.security.limits),
+      getLimits: (profileId) => {
+        const resolved = resolveLimits(
+          this.config.agents[profileId]?.limits,
+          this.config.security.limits
+        );
+        const globalLimits = resolveLimits(undefined, this.config.security.limits);
+        return {
+          ...resolved,
+          maxSessionsGlobal: globalLimits.maxSessionsGlobal,
+        };
+      },
     });
     this.sessionLimiter.start();
 
@@ -639,13 +649,21 @@ export class Gateway {
     // Apply allowlist, per-agent upload revocations, and event-stream revocation immediately —
     // do not wait for slow upstream pool reconnects before cutting off revoked agents or tickets.
     this.allowlist.reload(newConfig.agents);
+    for (const agentId of this.downstreamSessionIds.keys()) {
+      if (!(agentId in newConfig.agents)) {
+        this.downstreamSessionIds.delete(agentId);
+      }
+    }
     this.uploadStore.reconcileAgents(newConfig.agents);
     await this.eventService.reconcileAfterReload();
     if (reloadEpoch !== this.reloadEpoch) return;
     const mcpConfigs = getMcpConfigs(newConfig.providers);
-    await this.pool.reload(mcpConfigs, eventEnabledProviders(newConfig.agents));
+    const changedMcpIds = await this.pool.reload(
+      mcpConfigs,
+      eventEnabledProviders(newConfig.agents, Object.keys(mcpConfigs))
+    );
     if (reloadEpoch !== this.reloadEpoch) return;
-    this.credentialHealth.reload(getCredentialProbes(newConfig.providers));
+    this.credentialHealth.reload(getCredentialProbes(newConfig.providers), changedMcpIds);
     this.registry.reloadAgents(newConfig.agents, getProviderInstructions(newConfig.providers));
     // Rebuild adapters to pick up new CLIs/APIs and upload settings
     const adapters = this.buildAdapters();
@@ -666,10 +684,11 @@ export class Gateway {
     this.sessionLimiter?.stop();
     this.credentialHealth?.stop();
     this.pool?.disableReconnect();
-    await this.pool?.stop();
-    // End open push event streams and approval streams first: open SSE responses never go idle,
-    // so Fastify's close() would otherwise wait on them forever.
+    // End open push event streams BEFORE tearing down upstream pool clients so downstream
+    // subscribers receive a clean close rather than a spurious -32603 upstream_closed error.
     await this.eventStreamManager?.closeAll();
+    await this.pool?.stop();
+    // End approval streams before Fastify close: open SSE responses never go idle.
     await this.approvalStream?.stop();
     await this.managementApp?.close();
     await this.app?.close();

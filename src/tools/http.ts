@@ -74,6 +74,15 @@ function hasHeaderCaseInsensitive(headers: Record<string, string>, name: string)
   return Object.keys(headers).some((key) => key.toLowerCase() === target);
 }
 
+function deleteHeaderCaseInsensitive(headers: Record<string, string>, name: string): void {
+  const target = name.toLowerCase();
+  for (const key of Object.keys(headers)) {
+    if (key.toLowerCase() === target) {
+      delete headers[key];
+    }
+  }
+}
+
 export async function executeHttp(
   method: HttpMethod,
   args: Record<string, unknown>,
@@ -154,9 +163,8 @@ export async function executeHttp(
     if (!hasHeaderCaseInsensitive(headers, 'content-type')) {
       headers['Content-Type'] = record.contentType;
     }
-    if (!hasHeaderCaseInsensitive(headers, 'content-length')) {
-      headers['Content-Length'] = String(record.sizeBytes);
-    }
+    deleteHeaderCaseInsensitive(headers, 'content-length');
+    headers['Content-Length'] = String(record.sizeBytes);
     requestBody = stream;
     closeBodyStream = close;
     needsDuplex = true;
@@ -196,6 +204,7 @@ export async function executeHttp(
     }
     const streamed = await uploadStore.openStreamingMultipart(agentId, parts, sessionId);
     headers['Content-Type'] = streamed.contentType;
+    deleteHeaderCaseInsensitive(headers, 'content-length');
     headers['Content-Length'] = String(streamed.contentLength);
     requestBody = streamed.stream;
     closeBodyStream = streamed.close;
@@ -204,6 +213,7 @@ export async function executeHttp(
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let responseOk = false;
 
   try {
     const fetchInit: RequestInit & { duplex?: 'half' } = {
@@ -233,6 +243,7 @@ export async function executeHttp(
       }
     }
     const response = await fetch(url, fetchInit);
+    responseOk = response.ok;
 
     const responseHeaders: Record<string, string> = {};
     response.headers.forEach((value, key) => {
@@ -270,12 +281,16 @@ export async function executeHttp(
 
     return { status: response.status, headers: responseHeaders, body: bodyText, truncated };
   } catch (err) {
-    closeBodyStream?.();
     if ((err as Error).name === 'AbortError') {
       throw new Error(`HTTP request timed out after ${timeoutMs}ms`, { cause: err });
     }
     throw err;
   } finally {
+    // Always release verified upload file handles/inFlightRefs on errors, non-2xx early responses,
+    // or whenever fetch consumed/locked the stream.
+    if (!responseOk || (requestBody instanceof ReadableStream && requestBody.locked)) {
+      closeBodyStream?.();
+    }
     // Cleared only here so the deadline also covers reading the body, not just the headers.
     clearTimeout(timer);
   }

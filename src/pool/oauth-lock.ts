@@ -208,6 +208,7 @@ export class OAuthWriterLock {
   private acquireTimer?: NodeJS.Timeout;
   private readonly acquiredListeners = new Set<() => void>();
   private acquiring?: Promise<boolean>;
+  private beating?: Promise<boolean>;
   private graceAbort?: AbortController;
   private releasing = false;
   /** What this process saw as the current lock, and since when (monotonic), for staleness. */
@@ -308,6 +309,9 @@ export class OAuthWriterLock {
       // lock it just acquired and never race shutdown/teardown with its temp/lock files.
       if (this.acquiring) await this.acquiring.catch(() => {});
       this.stopTimers();
+      // Wait for any in-flight heartbeat so it cannot overwrite the released marker (or serialize
+      // an undefined nonce after we clear this.nonce below).
+      if (this.beating) await this.beating.catch(() => {});
       if (!this.nonce) return;
       const nonce = this.nonce;
       this.nonce = undefined;
@@ -564,7 +568,13 @@ export class OAuthWriterLock {
     this.heartbeatTimer = setInterval(() => {
       // Not routed through single(): a heartbeat must keep running while an acquisition waits out
       // its takeover grace period. Concurrent beats only ever rewrite our own generation file.
-      void this.beat().catch(() => {});
+      if (this.releasing || this.beating) return;
+      const run = this.beat()
+        .catch(() => false)
+        .finally(() => {
+          if (this.beating === run) this.beating = undefined;
+        });
+      this.beating = run;
     }, timings.heartbeatMs);
     this.heartbeatTimer.unref?.();
   }
@@ -576,11 +586,13 @@ export class OAuthWriterLock {
 
   /** Re-stamp our own generation, after confirming it is still the lock. */
   private async beat(): Promise<boolean> {
-    if (!this.nonce) return false;
+    const nonce = this.nonce;
+    if (!nonce || this.releasing) return false;
     const started = performance.now();
     if (!(await this.checkOwnership())) return false;
+    if (this.releasing || this.nonce !== nonce) return false;
     try {
-      await this.writeOwn(this.record(this.nonce));
+      await this.writeOwn(this.record(nonce));
     } catch (err) {
       this.lastProblem = `could not write heartbeat: ${err instanceof Error ? err.message : String(err)}`;
       return false;

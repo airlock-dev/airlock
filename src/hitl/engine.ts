@@ -22,10 +22,18 @@ export type ApprovalMode = 'sync' | 'async';
 /** call = a gated tool call; plan = several calls approved up front; question = airlock/ask_user. */
 export type ApprovalKind = 'call' | 'plan' | 'question';
 
+export interface ApprovalGrantMeta {
+  grantId?: string;
+  expiresAt?: string;
+  hasUseCap: boolean;
+}
+
 export interface HitlTicket {
   id: string;
   code: string;
   result: Promise<HitlResult>;
+  /** Populated before `result` resolves to `'approved'` when approved via a grant/use-cap spec. */
+  grantMeta?: ApprovalGrantMeta;
 }
 
 /** One call inside a plan approval. `args` are the redacted args shown to the operator. */
@@ -67,6 +75,7 @@ interface PendingRequest {
   expiresAt?: string;
   result: Promise<HitlResult>;
   resolve: (result: HitlResult) => void;
+  ticket?: HitlTicket;
   timer?: NodeJS.Timeout; // undefined when timeoutMs === 0 (no timeout)
 }
 
@@ -216,6 +225,7 @@ export class HitlEngine implements ApprovalApi {
 
     let resolve!: (result: HitlResult) => void;
     const result = new Promise<HitlResult>((r) => (resolve = r));
+    const ticket: HitlTicket = { id, code, result };
     const req: PendingRequest = {
       id,
       code,
@@ -232,6 +242,7 @@ export class HitlEngine implements ApprovalApi {
       createdAt,
       result,
       resolve,
+      ticket,
     };
     this.track(req, this.timeoutMs);
 
@@ -239,7 +250,7 @@ export class HitlEngine implements ApprovalApi {
       { id, code, agent: params.agentId, tool: params.tool, kind, mode },
       'HITL request created'
     );
-    return { id, code, result };
+    return ticket;
   }
 
   /** Redact args the same way approval requests are redacted before display. */
@@ -480,6 +491,10 @@ export class HitlEngine implements ApprovalApi {
     return this.grants.list(agentId);
   }
 
+  isGrantActive(id: string): boolean {
+    return this.grants.isGrantActive(id);
+  }
+
   revokeGrant(id: string): boolean {
     return this.grants.revoke(id);
   }
@@ -592,12 +607,20 @@ export class HitlEngine implements ApprovalApi {
       // Never silently widen a session-only grant to every session of the agent.
       throw new GrantSpecError('This request has no session to bind a session-only grant to');
     }
-    this.approveRequest(req);
-    if (!scope || !spec) return { approved: [req.id], skipped: [] };
+    if (!scope || !spec) {
+      this.approveRequest(req);
+      return { approved: [req.id], skipped: [] };
+    }
 
     // The approval that creates the grant counts as its first use.
     const usesRemaining = spec.maxUses !== undefined ? spec.maxUses - 1 : undefined;
-    if (usesRemaining === 0) return { approved: [req.id], skipped: [] };
+    if (usesRemaining === 0) {
+      if (req.ticket) {
+        req.ticket.grantMeta = { hasUseCap: true };
+      }
+      this.approveRequest(req);
+      return { approved: [req.id], skipped: [] };
+    }
 
     const durationMs = this.clampDuration(spec.durationMs);
     const grant = this.grants.create({
@@ -610,6 +633,14 @@ export class HitlEngine implements ApprovalApi {
       expiresAt: new Date(Date.now() + durationMs).toISOString(),
       ...(usesRemaining !== undefined ? { usesRemaining } : {}),
     });
+    if (req.ticket) {
+      req.ticket.grantMeta = {
+        grantId: grant.id,
+        expiresAt: grant.expiresAt,
+        hasUseCap: spec.maxUses !== undefined,
+      };
+    }
+    this.approveRequest(req);
     const alsoApproved = this.sweepPending(grant);
     return { approved: [req.id, ...alsoApproved], skipped: [], grant };
   }
@@ -618,12 +649,20 @@ export class HitlEngine implements ApprovalApi {
   private sweepPending(grant: Grant): string[] {
     const approved: string[] = [];
     const only = new Set([grant.id]);
+    const hasUseCap = grant.usesRemaining !== undefined;
     for (const other of [...this.pending.values()]) {
       if (other.kind !== 'call' || !other.subject) continue;
       if (!this.grants.covers(grant, other.subject)) continue;
       // Every auto-approval spends a use, so maxUses holds. (An async request then also gets its
       // own single-use call grant, which its retry consumes first.)
       if (!this.grants.consume(other.subject, only)) break;
+      if (other.ticket) {
+        other.ticket.grantMeta = {
+          grantId: grant.id,
+          expiresAt: grant.expiresAt,
+          hasUseCap,
+        };
+      }
       this.approveRequest(other);
       approved.push(other.id);
     }

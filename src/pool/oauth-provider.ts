@@ -439,9 +439,21 @@ export class FileOAuthProvider implements OAuthClientProvider {
     await this.save('authorization-reset').catch(() => {});
   }
 
+  /** True when this provider can receive an interactive browser callback in this process. */
+  canHandleAuthCallback(): boolean {
+    return this.callbackMode !== 'gateway' || Boolean(this.callbackRouter);
+  }
+
   redirectToAuthorization(url: URL): Promise<void> {
     if (this.stopped) return Promise.resolve();
     if (this.callbackMode === 'gateway') {
+      if (!this.callbackRouter) {
+        log.warn(
+          { serverId: this.serverId },
+          'Skipping browser OAuth launch: oauth_callback_mode: gateway requires the gateway HTTP listener'
+        );
+        return Promise.resolve();
+      }
       // The SDK has stored a new PKCE verifier. Show the corresponding URL every time we
       // supersede an attempt, so the operator always has a link that can complete the exchange.
       this.armGatewayCallback(url.searchParams.get('state') ?? '');
