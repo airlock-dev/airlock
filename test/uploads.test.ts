@@ -3539,6 +3539,9 @@ describe('Config schema, profiles, and loader diagnostics for uploads', () => {
     const sandboxLogPath = join(workDir, 'sandbox-stdio-calls.log');
     const sandboxDir = mkdtempSync(join(workDir, 'stdio-sandbox-guard-'));
     const sandboxStore = new UploadStore(makeUploadsConfig(sandboxDir));
+    const supportedSpy = vi.spyOn(SandboxManager, 'isSupportedPlatform').mockReturnValue(true);
+    const enabledSpy = vi.spyOn(SandboxManager, 'isSandboxingEnabled').mockReturnValue(false);
+    const initSpy = vi.spyOn(SandboxManager, 'initialize').mockResolvedValue(undefined);
     const wrapSpy = vi
       .spyOn(SandboxManager, 'wrapWithSandbox')
       .mockImplementationOnce(async (cmd) => cmd);
@@ -3608,6 +3611,9 @@ describe('Config schema, profiles, and loader diagnostics for uploads', () => {
     } finally {
       connectSpy.mockRestore();
       wrapSpy.mockRestore();
+      initSpy.mockRestore();
+      enabledSpy.mockRestore();
+      supportedSpy.mockRestore();
       await sandboxStore.stop();
     }
 
