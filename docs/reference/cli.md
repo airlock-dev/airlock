@@ -384,7 +384,8 @@ or a metadata outage leaves the stored grant in place; while this process owns t
 refresh is retried with exponential backoff (1 minute, doubling to 30 minutes, with no limit on
 attempts; the first retry after an ambiguous exchange comes after 5 seconds). A pending retry
 deadline is absolute: MCP reconnects can bring it forward but never postpone it. A process that
-does not own the store (another gateway holds the lock) re-checks every minute instead. State is reported under `oauthHealth` in `/health` and
+does not own the store (another gateway holds the lock) schedules a re-check about a minute later
+instead (a reconnect can bring it forward); the writer lock still guards every token exchange. State is reported under `oauthHealth` in `/health` and
 on the provider status, never paged:
 
 | State                 | Meaning                                                                                                      |

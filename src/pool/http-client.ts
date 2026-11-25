@@ -785,6 +785,8 @@ export class HttpMcpClient {
       REFRESH_BUFFER_MS,
       this.oauthMaxRefreshIntervalMs
     );
+    // stop() may have run while the grant was being read; never arm a timer after shutdown.
+    if (this.stopped) return;
     if (untilRefresh === undefined) return;
     const beyondCeiling = untilRefresh > MAX_REFRESH_TIMER_MS;
     const delay = Math.max(Math.min(untilRefresh, MAX_REFRESH_TIMER_MS), minRefreshTimerMs);
