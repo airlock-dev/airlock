@@ -7,6 +7,7 @@ import type { HitlBatcher } from '../hitl/batcher.js';
 import type { HitlProvider } from '../hitl/providers/types.js';
 import type { AuditLogger } from '../audit/logger.js';
 import type { AgentConfig, SecurityConfig } from '../config/schema.js';
+import type { UploadStore } from '../uploads/store.js';
 import type { Middleware, ToolCallContext } from '../middleware/types.js';
 import { buildMiddlewareChain } from '../middleware/chain-builder.js';
 import { deliveredResult } from '../middleware/response.js';
@@ -41,6 +42,9 @@ export interface AgentServerDeps {
   hitlProvider: HitlProvider;
   auditLogger: AuditLogger;
   securityConfig?: SecurityConfig;
+  uploadStore?: UploadStore;
+  /** Host header observed on the transport connection (used to select a matching upload public URL). */
+  requestHost?: string;
   chain?: Middleware;
   /** Opaque id propagated to downstream MCPs as params._meta.agentId. */
   downstreamSessionId?: string;
@@ -65,6 +69,10 @@ export const SESSION_META_KEY = 'dev.airlock/session';
 /** Header equivalent of {@link SESSION_META_KEY}, shared with the HTTP tools API. */
 export const SESSION_HEADER = 'x-airlock-session-id';
 const SESSION_ID_PATTERN = /^[A-Za-z0-9._:@-]{1,128}$/;
+
+export function isValidSessionId(value: unknown): value is string {
+  return typeof value === 'string' && SESSION_ID_PATTERN.test(value);
+}
 
 /**
  * The agent-supplied session id for one tool call: `_meta["dev.airlock/session"]`, then the
@@ -160,6 +168,11 @@ export function createAgentServer(deps: AgentServerDeps): Server {
       deps.getDownstreamSessionId?.() ??
       deps.downstreamSessionId;
 
+    const requestHost =
+      reqCtx.http?.req?.headers.get('x-forwarded-host') ??
+      reqCtx.http?.req?.headers.get('host') ??
+      deps.requestHost;
+
     const agentConfig = getConfig();
     const chain = staticChain ?? buildMiddlewareChain(agentConfig);
 
@@ -172,6 +185,7 @@ export function createAgentServer(deps: AgentServerDeps): Server {
       meta: {
         mcpRequestMeta: requestMeta,
         ...(downstreamSessionId !== undefined ? { downstreamSessionId } : {}),
+        ...(requestHost ? { requestHost } : {}),
       },
       deps: {
         registry,
@@ -180,6 +194,7 @@ export function createAgentServer(deps: AgentServerDeps): Server {
         hitlBatcher,
         auditLogger,
         securityConfig: deps.securityConfig ?? { blocked_hosts: [], allowed_local: [] },
+        uploadStore: deps.uploadStore,
       },
       startedAt: Date.now(),
       signal: anySignal(deps.signal, reqCtx.mcpReq.signal),

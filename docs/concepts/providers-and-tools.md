@@ -39,11 +39,12 @@ providers:
 Airlock ships with these built-in providers:
 
 - **exec** — shell command execution via `exec/run`, with per-agent command policies
-- **http** — HTTP requests via `http/get`, `http/post`, `http/put`, `http/delete`, `http/patch`, `http/head`, with domain allowlists and blocked host enforcement
-- **airlock** — notification, human prompt, approval, and agent-visible status tools:
+- **http** — HTTP requests via `http/get`, `http/post`, `http/put`, `http/delete`, `http/patch`, `http/head`, with domain allowlists, blocked host enforcement, and optional staged file uploads (`multipart` / `body_upload`)
+- **airlock** — notification, human prompt, approval, staged upload, and agent-visible status tools:
   `airlock/ask_user`, `airlock/notify_user`, `airlock/log`,
-  `airlock/status`, `airlock/list_provider_tools`, `airlock/request_approval`
-  and `airlock/await_approval`
+  `airlock/status`, `airlock/list_provider_tools`, `airlock/request_approval`,
+  `airlock/await_approval`, and (when `uploads.enabled: true`)
+  `airlock/prepare_upload` and `airlock/delete_upload`
 
 ```yaml
 providers:

@@ -19,6 +19,8 @@ import { auditApiPlugin } from './audit/api.js';
 import { mobileApiPlugin } from './mobile/api.js';
 import { hookApiPlugin } from './hook/api.js';
 import { toolsApiPlugin } from './tools/api.js';
+import { uploadsApiPlugin } from './uploads/api.js';
+import { UploadStore } from './uploads/store.js';
 import { ApprovalDashboardRoutes } from './hitl/approval-dashboard.js';
 import { ApprovalStreamHub } from './hitl/approval-stream.js';
 import { ApprovalPreviewReader } from './hitl/preview.js';
@@ -70,6 +72,7 @@ export class Gateway {
   private approvalStream!: ApprovalStreamHub;
   private approvalPreviews!: ApprovalPreviewReader;
   private auditLogger!: AuditLogger;
+  private uploadStore!: UploadStore;
   private app!: FastifyInstance;
   private managementApp?: FastifyInstance;
   /** Per agent, so one agent churning through session ids can only evict its own sessions. */
@@ -78,6 +81,7 @@ export class Gateway {
   private activityStream = new ActivityStream();
   private unsubscribeActivityNotifications?: () => void;
   private startTime = Date.now();
+  private reloadEpoch = 0;
   private dataPlaneRequestSecurity: RequestSecurityOptions = {};
   private managementRequestSecurity: RequestSecurityOptions = {};
 
@@ -158,6 +162,10 @@ export class Gateway {
       getCredentialProbes(this.config.providers)
     );
     void this.credentialHealth.prime();
+
+    // Staged file upload store (active only when uploads.enabled is true)
+    const initialBaseUrl = `http://${connectableLoopbackHost(this.config.server.host)}:${this.config.server.port}`;
+    this.uploadStore = new UploadStore(this.config.uploads, initialBaseUrl);
 
     // Build adapters from config (MCP, builtins, CLIs, APIs)
     const adapters = this.buildAdapters();
@@ -265,8 +273,26 @@ export class Gateway {
       });
     }
 
+    // Staged file upload endpoints (presigned PUT/POST /uploads/:token, one-time GET/HEAD
+    // /uploads/dl/:token, and direct agent-token POST/DELETE /agents/:agentId/uploads). All routes
+    // answer 404 while uploads.enabled is false so hot-reload can toggle uploads without restart.
+    await this.app.register(uploadsApiPlugin, {
+      uploadStore: this.uploadStore,
+      getAgentConfig: (agentId: string) => this.config.agents[agentId],
+      allowlist: this.allowlist,
+      resolveSessionId: (agentId: string, sessionId: string) =>
+        this.downstreamSessionIdFor(agentId, `${agentId}:${sessionId}`),
+      getRequestSecurity: getDataPlaneRequestSecurity,
+    });
+
     const { port, host } = this.config.server;
     await this.app.listen({ port, host });
+    const bound = this.app.server.address();
+    if (typeof bound === 'object' && bound !== null) {
+      const urlHost = connectableLoopbackHost(bound.address);
+      const formattedHost = urlHost.includes(':') ? `[${urlHost}]` : urlHost;
+      this.uploadStore.setRuntimeBaseUrl(`http://${formattedHost}:${bound.port}`);
+    }
     log.info({ port, host }, 'Airlock agent data-plane listening');
 
     if (this.config.server.management_api.enabled) {
@@ -471,6 +497,11 @@ export class Gateway {
         this.config.approvals.batch_window_ms,
         newConfig.approvals.batch_window_ms,
       ],
+      ...(this.config.uploads?.enabled && newConfig.uploads?.enabled
+        ? ([['uploads.dir', this.config.uploads.dir, newConfig.uploads.dir]] as Array<
+            [string, unknown, unknown]
+          >)
+        : []),
     ];
 
     const changed = restartFields.find(([, oldValue, newValue]) => oldValue !== newValue);
@@ -521,6 +552,7 @@ export class Gateway {
       hitlProvider: this.hitlProvider,
       auditLogger: this.auditLogger,
       securityConfig: this.config.security,
+      uploadStore: this.uploadStore,
       eventService: this.eventService,
     };
   }
@@ -580,22 +612,30 @@ export class Gateway {
     log.info('Reloading gateway config');
     this.assertManagementApiConfig(newConfig);
     this.assertReloadCompatible(newConfig);
+    // Apply upload store config BEFORE publishing `this.config` or allowlists so a failed
+    // exclusive directory lock leaves the gateway on its prior consistent configuration.
+    this.uploadStore.updateConfig(newConfig.uploads);
+    const reloadEpoch = ++this.reloadEpoch;
     this.config = newConfig;
     this.updateRequestSecurity(newConfig);
     this.hitlEngine.setTimeoutMs(newConfig.approvals.timeout_ms);
     this.hitlEngine.configure(engineOptionsFromConfig(newConfig, () => this.config));
-    // Apply allowlist + revoke disallowed event streams immediately — do not wait for slow
-    // upstream pool reconnects before cutting off revoked agents.
+    // Apply allowlist, per-agent upload revocations, and event-stream revocation immediately —
+    // do not wait for slow upstream pool reconnects before cutting off revoked agents or tickets.
     this.allowlist.reload(newConfig.agents);
+    this.uploadStore.reconcileAgents(newConfig.agents);
     await this.eventService.reconcileAfterReload();
+    if (reloadEpoch !== this.reloadEpoch) return;
     const mcpConfigs = getMcpConfigs(newConfig.providers);
     await this.pool.reload(mcpConfigs, eventEnabledProviders(newConfig.agents));
+    if (reloadEpoch !== this.reloadEpoch) return;
     this.credentialHealth.reload(getCredentialProbes(newConfig.providers));
     this.registry.reloadAgents(newConfig.agents, getProviderInstructions(newConfig.providers));
-    // Rebuild adapters to pick up new CLIs/APIs
+    // Rebuild adapters to pick up new CLIs/APIs and upload settings
     const adapters = this.buildAdapters();
     this.registry.setAdapters(adapters);
     await this.registry.refresh();
+    if (reloadEpoch !== this.reloadEpoch) return;
     await this.eventRegistry.refresh();
     log.info('Config reloaded: providers, allowlist, registry, events, and agent configs updated');
   }
@@ -620,6 +660,7 @@ export class Gateway {
     this.unsubscribeActivityNotifications?.();
     this.unsubscribeActivityNotifications = undefined;
     await this.registry?.stopAll();
+    await this.uploadStore?.stop();
     await this.hitlProvider?.stop();
     this.auditLogger?.stop();
   }
@@ -631,12 +672,26 @@ export class Gateway {
 
   private buildAdapters() {
     return buildAdapters(this.config, this.pool, {
+      uploadStore: this.uploadStore,
       airlock: {
         hitlEngine: this.hitlEngine,
         hitlBatcher: this.hitlBatcher,
         activityStream: this.activityStream,
+        uploadStore: this.uploadStore,
         getAgentTools: (agentId) => this.registry?.getFilteredWithDecisions(agentId) ?? [],
         getAgentConfig: (agentId) => this.config.agents[agentId],
+        getRawToolSchema: (toolName, agentId) => {
+          const resolved = this.registry?.resolveToolName(toolName, agentId) ?? toolName;
+          const tools = this.registry?.getAllTools() ?? [];
+          return (
+            tools.find((t) => t.name === toolName)?.inputSchema ??
+            tools.find((t) => t.name === resolved)?.inputSchema
+          );
+        },
+        getToolBackendKind: (toolName, agentId) =>
+          this.registry?.getToolBackendKind(toolName, agentId),
+        nativeUploadArgKind: (toolName, topKey, agentId) =>
+          this.registry?.nativeUploadArgKind(toolName, topKey, agentId),
         getKnownProviderIds: () => this.knownProviderIds(),
         getProviderConnectionStatus: (providerId) => this.providerConnectionStatus(providerId),
       },

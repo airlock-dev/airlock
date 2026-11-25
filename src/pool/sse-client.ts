@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'async_hooks';
 import { Client, SSEClientTransport } from '@modelcontextprotocol/client';
 import type { Tool } from '@modelcontextprotocol/client';
 import {
@@ -43,6 +44,7 @@ export class SseMcpClient {
   private reconnectTimer?: NodeJS.Timeout;
   private lastError?: string;
   private readyListeners = new Set<() => void>();
+  private readonly sendGuardStorage = new AsyncLocalStorage<() => void>();
 
   constructor(
     private id: string,
@@ -57,6 +59,25 @@ export class SseMcpClient {
   async connect(): Promise<void> {
     this.transport = new SSEClientTransport(new URL(this.url), {
       requestInit: this.headers ? { headers: this.headers } : undefined,
+      fetch: (url, init) => {
+        let isCancellation = false;
+        if (typeof init?.body === 'string') {
+          try {
+            const parsed = JSON.parse(init.body) as unknown;
+            isCancellation =
+              typeof parsed === 'object' &&
+              parsed !== null &&
+              !Array.isArray(parsed) &&
+              (parsed as { method?: unknown }).method === 'notifications/cancelled';
+          } catch {
+            isCancellation = false;
+          }
+        }
+        if (!isCancellation) {
+          this.sendGuardStorage.getStore()?.();
+        }
+        return fetch(url, init);
+      },
     });
 
     this.client = new Client({ name: 'airlock', version: VERSION });
@@ -108,13 +129,18 @@ export class SseMcpClient {
   async callTool(
     name: string,
     args: Record<string, unknown>,
-    requestMeta?: McpRequestMeta
+    requestMeta?: McpRequestMeta,
+    beforeSend?: () => void
   ): Promise<unknown> {
     if (!this.client || !this.ready) throw new Error(`MCP ${this.id} not connected`);
     const request = requestMeta
       ? { name, arguments: args, _meta: requestMeta }
       : { name, arguments: args };
-    return this.client.callTool(request);
+    const invoke = (): Promise<unknown> => {
+      beforeSend?.();
+      return this.client!.callTool(request);
+    };
+    return beforeSend ? this.sendGuardStorage.run(beforeSend, invoke) : invoke();
   }
 
   /** Legacy SSE transport predates MCP 2026-07-28 and does not support SEP-3415 Events. */

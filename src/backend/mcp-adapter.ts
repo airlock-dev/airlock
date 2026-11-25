@@ -1,6 +1,8 @@
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import { Client } from '@modelcontextprotocol/client';
 import type { Tool } from '@modelcontextprotocol/client';
+import { ProtocolError } from '@modelcontextprotocol/server';
+import type { ValidateFunction } from 'ajv';
 import type { BackendAdapter } from './types.js';
 import type { ToolCall, ToolResult } from '../types.js';
 import type { ClientPool } from '../pool/pool.js';
@@ -8,6 +10,12 @@ import type { McpServerConfig } from '../config/schema.js';
 import { wrapCommandWithSandbox, type ResolvedSandboxConfig } from '../sandbox/index.js';
 import { childLogger } from '../util/logger.js';
 import { VERSION } from '../version.js';
+import {
+  assertUploadPlanActive,
+  materializeUploadArgs,
+  type UploadExecutionPlan,
+} from '../uploads/resolve.js';
+import type { UploadStore } from '../uploads/store.js';
 
 const log = childLogger('mcp-adapter');
 
@@ -41,7 +49,8 @@ export class McpBackendAdapter implements BackendAdapter {
   constructor(
     private mcpId: string,
     private pool: ClientPool,
-    private serverConfig?: McpServerConfig
+    private serverConfig?: McpServerConfig,
+    private uploadStore?: UploadStore
   ) {
     this.id = `mcp:${mcpId}`;
   }
@@ -71,16 +80,54 @@ export class McpBackendAdapter implements BackendAdapter {
     const originalName = toolCall.tool.slice(prefix.length);
     const sandbox = toolCall.meta?.sandbox as ResolvedSandboxConfig | undefined;
     const requestMeta = mcpRequestMeta(toolCall.meta);
+    const uploadPlan = toolCall.meta?.uploadPlan as UploadExecutionPlan | undefined;
+
+    const sessionId =
+      typeof toolCall.meta?.downstreamSessionId === 'string'
+        ? toolCall.meta.downstreamSessionId
+        : undefined;
+
+    let effectiveArgs = toolCall.args;
+    if (uploadPlan && this.uploadStore) {
+      try {
+        effectiveArgs = await materializeUploadArgs(
+          toolCall.args,
+          toolCall.agentId,
+          uploadPlan,
+          this.uploadStore,
+          sessionId,
+          { schemaValidator: toolCall.meta?.schemaValidator as ValidateFunction | undefined }
+        );
+      } catch (err) {
+        if (err instanceof ProtocolError) throw err;
+        return { success: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    }
+
+    const store = this.uploadStore;
+    const beforeDispatch =
+      uploadPlan && store
+        ? () => assertUploadPlanActive(uploadPlan, toolCall.agentId, store, sessionId)
+        : undefined;
 
     // If sandbox config is present and server is stdio, spawn an ephemeral sandboxed instance
     if (sandbox && this.serverConfig?.type === 'stdio') {
-      return this.callSandboxed(originalName, toolCall.args, sandbox, requestMeta);
+      return this.callSandboxed(originalName, effectiveArgs, sandbox, requestMeta, beforeDispatch);
     }
 
     try {
-      const data = requestMeta
-        ? await this.pool.callTool(this.mcpId, originalName, toolCall.args, requestMeta)
-        : await this.pool.callTool(this.mcpId, originalName, toolCall.args);
+      beforeDispatch?.();
+      const data = beforeDispatch
+        ? await this.pool.callTool(
+            this.mcpId,
+            originalName,
+            effectiveArgs,
+            requestMeta,
+            beforeDispatch
+          )
+        : requestMeta
+          ? await this.pool.callTool(this.mcpId, originalName, effectiveArgs, requestMeta)
+          : await this.pool.callTool(this.mcpId, originalName, effectiveArgs);
       return { success: true, data };
     } catch (err) {
       return { success: false, error: err instanceof Error ? err.message : String(err) };
@@ -94,7 +141,8 @@ export class McpBackendAdapter implements BackendAdapter {
     toolName: string,
     args: Record<string, unknown>,
     sandbox: ResolvedSandboxConfig,
-    requestMeta?: McpRequestMeta
+    requestMeta?: McpRequestMeta,
+    beforeDispatch?: () => void
   ): Promise<ToolResult> {
     if (!this.serverConfig || this.serverConfig.type !== 'stdio') {
       return { success: false, error: 'Sandboxed call requires stdio MCP server config' };
@@ -123,6 +171,30 @@ export class McpBackendAdapter implements BackendAdapter {
 
       log.info({ mcpId: this.mcpId, toolName }, 'Ephemeral sandboxed MCP connected');
 
+      if (beforeDispatch) {
+        beforeDispatch();
+        const rawSend = transport.send.bind(transport);
+        transport.send = (message) => {
+          const isToolCall = Array.isArray(message)
+            ? message.some(
+                (item) =>
+                  typeof item === 'object' &&
+                  item !== null &&
+                  (item as { method?: unknown }).method === 'tools/call'
+              )
+            : typeof message === 'object' &&
+              message !== null &&
+              (message as { method?: unknown }).method === 'tools/call';
+          if (isToolCall) {
+            try {
+              beforeDispatch();
+            } catch (err) {
+              return Promise.reject(err instanceof Error ? err : new Error(String(err)));
+            }
+          }
+          return rawSend(message);
+        };
+      }
       const request = requestMeta
         ? { name: toolName, arguments: args, _meta: requestMeta }
         : { name: toolName, arguments: args };

@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'async_hooks';
 import {
   StreamableHTTPClientTransport,
   auth,
@@ -42,6 +43,22 @@ const MAX_REFRESH_TIMER_MS = 24 * 60 * 60 * 1000;
 const MIN_REFRESH_TIMER_MS = 5 * 1000;
 // Backoff before retrying a transiently-failed proactive refresh (network blip, 5xx).
 const REFRESH_RETRY_MS = 60 * 1000;
+
+/** Whether an HTTP fetch payload is strictly an MCP `notifications/cancelled` frame. */
+function isCancellationFetch(init?: RequestInit): boolean {
+  if (typeof init?.body !== 'string') return false;
+  try {
+    const parsed = JSON.parse(init.body) as unknown;
+    return (
+      typeof parsed === 'object' &&
+      parsed !== null &&
+      !Array.isArray(parsed) &&
+      (parsed as { method?: unknown }).method === 'notifications/cancelled'
+    );
+  } catch {
+    return false;
+  }
+}
 
 /** Extract a short, human-readable reason from a connection error. */
 function friendlyError(err: unknown): string {
@@ -94,6 +111,7 @@ export class HttpMcpClient {
   private refreshTimer?: NodeJS.Timeout;
   private readyListeners = new Set<() => void>();
   private eventsListChangedListeners = new Set<() => void>();
+  private readonly sendGuardStorage = new AsyncLocalStorage<() => void>();
 
   private awaitingAuth = false;
   private connecting = false;
@@ -165,11 +183,16 @@ export class HttpMcpClient {
       transportOpts.authProvider = this.oauthProvider;
     }
 
-    if (this.tokenSource) {
-      transportOpts.fetch = wrapFetchWithEventHeaders(this.clientCredentialsFetch());
-    } else {
-      transportOpts.fetch = wrapFetchWithEventHeaders();
-    }
+    const guardedFetch: (url: string | URL, init?: RequestInit) => Promise<Response> = this
+      .tokenSource
+      ? this.clientCredentialsFetch()
+      : (url, init) => {
+          if (!isCancellationFetch(init)) {
+            this.sendGuardStorage.getStore()?.();
+          }
+          return fetch(url, init);
+        };
+    transportOpts.fetch = wrapFetchWithEventHeaders(guardedFetch);
 
     this.transport = new StreamableHTTPClientTransport(new URL(this.url), transportOpts);
 
@@ -269,7 +292,14 @@ export class HttpMcpClient {
     const source = this.tokenSource!;
     return async (url, init) => {
       const send = async (force: boolean): Promise<Response> => {
+        const skipGuard = isCancellationFetch(init);
+        if (!skipGuard) {
+          this.sendGuardStorage.getStore()?.();
+        }
         const token = await source.getToken(force);
+        if (!skipGuard) {
+          this.sendGuardStorage.getStore()?.();
+        }
         const headers = new Headers(init?.headers);
         headers.set('Authorization', `Bearer ${token}`);
         return fetch(url, { ...init, headers });
@@ -471,14 +501,19 @@ export class HttpMcpClient {
   async callTool(
     name: string,
     args: Record<string, unknown>,
-    requestMeta?: McpRequestMeta
+    requestMeta?: McpRequestMeta,
+    beforeSend?: () => void
   ): Promise<unknown> {
     return this.withSessionRetry('callTool', async () => {
       if (!this.client || !this.ready) throw new Error(`MCP ${this.id} not connected`);
       const request = requestMeta
         ? { name, arguments: args, _meta: requestMeta }
         : { name, arguments: args };
-      return this.client.callTool(request, { timeout: this.requestTimeoutMs });
+      const invoke = (): Promise<unknown> => {
+        beforeSend?.();
+        return this.client!.callTool(request, { timeout: this.requestTimeoutMs });
+      };
+      return beforeSend ? this.sendGuardStorage.run(beforeSend, invoke) : invoke();
     });
   }
 

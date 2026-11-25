@@ -104,8 +104,12 @@ export function sensitivityClassifierMiddleware(
   const { mode = 'detect', threshold = 0.7, backend = 'heuristic', model } = opts;
 
   return async (ctx, next) => {
-    // Pre-execution: scan args
-    const argsText = JSON.stringify(ctx.args);
+    // Pre-execution: scan args (plus any staged :text upload content validated before detectors)
+    const uploadText =
+      typeof ctx.meta.uploadTextForDetectors === 'string' ? ctx.meta.uploadTextForDetectors : '';
+    const argsText = uploadText
+      ? `${JSON.stringify(ctx.args)}\n${uploadText}`
+      : JSON.stringify(ctx.args);
     await checkSensitivity(argsText, 'args', ctx, backend, model, threshold, mode);
 
     const response = await next();
@@ -160,9 +164,20 @@ async function checkSensitivity(
       error: `score=${score}, labels=${details}`,
     });
 
-    if (mode === 'escalate' && phase === 'args' && !ctx.meta.needsApproval) {
-      ctx.meta.needsApproval = true;
-      ctx.meta.approvalReason = `High sensitivity data detected (score: ${score}, ${details})`;
+    if (mode === 'escalate' && phase === 'args') {
+      ctx.meta.detectorEscalated = true;
+      const reason = `High sensitivity data detected (score: ${score}, ${details})`;
+      if (!ctx.meta.needsApproval) {
+        ctx.meta.needsApproval = true;
+        ctx.meta.approvalReason = reason;
+      } else if (
+        typeof ctx.meta.approvalReason === 'string' &&
+        !ctx.meta.approvalReason.includes(reason)
+      ) {
+        ctx.meta.approvalReason = `${ctx.meta.approvalReason}; ${reason}`;
+      } else if (!ctx.meta.approvalReason) {
+        ctx.meta.approvalReason = reason;
+      }
     }
   }
 }

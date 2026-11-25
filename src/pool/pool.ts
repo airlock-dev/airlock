@@ -65,6 +65,8 @@ export class ClientPool {
   private _onClientReady?: (id: string) => void;
   private _onEventsListChanged?: (id: string) => void;
   private eventsProviders: Set<string>;
+  private reloadChain: Promise<void> = Promise.resolve();
+  private reloadEpoch = 0;
 
   constructor(
     private mcps: Record<string, McpServerConfig>,
@@ -104,10 +106,18 @@ export class ClientPool {
     }
     try {
       await client.connect();
+      if (this.clients.get(id) !== client) {
+        void client.stop().catch(() => {});
+        return;
+      }
       if (!client.isReady()) {
         log.info({ id }, 'MCP connection pending');
       }
     } catch {
+      if (this.clients.get(id) !== client) {
+        void client.stop().catch(() => {});
+        return;
+      }
       if (this.options?.retryFailedConnections === false) {
         log.warn({ id }, 'Failed to connect MCP');
       } else {
@@ -179,12 +189,15 @@ export class ClientPool {
     mcpId: string,
     toolName: string,
     args: Record<string, unknown>,
-    requestMeta?: McpRequestMeta
+    requestMeta?: McpRequestMeta,
+    beforeSend?: () => void
   ): Promise<unknown> {
     const client = this.clients.get(mcpId);
     if (!client) throw new Error(`Unknown MCP: ${mcpId}`);
     if (!client.isReady()) throw new Error(`MCP ${mcpId} is not connected`);
-    return client.callTool(toolName, args, requestMeta);
+    return beforeSend
+      ? client.callTool(toolName, args, requestMeta, beforeSend)
+      : client.callTool(toolName, args, requestMeta);
   }
 
   supportsEvents(mcpId: string): boolean {
@@ -222,6 +235,22 @@ export class ClientPool {
   }
 
   async reload(
+    newMcps: Record<string, McpServerConfig>,
+    newEventsProviders?: Set<string>
+  ): Promise<void> {
+    const epoch = ++this.reloadEpoch;
+    const run = async (): Promise<void> => {
+      // Skip queued reloads superseded before they even begin so an older config never replaces a
+      // newer upstream destination under the same provider ID.
+      if (epoch !== this.reloadEpoch) return;
+      await this.applyReload(newMcps, newEventsProviders);
+    };
+    const next = this.reloadChain.then(run, run);
+    this.reloadChain = next;
+    return next;
+  }
+
+  private async applyReload(
     newMcps: Record<string, McpServerConfig>,
     newEventsProviders?: Set<string>
   ): Promise<void> {

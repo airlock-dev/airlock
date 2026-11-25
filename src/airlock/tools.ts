@@ -5,6 +5,8 @@ export const AIRLOCK_STATUS_TOOL = 'airlock/status';
 export const AIRLOCK_LIST_PROVIDER_TOOLS_TOOL = 'airlock/list_provider_tools';
 export const AIRLOCK_REQUEST_APPROVAL_TOOL = 'airlock/request_approval';
 export const AIRLOCK_AWAIT_APPROVAL_TOOL = 'airlock/await_approval';
+export const AIRLOCK_PREPARE_UPLOAD_TOOL = 'airlock/prepare_upload';
+export const AIRLOCK_DELETE_UPLOAD_TOOL = 'airlock/delete_upload';
 
 export const AIRLOCK_TOOL_NAMES = [
   AIRLOCK_ASK_USER_TOOL,
@@ -14,7 +16,18 @@ export const AIRLOCK_TOOL_NAMES = [
   AIRLOCK_LIST_PROVIDER_TOOLS_TOOL,
   AIRLOCK_REQUEST_APPROVAL_TOOL,
   AIRLOCK_AWAIT_APPROVAL_TOOL,
+  AIRLOCK_PREPARE_UPLOAD_TOOL,
+  AIRLOCK_DELETE_UPLOAD_TOOL,
 ] as const;
+
+export const AIRLOCK_UPLOAD_TOOLS = [
+  AIRLOCK_PREPARE_UPLOAD_TOOL,
+  AIRLOCK_DELETE_UPLOAD_TOOL,
+] as const;
+
+export function isAirlockUploadTool(toolName: string): boolean {
+  return (AIRLOCK_UPLOAD_TOOLS as readonly string[]).includes(toolName);
+}
 
 /**
  * Approval-plumbing tools. Any agent whose config can route a call to approval (an `ask` rule, an

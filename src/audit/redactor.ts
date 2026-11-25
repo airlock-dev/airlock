@@ -11,11 +11,12 @@ export function redactFields(obj: unknown, fieldPatterns: string[]): unknown {
 
   const result: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(obj as Record<string, unknown>)) {
-    if (shouldRedact(key, fieldPatterns)) {
-      result[key] = '[REDACTED]';
-    } else {
-      result[key] = redactFields(value, fieldPatterns);
-    }
+    Object.defineProperty(result, key, {
+      value: shouldRedact(key, fieldPatterns) ? '[REDACTED]' : redactFields(value, fieldPatterns),
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
   }
   return result;
 }
