@@ -314,29 +314,44 @@ Airlock-held OAuth grants (`oauth: true`) are stored as immutable revisions in
 `~/.airlock/oauth/.grants/<provider>/` (the highest revision is the grant; the last 5 are kept).
 `~/.airlock/oauth/<provider>.json` is kept as a mirror of the current revision for tools that list or
 read it; a grant that only exists as that file (from an older Airlock) is migrated on its first
-write. Edits to the mirror are ignored once revisions exist; use `airlock oauth restore`.
+write. Provider ids are used verbatim in these paths, so an `oauth: true` provider id must consist
+of letters, digits, `.`, `_` and `-` (not starting with `.`); the config check rejects other ids
+and ids that differ only in letter case.
 
-Each revision is published with an exclusive create, so a writer that stalled and lost the writer
-lock can never replace a newer grant. Every replacement keeps the previous grant in
+Each revision is published with a hard link (exclusive create), so a writer that stalled and lost
+the writer lock can never replace a newer grant. **The store directory must support hard links**;
+on a filesystem without them Airlock refuses to write or spend any refresh token, and status says
+why. Every replacement keeps the previous grant in
 `~/.airlock/oauth/.history/<provider>/` (last 10 kept, owner-only permissions). A refresh rotation
 is made durable first and its predecessor backed up afterwards; replacing a different grant (a
-restore, a new authorization) requires a durable backup first. Crash-left temporary files and
-abandoned restore requests are removed after an hour and ten minutes respectively.
+restore, a new authorization) requires a durable backup first. Crash-left temporary files are
+removed after an hour.
 
 ```bash
 airlock oauth status [provider]            # what is stored, unresolved refreshes, lock holder
 airlock oauth history <provider>           # backups, newest first
 airlock oauth restore <provider> <version> # put a backup back (the replaced grant is backed up too)
+airlock oauth export-legacy [provider]     # rollback step: newest revision → <provider>.json
+airlock oauth import-legacy [provider]     # roll-forward step: <provider>.json → new revision
 ```
 
 None of these print token values.
 
-A restore never races a refresh. When another process (normally the gateway, also when you run the
-command through `docker exec`) holds the OAuth writer lock, the restore is handed to that process,
-which applies it between refreshes; the command waits for the answer (`--wait <seconds>`, default
-30). With no live holder the command takes the lock for the duration of the restore. `--force`
-takes the lock over from a holder that does not answer: that process turns read-only for OAuth until
-it re-acquires the lock, and a refresh it had in flight is parked for adoption rather than lost.
+The writing commands (`restore`, `export-legacy`, `import-legacy`) take the OAuth writer lock, so
+they never race a refresh: they refuse while a gateway owns the store. Stop it and run them in a
+one-off container, for example
+`docker compose stop airlock && docker compose run --rm airlock airlock oauth restore <provider> <version>`.
+`restore --force` instead takes the lock over from a running gateway (waiting out a 35-second
+grace period): the gateway turns read-only for OAuth until it re-acquires the lock shortly after,
+and a refresh it had in flight is parked for adoption rather than lost.
+
+**Rolling back** to an Airlock build without grant revisions: stop the gateway, run
+`airlock oauth export-legacy` (it writes the newest revision of every grant to
+`<provider>.json` and verifies it), then start the older build. **Rolling forward** after an
+older build ran: the new build notices that `<provider>.json` was changed by something else after
+its last revision and refuses to write or refresh that grant (status: `… WAS CHANGED BY ANOTHER
+AIRLOCK VERSION`) instead of ignoring the newer token; stop it, run `airlock oauth import-legacy`,
+and start it again.
 
 Airlock never deletes a grant on its own. An issuer answering `invalid_grant`, an issuer URL change,
 or a metadata outage leaves the stored grant in place; refresh is retried with exponential backoff
@@ -372,7 +387,9 @@ reuse grace window accepts it and the grant recovers. An issuer that strictly en
 and rotated the token before the answer was lost cannot be recovered from the client side: the
 retry gets `invalid_grant` and status says that the earlier lost exchange probably consumed it.
 If the endpoint of such an exchange stays gone or unreachable for 7 days, the grant is reported as
-`grant_rejected` (`endpoint_retired`); the stored grant and the marker are still kept.
+`grant_rejected` (`endpoint_retired`). It stays pinned to that endpoint — retried there, never
+elsewhere — until a refresh there succeeds or a new authorization or a restore replaces the grant;
+the stored grant and the marker are never dropped.
 Airlock never spends a refresh token unless it could first durably record the attempt.
 
 ## Setup OpenClaw integration

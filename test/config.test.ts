@@ -636,6 +636,27 @@ agents:
     expect(diagnostics.some((d) => d.message.includes('"held"'))).toBe(false);
   });
 
+  it('rejects OAuth provider ids that cannot be used verbatim as grant file names, and case collisions', () => {
+    const base = { type: 'http', url: 'https://mcp.example.com/mcp', oauth: true };
+    const config = GatewayConfig.parse({
+      providers: {
+        'work chat': base,
+        work_chat: base,
+        Work_Chat: base,
+        'plain id': { type: 'http', url: 'https://mcp.example.com/mcp' },
+      },
+      agents: { agent1: { token: 'agent-secret' } },
+    });
+    const errors = validateConfig(config).filter((d) => d.level === 'error');
+    expect(errors.map((d) => d.message)).toEqual(
+      expect.arrayContaining([
+        'Provider "work chat" uses oauth: true but its id cannot be used for OAuth grant storage.',
+        'OAuth providers "work_chat" and "Work_Chat" differ only in letter case.',
+      ])
+    );
+    expect(errors.some((d) => d.message.includes('"plain id"'))).toBe(false);
+  });
+
   it('accepts a provider with client_credentials alone', () => {
     const config = GatewayConfig.parse({
       providers: {

@@ -190,8 +190,11 @@ interface WireTrace {
 }
 
 /** oauthFetch that records the wire trace and reads the body itself (to see a mid-body reset). */
-function tracingFetch(trace: WireTrace): typeof fetch {
+function tracingFetch(trace: WireTrace, provider: FileOAuthProvider): typeof fetch {
   return (async (url: string | URL | Request, init?: RequestInit) => {
+    // Last check right at dispatch: once shutdown began, a token request is not sent at all
+    // (not invoked → classified as not sent; the refresh token is not spent).
+    if (provider.closing) throw new Error('Airlock is shutting down; token request not sent');
     trace.invoked = true;
     let res: Response;
     try {
@@ -468,7 +471,7 @@ async function doRefresh(
         clientInformation: clientInfo,
         refreshToken,
         ...(resource ? { resource } : {}),
-        fetchFn: tracingFetch(trace),
+        fetchFn: tracingFetch(trace, provider),
       });
     } catch (err) {
       const cls = classifyExchange(err, trace);

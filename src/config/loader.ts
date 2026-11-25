@@ -1,3 +1,4 @@
+import { isValidProviderId } from '../pool/oauth-store.js';
 import { readFileSync } from 'fs';
 import { isIP } from 'net';
 import { parse as parseYaml } from 'yaml';
@@ -392,6 +393,7 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
   // `client_credentials` is the application's (no user at all). Declaring both is not a merge — it
   // is an unanswerable question about whose name an agent's writes land under, so reject it here
   // rather than let whichever code path runs first decide silently.
+  const oauthIdsFolded = new Map<string, string>();
   for (const [providerId, provider] of Object.entries(config.providers)) {
     if (provider === 'builtin' || provider.type !== 'http') continue;
     if (hasConflictingBearerAuth(provider)) {
@@ -401,6 +403,28 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
         suggestion:
           'Use one source: bearer_token_file, an Authorization header, OAuth or client_credentials.',
       });
+    }
+    if (provider.oauth && !isValidProviderId(providerId)) {
+      diagnostics.push({
+        level: 'error',
+        message: `Provider "${providerId}" uses oauth: true but its id cannot be used for OAuth grant storage.`,
+        suggestion:
+          'OAuth provider ids are used verbatim as file names: use letters, digits, ".", "_" and "-", not starting with ".".',
+      });
+    }
+    if (provider.oauth) {
+      const folded = providerId.toLowerCase();
+      const other = oauthIdsFolded.get(folded);
+      if (other !== undefined) {
+        diagnostics.push({
+          level: 'error',
+          message: `OAuth providers "${other}" and "${providerId}" differ only in letter case.`,
+          suggestion:
+            'Their grant files would collide on case-insensitive filesystems; rename one of them.',
+        });
+      } else {
+        oauthIdsFolded.set(folded, providerId);
+      }
     }
     if (provider.oauth_max_refresh_interval_ms !== undefined && !provider.oauth) {
       diagnostics.push({

@@ -1,6 +1,6 @@
-import { chmod, link, mkdir, open, readdir, readFile, rename, stat, unlink } from 'fs/promises';
+import { link, mkdir, open, readdir, readFile, stat, unlink } from 'fs/promises';
 import { createHash, randomUUID } from 'crypto';
-import { join, resolve } from 'path';
+import { dirname, join } from 'path';
 import type {
   OAuthClientInformationFull,
   OAuthDiscoveryState,
@@ -17,8 +17,6 @@ export const HISTORY_LIMIT = 10;
 export const HISTORY_DIR = '.history';
 /** Successors obtained by a process that lost the writer lock mid-exchange (see adoption). */
 export const ORPHAN_DIR = '.successors';
-/** Operator requests handed to the lock holder (`airlock oauth restore` while a gateway runs). */
-export const REQUEST_DIR = '.requests';
 /**
  * Immutable grant revisions: `.grants/<id>/r<NNNNNNNNNNNN>.json`. The highest readable revision is
  * the grant. `<id>.json` next to it is a compatibility mirror (status tools, `ls`), never read
@@ -27,8 +25,7 @@ export const REQUEST_DIR = '.requests';
 export const REVISION_DIR = '.grants';
 /** Revisions kept per grant (older ones are pruned after a newer one is durable). */
 export const REVISIONS_KEPT = 5;
-/** Abandoned operator requests/results and crash-left temp files are removed after these ages. */
-const REQUEST_TTL_MS = 10 * 60 * 1000;
+/** Crash-left temp files are removed after this age. */
 const TMP_TTL_MS = 60 * 60 * 1000;
 
 /**
@@ -105,19 +102,42 @@ export class OAuthStoreReadOnlyError extends Error {
 }
 
 /** The grant file changed under this process (operator restore, another writer). */
-/** A provider id that cannot be mapped to a file inside the store directory. */
+/** A provider id that OAuth storage refuses (it would not map to its own files verbatim). */
 export class OAuthStoreIdError extends Error {
   constructor(serverId: string) {
-    super(`Invalid OAuth provider id: ${JSON.stringify(serverId)}`);
+    super(
+      `OAuth provider id ${JSON.stringify(serverId)} is not supported for OAuth grant storage (use letters, digits, ".", "_", "-"; not starting with ".")`
+    );
     this.name = 'OAuthStoreIdError';
   }
 }
 
-/** Whether a provider id maps to a file directly inside `dir` (no separators, no traversal). */
-export function isValidProviderId(dir: string, serverId: string): boolean {
-  if (!serverId || serverId === '.' || serverId === '..') return false;
-  if (/[/\\]/.test(serverId)) return false;
-  return resolve(dir, `${serverId}.json`) === join(resolve(dir), `${serverId}.json`);
+/**
+ * Provider ids are used verbatim in every OAuth path (`<id>.json`, `.grants/<id>/`, …), so only
+ * ids that are already safe file names are accepted. No encoding, so no two ids can collide.
+ */
+export const OAUTH_PROVIDER_ID_RE = /^[A-Za-z0-9_-][A-Za-z0-9._-]*$/;
+
+export function isValidProviderId(serverId: string): boolean {
+  return OAUTH_PROVIDER_ID_RE.test(serverId) && serverId.length <= 200;
+}
+
+/** The store's files were written by an older Airlock after this one last wrote them. */
+export class OAuthStoreForeignWriteError extends Error {
+  constructor(serverId: string) {
+    super(
+      `${serverId}.json was changed by something other than this Airlock version (an older build after a rollback?) after its last grant revision; refusing to write or refresh until reconciled with "airlock oauth import-legacy ${serverId}" (gateway stopped)`
+    );
+    this.name = 'OAuthStoreForeignWriteError';
+  }
+}
+
+/** The filesystem cannot provide the guarantees OAuth storage relies on (hard links). */
+export class OAuthStoreUnsupportedError extends Error {
+  constructor(reason: string) {
+    super(`OAuth store directory is unsupported: ${reason}; no refresh token will be spent`);
+    this.name = 'OAuthStoreUnsupportedError';
+  }
 }
 
 export class OAuthStoreConflictError extends Error {
@@ -313,17 +333,33 @@ function parseRev(name: string): number | undefined {
   return m ? Number(m[1]) : undefined;
 }
 
-async function fsyncDir(dir: string): Promise<void> {
-  let handle: Awaited<ReturnType<typeof open>>;
+/** fsync a directory so entries created/renamed in it survive a crash. Errors propagate. */
+export async function fsyncDir(dir: string): Promise<void> {
+  if (process.platform === 'win32') return; // directories cannot be opened there
+  const handle = await open(dir, 'r');
   try {
-    handle = await open(dir, 'r');
-  } catch {
-    return; // platforms that cannot open directories: durability there is best-effort
-  }
-  try {
-    await handle.sync(); // a failing directory fsync is surfaced: the entry may not be durable
+    await handle.sync();
   } finally {
     await handle.close().catch(() => {});
+  }
+}
+
+/**
+ * Create `target` (and missing parents below `root`) with mode 0700, fsyncing the parent of every
+ * directory created so the new entries are durable before anything is written inside them.
+ */
+export async function mkdirDurable(root: string, target: string): Promise<void> {
+  const chain: string[] = [];
+  for (let d = target; d !== root && d.startsWith(root); d = dirname(d)) chain.unshift(d);
+  await mkdir(root, { recursive: true, mode: 0o700 });
+  for (const d of chain) {
+    try {
+      await mkdir(d, { mode: 0o700 });
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'EEXIST') continue;
+      throw err;
+    }
+    await fsyncDir(dirname(d));
   }
 }
 
@@ -334,7 +370,6 @@ export async function cleanupStaleTemp(dir: string): Promise<void> {
     const names = await readdir(join(dir, sub)).catch(() => [] as string[]);
     for (const name of names) dirs.push(join(dir, sub, name));
   }
-  dirs.push(join(dir, REQUEST_DIR));
   for (const d of dirs) {
     const names = await readdir(d).catch(() => [] as string[]);
     for (const name of names) {
@@ -378,16 +413,15 @@ export class OAuthGrantStore {
     readonly mode: OAuthStorageMode = 'writer',
     readonly dir: string = oauthStoreDir()
   ) {
-    this.validId = isValidProviderId(dir, serverId);
-    this.path = join(dir, `${serverId}.json`);
-    this.revisionDir = join(dir, REVISION_DIR, sanitizeId(serverId));
-    this.historyDir = join(dir, HISTORY_DIR, sanitizeId(serverId));
-    this.orphanDir = join(dir, ORPHAN_DIR, sanitizeId(serverId));
+    this.validId = isValidProviderId(serverId);
+    // Verbatim (validated) id everywhere: no encoding, no collisions between providers.
+    const safe = this.validId ? serverId : '_invalid_';
+    this.path = join(dir, `${safe}.json`);
+    this.revisionDir = join(dir, REVISION_DIR, safe);
+    this.historyDir = join(dir, HISTORY_DIR, safe);
+    this.orphanDir = join(dir, ORPHAN_DIR, safe);
     this.lock = writerLockFor(dir);
-    if (mode === 'writer') {
-      this.lock.setRequestHandler(processOperatorRequests);
-      this.lock.keepAcquiring();
-    }
+    if (mode === 'writer') this.lock.keepAcquiring();
   }
 
   private assertValidId(): void {
@@ -443,7 +477,6 @@ export class OAuthGrantStore {
           }
           throw err;
         }
-        if (raw.length === 0) continue; // O_EXCL fallback publication still being written
         try {
           return { data: JSON.parse(raw) as PersistedGrant, raw, rev, hash: sha256(raw) };
         } catch {
@@ -487,7 +520,7 @@ export class OAuthGrantStore {
   async write(
     data: PersistedGrant,
     reason: string,
-    opts: { expectRev?: number; backup?: 'before' | 'after' } = {}
+    opts: { expectRev?: number; backup?: 'before' | 'after'; acceptForeignMirror?: boolean } = {}
   ): Promise<{ rev: number; hash: string }> {
     this.assertValidId();
     if (this.mode === 'readonly') {
@@ -502,6 +535,9 @@ export class OAuthGrantStore {
         );
       }
       const current = await this.read();
+      if (!opts.acceptForeignMirror && current.rev > 0 && (await this.mirrorIsForeign(current))) {
+        throw new OAuthStoreForeignWriteError(this.serverId);
+      }
       if (
         opts.expectRev !== undefined &&
         current.rev !== opts.expectRev &&
@@ -535,8 +571,7 @@ export class OAuthGrantStore {
   }
 
   private async publish(rev: number, snapshot: string): Promise<void> {
-    await mkdir(this.revisionDir, { recursive: true, mode: 0o700 });
-    await chmod(this.revisionDir, 0o700).catch(() => {});
+    await mkdirDurable(this.dir, this.revisionDir);
     const target = join(this.revisionDir, revFile(rev));
     const tmp = `${target}.${process.pid}.${randomUUID()}.tmp`;
     const handle = await open(tmp, 'wx', 0o600);
@@ -549,14 +584,15 @@ export class OAuthGrantStore {
     try {
       await this.beforePublish();
       try {
+        // The revision appears complete and exactly once, or not at all.
         await link(tmp, target);
       } catch (err) {
         const code = (err as NodeJS.ErrnoException).code;
         if (code === 'EEXIST') throw new OAuthStoreConflictError(this.serverId);
-        if (code !== 'EPERM' && code !== 'ENOTSUP' && code !== 'EOPNOTSUPP' && code !== 'ENOSYS') {
-          throw err;
+        if (code === 'EPERM' || code === 'ENOTSUP' || code === 'EOPNOTSUPP' || code === 'ENOSYS') {
+          throw new OAuthStoreUnsupportedError(`hard links are not supported (${code})`);
         }
-        await this.publishExclusiveFallback(target, snapshot);
+        throw err;
       }
     } finally {
       await unlink(tmp).catch(() => {});
@@ -564,23 +600,55 @@ export class OAuthGrantStore {
     await fsyncDir(this.revisionDir);
   }
 
-  /** Filesystems without hard links: O_EXCL create (readers skip it while it is empty). */
-  private async publishExclusiveFallback(target: string, snapshot: string): Promise<void> {
-    let handle: Awaited<ReturnType<typeof open>>;
+  /**
+   * Whether `<id>.json` holds content that is not one of the kept revisions, i.e. it was written
+   * by something else (an older Airlock after a rollback, a hand edit) after this build's last
+   * revision. A mirror equal to the newest revision, or lagging behind on an older kept revision,
+   * is fine.
+   */
+  async mirrorIsForeign(current?: StoredGrant): Promise<boolean> {
+    let mirror: string;
     try {
-      handle = await open(target, 'wx', 0o600);
+      mirror = await readFile(this.path, 'utf-8');
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'EEXIST') {
-        throw new OAuthStoreConflictError(this.serverId);
-      }
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return false;
       throw err;
     }
-    try {
-      await handle.writeFile(snapshot, 'utf-8');
-      await handle.sync();
-    } finally {
-      await handle.close();
+    const top = current ?? (await this.read());
+    if (top.rev === 0) return false; // legacy only: the mirror IS the grant
+    if (top.raw === mirror) return false;
+    for (const rev of await this.revisions()) {
+      const raw = await readFile(join(this.revisionDir, revFile(rev)), 'utf-8').catch(() => '');
+      if (raw === mirror) return false;
     }
+    return true;
+  }
+
+  /**
+   * Rollback step (gateway stopped, writer lock held): write the newest revision to `<id>.json`
+   * so an older Airlock reads the current grant, and verify it.
+   */
+  async exportLegacy(): Promise<{ rev: number; exported: boolean }> {
+    this.assertValidId();
+    const current = await this.read();
+    if (current.rev === 0 || current.raw === undefined) return { rev: 0, exported: false };
+    if (await this.mirrorIsForeign(current)) throw new OAuthStoreForeignWriteError(this.serverId);
+    await atomicWritePrivateFile(this.path, current.raw);
+    if ((await readFile(this.path, 'utf-8')) !== current.raw) {
+      throw new Error(`verification of ${this.path} failed`);
+    }
+    return { rev: current.rev, exported: true };
+  }
+
+  /**
+   * Roll-forward step (gateway stopped, writer lock held): publish `<id>.json` as the newest
+   * revision after an older Airlock wrote it. The revision it supersedes is backed up first.
+   */
+  async importLegacy(): Promise<{ rev: number }> {
+    this.assertValidId();
+    const raw = await readFile(this.path, 'utf-8');
+    const data = JSON.parse(raw) as PersistedGrant;
+    return this.write(data, 'import-legacy', { backup: 'before', acceptForeignMirror: true });
   }
 
   /** Keep `<id>.json` in step for tools that read it. Never authoritative; failures are logged. */
@@ -629,8 +697,7 @@ export class OAuthGrantStore {
   private enqueueHistory(raw: string, reason: string): Promise<boolean> {
     const run = this.historyQueue.then(async () => {
       try {
-        await mkdir(this.historyDir, { recursive: true, mode: 0o700 });
-        await chmod(this.historyDir, 0o700).catch(() => {});
+        await mkdirDurable(this.dir, this.historyDir);
         const stamp = historyStamp();
         let version = `${stamp}-${sanitizeId(reason)}`;
         const existing = new Set(await readdir(this.historyDir).catch(() => [] as string[]));
@@ -728,6 +795,7 @@ export class OAuthGrantStore {
       ...(basis.exchangeId ? { exchangeId: basis.exchangeId } : {}),
       grant,
     };
+    await mkdirDurable(this.dir, this.orphanDir);
     await atomicWritePrivateFile(join(this.orphanDir, file), JSON.stringify(body, null, 2));
     return file;
   }
@@ -759,194 +827,27 @@ export class OAuthGrantStore {
   }
 }
 
-// ─── Operator restore (serialized with refresh, through the lock holder) ────────────────────────
+// ─── Operator restore ───────────────────────────────────────────────────────────────────────────
 
 /**
- * Restore a backup. The caller must hold the writer lock; serialized with refresh/authorization.
- * With `expectedRevision`, the restore is refused when the grant moved on since it was requested
- * (so a replayed request can never put an old grant over a later rotation).
+ * Restore a backup. The caller must hold the writer lock (`airlock oauth restore` takes it, so a
+ * restore only runs while no gateway owns the store, or after an explicit `--force` takeover).
+ * Serialized with refresh/authorization in this process.
  */
 export async function restoreGrant(
   dir: string,
   serverId: string,
-  version: string,
-  opts: { expectedRevision?: number } = {}
+  version: string
 ): Promise<GrantSummary> {
-  if (!isValidProviderId(dir, serverId)) throw new OAuthStoreIdError(serverId);
+  if (!isValidProviderId(serverId)) throw new OAuthStoreIdError(serverId);
   const store = new OAuthGrantStore(serverId, 'writer', dir);
   return withGrantOperation(store.path, async () => {
     // Staged authorization state and exchange markers belong to the moment the backup was taken,
     // not to the restored grant.
     const { pending: _pending, exchange: _exchange, ...data } = await store.readBackup(version);
-    if (opts.expectedRevision !== undefined) {
-      const current = await store.read();
-      if (current.rev !== opts.expectedRevision) {
-        throw new Error(
-          `the grant changed since the restore was requested (revision ${opts.expectedRevision} → ${current.rev}); nothing restored`
-        );
-      }
-    }
     // A restore replaces a possibly valid grant: it must be durably backed up first.
-    await store.write(data, 'restore', {
-      backup: 'before',
-      ...(opts.expectedRevision !== undefined ? { expectRev: opts.expectedRevision } : {}),
-    });
+    await store.write(data, 'restore', { backup: 'before' });
     log.warn({ serverId, version }, 'OAuth grant restored from backup by operator request');
     return summarizeGrant(data);
   });
-}
-
-interface OperatorRequest {
-  op: 'restore';
-  /** Same as the request file's id; the result carries it back. */
-  id: string;
-  provider: string;
-  version: string;
-  /** Grant revision when the request was made; the restore is refused if it moved on. */
-  expectedRevision: number;
-  requestedAt: number;
-}
-
-export interface OperatorResult {
-  id?: string;
-  ok: boolean;
-  summary?: GrantSummary;
-  error?: string;
-}
-
-const REQUEST_RE = /^([A-Za-z0-9-]+)\.(request|claimed|result)\.json$/;
-const inProgress = new Set<string>();
-
-/**
- * Lock-holder side: apply queued operator requests. Runs from the writer lock's poll timer.
- *
- * Requests a previous holder claimed but never answered (it crashed) are re-processed; the
- * revision check makes that safe (an already-applied restore, or one overtaken by a rotation, is
- * refused rather than re-applied). Requests, claims and results older than 10 minutes expire.
- */
-export async function processOperatorRequests(dir: string): Promise<void> {
-  const reqDir = join(dir, REQUEST_DIR);
-  const names = await readdir(reqDir).catch(() => [] as string[]);
-  const results = new Set(
-    names
-      .map((n) => REQUEST_RE.exec(n))
-      .filter((m) => m?.[2] === 'result')
-      .map((m) => m![1])
-  );
-  for (const name of names) {
-    const match = REQUEST_RE.exec(name);
-    if (!match) continue;
-    const [, id, kind] = match;
-    const path = join(reqDir, name);
-    const info = await stat(path).catch(() => undefined);
-    if (!info) continue;
-    if (Date.now() - info.mtimeMs > REQUEST_TTL_MS) {
-      if (!inProgress.has(id)) await unlink(path).catch(() => {});
-      continue;
-    }
-    if (kind === 'result' || inProgress.has(id)) continue;
-    if (kind === 'claimed' && results.has(id)) {
-      await unlink(path).catch(() => {});
-      continue;
-    }
-    const claimed = join(reqDir, `${id}.claimed.json`);
-    if (kind === 'request') {
-      try {
-        await rename(path, claimed); // claim; the CLI cancels by unlinking first
-      } catch {
-        continue;
-      }
-    }
-    inProgress.add(id);
-    let result: OperatorResult;
-    try {
-      const request = JSON.parse(await readFile(claimed, 'utf-8')) as Partial<OperatorRequest>;
-      if (
-        request.op !== 'restore' ||
-        typeof request.provider !== 'string' ||
-        typeof request.version !== 'string' ||
-        typeof request.expectedRevision !== 'number'
-      ) {
-        throw new Error('unsupported or malformed request');
-      }
-      if (!isValidProviderId(dir, request.provider)) throw new OAuthStoreIdError(request.provider);
-      const summary = await restoreGrant(dir, request.provider, request.version, {
-        expectedRevision: request.expectedRevision,
-      });
-      result = { id, ok: true, summary };
-    } catch (err) {
-      result = {
-        id,
-        ok: false,
-        error:
-          (err as NodeJS.ErrnoException).code === 'ENOENT'
-            ? 'backup not found'
-            : err instanceof Error
-              ? err.message
-              : String(err),
-      };
-    }
-    try {
-      await atomicWritePrivateFile(join(reqDir, `${id}.result.json`), JSON.stringify(result));
-      await unlink(claimed).catch(() => {});
-    } catch {
-      // Leave the claim: the next poll (or holder) re-evaluates it; the revision check keeps a
-      // re-run from applying twice.
-    } finally {
-      inProgress.delete(id);
-    }
-  }
-}
-
-/**
- * CLI side: hand a restore to the process holding the writer lock and wait for its answer.
- * Returns undefined when nobody picked the request up in time (the request is withdrawn).
- */
-export async function submitRestoreRequest(
-  dir: string,
-  provider: string,
-  version: string,
-  waitMs: number
-): Promise<OperatorResult | undefined> {
-  if (!isValidProviderId(dir, provider)) throw new OAuthStoreIdError(provider);
-  const reqDir = join(dir, REQUEST_DIR);
-  const id = randomUUID();
-  const requestPath = join(reqDir, `${id}.request.json`);
-  const resultPath = join(reqDir, `${id}.result.json`);
-  const expectedRevision = (await new OAuthGrantStore(provider, 'readonly', dir).read()).rev;
-  const request: OperatorRequest = {
-    op: 'restore',
-    id,
-    provider,
-    version,
-    expectedRevision,
-    requestedAt: Date.now(),
-  };
-  await atomicWritePrivateFile(requestPath, JSON.stringify(request));
-  const readResult = async (): Promise<OperatorResult | undefined> => {
-    try {
-      const result = JSON.parse(await readFile(resultPath, 'utf-8')) as OperatorResult;
-      await unlink(resultPath).catch(() => {});
-      return result;
-    } catch {
-      return undefined;
-    }
-  };
-  const poll = async (deadline: number): Promise<OperatorResult | undefined> => {
-    while (Date.now() < deadline) {
-      const result = await readResult();
-      if (result) return result;
-      await new Promise((r) => setTimeout(r, 100));
-    }
-    return readResult();
-  };
-  const result = await poll(Date.now() + waitMs);
-  if (result) return result;
-  try {
-    await unlink(requestPath); // withdrawn before anyone claimed it
-    return undefined;
-  } catch {
-    // Claimed while we gave up: it is being applied. Wait for the answer.
-    return poll(Date.now() + Math.max(waitMs, 30_000));
-  }
 }

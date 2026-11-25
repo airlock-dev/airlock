@@ -414,6 +414,7 @@ export class HttpMcpClient {
           { id: this.id, trigger, issuer: outcome.issuer, persistence: outcome.persistence },
           'Refreshed OAuth access token'
         );
+        this.rearmAfterExchange();
         return;
       case 'unpersisted':
         // Usable from memory, not on disk: persistence_pending (reported live from the provider).
@@ -425,13 +426,17 @@ export class HttpMcpClient {
         this.lastRefreshError = outcome.message;
         this.lastRefreshErrorAt = now;
         log.warn({ id: this.id, trigger, issuer: outcome.issuer }, outcome.message);
+        this.rearmAfterExchange();
         return;
       case 'rejected':
         this.oauthState = 'grant_rejected';
         this.refreshFailures++;
-        this.lastRefreshError = outcome.afterAmbiguous
-          ? `issuer rejected the stored refresh grant after an earlier exchange whose answer was lost; that exchange probably consumed it, so browser re-authorization is likely required (${outcome.message})`
-          : `issuer rejected the stored refresh grant (${outcome.message})`;
+        this.lastRefreshError =
+          outcome.code === 'endpoint_retired'
+            ? `endpoint_retired: ${outcome.message} (the grant stays pinned to that endpoint until a refresh there succeeds, or a new authorization or restore replaces it)`
+            : outcome.afterAmbiguous
+              ? `issuer rejected the stored refresh grant after an earlier exchange whose answer was lost; that exchange probably consumed it, so browser re-authorization is likely required (${outcome.message})`
+              : `issuer rejected the stored refresh grant (${outcome.message})`;
         this.lastRefreshErrorAt = now;
         this.oauthIssuer = outcome.issuer ?? this.oauthIssuer;
         log.warn(
@@ -474,6 +479,17 @@ export class HttpMcpClient {
         log.debug({ id: this.id, trigger, reason: outcome.reason }, 'Not refreshing OAuth token');
         return;
     }
+  }
+
+  /**
+   * Every successful exchange — proactive, reactive (401) or auth-flow — recomputes the proactive
+   * deadline from the new token's lifetime (recordRefreshOutcome runs once per exchange).
+   */
+  private rearmAfterExchange(): void {
+    if (this.stopped || !this.oauthProvider || this.oauthProvider.storageMode !== 'writer') return;
+    void this.scheduleProactiveRefresh().catch((err) =>
+      log.debug({ id: this.id, reason: friendlyError(err) }, 'Failed to re-arm token refresh')
+    );
   }
 
   private outcomeReason(outcome: RefreshOutcome): string {
@@ -679,11 +695,19 @@ export class HttpMcpClient {
     if (this.stopped || provider.closing) throw new Error('Airlock is shutting down');
     // Serialized with refresh exchanges of the same grant: a refresh in flight finishes (and
     // commits coherently) before the new grant replaces it, never after.
+    // Checked again at dispatch: a code exchange queued behind a refresh must not be sent once
+    // shutdown has begun (its result could not be committed before exit).
+    const fetchFn: typeof fetch = (input, init) => {
+      if (provider.closing && (init?.method ?? 'GET').toUpperCase() === 'POST') {
+        return Promise.reject(new Error('Airlock is shutting down; OAuth request not sent'));
+      }
+      return oauthFetch(input as string | URL, init);
+    };
     const result = await provider.runExclusive(() =>
       auth(provider, {
         serverUrl: this.url,
         authorizationCode: code,
-        fetchFn: oauthFetch,
+        fetchFn,
         ...(this.challengeResourceMetadataUrl
           ? { resourceMetadataUrl: this.challengeResourceMetadataUrl }
           : {}),

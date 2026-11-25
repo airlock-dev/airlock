@@ -86,10 +86,15 @@ describe('FileOAuthProvider — refresh_token preservation', () => {
   });
 
   it('keeps a rotated token in memory when persistence fails instead of refreshing it again', async () => {
-    const provider = new FileOAuthProvider('broken\0path', 18432);
+    const provider = new FileOAuthProvider('test-server', 18432);
+    await provider.saveTokens({ ...initial, refresh_token: 'refresh-0' });
+    // Injected write failure (works as root, unlike permission tricks).
+    vi.spyOn(provider.store, 'write').mockRejectedValue(new Error('EIO: injected'));
     await expect(provider.saveTokens(initial)).resolves.toBeUndefined();
 
     expect((await provider.tokens())?.refresh_token).toBe('refresh-1');
+    expect(provider.persistencePending).toBe(true);
+    vi.restoreAllMocks();
   });
 
   it('does not truncate the last known-good token file when a replacement write fails', async () => {

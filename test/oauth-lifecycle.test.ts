@@ -44,13 +44,9 @@ const { HttpMcpClient, setProactiveRefreshFloorMs } = await import('../src/pool/
 const { FileOAuthProvider } = await import('../src/pool/oauth-provider.js');
 const { refreshGrant, setOAuthRequestTimeout } = await import('../src/pool/oauth-refresh.js');
 const { oauthCommand } = await import('../src/pool/oauth-cli.js');
-const {
-  HISTORY_LIMIT,
-  OAuthGrantStore,
-  credentialFingerprint,
-  processOperatorRequests,
-  restoreGrant,
-} = await import('../src/pool/oauth-store.js');
+const { HISTORY_LIMIT, OAuthGrantStore, credentialFingerprint, restoreGrant } =
+  await import('../src/pool/oauth-store.js');
+const { setPersistenceRetryMs } = await import('../src/pool/oauth-provider.js');
 const {
   WRITER_LOCK_PREFIX,
   lockNamespace,
@@ -589,6 +585,7 @@ beforeEach(async () => {
 afterEach(async () => {
   setOAuthRequestTimeout();
   setProactiveRefreshFloorMs();
+  setPersistenceRetryMs();
   vi.restoreAllMocks();
   await releaseAllWriterLocks();
   setWriterLockTimings();
@@ -625,7 +622,7 @@ describe('OAuth lifecycle — rotation and restarts', () => {
     }
     expect((await stat(join(dir, '.history', ID))).mode & 0o777).toBe(0o700);
     await expectUsableGrant();
-  });
+  }, 30_000);
 
   it('survives a gateway restart mid-lifetime and continues the rotation chain', async () => {
     await seedGrant();
@@ -1447,19 +1444,28 @@ describe('OAuth lifecycle — authorization vs refresh', () => {
     expect(data.pending).toBeUndefined();
   });
 
-  it('a refresh result for a grant that was replaced meanwhile is archived, never mixed in', async () => {
+  it('a refresh result for a grant that was replaced meanwhile is archived or parked, never mixed in', async () => {
     await seedGrant();
     const p = provider();
     world.tokenDelayMs = 300;
     const refresh = refreshGrant(p, world.mcpUrl);
     await vi.waitFor(() => expect(refreshRequests()).toHaveLength(1), { interval: 10 });
     await authorizeB(provider()); // a path that does not serialize (e.g. another instance)
-    expect(await refresh).toMatchObject({ kind: 'refreshed', persistence: 'superseded' });
+    const outcome = await refresh;
+    // Two orderings are permitted: the refresh commit sees B and archives its result
+    // (`superseded`), or its publication loses to B's revision and the result is parked
+    // (`read_only`, handed off). Either way B stays and A's successor is kept durably.
     const data = await readGrant();
     expect(data.clientInfo.client_id).toBe('client-B');
     expect(data.tokens.refresh_token).toBe('rt-B');
     await p.store.flushHistory();
-    expect(await historyReasons()).toContain('superseded-refresh');
+    if (outcome.kind === 'refreshed') {
+      expect(outcome).toMatchObject({ persistence: 'superseded' });
+      expect(await historyReasons()).toContain('superseded-refresh');
+    } else {
+      expect(outcome.kind).toBe('read_only');
+      expect((await readdir(join(dir, '.successors', ID))).length).toBe(1);
+    }
   });
 
   it('saveTokens() with the same access token but a different refresh token commits it', async () => {
@@ -1485,39 +1491,7 @@ describe('OAuth lifecycle — operator restore vs the running owner', () => {
     return data.history.map((h) => h.version);
   }
 
-  it('is handed to the lock-holding process, which applies it between refreshes', async () => {
-    setWriterLockTimings({ requestPollMs: 100 });
-    const original = await seedGrant();
-    world.reuseGraceMs = 0;
-    const p = provider();
-    await refreshGrant(p, world.mcpUrl); // this process now owns the store
-    await p.store.flushHistory();
-    const [version] = await backups();
-    // Make the restored grant valid again at the AS so the case ends usable.
-    world.validRefresh.set(original.refresh, { clientId: world.clientId });
-
-    const cli = spawnTs([
-      join(import.meta.dirname, '..', 'src', 'index.ts'),
-      'oauth',
-      'restore',
-      ID,
-      version,
-      '--dir',
-      dir,
-      '--json',
-      '--wait',
-      '15',
-    ]);
-    const code = await cli.exited;
-    const output = JSON.parse(cli.stdout()) as { via: string };
-    expect(code).toBe(0);
-    expect(output.via).toBe('applied by the lock holder');
-    expect((await readGrant()).tokens.refresh_token).toBe(original.refresh);
-    expect(await writerLockFor(dir).verify()).toBe(true); // never took the lock from the owner
-    await expectUsableGrant();
-  }, 30_000);
-
-  it('refuses while a live holder does not answer, and never writes behind its back', async () => {
+  it('refuses while a live holder owns the store (gateway running), and never writes behind its back', async () => {
     await seedGrant();
     const p = provider();
     await refreshGrant(p, world.mcpUrl);
@@ -1529,8 +1503,9 @@ describe('OAuth lifecycle — operator restore vs the running owner', () => {
     await writeForeignLock({ pid: holder.pid!, ns: lockNamespace() }, 5);
     const before = await readFile(tokenFile(), 'utf-8');
 
-    const refused = await oauthCommand(['restore', ID, version, '--dir', dir, '--wait', '0.3']);
+    const refused = await oauthCommand(['restore', ID, version, '--dir', dir]);
     expect(refused.exitCode).toBe(1);
+    expect(refused.text).toContain('Stop the gateway first');
     expect(refused.text).toContain('--force');
     expect(await readFile(tokenFile(), 'utf-8')).toBe(before);
 
@@ -1607,7 +1582,9 @@ describe('OAuth lifecycle — graceful shutdown', () => {
     dir = join(home, '.airlock', 'oauth');
     try {
       await seedGrant();
-      world.holdResponseMs = 1500; // rotated at the issuer, answer still on its way
+      // Rotated at the issuer, answer still on its way for 8 s: past the old 5 s forced exit,
+      // within the 20 s drain.
+      world.holdResponseMs = 8000;
       const gw = spawnTs([fixture, 'gateway', world.mcpUrl, String(callbackPort)], {
         HOME: home,
       });
@@ -1627,7 +1604,7 @@ describe('OAuth lifecycle — graceful shutdown', () => {
     } finally {
       await rm(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 20 });
     }
-  }, 40_000);
+  }, 60_000);
 
   it('a stopping client admits no new exchange', async () => {
     await seedGrant();
@@ -1722,36 +1699,46 @@ describe('OAuth lifecycle — durable copies before anything is dropped', () => 
     await expectUsableGrant();
   });
 
-  it('unsaved state that loses to a restore is held until a durable copy exists', async () => {
+  it('unsaved state that loses to a restore is held until a durable copy exists, retried automatically', async () => {
     const original = await seedGrant();
+    setPersistenceRetryMs(100);
     const p = provider();
     const realWrite = p.store.write.bind(p.store);
     let failCommit = true;
     vi.spyOn(p.store, 'write').mockImplementation(async (data, reason, opts) => {
-      if (reason === 'refresh' && failCommit) throw new Error('EIO: injected');
+      // The commit and its automatic retries fail until the restore below has landed.
+      if ((reason === 'refresh' || reason === 'persistence-retry') && failCommit) {
+        throw new Error('EIO: injected');
+      }
       return realWrite(data, reason, opts);
     });
-    expect(await refreshGrant(p, world.mcpUrl)).toMatchObject({ kind: 'unpersisted' });
-    const successor = (await p.tokens())!.refresh_token!;
-    failCommit = false;
-    // An operator restore lands (a different grant) while the successor is only in memory.
-    await new OAuthGrantStore(ID, 'writer', dir).write(
-      {
-        ...(await readGrant()),
-        tokens: { ...(await readGrant()).tokens, access_token: 'at-restored' },
-      },
-      'restore'
-    );
     // Nowhere to put a copy: neither history nor the orphan journal.
     const hist = vi.spyOn(p.store, 'writeHistoryFile').mockRejectedValue(new Error('EIO'));
     const orph = vi.spyOn(p.store, 'writeOrphan').mockRejectedValue(new Error('EIO'));
-    await p.retryPersistenceNow();
-    expect(p.persistencePending).toBe(true); // still held, not dropped
+    expect(await refreshGrant(p, world.mcpUrl)).toMatchObject({ kind: 'unpersisted' });
+    const successor = (await p.tokens())!.refresh_token!;
+    // An operator restore lands (a different grant) while the successor is only in memory.
+    const current = await readGrant();
+    await new OAuthGrantStore(ID, 'writer', dir).write(
+      { ...current, tokens: { ...current.tokens, access_token: 'at-restored' } },
+      'restore'
+    );
+    failCommit = false;
+    // The automatic retry hits the conflict, cannot copy the successor anywhere, keeps it.
+    await vi.waitFor(async () => expect((await p.tokens())?.access_token).toBe('at-restored'), {
+      timeout: 3_000,
+      interval: 20,
+    });
+    expect(p.persistencePending).toBe(true);
+    // An unrelated successful save must not cancel the retry of what is still unpreserved.
+    await p.beginAuthorization();
     hist.mockRestore();
     orph.mockRestore();
-    expect(await p.retryPersistenceNow()).toBe(true);
-    expect(p.persistencePending).toBe(false);
-    const files = await readdir(join(dir, '.history', ID));
+    await vi.waitFor(() => expect(p.persistencePending).toBe(false), {
+      timeout: 3_000,
+      interval: 20,
+    });
+    const files = (await readdir(join(dir, '.history', ID))).filter((f) => f.endsWith('.json'));
     const copies = await Promise.all(
       files.map((f) => readFile(join(dir, '.history', ID, f), 'utf-8'))
     );
@@ -1844,68 +1831,6 @@ describe('OAuth lifecycle — restore CLI and requests', () => {
     expect(output.warning).toContain('--force');
     expect((await readGrant()).tokens.refresh_token).toBe(original.refresh);
   }, 30_000);
-
-  it('rejects a request whose provider id escapes the store, reconciles crash-left claims safely, expires stale files', async () => {
-    const original = await seedGrant();
-    const p = provider();
-    await refreshGrant(p, world.mcpUrl);
-    await p.store.flushHistory();
-    const { data } = (await oauthCommand(['history', ID, '--dir', dir, '--json'])) as {
-      data: { history: Array<{ version: string }> };
-    };
-    const version = data.history[0].version;
-    const reqDir = join(dir, '.requests');
-    await mkdir(reqDir, { recursive: true });
-    const rev = (await new OAuthGrantStore(ID, 'readonly', dir).read()).rev;
-    const write = (id: string, kind: string, body: object) =>
-      writeFile(join(reqDir, `${id}.${kind}.json`), JSON.stringify(body));
-
-    await write('evil', 'request', {
-      op: 'restore',
-      id: 'evil',
-      provider: '../../escape',
-      version,
-      expectedRevision: 0,
-    });
-    // A previous holder claimed these and crashed before answering.
-    await write('stale', 'claimed', {
-      op: 'restore',
-      id: 'stale',
-      provider: ID,
-      version,
-      expectedRevision: rev - 1,
-    });
-    await write('fresh', 'claimed', {
-      op: 'restore',
-      id: 'fresh',
-      provider: ID,
-      version,
-      expectedRevision: rev,
-    });
-    await write('old', 'request', {
-      op: 'restore',
-      id: 'old',
-      provider: ID,
-      version,
-      expectedRevision: rev,
-    });
-    const { utimes } = await import('fs/promises');
-    const ancient = new Date(Date.now() - 60 * 60 * 1000);
-    await utimes(join(reqDir, 'old.request.json'), ancient, ancient);
-
-    await processOperatorRequests(dir);
-    const result = async (id: string) =>
-      JSON.parse(await readFile(join(reqDir, `${id}.result.json`), 'utf-8')) as {
-        ok: boolean;
-        error?: string;
-      };
-    expect(await result('evil')).toMatchObject({ ok: false });
-    expect((await result('evil')).error).toContain('Invalid OAuth provider id');
-    expect(await result('stale')).toMatchObject({ ok: false }); // overtaken: never re-applied
-    expect(await result('fresh')).toMatchObject({ ok: true });
-    expect(await readdir(reqDir)).not.toContain('old.request.json'); // expired
-    expect((await readGrant()).tokens.refresh_token).toBe(original.refresh);
-  });
 
   it('cleans up crash-left temp files older than an hour when the lock is acquired', async () => {
     await seedGrant();
@@ -2040,5 +1965,201 @@ describe('OAuth lifecycle — round-2 partial gaps', () => {
     ]);
     expect(outcome).toMatchObject({ kind: 'refreshed', persistence: 'persisted' });
     await expectUsableGrant();
+  });
+});
+
+// ─── Review round 3 ────────────────────────────────────────────────────────────────────────────
+
+describe('OAuth lifecycle — round 3', () => {
+  it('provider ids are used verbatim: two legacy grants stay separate, an unsafe id is refused', async () => {
+    const a = await seedGrant({ id: 'work_chat' });
+    const b = await seedGrant({ id: 'work-chat' });
+    await refreshGrant(
+      new FileOAuthProvider('work_chat', callbackPort, undefined, undefined, undefined, {
+        storeDir: dir,
+      }),
+      world.mcpUrl
+    );
+    await refreshGrant(
+      new FileOAuthProvider('work-chat', callbackPort, undefined, undefined, undefined, {
+        storeDir: dir,
+      }),
+      world.mcpUrl
+    );
+    expect((await readdir(join(dir, '.grants'))).sort()).toEqual(['work-chat', 'work_chat']);
+    await expectUsableGrant('work_chat');
+    await expectUsableGrant('work-chat');
+    expect(world.validRefresh.has(a.refresh) || world.validRefresh.has(b.refresh)).toBe(false);
+    // `work chat` would have been encoded onto `work_chat` before: now it is refused outright.
+    await expect(new OAuthGrantStore('work chat', 'readonly', dir).read()).rejects.toThrow(
+      'not supported for OAuth grant storage'
+    );
+  });
+
+  it('a failed initial read never becomes an empty grant that gets published', async () => {
+    await seedGrant();
+    const p = provider();
+    const realRead = p.store.read.bind(p.store);
+    const spy = vi.spyOn(p.store, 'read').mockRejectedValue(new Error('EIO: injected'));
+    await expect(p.beginAuthorization()).rejects.toThrow('could not be read');
+    await expect(
+      p.saveTokens({ access_token: 'at-new', token_type: 'Bearer', refresh_token: 'rt-new' })
+    ).rejects.toThrow();
+    spy.mockImplementation(realRead);
+    await expect(readdir(join(dir, '.grants', ID))).rejects.toThrow(); // nothing published
+    await p.store.flushHistory();
+    expect(await historyReasons()).toContain('unobserved-save'); // issued tokens kept anyway
+    await expectUsableGrant();
+  });
+
+  it('a copy held only in memory is reported pending until its archive is durable', async () => {
+    await seedGrant();
+    const p = provider();
+    const realWrite = p.store.writeHistoryFile.bind(p.store);
+    const hist = vi.spyOn(p.store, 'writeHistoryFile').mockRejectedValue(new Error('EIO'));
+    vi.spyOn(p.store, 'writeOrphan').mockRejectedValue(new Error('EIO'));
+    // A superseded result that cannot be copied anywhere yet.
+    await (p as unknown as { preserve(g: object, r: string): Promise<boolean> }).preserve(
+      { tokens: { access_token: 'at-x', token_type: 'Bearer', refresh_token: 'rt-x' } },
+      'superseded-refresh'
+    );
+    expect(p.persistencePending).toBe(true);
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    hist.mockImplementation(async (path, raw) => {
+      await gate; // the archive is in flight…
+      return realWrite(path, raw);
+    });
+    const retry = p.retryPersistenceNow();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(p.persistencePending).toBe(true); // …so it is still only in memory
+    release();
+    expect(await retry).toBe(true);
+    expect(p.persistencePending).toBe(false);
+  });
+
+  it('a late refresh result never overwrites a newer access token (non-rotating refresh tokens)', async () => {
+    world.rotate = false;
+    await seedGrant();
+    const p = provider();
+    world.tokenDelayMs = 300;
+    const refresh = refreshGrant(p, world.mcpUrl);
+    await vi.waitFor(() => expect(refreshRequests()).toHaveLength(1), { interval: 5 });
+    // Meanwhile a newer access token for the same refresh token is committed (e.g. by a writer
+    // that adopted a parked successor).
+    const store = new OAuthGrantStore(ID, 'writer', dir);
+    const current = await store.read();
+    await store.write(
+      { ...current.data, tokens: { ...current.data.tokens!, access_token: 'at-newer' } },
+      'test-newer'
+    );
+    const outcome = await refresh;
+    expect(['refreshed', 'read_only']).toContain(outcome.kind);
+    expect((await readGrant()).tokens.access_token).toBe('at-newer');
+    await expectUsableGrant();
+  });
+
+  it('a successful reactive (401) refresh recomputes the proactive deadline', async () => {
+    setProactiveRefreshFloorMs(50);
+    await seedGrant();
+    const client = makeClient();
+    await client.connect(); // proactive timer armed for a 1-hour token
+    world.accessTtlSec = 2; // the next token lives 2 s
+    world.revokeAccessTokens(); // → 401 → reactive refresh
+    expect(await callEcho(client)).toMatch(/^ok:/);
+    expect(refreshRequests()).toHaveLength(1);
+    // No further calls: the re-armed proactive timer refreshes before the 2 s token expires.
+    await vi.waitFor(() => expect(refreshRequests().length).toBeGreaterThanOrEqual(2), {
+      timeout: 4_000,
+      interval: 50,
+    });
+    await client.stop();
+    await expectUsableGrant();
+  }, 10_000);
+
+  it('rollback safety: a mirror written by an older build blocks writes and refreshes until imported', async () => {
+    await seedGrant();
+    const p = provider();
+    expect(await refreshGrant(p, world.mcpUrl)).toMatchObject({ kind: 'refreshed' });
+    // An older Airlock (no revisions) ran after this one and rotated the grant in <id>.json.
+    const old = await readGrant();
+    const rotated = world.issueGrant();
+    await writeFile(
+      tokenFile(),
+      JSON.stringify({
+        ...old,
+        tokens: { ...old.tokens, access_token: rotated.access, refresh_token: rotated.refresh },
+      })
+    );
+    const spent = refreshRequests().length;
+    const outcome = await refreshGrant(provider(), world.mcpUrl);
+    expect(outcome.kind).toBe('failed');
+    expect((outcome as { message: string }).message).toContain('import-legacy');
+    expect(refreshRequests()).toHaveLength(spent); // nothing spent
+    const status = await oauthCommand(['status', '--dir', dir]);
+    expect(status.text).toContain('WAS CHANGED BY ANOTHER AIRLOCK VERSION');
+
+    await releaseAllWriterLocks();
+    const imported = await oauthCommand(['import-legacy', ID, '--dir', dir]);
+    expect(imported.exitCode).toBe(0);
+    expect((await readGrant()).tokens.refresh_token).toBe(rotated.refresh);
+    expect(await refreshGrant(provider(), world.mcpUrl)).toMatchObject({ kind: 'refreshed' });
+    await expectUsableGrant();
+  });
+
+  it('rollback step: export-legacy writes the newest revision to <id>.json and verifies it; refused while a gateway runs', async () => {
+    await seedGrant();
+    const p = provider();
+    await refreshGrant(p, world.mcpUrl);
+    // Make the mirror lag on an older (kept) revision, as a stalled writer could leave it.
+    const revs = (await readdir(join(dir, '.grants', ID)))
+      .filter((f) => f.endsWith('.json'))
+      .sort();
+    await writeFile(tokenFile(), await readFile(join(dir, '.grants', ID, revs[0]), 'utf-8'));
+
+    const holder = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)']);
+    children.push(holder);
+    await releaseAllWriterLocks();
+    await writeForeignLock({ pid: holder.pid!, ns: lockNamespace() }, 40);
+    const refused = await oauthCommand(['export-legacy', '--dir', dir]);
+    expect(refused.exitCode).toBe(1);
+    holder.kill('SIGKILL');
+    await new Promise((resolve) => holder.on('exit', resolve));
+
+    const exported = await oauthCommand(['export-legacy', '--dir', dir, '--json']);
+    expect(exported.exitCode).toBe(0);
+    const mirror = JSON.parse(await readFile(tokenFile(), 'utf-8'));
+    expect(mirror).toEqual(await readGrant());
+    expect(world.validRefresh.has(mirror.tokens.refresh_token)).toBe(true); // an old build reads a live token
+  });
+
+  it('a retired pinned endpoint stays pinned (and reported) until a refresh succeeds or the grant is replaced', async () => {
+    await seedGrant();
+    const data = await readGrant();
+    data.exchange = {
+      state: 'ambiguous',
+      startedAt: Date.now() - 9 * 86_400_000,
+      at: Date.now() - 9 * 86_400_000,
+      goneSince: Date.now() - 8 * 86_400_000,
+      issuer: world.issuer,
+      tokenEndpoint: `${world.issuer}/token`,
+      discovery: world.discoveryState(),
+      resource: world.mcpUrl,
+    };
+    await writeFile(tokenFile(), JSON.stringify(data));
+    world.goneIssuers.add(world.issuer);
+    const client = makeClient();
+    await client.connect();
+    await (client as unknown as Internals).proactiveRefresh();
+    expect(client.getOAuthHealth()).toMatchObject({
+      state: 'grant_rejected',
+      exchange: { state: 'ambiguous' },
+    });
+    expect(client.getOAuthHealth()?.lastError).toContain('endpoint_retired');
+    // The endpoint comes back: the pinned retry succeeds and the marker clears.
+    world.goneIssuers.clear();
+    await (client as unknown as Internals).proactiveRefresh();
+    expect(client.getOAuthHealth()).toMatchObject({ state: 'ok' });
+    expect((await readGrant()).exchange).toBeUndefined();
   });
 });

@@ -17,7 +17,6 @@ import {
   grantIssuer,
   credentialFingerprint,
   drainGrantOperations,
-  sha256,
   withGrantOperation,
   type ExchangeMarker,
   type OAuthStorageMode,
@@ -25,7 +24,12 @@ import {
 } from './oauth-store.js';
 
 const log = childLogger('oauth');
-const PERSIST_RETRY_MS = 30 * 1000;
+let persistRetryMs = 30 * 1000;
+
+/** Test hook: shorten the persistence retry interval (default 30 s). */
+export function setPersistenceRetryMs(ms = 30 * 1000): void {
+  persistRetryMs = ms;
+}
 const TOKEN_CHANGE_POLL_MS = 2 * 1000;
 /**
  * Refresh at least this often while a refresh token is stored, even when the access token is
@@ -276,7 +280,7 @@ export class FileOAuthProvider implements OAuthClientProvider {
 
   async saveClientInformation(info: OAuthClientInformationFull): Promise<void> {
     if (this.preregisteredClientId) return;
-    await this.load();
+    await this.loadForMutation();
     if (this.data.pending?.clientInfo?.client_id === info.client_id) {
       this.data.pending.clientInfo = info;
     } else if (this.data.clientInfo?.client_id === info.client_id || !this.data.tokens) {
@@ -301,7 +305,16 @@ export class FileOAuthProvider implements OAuthClientProvider {
    * only automatic way a stored grant is replaced. Without one, it behaves like a refresh commit.
    */
   async saveTokens(tokens: OAuthTokens): Promise<void> {
-    await this.load();
+    try {
+      await this.loadForMutation();
+    } catch (err) {
+      // The stored grant cannot be read, so nothing may be published on top of it. Tokens the
+      // issuer just issued are kept anyway (history, else orphan journal, else memory + retry).
+      if (tokens.refresh_token || tokens.access_token) {
+        await this.preserve({ tokens }, 'unobserved-save');
+      }
+      throw err;
+    }
     const stamped = tokens as StampedTokens;
     const current = this.data.tokens as StampedTokens | undefined;
     if (current && sameExceptIssuer(current, stamped)) {
@@ -359,6 +372,7 @@ export class FileOAuthProvider implements OAuthClientProvider {
     scope: 'all' | 'client' | 'tokens' | 'verifier' | 'discovery'
   ): Promise<void> {
     await this.load();
+    if (this.diskRev === undefined) return; // nothing observed: nothing staged to discard
     log.warn(
       {
         serverId: this.serverId,
@@ -405,7 +419,7 @@ export class FileOAuthProvider implements OAuthClientProvider {
 
   /** Stage the PKCE verifier for a new authorization. The stored grant is not touched. */
   async saveCodeVerifier(verifier: string): Promise<void> {
-    await this.load();
+    await this.loadForMutation();
     this.data.pending = { startedAt: Date.now(), ...this.data.pending, codeVerifier: verifier };
     delete this.data.codeVerifier;
     this.touched();
@@ -424,14 +438,14 @@ export class FileOAuthProvider implements OAuthClientProvider {
   }
 
   async saveDiscoveryState(state: OAuthDiscoveryState): Promise<void> {
-    await this.load();
+    await this.loadForMutation();
     this.data.pending = { startedAt: Date.now(), ...this.data.pending, discovery: state };
     this.touched();
     await this.save('authorization-discovery');
   }
 
   async saveResourceUrl(resourceUrl: string): Promise<void> {
-    await this.load();
+    await this.loadForMutation();
     if (this.data.pending?.resource === resourceUrl) return;
     this.data.pending = { startedAt: Date.now(), ...this.data.pending, resource: resourceUrl };
     this.touched();
@@ -439,7 +453,7 @@ export class FileOAuthProvider implements OAuthClientProvider {
   }
 
   async saveAuthorizationServerUrl(issuer: string): Promise<void> {
-    await this.load();
+    await this.loadForMutation();
     if (this.data.pending?.issuer === issuer) return;
     this.data.pending = { startedAt: Date.now(), ...this.data.pending, issuer };
     this.touched();
@@ -448,7 +462,7 @@ export class FileOAuthProvider implements OAuthClientProvider {
 
   /** Start a fresh authorization attempt: discard stale staged state, keep the stored grant. */
   async beginAuthorization(): Promise<void> {
-    await this.load();
+    await this.loadForMutation();
     this.data.pending = { startedAt: Date.now() };
     delete this.data.codeVerifier;
     this.touched();
@@ -458,7 +472,7 @@ export class FileOAuthProvider implements OAuthClientProvider {
   // ─── Refresh-engine facing ────────────────────────────────────────────────────────────────────
 
   async grant(): Promise<GrantSnapshot> {
-    await this.load();
+    await this.loadForMutation();
     return {
       tokens: this.data.tokens,
       clientInfo: this.preregisteredClient() ?? this.data.clientInfo,
@@ -478,7 +492,15 @@ export class FileOAuthProvider implements OAuthClientProvider {
    * must never be spent unless its successor can be committed.
    */
   async beginExchange(marker: ExchangeMarker): Promise<BeginExchangeResult> {
-    await this.load();
+    try {
+      await this.loadForMutation();
+    } catch (err) {
+      return {
+        ok: false,
+        kind: 'unwritable',
+        message: err instanceof Error ? err.message : String(err),
+      };
+    }
     const wasClean = this.mutationGen === this.persistedGen;
     const previous = this.data.exchange;
     this.data.exchange = marker;
@@ -504,7 +526,7 @@ export class FileOAuthProvider implements OAuthClientProvider {
 
   /** Replace (or clear) the exchange marker after an exchange without a successor. */
   async endExchange(next: ExchangeMarker | undefined): Promise<void> {
-    await this.load();
+    await this.loadForMutation();
     if (next) this.data.exchange = next;
     else delete this.data.exchange;
     this.touched();
@@ -519,16 +541,18 @@ export class FileOAuthProvider implements OAuthClientProvider {
   async adoptOrphanedSuccessors(): Promise<void> {
     const orphans = await this.store.listOrphans();
     if (orphans.length === 0) return;
-    await this.load();
+    await this.loadForMutation();
     for (const orphan of orphans) {
       const current = this.data.tokens?.refresh_token;
       // Adopt only while the stored credentials are exactly the ones the exchange started from.
       // Revisions that only changed markers or staged state do not block adoption; any credential
       // change (a later refresh — also with non-rotating refresh tokens — an authorization, a
       // restore) does, and the parked successor is then archived instead.
-      const matches = orphan.predecessorCredentials
-        ? orphan.predecessorCredentials === credentialFingerprint(this.data)
-        : Boolean(current && sha256(current) === orphan.predecessor);
+      // Orphans without a credential fingerprint (older format) are never adopted, only archived.
+      const matches =
+        Boolean(current) &&
+        orphan.predecessorCredentials !== undefined &&
+        orphan.predecessorCredentials === credentialFingerprint(this.data);
       if (matches) {
         const { pending: _pending, exchange: _exchange, ...grant } = orphan.grant;
         this.data = { ...grant, ...(this.data.pending ? { pending: this.data.pending } : {}) };
@@ -574,10 +598,14 @@ export class FileOAuthProvider implements OAuthClientProvider {
     if (basis) {
       const currentClientId =
         this.preregisteredClient()?.client_id ?? this.data.clientInfo?.client_id;
-      if (
-        this.data.tokens?.refresh_token !== basis.refreshToken ||
-        currentClientId !== basis.clientInfo.client_id
-      ) {
+      // Coherent only while the stored credentials are exactly the ones the exchange started
+      // from (refresh + access token + client). A late result must never overwrite a newer
+      // access token (non-rotating refresh tokens) or another grant's registration.
+      const coherent = basis.credentials
+        ? credentialFingerprint(this.data) === basis.credentials
+        : this.data.tokens?.refresh_token === basis.refreshToken &&
+          currentClientId === basis.clientInfo.client_id;
+      if (!coherent) {
         await this.preserve(
           {
             clientInfo: basis.clientInfo,
@@ -806,13 +834,28 @@ export class FileOAuthProvider implements OAuthClientProvider {
     this.diskRev = result.rev;
   }
 
+  /**
+   * Load for a mutation: the change must be based on a successfully observed revision (a read that
+   * succeeded, or found nothing). A failed read never turns into "empty grant" + publish.
+   */
+  private async loadForMutation(): Promise<void> {
+    await this.load();
+    if (this.diskRev === undefined) {
+      throw new Error('the stored OAuth grant could not be read; not changing it');
+    }
+  }
+
   private async save(reason: string, opts: { keepOnConflict?: boolean } = {}): Promise<void> {
     const generation = this.mutationGen;
+    if (this.diskRev === undefined) {
+      // Never publish without knowing which revision this change is based on.
+      throw new Error('the stored OAuth grant has not been read successfully; not writing');
+    }
     const snapshot = JSON.parse(JSON.stringify(this.data)) as PersistedGrant;
     let rev: number;
     try {
       ({ rev } = await this.store.write(snapshot, reason, {
-        ...(this.diskRev === undefined ? {} : { expectRev: this.diskRev }),
+        expectRev: this.diskRev,
         // Replacing a grant with a different one: the previous one must be safely in history.
         ...(reason === 'authorization' ? { backup: 'before' as const } : {}),
       }));
@@ -826,7 +869,8 @@ export class FileOAuthProvider implements OAuthClientProvider {
       this.persistedGen = generation;
       this.diskRev = rev;
     }
-    if (this.persistedGen === this.mutationGen) {
+    // Keep retrying while anything is still held only in memory (also unpreserved copies).
+    if (this.persistedGen === this.mutationGen && this.unpreserved.length === 0) {
       this.persistFailing = false;
       if (this.persistenceRetryTimer) {
         clearTimeout(this.persistenceRetryTimer);
@@ -889,10 +933,11 @@ export class FileOAuthProvider implements OAuthClientProvider {
   }
 
   private async flushUnpreserved(): Promise<boolean> {
-    const pending = this.unpreserved.splice(0);
-    for (const item of pending) {
-      if (!(await this.store.archive(item.grant, item.reason))) {
-        this.unpreserved.push(item);
+    // An item leaves the list only once its copy is durable, so persistencePending stays true
+    // for as long as anything exists only in memory.
+    for (const item of [...this.unpreserved]) {
+      if (await this.store.archive(item.grant, item.reason)) {
+        this.unpreserved.splice(this.unpreserved.indexOf(item), 1);
       }
     }
     return this.unpreserved.length === 0;
@@ -994,7 +1039,7 @@ export class FileOAuthProvider implements OAuthClientProvider {
         this.persistFailing = true;
         this.schedulePersistenceRetry();
       });
-    }, PERSIST_RETRY_MS);
+    }, persistRetryMs);
     this.persistenceRetryTimer.unref?.();
   }
 }

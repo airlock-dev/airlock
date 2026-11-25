@@ -29,8 +29,6 @@ interface LockTimings {
    * write. It outlasts any token request the previous holder could have had in flight.
    */
   takeoverGraceMs: number;
-  /** How often the holder looks for operator requests (e.g. `airlock oauth restore`). */
-  requestPollMs: number;
 }
 
 const DEFAULT_TIMINGS: LockTimings = {
@@ -38,7 +36,6 @@ const DEFAULT_TIMINGS: LockTimings = {
   staleMs: 2 * 60_000,
   // Two full OAuth request timeouts (15 s each) plus slack.
   takeoverGraceMs: 35_000,
-  requestPollMs: 2_000,
 };
 let timings: LockTimings = { ...DEFAULT_TIMINGS };
 
@@ -141,7 +138,6 @@ function parseRecord(raw: string, gen: number): LockRecord | undefined {
 // such as `airlock oauth restore --force` alive until it is over.
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
-export type RequestHandler = (dir: string) => Promise<void>;
 export type AcquiredHook = (dir: string) => Promise<void>;
 let acquiredHook: AcquiredHook | undefined;
 
@@ -160,7 +156,7 @@ export function setLockAcquiredHook(hook: AcquiredHook): void {
  * Design (no native addon, so no flock/fcntl):
  *
  * - **Atomic takeover.** The lock is the highest-numbered `.writer.lock.<gen>` file. Acquiring or
- *   taking over creates generation `top + 1` with `link()` (falls back to `O_EXCL`), which exactly
+ *   taking over creates generation `top + 1` with `link()` (hard links are required; without them the lock fails closed), which exactly
  *   one process can win. A process owns the lock iff its generation is the highest present and the
  *   file carries its nonce, so two processes can never both pass the ownership check. Heartbeats
  *   rewrite only the holder's own generation file and so can never overwrite a newer owner.
@@ -192,9 +188,6 @@ export class OAuthWriterLock {
   /** Monotonic time at which the last successful heartbeat write started. */
   private lastBeatMono = 0;
   private heartbeatTimer?: NodeJS.Timeout;
-  private requestTimer?: NodeJS.Timeout;
-  private requestHandler?: RequestHandler;
-  private handlingRequests = false;
   private acquireTimer?: NodeJS.Timeout;
   private readonly acquiredListeners = new Set<() => void>();
   private acquiring?: Promise<boolean>;
@@ -235,12 +228,6 @@ export class OAuthWriterLock {
   stopAcquiring(): void {
     if (this.acquireTimer) clearInterval(this.acquireTimer);
     this.acquireTimer = undefined;
-  }
-
-  /** Register the handler run periodically while this process holds the lock. */
-  setRequestHandler(handler: RequestHandler): void {
-    this.requestHandler = handler;
-    if (this.nonce) this.startRequestPolling();
   }
 
   /**
@@ -432,7 +419,6 @@ export class OAuthWriterLock {
     }
     log.info({ dir: this.dir, pid: process.pid, gen }, 'Acquired OAuth writer lock');
     this.lastProblem = undefined;
-    this.startRequestPolling();
     if (acquiredHook) {
       const hook = acquiredHook;
       void hook(this.dir).catch(() => {});
@@ -477,7 +463,7 @@ export class OAuthWriterLock {
     this.nonce = undefined;
   }
 
-  /** Create a generation file with its full content, failing if it already exists. */
+  /** Create a generation file with its full content via link(), failing if it already exists. */
   private async createExclusive(gen: number, record: LockRecord): Promise<boolean> {
     const path = join(this.dir, genFile(gen));
     const tmp = `${path}.${process.pid}.${randomUUID()}.tmp`;
@@ -494,23 +480,13 @@ export class OAuthWriterLock {
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code;
       if (code === 'EEXIST') return false;
-      if (code !== 'EPERM' && code !== 'ENOTSUP' && code !== 'EOPNOTSUPP' && code !== 'ENOSYS') {
-        throw err;
+      if (code === 'EPERM' || code === 'ENOTSUP' || code === 'EOPNOTSUPP' || code === 'ENOSYS') {
+        // No exclusive publication without hard links: fail closed (never write, never refresh).
+        throw new Error(`the OAuth store filesystem does not support hard links (${code})`, {
+          cause: err,
+        });
       }
-      // Filesystem without hard links: O_EXCL create (readers may briefly see an empty file).
-      try {
-        const excl = await open(path, 'wx', 0o600);
-        try {
-          await excl.writeFile(JSON.stringify(record), 'utf-8');
-          await excl.sync();
-        } finally {
-          await excl.close();
-        }
-        return true;
-      } catch (exclErr) {
-        if ((exclErr as NodeJS.ErrnoException).code === 'EEXIST') return false;
-        throw exclErr;
-      }
+      throw err;
     } finally {
       await unlink(tmp).catch(() => {});
     }
@@ -553,34 +529,9 @@ export class OAuthWriterLock {
     this.heartbeatTimer.unref?.();
   }
 
-  private startRequestPolling(): void {
-    if (!this.requestHandler || this.requestTimer) return;
-    this.requestTimer = setInterval(() => {
-      void this.pollRequests();
-    }, timings.requestPollMs);
-    this.requestTimer.unref?.();
-  }
-
-  private async pollRequests(): Promise<void> {
-    if (this.handlingRequests || !this.nonce || !this.requestHandler) return;
-    this.handlingRequests = true;
-    try {
-      await this.requestHandler(this.dir);
-    } catch (err) {
-      log.warn(
-        { dir: this.dir, reason: err instanceof Error ? err.message : String(err) },
-        'Could not process OAuth operator requests'
-      );
-    } finally {
-      this.handlingRequests = false;
-    }
-  }
-
   private stopTimers(): void {
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
-    if (this.requestTimer) clearInterval(this.requestTimer);
     this.heartbeatTimer = undefined;
-    this.requestTimer = undefined;
   }
 
   /** Re-stamp our own generation, after confirming it is still the lock. */
