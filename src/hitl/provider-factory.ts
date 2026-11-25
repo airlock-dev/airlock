@@ -63,7 +63,12 @@ function createSingleProvider(
     case 'dashboard': {
       const approvalStream = options.approvalStream ?? new ApprovalStreamHub();
       const dashboard = new DashboardHitlProvider(
-        { host: cfg.host, port: cfg.port, config_path: options.configPath },
+        {
+          host: cfg.host,
+          port: cfg.port,
+          insecure_remote_bind: cfg.insecure_remote_bind,
+          config_path: options.configPath,
+        },
         approvalApi,
         approvalStream,
         options.approvalPreviews

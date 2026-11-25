@@ -47,7 +47,9 @@ agents:
 
 approvals:
   provider:
-    type: tui
+    type: dashboard
+    host: 127.0.0.1
+    port: 4112
   timeout_ms: 300000
 
 audit:

@@ -118,14 +118,16 @@ export function buildGrantChoices(p: PendingApproval): GrantChoice[] {
     }
   }
 
-  choices.push({
-    id: 'always',
-    label: 'Always allow',
-    sub: 'Adds an allow rule to airlock.yaml',
-    options: { remember: 'always' },
-    toast: `Always allowing ${p.tool}`,
-    permanent: true,
-  });
+  if (!p.tool.startsWith('event:')) {
+    choices.push({
+      id: 'always',
+      label: 'Always allow',
+      sub: 'Adds an allow rule to airlock.yaml',
+      options: { remember: 'always' },
+      toast: `Always allowing ${p.tool}`,
+      permanent: true,
+    });
+  }
   return choices;
 }
 
@@ -142,7 +144,7 @@ function denyLabel(p: PendingApproval): string {
 }
 
 export function useApprovalDecider() {
-  const { refreshPending, refreshStatus, refreshGrants, toast } = useStore();
+  const { refreshPending, refreshGrants, refreshState, toast } = useStore();
   const [busyId, setBusyId] = useState<string | null>(null);
 
   const decide = async (
@@ -163,7 +165,11 @@ export function useApprovalDecider() {
               ? `Approved ${plural(p.plan?.length ?? 0, 'planned call')}`
               : `Approved ${subject}`)
       );
-      await Promise.all([refreshPending(), refreshStatus(), refreshGrants()]);
+      await Promise.all([
+        refreshPending(),
+        refreshGrants(),
+        ...(options.remember === 'always' ? [refreshState()] : []),
+      ]);
       return true;
     } catch (e) {
       toast((e as Error).message, 'error');
@@ -276,7 +282,7 @@ export function Inbox() {
       const target = e.target as HTMLElement;
       if (['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName) || target.isContentEditable)
         return;
-      if (document.querySelector('.scrim, .menu')) return;
+      if (document.querySelector('.scrim, .menu, .assistant.is-open')) return;
       if (!ordered.length) return;
       if (e.key === 'j' || e.key === 'ArrowDown') {
         e.preventDefault();

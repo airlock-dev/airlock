@@ -202,6 +202,13 @@ export class ApprovalDashboardRoutes {
     if ((pendingRequest.kind ?? 'call') !== 'call' || pendingRequest.escalated) {
       return { status: 400, error: 'Only a routine tool call can be remembered' };
     }
+    if (pendingRequest.tool.startsWith('event:')) {
+      return {
+        status: 400,
+        error:
+          'Event subscription approvals cannot be persisted as tool allow rules; add them under events.allow in airlock.yaml',
+      };
+    }
     return undefined;
   }
 

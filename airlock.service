@@ -15,6 +15,7 @@ StandardError=journal
 SyslogIdentifier=airlock
 
 # Environment
+Environment=AIRLOCK_OAUTH_DIR=/var/lib/airlock/oauth
 EnvironmentFile=-/etc/airlock/env
 
 # Hardening

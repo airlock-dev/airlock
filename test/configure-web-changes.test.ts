@@ -202,6 +202,37 @@ describe('configure-web change sets', () => {
     expect(preview.warnings.join('\n')).toMatch(/whole providers/);
     expect(preview.warnings.join('\n')).toMatch(/stops working/);
   });
+
+  it('validates configs with unset ${VAR} placeholders and prunes revoked remember_allow entries on update_agent', () => {
+    delete process.env['AIRLOCK_UNSET_TEST_VAR'];
+    writeFileSync(
+      configPath,
+      `
+server:
+  api_secret: "\${AIRLOCK_UNSET_TEST_VAR}"
+providers:
+  exec: builtin
+agents:
+  dev:
+    allow:
+      - exec/run
+    ask: []
+    remember_allow:
+      - tool: exec/run
+`
+    );
+
+    const ops = parseChangeSet({
+      ops: [{ op: 'update_agent', id: 'dev', agent: { allow: [], ask: ['exec/run'] } }],
+    });
+    const preview = previewChanges(configPath, ops);
+    expect(preview.ok).toBe(true);
+
+    const applied = applyChanges(configPath, ops, preview.version);
+    expect(applied.changes).toHaveLength(1);
+    const updatedYaml = readFileSync(configPath, 'utf8');
+    expect(updatedYaml).not.toContain('remember_allow');
+  });
 });
 
 describe('configure-web change and assistant routes', () => {

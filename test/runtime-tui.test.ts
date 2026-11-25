@@ -25,4 +25,15 @@ describe('TUI approval provider', () => {
     expect(kill).toHaveBeenCalledWith(process.pid, 'SIGINT');
     expect(exit).not.toHaveBeenCalled();
   });
+
+  it('does not open /dev/tty in the constructor or crash init() when headless', async () => {
+    const provider = new TuiHitlProvider({
+      approve: () => undefined,
+      deny: () => false,
+      approveByCode: () => undefined,
+      denyByCode: () => false,
+    });
+    await expect(provider.init()).resolves.toBeUndefined();
+    await expect(provider.stop()).resolves.toBeUndefined();
+  });
 });

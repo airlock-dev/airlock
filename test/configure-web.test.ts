@@ -554,7 +554,16 @@ approvals:
       ],
     });
     expect((await app.inject('/api/tools')).json()).toMatchObject({
-      tools: [expect.objectContaining({ name: 'exec/run' })],
+      tools: [
+        expect.objectContaining({
+          name: 'exec/run',
+          provider: 'exec',
+          shortName: 'run',
+          tags: expect.any(Array),
+          suspiciousPatterns: expect.any(Array),
+          recommended: 'allow',
+        }),
+      ],
     });
 
     const approveRes = await app.inject({
@@ -568,5 +577,113 @@ approvals:
     await app.close();
     fetchSpy.mockRestore();
     rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('blocks DNS rebinding Host headers, cross-site CSRF, and event:* remember=always, and strips HTTP fields on transport switch', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'airlock-web-hardening-'));
+    const configPath = join(dir, 'airlock.yaml');
+    const tokenFile = join(dir, 'token.txt');
+    writeFileSync(tokenFile, 'secret-token-value\n', { mode: 0o600 });
+    writeFileSync(
+      configPath,
+      `
+providers:
+  exec: builtin
+  remote_http:
+    type: http
+    url: https://mcp.example.com/mcp
+    bearer_token_file: ${tokenFile}
+    request_timeout_ms: 15000
+agents:
+  dev:
+    allow: ['exec/run']
+approvals:
+  provider:
+    type: dashboard
+    host: 127.0.0.1
+    port: 4112
+`
+    );
+
+    const stream = new ApprovalStreamHub();
+    stream.notify([
+      {
+        id: 'evt-req-1',
+        code: 'EVTCODE1',
+        agentId: 'dev',
+        tool: 'event:pd/incident.created',
+        args: {},
+        createdAt: new Date().toISOString(),
+        timeoutMs: 60_000,
+      },
+    ]);
+    const approvals = new ApprovalDashboardRoutes(
+      {
+        approve: () => undefined,
+        deny: () => false,
+        approveByCode: () => undefined,
+        denyByCode: () => false,
+      },
+      stream
+    );
+    const app = createConfigureWebApp(configPath, { approvals, bindHost: '127.0.0.1' });
+    await app.ready();
+
+    try {
+      // DNS rebinding Host blocked
+      const rebind = await app.inject({
+        method: 'GET',
+        url: '/api/state',
+        headers: { host: 'attacker.example:4112' },
+      });
+      expect(rebind.statusCode).toBe(403);
+
+      // Cross-site CSRF blocked on /approve and /api/*
+      const csrfFetchSite = await app.inject({
+        method: 'POST',
+        url: '/approve?code=EVTCODE1',
+        headers: { 'sec-fetch-site': 'cross-site' },
+      });
+      expect(csrfFetchSite.statusCode).toBe(403);
+
+      const csrfOrigin = await app.inject({
+        method: 'POST',
+        url: '/approve?code=EVTCODE1',
+        headers: { host: '127.0.0.1:4112', origin: 'https://evil.example' },
+      });
+      expect(csrfOrigin.statusCode).toBe(403);
+
+      // Same-origin /api/state sets no-store and exposes bearerTokenFile path
+      const stateRes = await app.inject({
+        method: 'GET',
+        url: '/api/state',
+        headers: { host: '127.0.0.1:4112' },
+      });
+      expect(stateRes.statusCode).toBe(200);
+      expect(stateRes.headers['cache-control']).toBe('no-store');
+      expect(stateRes.json().providers.remote_http.bearerTokenFile).toBe(tokenFile);
+
+      // event:* approvals cannot use remember=always
+      const eventRemember = await app.inject({
+        method: 'POST',
+        url: '/approve?code=EVTCODE1&remember=always',
+        headers: { host: '127.0.0.1:4112', origin: 'http://127.0.0.1:4112' },
+      });
+      expect(eventRemember.statusCode).toBe(400);
+      expect(readFileSync(configPath, 'utf8')).not.toContain('event:pd/incident.created');
+
+      // Switching HTTP provider with bearer_token_file & request_timeout_ms to stdio passes strict schema
+      const switched = upsertProvider(configPath, {
+        id: 'remote_http',
+        type: 'stdio',
+        command: 'echo',
+        args: ['ok'],
+      });
+      expect(switched.providers.remote_http.type).toBe('stdio');
+      expect(switched.providers.remote_http.bearerTokenFile).toBeUndefined();
+    } finally {
+      await app.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

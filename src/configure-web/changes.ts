@@ -1,11 +1,16 @@
 import { createHash, randomBytes } from 'crypto';
 import { sha256Hex } from '../security/request.js';
-import { copyFileSync, existsSync, readFileSync, writeFileSync } from 'fs';
+import { copyFileSync, existsSync, readFileSync } from 'fs';
 import { Document, isMap, parseDocument, stringify as stringifyYaml } from 'yaml';
 import { z } from 'zod';
 import { validateConfig, type ConfigDiagnostic } from '../config/loader.js';
 import { applyProfiles } from '../config/profiles.js';
-import { GatewayConfig, type GatewayConfig as ParsedGatewayConfig } from '../config/schema.js';
+import {
+  GatewayConfig,
+  withEnvVarResolution,
+  type GatewayConfig as ParsedGatewayConfig,
+} from '../config/schema.js';
+import { atomicWriteTextFileSync } from '../util/atomic-file.js';
 
 // A change set is the single write path shared by the agent/profile composer and the assistant.
 // Both produce the same ops; the operator previews the resulting YAML and applies it explicitly.
@@ -165,7 +170,7 @@ export function applyChanges(
 
   const next = doc.toString();
   copyFileSync(configPath, configPath.replace(/\.ya?ml$/i, '') + '.bak');
-  writeFileSync(configPath, next);
+  atomicWriteTextFileSync(configPath, next);
   return { version: configVersion(next), createdKeys, changes };
 }
 
@@ -217,6 +222,38 @@ function applyOps(
             }
           } else {
             doc.setIn([...path, key], doc.createNode(value));
+          }
+        }
+        // When an agent's allow/ask/deny rules are edited in the Command Center, prune any
+        // `remember_allow` entries that the operator moved to ask/deny or removed from allow so
+        // `remember_allow` precedence cannot silently bypass the revoked rule at runtime.
+        if (op.op === 'update_agent') {
+          const existingRemember = doc.getIn([...path, 'remember_allow']);
+          const rawRemember =
+            existingRemember &&
+            typeof existingRemember === 'object' &&
+            'toJSON' in existingRemember &&
+            typeof (existingRemember as { toJSON?: unknown }).toJSON === 'function'
+              ? (existingRemember as { toJSON: () => unknown }).toJSON()
+              : existingRemember;
+          if (Array.isArray(rawRemember)) {
+            const nextAllow = Array.isArray(spec.allow)
+              ? new Set(spec.allow as string[])
+              : undefined;
+            const nextAsk = Array.isArray(spec.ask) ? new Set(spec.ask as string[]) : undefined;
+            const nextDeny = Array.isArray(spec.deny) ? new Set(spec.deny as string[]) : undefined;
+            const filtered = rawRemember.filter((entry) => {
+              if (!entry || typeof entry !== 'object') return false;
+              const tool = (entry as { tool?: unknown }).tool;
+              if (typeof tool !== 'string') return false;
+              if (nextAsk?.has(tool) || nextDeny?.has(tool)) return false;
+              if (nextAllow && !nextAllow.has(tool)) return false;
+              return true;
+            });
+            if (filtered.length !== rawRemember.length) {
+              if (filtered.length === 0) doc.deleteIn([...path, 'remember_allow']);
+              else doc.setIn([...path, 'remember_allow'], doc.createNode(filtered));
+            }
           }
         }
         break;
@@ -299,7 +336,7 @@ function maskPendingHash(change: EntityChange): EntityChange {
 function validateDocument(doc: Document): ConfigDiagnostic[] {
   const js = (doc.toJS() ?? {}) as Record<string, unknown>;
   try {
-    const result = GatewayConfig.safeParse(js);
+    const result = withEnvVarResolution(false, () => GatewayConfig.safeParse(js));
     if (!result.success) {
       return result.error.issues.map((issue) => ({
         level: 'error' as const,

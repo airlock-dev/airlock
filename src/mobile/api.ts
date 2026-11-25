@@ -265,6 +265,13 @@ export function mobileApiPlugin(app: FastifyInstance, opts: MobileApiOptions): v
         reply.code(400);
         return { error: 'Only a routine tool call can be remembered' };
       }
+      if (body.remember === 'always' && row.tool.startsWith('event:')) {
+        reply.code(400);
+        return {
+          error:
+            'Event subscription approvals cannot be persisted as tool allow rules; add them under events.allow in airlock.yaml',
+        };
+      }
       // Everything an "always" rule needs is checked before approving, so a request that can't be
       // remembered is refused outright instead of being approved and then reported as an error.
       if (body.remember === 'always' && !opts.configPath) {

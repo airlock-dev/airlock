@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=../schema.json
 # Sandbox presets + tool variant example.
 #
 # Goal:
@@ -132,7 +133,9 @@ agents:
 
 approvals:
   provider:
-    type: stdio
+    type: dashboard
+    host: 127.0.0.1
+    port: 4112
   timeout_ms: 300000
   batch_window_ms: 5000
 

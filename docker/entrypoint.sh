@@ -18,7 +18,7 @@ elif [ "${1#-}" != "$1" ]; then
   if ! has_config_arg "$@"; then
     set -- --config "$config" "$@"
   fi
-elif [ "$1" = "run" ] || [ "$1" = "configure-web" ] || [ "$1" = "configure-agent" ]; then
+elif [ "$1" = "run" ] || [ "$1" = "gateway" ] || [ "$1" = "dashboard" ] || [ "$1" = "serve" ] || [ "$1" = "configure-web" ] || [ "$1" = "configure-agent" ] || [ "$1" = "tools" ] || [ "$1" = "lint" ]; then
   subcommand="$1"
   shift
   if ! has_config_arg "$@"; then

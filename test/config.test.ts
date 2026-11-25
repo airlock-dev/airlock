@@ -153,14 +153,67 @@ describe('GatewayConfig schema', () => {
 
   it('accepts dashboard approval host overrides for container deployments', () => {
     const result = GatewayConfig.safeParse({
-      approvals: { provider: { type: 'dashboard', host: '0.0.0.0', port: 4112 } },
+      approvals: {
+        provider: {
+          type: 'dashboard',
+          host: '0.0.0.0',
+          port: 4112,
+          insecure_remote_bind: true,
+        },
+      },
     });
     expect(result.success).toBe(true);
     if (!result.success) return;
     expect(result.data.approvals.provider).toMatchObject({
       type: 'dashboard',
       host: '0.0.0.0',
+      insecure_remote_bind: true,
     });
+  });
+
+  it('rejects non-loopback dashboard approval host unless insecure_remote_bind is true', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'airlock-dash-bind-'));
+    try {
+      const badPath = join(tmp, 'bad.yaml');
+      writeFileSync(
+        badPath,
+        [
+          'approvals:',
+          '  provider:',
+          '    type: dashboard',
+          '    host: 0.0.0.0',
+          '    port: 4112',
+          'agents:',
+          '  a:',
+          '    allow: []',
+        ].join('\n')
+      );
+      expect(() => loadConfig(badPath)).toThrow(/insecure_remote_bind/i);
+
+      const okPath = join(tmp, 'ok.yaml');
+      writeFileSync(
+        okPath,
+        [
+          'approvals:',
+          '  provider:',
+          '    type: dashboard',
+          '    host: 0.0.0.0',
+          '    port: 4112',
+          '    insecure_remote_bind: true',
+          'agents:',
+          '  a:',
+          '    allow: []',
+        ].join('\n')
+      );
+      const loaded = loadConfig(okPath);
+      expect(loaded.approvals.provider).toMatchObject({
+        type: 'dashboard',
+        host: '0.0.0.0',
+        insecure_remote_bind: true,
+      });
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
   });
 
   it('accepts builtin string shorthand for providers', () => {

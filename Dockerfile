@@ -20,6 +20,7 @@ FROM node:22-bookworm-slim AS runtime
 
 ENV NODE_ENV=production \
   AIRLOCK_CONFIG=/config/airlock.yaml \
+  AIRLOCK_OAUTH_DIR=/data/oauth \
   AIRLOCK_HEALTH_HOST=127.0.0.1 \
   AIRLOCK_HEALTH_PORT=4111 \
   NPM_CONFIG_CACHE=/home/airlock/.npm

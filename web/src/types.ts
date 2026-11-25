@@ -30,6 +30,7 @@ export interface Provider {
   url?: string;
   headers?: Record<string, string>;
   oauth?: boolean;
+  bearerTokenFile?: string;
 }
 
 export interface Diagnostic {
@@ -62,7 +63,7 @@ export interface ProviderStatus {
   id: string;
   type: Provider['type'];
   enabled: boolean;
-  status: 'ok' | 'down' | 'disabled';
+  status: 'ok' | 'degraded' | 'down' | 'disabled';
   toolCount: number;
   toolFingerprint: string;
   serverInfo?: { name: string; version: string };

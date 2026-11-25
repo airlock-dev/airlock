@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync, copyFileSync, statSync } from 'fs';
+import { existsSync, readFileSync, copyFileSync, statSync } from 'fs';
 import { isIP } from 'net';
 import { dirname, extname, join, normalize, sep } from 'path';
 import { fileURLToPath } from 'url';
@@ -17,11 +17,13 @@ import {
   withEnvVarResolution,
   type GatewayConfig as ParsedGatewayConfig,
 } from '../config/schema.js';
+import { resolveProviderBearerFile } from '../config/provider-credentials.js';
 import { rememberAllow } from '../config/mutator.js';
 import { validateConfig, type ConfigDiagnostic } from '../config/loader.js';
 import { applyProfiles } from '../config/profiles.js';
 import { ClientPool } from '../pool/pool.js';
 import { checkSuspiciousPatterns } from '../registry/sanitizer.js';
+import { atomicWriteTextFileSync } from '../util/atomic-file.js';
 import { VERSION } from '../version.js';
 import { stringifyPreservingComments } from '../config/yaml-merge.js';
 import {
@@ -63,6 +65,7 @@ interface EditableProvider {
   url?: string;
   headers?: Record<string, string>;
   oauth?: boolean;
+  bearerTokenFile?: string;
 }
 
 interface EditableAgent {
@@ -110,6 +113,7 @@ interface ProviderBody {
   url?: unknown;
   headers?: unknown;
   oauth?: unknown;
+  bearer_token_file?: unknown;
 }
 
 interface ToolEntry {
@@ -123,7 +127,7 @@ interface ToolEntry {
   recommended: RecommendedDecision;
 }
 
-type ProviderRuntimeStatus = 'ok' | 'down' | 'disabled';
+type ProviderRuntimeStatus = 'ok' | 'degraded' | 'down' | 'disabled';
 
 interface ProviderStatusEntry {
   id: string;
@@ -186,6 +190,8 @@ export interface ConfigureWebOptions {
   assistant?: AssistantOptions;
   /** Public base URL agents use to reach the gateway, for connection snippets. */
   publicGatewayUrl?: string;
+  /** Bind host used by this UI listener; loopback binds reject non-loopback Host headers. */
+  bindHost?: string;
 }
 
 export interface RemoteGatewayOptions {
@@ -297,6 +303,7 @@ export async function runDashboard(argv: string[]): Promise<void> {
     remoteGateway: { url: gatewayUrl, secret: gatewaySecret },
     assistant: assistantOptionsFromEnv(),
     publicGatewayUrl: values['public-url'] ?? process.env['AIRLOCK_PUBLIC_URL'],
+    bindHost: host,
   });
   await app.listen({ host, port });
   console.log(`Airlock dashboard running at http://${host}:${port}`);
@@ -338,6 +345,7 @@ export async function runConfigureWeb(
   const app = createConfigureWebApp(configPath, {
     assistant: assistantOptionsFromEnv(),
     publicGatewayUrl: values['public-url'] ?? process.env['AIRLOCK_PUBLIC_URL'],
+    bindHost: host,
   });
   await app.listen({ host, port });
   console.log(`Airlock command center running at http://${host}:${port}`);
@@ -360,20 +368,106 @@ function isLoopbackBindHost(host: string): boolean {
   return Number(normalized.split('.')[0]) === 127;
 }
 
+function extractHostName(hostHeader: string): string {
+  const trimmed = hostHeader.trim().toLowerCase();
+  if (trimmed.startsWith('[')) {
+    const end = trimmed.indexOf(']');
+    return end === -1 ? trimmed : trimmed.slice(0, end + 1);
+  }
+  const colon = trimmed.indexOf(':');
+  return colon === -1 ? trimmed : trimmed.slice(0, colon);
+}
+
+function isSensitiveWebPath(url: string): boolean {
+  const path = url.split('?')[0] ?? url;
+  return (
+    path.startsWith('/api/') ||
+    path === '/approve' ||
+    path === '/deny' ||
+    path === '/events' ||
+    path.startsWith('/approval-preview/')
+  );
+}
+
+function toToolEntry(tool: Tool | ToolEntry): ToolEntry {
+  if (
+    'provider' in tool &&
+    typeof tool.provider === 'string' &&
+    'shortName' in tool &&
+    typeof tool.shortName === 'string' &&
+    Array.isArray(tool.tags) &&
+    Array.isArray(tool.suspiciousPatterns) &&
+    typeof tool.recommended === 'string'
+  ) {
+    return {
+      ...tool,
+      description: tool.description ?? '',
+    };
+  }
+  const provider = tool.name.split('/')[0] ?? '';
+  const suspiciousPatterns = tool.description ? checkSuspiciousPatterns(tool.description) : [];
+  return {
+    name: tool.name,
+    provider,
+    shortName: tool.name.split('/').slice(1).join('/') || tool.name,
+    description: tool.description ?? '',
+    annotations: tool.annotations,
+    tags: annotationTags(tool.annotations, suspiciousPatterns),
+    suspiciousPatterns,
+    recommended: recommendedDecision(tool.annotations, suspiciousPatterns),
+  };
+}
+
 export function createConfigureWebApp(configPath: string, options: ConfigureWebOptions = {}) {
   const app = Fastify({ logger: false });
+  const enforceLoopbackHost = !options.bindHost || isLoopbackBindHost(options.bindHost);
+
+  // Guard the unauthenticated local UI against DNS rebinding (Host header validation on loopback
+  // listeners) and cross-site browser CSRF (Sec-Fetch-Site / Origin checks on API & approval routes).
+  app.addHook('onRequest', async (request, reply) => {
+    const hostHeader = typeof request.headers.host === 'string' ? request.headers.host : undefined;
+    if (enforceLoopbackHost && hostHeader && !isLoopbackBindHost(extractHostName(hostHeader))) {
+      return reply.code(403).send({ error: 'Forbidden: invalid Host header' });
+    }
+    if (!isSensitiveWebPath(request.url)) return;
+
+    const fetchSite = request.headers['sec-fetch-site'];
+    if (typeof fetchSite === 'string' && fetchSite.toLowerCase() === 'cross-site') {
+      return reply.code(403).send({ error: 'Forbidden: cross-site request blocked' });
+    }
+    const originHeader = request.headers.origin;
+    if (typeof originHeader === 'string' && originHeader.trim() !== '') {
+      if (originHeader === 'null' || !hostHeader) {
+        return reply.code(403).send({ error: 'Forbidden: cross-origin request blocked' });
+      }
+      try {
+        const originUrl = new URL(originHeader);
+        if (originUrl.host.toLowerCase() !== hostHeader.trim().toLowerCase()) {
+          return reply.code(403).send({ error: 'Forbidden: cross-origin request blocked' });
+        }
+      } catch {
+        return reply.code(403).send({ error: 'Forbidden: invalid Origin header' });
+      }
+    }
+  });
 
   const webRoot = findWebRoot();
   const assistant = options.assistant;
   let toolCache: { tools: ToolEntry[]; fetchedAt: number } | null = null;
 
   const loadTools = async (): Promise<{ tools: ToolEntry[]; errors?: string[] }> => {
-    const result = options.remoteGateway
-      ? await remoteGatewayJson<{ tools: ToolEntry[]; errors?: string[] }>(
-          options.remoteGateway,
-          '/admin/tools'
-        )
-      : await discoverTools(configPath);
+    if (options.remoteGateway) {
+      const remote = await remoteGatewayJson<{
+        tools?: Array<Tool | ToolEntry>;
+        errors?: string[];
+      }>(options.remoteGateway, '/admin/tools');
+      const tools = (remote.tools ?? [])
+        .map(toToolEntry)
+        .sort((a, b) => a.name.localeCompare(b.name));
+      toolCache = { tools, fetchedAt: Date.now() };
+      return { tools, ...(remote.errors ? { errors: remote.errors } : {}) };
+    }
+    const result = await discoverTools(configPath);
     toolCache = { tools: result.tools ?? [], fetchedAt: Date.now() };
     return result;
   };
@@ -408,7 +502,10 @@ export function createConfigureWebApp(configPath: string, options: ConfigureWebO
       .send(readFileSync(file));
   });
 
-  app.get('/api/state', () => readState(configPath));
+  app.get('/api/state', (_request, reply) => {
+    reply.header('cache-control', 'no-store');
+    return readState(configPath);
+  });
 
   app.get('/api/meta', () => ({
     version: VERSION,
@@ -743,7 +840,9 @@ export async function readCommandCenterStatus(configPath: string): Promise<Comma
     enabledProviders[id] = parsedProvider.data;
   }
 
-  const parsed = GatewayConfig.parse({ ...raw, providers: enabledProviders });
+  const parsed = withEnvVarResolution(false, () =>
+    GatewayConfig.parse({ ...raw, providers: enabledProviders })
+  );
   const mcpConfigs = getMcpConfigs(parsed.providers);
   const pool = new ClientPool(mcpConfigs, {
     stdioStderr: 'ignore',
@@ -894,7 +993,9 @@ export function revokeAuditGrant(configPath: string, id: string): boolean {
 }
 
 interface RemoteHealth {
-  mcpHealth?: Record<string, 'ok' | 'down'>;
+  mcpHealth?: Record<string, 'ok' | 'degraded' | 'down'>;
+  oauthHealth?: Record<string, { state?: string; reason?: string }>;
+  credentialHealth?: Record<string, { state?: string; reason?: string }>;
   pendingApprovals?: number;
 }
 
@@ -931,7 +1032,7 @@ async function readRemoteCommandCenterStatus(
   remoteGateway: RemoteGatewayOptions
 ): Promise<CommandCenterStatus> {
   const raw = readConfigObject(configPath);
-  const config = GatewayConfig.parse(raw);
+  const config = withEnvVarResolution(false, () => GatewayConfig.parse(raw));
   const [health, served] = await Promise.all([
     remoteGatewayJson<RemoteHealth>(remoteGateway, '/health'),
     // Tool counts are a nicety; a gateway that can't list them still reports health.
@@ -940,28 +1041,43 @@ async function readRemoteCommandCenterStatus(
     })),
   ]);
   const mcpHealth = health.mcpHealth ?? {};
+  const oauthHealth = health.oauthHealth ?? {};
+  const credentialHealth = health.credentialHealth ?? {};
   const toolNamesByProvider = new Map<string, string[]>();
   for (const tool of served.tools ?? []) {
     const provider = tool.name.split('/')[0] ?? '';
     toolNamesByProvider.set(provider, [...(toolNamesByProvider.get(provider) ?? []), tool.name]);
   }
   const providers = Object.entries(config.providers).map(([id, provider]) => {
-    const providerConfig = ProviderConfig.parse(provider);
+    const providerConfig = withEnvVarResolution(false, () => ProviderConfig.parse(provider));
     const type = providerConfig === 'builtin' ? 'builtin' : providerConfig.type;
     const enabled = providerConfig === 'builtin' ? true : providerConfig.enabled;
     const runtime = mcpHealth[id];
+    const status: ProviderRuntimeStatus = !enabled
+      ? 'disabled'
+      : (runtime ?? (type === 'builtin' ? 'ok' : 'down'));
+    const detailError =
+      oauthHealth[id]?.reason ??
+      credentialHealth[id]?.reason ??
+      (status === 'down'
+        ? 'Provider is down on the gateway'
+        : status === 'degraded'
+          ? 'Provider is degraded or awaiting OAuth sign-in'
+          : undefined);
     return {
       id,
       type,
       enabled,
-      status: enabled ? (runtime ?? 'ok') : 'disabled',
+      status,
       toolCount: toolNamesByProvider.get(id)?.length ?? 0,
       toolFingerprint: toolFingerprint(toolNamesByProvider.get(id) ?? []),
-      ...(runtime === 'down' ? { error: 'Provider is down on the gateway' } : {}),
+      ...(detailError ? { error: detailError } : {}),
     } satisfies ProviderStatusEntry;
   });
   const ok = providers.filter((provider) => provider.status === 'ok').length;
-  const down = providers.filter((provider) => provider.status === 'down').length;
+  const down = providers.filter(
+    (provider) => provider.status === 'down' || provider.status === 'degraded'
+  ).length;
   const disabled = providers.filter((provider) => provider.status === 'disabled').length;
 
   return {
@@ -1058,9 +1174,9 @@ function registerRemoteGatewayRoutes(
       return reply.code(502).send({ error: 'Approval preview unavailable.' });
     }
   });
-  app.get('/events', (request, reply) => {
+  app.get('/events', (_request, reply) => {
     const controller = new AbortController();
-    request.raw.on('close', () => controller.abort());
+    reply.raw.once('close', () => controller.abort());
 
     void (async () => {
       const response = await remoteGatewayFetch(remoteGateway, '/events', {
@@ -1074,7 +1190,8 @@ function registerRemoteGatewayRoutes(
       reply.hijack();
       reply.raw.writeHead(200, {
         'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
+        'Cache-Control': 'no-cache, no-transform',
+        'X-Accel-Buffering': 'no',
         Connection: 'keep-alive',
       });
 
@@ -1213,6 +1330,13 @@ async function checkRememberAlways(
   if ((request.kind ?? 'call') !== 'call' || request.escalated) {
     return { status: 400, error: 'Only a routine tool call can be remembered' };
   }
+  if (request.tool.startsWith('event:')) {
+    return {
+      status: 400,
+      error:
+        'Event subscription approvals cannot be persisted as tool allow rules; add them under events.allow in airlock.yaml',
+    };
+  }
   return { request };
 }
 
@@ -1290,10 +1414,26 @@ export function saveRules(configPath: string, body: SaveRulesBody): WebState {
   const section = asMutableRecord(doc[sectionName]);
   const existing = asMutableRecord(section[id]);
 
+  const nextAllow = parseStringArray(body.allow, 'allow');
+  const nextAsk = parseStringArray(body.ask, 'ask');
+  const nextDeny = parseStringArray(body.deny, 'deny');
   existing.extends = parseStringArray(body.extends, 'extends');
-  existing.allow = parseStringArray(body.allow, 'allow');
-  existing.ask = parseStringArray(body.ask, 'ask');
-  existing.deny = parseStringArray(body.deny, 'deny');
+  existing.allow = nextAllow;
+  existing.ask = nextAsk;
+  existing.deny = nextDeny;
+  if (kind === 'agent' && Array.isArray(existing.remember_allow)) {
+    const allowSet = new Set(nextAllow);
+    const askSet = new Set(nextAsk);
+    const denySet = new Set(nextDeny);
+    const filtered = existing.remember_allow.filter((entry) => {
+      if (!entry || typeof entry !== 'object') return false;
+      const tool = (entry as { tool?: unknown }).tool;
+      if (typeof tool !== 'string') return false;
+      return allowSet.has(tool) && !askSet.has(tool) && !denySet.has(tool);
+    });
+    if (filtered.length === 0) delete existing.remember_allow;
+    else existing.remember_allow = filtered;
+  }
 
   section[id] = existing;
   doc[sectionName] = section;
@@ -1399,6 +1539,15 @@ export function upsertProvider(configPath: string, body: ProviderBody): WebState
       url: undefined,
       headers: undefined,
       oauth: undefined,
+      bearer_token_file: undefined,
+      oauth_callback_mode: undefined,
+      oauth_callback_url: undefined,
+      oauth_callback_port: undefined,
+      oauth_max_refresh_interval_ms: undefined,
+      client_id: undefined,
+      client_secret: undefined,
+      client_credentials: undefined,
+      request_timeout_ms: undefined,
     });
   } else {
     const url =
@@ -1415,6 +1564,16 @@ export function upsertProvider(configPath: string, body: ProviderBody): WebState
           ? headers
           : undefined
         : stringMap(existing.headers);
+    const bearerTokenFile =
+      type === 'http'
+        ? body.bearer_token_file !== undefined
+          ? typeof body.bearer_token_file === 'string' && body.bearer_token_file.trim()
+            ? body.bearer_token_file.trim()
+            : undefined
+          : typeof existing.bearer_token_file === 'string'
+            ? existing.bearer_token_file
+            : undefined
+        : undefined;
     providers[id] = removeUndefined({
       ...existing,
       type,
@@ -1426,6 +1585,19 @@ export function upsertProvider(configPath: string, body: ProviderBody): WebState
       env: undefined,
       oauth:
         type === 'http' ? (parseOptionalBoolean(body.oauth) ?? Boolean(existing.oauth)) : undefined,
+      bearer_token_file: bearerTokenFile,
+      ...(type === 'sse'
+        ? {
+            oauth_callback_mode: undefined,
+            oauth_callback_url: undefined,
+            oauth_callback_port: undefined,
+            oauth_max_refresh_interval_ms: undefined,
+            client_id: undefined,
+            client_secret: undefined,
+            client_credentials: undefined,
+            request_timeout_ms: undefined,
+          }
+        : {}),
     });
   }
 
@@ -1471,14 +1643,33 @@ export async function discoverTools(
   configPath: string
 ): Promise<{ tools: ToolEntry[]; errors: string[] }> {
   const raw = readConfigObject(configPath);
-  const parsed = GatewayConfig.parse(withoutDisabledProviders(raw));
+  const rawProviders = asRecord(raw.providers);
+  const validProviders: Record<string, unknown> = {};
+  const errors: string[] = [];
+
+  for (const [id, rawProvider] of Object.entries(rawProviders)) {
+    if (rawProviderDisabled(rawProvider)) continue;
+    if (rawProvider === 'builtin' || asRecord(rawProvider).type === 'builtin') {
+      validProviders[id] = rawProvider;
+      continue;
+    }
+    const parsedProvider = parseMcpProviderStatus(rawProvider);
+    if (!parsedProvider.success) {
+      errors.push(`${id}: ${parsedProvider.error}`);
+      continue;
+    }
+    validProviders[id] = parsedProvider.data;
+  }
+
+  const parsed = withEnvVarResolution(false, () =>
+    GatewayConfig.parse({ ...raw, providers: validProviders })
+  );
   const mcpConfigs = getMcpConfigs(parsed.providers);
   const pool = new ClientPool(mcpConfigs, {
     stdioStderr: 'ignore',
     healthCheck: false,
     retryFailedConnections: false,
   });
-  const errors: string[] = [];
 
   try {
     await Promise.race([
@@ -1504,20 +1695,7 @@ export async function discoverTools(
         continue;
       }
       for (const tool of result.value) {
-        const provider = tool.name.split('/')[0] ?? '';
-        const suspiciousPatterns = tool.description
-          ? checkSuspiciousPatterns(tool.description)
-          : [];
-        tools.push({
-          name: tool.name,
-          provider,
-          shortName: tool.name.split('/').slice(1).join('/') || tool.name,
-          description: tool.description ?? '',
-          annotations: tool.annotations,
-          tags: annotationTags(tool.annotations, suspiciousPatterns),
-          suspiciousPatterns,
-          recommended: recommendedDecision(tool.annotations, suspiciousPatterns),
-        });
+        tools.push(toToolEntry(tool));
       }
     }
 
@@ -1526,14 +1704,6 @@ export async function discoverTools(
   } finally {
     await pool.stop().catch(() => {});
   }
-}
-
-function withoutDisabledProviders(doc: Record<string, unknown>): Record<string, unknown> {
-  const providers = asRecord(doc.providers);
-  const enabledProviders = Object.fromEntries(
-    Object.entries(providers).filter(([, provider]) => !rawProviderDisabled(provider))
-  );
-  return { ...doc, providers: enabledProviders };
 }
 
 function rawProviderDisabled(provider: unknown): boolean {
@@ -1570,11 +1740,16 @@ function parseMcpProviderStatus(
 ): { success: true; data: McpServerConfig } | { success: false; error: string } {
   try {
     const result = McpServerConfig.safeParse(provider);
-    if (result.success) return { success: true, data: result.data };
-    return {
-      success: false,
-      error: result.error.issues.map((issue) => issue.message).join('; '),
-    };
+    if (!result.success) {
+      return {
+        success: false,
+        error: result.error.issues.map((issue) => issue.message).join('; '),
+      };
+    }
+    // Validate bearer_token_file readability now so missing/invalid credential files surface
+    // cleanly as provider errors rather than leaving status at "Not checked yet".
+    resolveProviderBearerFile(result.data);
+    return { success: true, data: result.data };
   } catch (err) {
     return {
       success: false,
@@ -1605,7 +1780,10 @@ function writeValidatedConfig(configPath: string, doc: Record<string, unknown>):
 
   const backupPath = configPath.replace(/\.ya?ml$/i, '') + '.bak';
   copyFileSync(configPath, backupPath);
-  writeFileSync(configPath, stringifyPreservingComments(readFileSync(configPath, 'utf8'), doc));
+  atomicWriteTextFileSync(
+    configPath,
+    stringifyPreservingComments(readFileSync(configPath, 'utf8'), doc)
+  );
 }
 
 function parseGatewayConfig(doc: Record<string, unknown>): {
@@ -1685,6 +1863,8 @@ function toEditableProviders(input: Record<string, unknown>): Record<string, Edi
       url: typeof provider.url === 'string' ? provider.url : undefined,
       ...(headers ? { headers } : {}),
       oauth: typeof provider.oauth === 'boolean' ? provider.oauth : undefined,
+      bearerTokenFile:
+        typeof provider.bearer_token_file === 'string' ? provider.bearer_token_file : undefined,
     };
   }
   return providers;

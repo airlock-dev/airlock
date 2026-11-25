@@ -65,7 +65,7 @@ agents:
 
 ```sh
 # Verify the agent works
-airlock --agent claude-code --config examples/gateway.yaml
+airlock --agent claude-code --config examples/airlock.yaml
 ```
 
 Then use MCP Inspector or connect from Claude Code to verify:

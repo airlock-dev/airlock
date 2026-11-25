@@ -405,6 +405,21 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
     });
   }
 
+  const approvalProviders = Array.isArray(config.approvals.provider)
+    ? config.approvals.provider
+    : [config.approvals.provider];
+  for (const ap of approvalProviders) {
+    if (ap.type === 'dashboard' && !isLoopbackHost(ap.host) && !ap.insecure_remote_bind) {
+      diagnostics.push({
+        level: 'error',
+        message:
+          'approvals.provider (dashboard) host is non-loopback while insecure_remote_bind is false.',
+        suggestion:
+          'Keep dashboard host on 127.0.0.1/::1, or explicitly set insecure_remote_bind: true only behind an authenticated reverse proxy or private network.',
+      });
+    }
+  }
+
   // A provider carries ONE identity. `oauth: true` is a user's (authorization code, browser flow);
   // `client_credentials` is the application's (no user at all). Declaring both is not a merge — it
   // is an unanswerable question about whose name an agent's writes land under, so reject it here
