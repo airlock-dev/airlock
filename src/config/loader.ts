@@ -408,8 +408,7 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
       diagnostics.push({
         level: 'error',
         message: `Provider "${providerId}" uses oauth: true but its id cannot be used for OAuth grant storage.`,
-        suggestion:
-          'OAuth provider ids are used verbatim as file names: use letters, digits, ".", "_" and "-", not starting with ".".',
+        suggestion: `OAuth provider ids are used verbatim as file names (letters, digits, ".", "_", "-"; not starting with "."). Rename it, e.g. to "${suggestOAuthId(providerId)}"; to keep its stored grant, stop Airlock first and rename ~/.airlock/oauth/${providerId}.json (and .grants/, .history/, .successors/ entries of that name, if any) to the new id (see "Rename an OAuth provider" in docs/reference/cli.md).`,
       });
     }
     if (provider.oauth) {
@@ -419,8 +418,7 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
         diagnostics.push({
           level: 'error',
           message: `OAuth providers "${other}" and "${providerId}" differ only in letter case.`,
-          suggestion:
-            'Their grant files would collide on case-insensitive filesystems; rename one of them.',
+          suggestion: `Their grant files would collide on case-insensitive filesystems. Rename one (e.g. "${providerId}" → "${providerId}-2"); to keep its stored grant, stop Airlock and rename its files as described under "Rename an OAuth provider" in docs/reference/cli.md.`,
         });
       } else {
         oauthIdsFolded.set(folded, providerId);
@@ -1153,4 +1151,10 @@ function isLoopbackHost(host: string): boolean {
   if (ipVersion !== 4) return false;
   const firstOctet = Number(normalized.split('.')[0]);
   return firstOctet === 127;
+}
+
+/** A safe OAuth provider id close to `id` (for rename suggestions). */
+function suggestOAuthId(id: string): string {
+  const cleaned = id.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^[.]+/, '');
+  return cleaned || 'provider';
 }

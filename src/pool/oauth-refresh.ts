@@ -475,6 +475,11 @@ async function doRefresh(
       });
     } catch (err) {
       const cls = classifyExchange(err, trace);
+      if (cls === 'not_sent' && provider.closing) {
+        // Refused at dispatch because shutdown began: nothing was sent.
+        await provider.endExchange(pinned);
+        return { kind: 'read_only', reason: 'Airlock is shutting down' };
+      }
       failures.push({ target, err, cls });
       log.warn(
         {

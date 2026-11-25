@@ -46,6 +46,11 @@ export function setWriterLockTimings(overrides?: Partial<LockTimings>): void {
 
 export const STALE_LOCK_MS = DEFAULT_TIMINGS.staleMs;
 
+/** Current lock timings (the CLI bounds its wait for an abandoned lock with them). */
+export function writerLockTimings(): Readonly<LockTimings> {
+  return timings;
+}
+
 interface LockRecord {
   pid: number;
   hostname: string;

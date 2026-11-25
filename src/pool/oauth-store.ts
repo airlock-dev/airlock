@@ -122,16 +122,6 @@ export function isValidProviderId(serverId: string): boolean {
   return OAUTH_PROVIDER_ID_RE.test(serverId) && serverId.length <= 200;
 }
 
-/** The store's files were written by an older Airlock after this one last wrote them. */
-export class OAuthStoreForeignWriteError extends Error {
-  constructor(serverId: string) {
-    super(
-      `${serverId}.json was changed by something other than this Airlock version (an older build after a rollback?) after its last grant revision; refusing to write or refresh until reconciled with "airlock oauth import-legacy ${serverId}" (gateway stopped)`
-    );
-    this.name = 'OAuthStoreForeignWriteError';
-  }
-}
-
 /** The filesystem cannot provide the guarantees OAuth storage relies on (hard links). */
 export class OAuthStoreUnsupportedError extends Error {
   constructor(reason: string) {
@@ -259,7 +249,18 @@ export async function withGrantOperation<T>(path: string, fn: () => Promise<T>):
 }
 
 // Whoever acquires a store's writer lock removes crash-left temp files there (bounded cleanup).
-setLockAcquiredHook((dir) => cleanupStaleTemp(dir));
+setLockAcquiredHook(async (dir) => {
+  await cleanupStaleTemp(dir);
+  await repairMirrors(dir);
+});
+
+/** On acquiring the lock (e.g. at startup), bring every `<id>.json` mirror up to date. */
+async function repairMirrors(dir: string): Promise<void> {
+  const ids = await readdir(join(dir, REVISION_DIR)).catch(() => [] as string[]);
+  for (const id of ids) {
+    if (isValidProviderId(id)) await new OAuthGrantStore(id, 'writer', dir).repairMirror();
+  }
+}
 
 /**
  * Wait until no grant operation (refresh exchange + commit, code exchange, restore) is running
@@ -352,12 +353,14 @@ export async function mkdirDurable(root: string, target: string): Promise<void> 
   const chain: string[] = [];
   for (let d = target; d !== root && d.startsWith(root); d = dirname(d)) chain.unshift(d);
   await mkdir(root, { recursive: true, mode: 0o700 });
+  // Always fsync the parents, also when the directories already exist: a previous attempt may
+  // have created one and then failed its parent fsync. Directory fsyncs are cheap.
+  await fsyncDir(dirname(root));
   for (const d of chain) {
     try {
       await mkdir(d, { mode: 0o700 });
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'EEXIST') continue;
-      throw err;
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
     }
     await fsyncDir(dirname(d));
   }
@@ -520,7 +523,7 @@ export class OAuthGrantStore {
   async write(
     data: PersistedGrant,
     reason: string,
-    opts: { expectRev?: number; backup?: 'before' | 'after'; acceptForeignMirror?: boolean } = {}
+    opts: { expectRev?: number; backup?: 'before' | 'after' } = {}
   ): Promise<{ rev: number; hash: string }> {
     this.assertValidId();
     if (this.mode === 'readonly') {
@@ -535,9 +538,6 @@ export class OAuthGrantStore {
         );
       }
       const current = await this.read();
-      if (!opts.acceptForeignMirror && current.rev > 0 && (await this.mirrorIsForeign(current))) {
-        throw new OAuthStoreForeignWriteError(this.serverId);
-      }
       if (
         opts.expectRev !== undefined &&
         current.rev !== opts.expectRev &&
@@ -558,7 +558,7 @@ export class OAuthGrantStore {
       const rev = current.rev + 1;
       await this.publish(rev, snapshot);
       this.lastWrittenRev = rev;
-      await this.writeMirror(rev, snapshot);
+      await this.repairMirror();
       await this.pruneRevisions(rev);
       if (needsBackup && opts.backup !== 'before' && !current.corrupt) {
         // Not awaited: the new revision is already durable; history must never delay it.
@@ -601,30 +601,6 @@ export class OAuthGrantStore {
   }
 
   /**
-   * Whether `<id>.json` holds content that is not one of the kept revisions, i.e. it was written
-   * by something else (an older Airlock after a rollback, a hand edit) after this build's last
-   * revision. A mirror equal to the newest revision, or lagging behind on an older kept revision,
-   * is fine.
-   */
-  async mirrorIsForeign(current?: StoredGrant): Promise<boolean> {
-    let mirror: string;
-    try {
-      mirror = await readFile(this.path, 'utf-8');
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return false;
-      throw err;
-    }
-    const top = current ?? (await this.read());
-    if (top.rev === 0) return false; // legacy only: the mirror IS the grant
-    if (top.raw === mirror) return false;
-    for (const rev of await this.revisions()) {
-      const raw = await readFile(join(this.revisionDir, revFile(rev)), 'utf-8').catch(() => '');
-      if (raw === mirror) return false;
-    }
-    return true;
-  }
-
-  /**
    * Rollback step (gateway stopped, writer lock held): write the newest revision to `<id>.json`
    * so an older Airlock reads the current grant, and verify it.
    */
@@ -632,8 +608,7 @@ export class OAuthGrantStore {
     this.assertValidId();
     const current = await this.read();
     if (current.rev === 0 || current.raw === undefined) return { rev: 0, exported: false };
-    if (await this.mirrorIsForeign(current)) throw new OAuthStoreForeignWriteError(this.serverId);
-    await atomicWritePrivateFile(this.path, current.raw);
+    await this.writeMirrorFile(this.path, current.raw);
     if ((await readFile(this.path, 'utf-8')) !== current.raw) {
       throw new Error(`verification of ${this.path} failed`);
     }
@@ -641,22 +616,35 @@ export class OAuthGrantStore {
   }
 
   /**
-   * Roll-forward step (gateway stopped, writer lock held): publish `<id>.json` as the newest
-   * revision after an older Airlock wrote it. The revision it supersedes is backed up first.
+   * Roll-forward step, run explicitly by the operator (gateway stopped, writer lock held), and
+   * only after an older Airlock actually ran against this store: publish `<id>.json` as the newest
+   * revision. This PROMOTES the legacy file over newer revisions (the superseded revision is backed
+   * up first). Never automatic.
    */
   async importLegacy(): Promise<{ rev: number }> {
     this.assertValidId();
     const raw = await readFile(this.path, 'utf-8');
     const data = JSON.parse(raw) as PersistedGrant;
-    return this.write(data, 'import-legacy', { backup: 'before', acceptForeignMirror: true });
+    return this.write(data, 'import-legacy', { backup: 'before' });
   }
 
-  /** Keep `<id>.json` in step for tools that read it. Never authoritative; failures are logged. */
-  private async writeMirror(rev: number, snapshot: string): Promise<void> {
+  /** Test seam: write the `<id>.json` mirror. */
+  async writeMirrorFile(path: string, raw: string): Promise<void> {
+    await atomicWritePrivateFile(path, raw);
+  }
+
+  /**
+   * Make `<id>.json` equal to the newest revision if it is not (after each publish, and when a
+   * process acquires the writer lock). The mirror is a convenience copy for tools: it is never
+   * read once revisions exist and never blocks anything; failures are only logged.
+   */
+  async repairMirror(): Promise<void> {
     try {
-      const top = (await this.revisions())[0];
-      if (top !== rev) return; // a newer revision exists; its writer mirrors it
-      await atomicWritePrivateFile(this.path, snapshot);
+      const top = await this.read();
+      if (top.rev === 0 || top.raw === undefined) return;
+      const mirror = await readFile(this.path, 'utf-8').catch(() => undefined);
+      if (mirror === top.raw) return;
+      await this.writeMirrorFile(this.path, top.raw);
     } catch (err) {
       log.warn(
         { serverId: this.serverId, reason: err instanceof Error ? err.message : String(err) },

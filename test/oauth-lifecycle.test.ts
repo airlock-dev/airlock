@@ -505,6 +505,14 @@ async function writeForeignLock(
   );
 }
 
+/** A foreign holder that keeps heartbeating (a live gateway): rewrites its record every 50 ms. */
+function heartbeatForeignLock(record: { pid: number; ns?: string }, gen: number): () => void {
+  const timer = setInterval(() => {
+    void writeForeignLock({ ...record, heartbeatAt: Date.now() }, gen).catch(() => {});
+  }, 50);
+  return () => clearInterval(timer);
+}
+
 /** The grant-relevant part of the file (the file also carries exchange markers). */
 async function grantCore(id = ID): Promise<{ clientInfo: unknown; tokens: unknown }> {
   const data = await readGrant(id);
@@ -1500,10 +1508,13 @@ describe('OAuth lifecycle — operator restore vs the running owner', () => {
     await releaseAllWriterLocks();
     const holder = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)']);
     children.push(holder);
+    setWriterLockTimings({ heartbeatMs: 200 });
     await writeForeignLock({ pid: holder.pid!, ns: lockNamespace() }, 5);
+    const stopBeating = heartbeatForeignLock({ pid: holder.pid!, ns: lockNamespace() }, 5);
     const before = await readFile(tokenFile(), 'utf-8');
 
     const refused = await oauthCommand(['restore', ID, version, '--dir', dir]);
+    stopBeating();
     expect(refused.exitCode).toBe(1);
     expect(refused.text).toContain('Stop the gateway first');
     expect(refused.text).toContain('--force');
@@ -2077,36 +2088,6 @@ describe('OAuth lifecycle — round 3', () => {
     await expectUsableGrant();
   }, 10_000);
 
-  it('rollback safety: a mirror written by an older build blocks writes and refreshes until imported', async () => {
-    await seedGrant();
-    const p = provider();
-    expect(await refreshGrant(p, world.mcpUrl)).toMatchObject({ kind: 'refreshed' });
-    // An older Airlock (no revisions) ran after this one and rotated the grant in <id>.json.
-    const old = await readGrant();
-    const rotated = world.issueGrant();
-    await writeFile(
-      tokenFile(),
-      JSON.stringify({
-        ...old,
-        tokens: { ...old.tokens, access_token: rotated.access, refresh_token: rotated.refresh },
-      })
-    );
-    const spent = refreshRequests().length;
-    const outcome = await refreshGrant(provider(), world.mcpUrl);
-    expect(outcome.kind).toBe('failed');
-    expect((outcome as { message: string }).message).toContain('import-legacy');
-    expect(refreshRequests()).toHaveLength(spent); // nothing spent
-    const status = await oauthCommand(['status', '--dir', dir]);
-    expect(status.text).toContain('WAS CHANGED BY ANOTHER AIRLOCK VERSION');
-
-    await releaseAllWriterLocks();
-    const imported = await oauthCommand(['import-legacy', ID, '--dir', dir]);
-    expect(imported.exitCode).toBe(0);
-    expect((await readGrant()).tokens.refresh_token).toBe(rotated.refresh);
-    expect(await refreshGrant(provider(), world.mcpUrl)).toMatchObject({ kind: 'refreshed' });
-    await expectUsableGrant();
-  });
-
   it('rollback step: export-legacy writes the newest revision to <id>.json and verifies it; refused while a gateway runs', async () => {
     await seedGrant();
     const p = provider();
@@ -2120,8 +2101,11 @@ describe('OAuth lifecycle — round 3', () => {
     const holder = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)']);
     children.push(holder);
     await releaseAllWriterLocks();
+    setWriterLockTimings({ heartbeatMs: 200 });
     await writeForeignLock({ pid: holder.pid!, ns: lockNamespace() }, 40);
+    const stopBeating = heartbeatForeignLock({ pid: holder.pid!, ns: lockNamespace() }, 40);
     const refused = await oauthCommand(['export-legacy', '--dir', dir]);
+    stopBeating();
     expect(refused.exitCode).toBe(1);
     holder.kill('SIGKILL');
     await new Promise((resolve) => holder.on('exit', resolve));
@@ -2161,5 +2145,131 @@ describe('OAuth lifecycle — round 3', () => {
     await (client as unknown as Internals).proactiveRefresh();
     expect(client.getOAuthHealth()).toMatchObject({ state: 'ok' });
     expect((await readGrant()).exchange).toBeUndefined();
+  });
+});
+
+// ─── Review round 4 ────────────────────────────────────────────────────────────────────────────
+
+describe('OAuth lifecycle — round 4', () => {
+  it('skipped mirror updates never block refresh (first migration and >5 revisions), and the mirror is repaired', async () => {
+    const legacy = await readFile(tokenFile(), 'utf-8').catch(() => undefined);
+    expect(legacy).toBeUndefined();
+    await seedGrant();
+    const seeded = await readFile(tokenFile(), 'utf-8');
+    const p = provider();
+    const realMirror = p.store.writeMirrorFile.bind(p.store);
+    const spy = vi.spyOn(p.store, 'writeMirrorFile').mockRejectedValue(new Error('EIO: injected'));
+    // First migration from a legacy-only grant, then many more revisions: no mirror update lands.
+    for (let i = 0; i < 6; i++) {
+      expect(await refreshGrant(p, world.mcpUrl)).toMatchObject({
+        kind: 'refreshed',
+        persistence: 'persisted',
+      });
+    }
+    const revs = (await readdir(join(dir, '.grants', ID))).filter((f) => /^r\d+\.json$/.test(f));
+    expect(revs.length).toBe(5); // pruned: none of them matches the stale mirror any more
+    expect(await readFile(tokenFile(), 'utf-8')).toBe(seeded); // mirror stale…
+    expect(world.refreshReuseAttempts).toBe(0); // …and never consulted
+    await expectUsableGrant();
+
+    // Repaired after the next publish…
+    spy.mockImplementation(realMirror);
+    await refreshGrant(p, world.mcpUrl);
+    expect(JSON.parse(await readFile(tokenFile(), 'utf-8'))).toEqual(await readGrant());
+
+    // …and when a process acquires the lock (startup).
+    await writeFile(tokenFile(), seeded);
+    await releaseAllWriterLocks();
+    expect(await writerLockFor(dir).ensure()).toBe(true);
+    await vi.waitFor(async () =>
+      expect(JSON.parse(await readFile(tokenFile(), 'utf-8'))).toEqual(await readGrant())
+    );
+    expect(await refreshGrant(p, world.mcpUrl)).toMatchObject({ kind: 'refreshed' });
+    await expectUsableGrant();
+  });
+
+  it('import-legacy is explicit and promotes <id>.json (only for use after an older build ran)', async () => {
+    await seedGrant();
+    await refreshGrant(provider(), world.mcpUrl);
+    const rotated = world.issueGrant(); // what an older build would have written after rotating
+    const old = await readGrant();
+    await writeFile(
+      tokenFile(),
+      JSON.stringify({ ...old, tokens: { ...old.tokens, refresh_token: rotated.refresh } })
+    );
+    // A different mirror changes nothing by itself: refresh keeps using the revisions.
+    expect(await refreshGrant(provider(), world.mcpUrl)).toMatchObject({ kind: 'refreshed' });
+    await releaseAllWriterLocks();
+    await writeFile(
+      tokenFile(),
+      JSON.stringify({ ...old, tokens: { ...old.tokens, refresh_token: rotated.refresh } })
+    );
+    const imported = await oauthCommand(['import-legacy', ID, '--dir', dir]);
+    expect(imported.exitCode).toBe(0);
+    expect((await readGrant()).tokens.refresh_token).toBe(rotated.refresh);
+    await expectUsableGrant();
+  });
+
+  it('a one-shot CLI waits for a crashed holder to age out instead of refusing at once', async () => {
+    setWriterLockTimings({ staleMs: 300, heartbeatMs: 200, takeoverGraceMs: 100 });
+    const original = await seedGrant();
+    const p = provider();
+    await refreshGrant(p, world.mcpUrl);
+    await p.store.flushHistory();
+    const { data } = (await oauthCommand(['history', ID, '--dir', dir, '--json'])) as {
+      data: { history: Array<{ version: string }> };
+    };
+    await releaseAllWriterLocks();
+    // A gateway in another container crashed without releasing the lock (never heartbeats again).
+    await writeForeignLock({ pid: 1, hostname: 'gone-container', ns: 'gone' }, 70);
+    const started = Date.now();
+    const restored = await oauthCommand(['restore', ID, data.history[0].version, '--dir', dir]);
+    expect(restored.exitCode).toBe(0);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(300);
+    expect((await readGrant()).tokens.refresh_token).toBe(original.refresh);
+  });
+
+  it('shutdown: a refresh is not dispatched once closing begins after its intent was written', async () => {
+    await seedGrant();
+    const p = provider();
+    const realWrite = p.store.write.bind(p.store);
+    vi.spyOn(p.store, 'write').mockImplementation(async (data, reason, opts) => {
+      const result = await realWrite(data, reason, opts);
+      if (reason === 'refresh-start') p.closing = true; // SIGTERM lands right here
+      return result;
+    });
+    const outcome = await refreshGrant(p, world.mcpUrl);
+    expect(outcome.kind).toBe('read_only');
+    expect(refreshRequests()).toHaveLength(0);
+    expect((await readGrant()).exchange).toBeUndefined();
+    await expectUsableGrant();
+  });
+
+  it('shutdown: a queued code exchange is not dispatched once closing begins', async () => {
+    await seedGrant();
+    const client = makeClient();
+    await client.connect();
+    const internals = client as unknown as {
+      prepareAuthorization(): Promise<string>;
+      finishAuthorization(code: string): Promise<void>;
+      oauthProvider: InstanceType<typeof FileOAuthProvider>;
+    };
+    expect(await internals.prepareAuthorization()).toBe('REDIRECT');
+    const authorizeUrl = new URL((execFileMock.mock.calls[0] as [string, string[]])[1][0]);
+    const code = `code-${randomUUID()}`;
+    world.codes.set(code, {
+      clientId: world.clientId,
+      challenge: authorizeUrl.searchParams.get('code_challenge')!,
+      redirectUri: authorizeUrl.searchParams.get('redirect_uri')!,
+    });
+    const p = internals.oauthProvider;
+    const realSave = p.saveAuthorizationServerUrl.bind(p);
+    vi.spyOn(p, 'saveAuthorizationServerUrl').mockImplementation(async (issuer: string) => {
+      await realSave(issuer);
+      p.closing = true; // SIGTERM lands after the exchange started, before its token POST
+    });
+    await expect(internals.finishAuthorization(code)).rejects.toThrow();
+    expect(world.tokenRequests.some((r) => r.grantType === 'authorization_code')).toBe(false);
+    await expectUsableGrant();
   });
 });

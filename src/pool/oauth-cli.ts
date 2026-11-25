@@ -9,7 +9,7 @@ import {
   summarizeGrant,
   type GrantSummary,
 } from './oauth-store.js';
-import { writerLockFor } from './oauth-lock.js';
+import { writerLockFor, writerLockTimings, type OAuthWriterLock } from './oauth-lock.js';
 
 const HELP = `airlock oauth — inspect and restore Airlock-held OAuth grants (never prints secrets)
 
@@ -30,9 +30,13 @@ only while no gateway owns the store: stop it and run them in a one-off containe
   docker compose stop airlock && docker compose run --rm airlock airlock oauth restore …
 restore --force instead takes the lock over from a running gateway (it re-acquires afterwards).
 
+A lock left by a crashed gateway is waited out (up to ~2m45s); a live one is refused at once.
+"restore --force" overrides a running gateway; it does not prove the gateway was stopped.
+
 Rollback to an Airlock without grant revisions: stop the gateway, run "export-legacy" (writes the
 newest revision of every grant to <provider>.json and verifies it), then start the older build.
-Roll-forward after an older build wrote grants: stop it, run "import-legacy", then start this one.
+Roll-forward only after an older build actually ran: stop it, run "import-legacy" (it PROMOTES
+<provider>.json over newer revisions; the replaced one stays in history), then start this one.
 
 Options:
       --dir <path>   OAuth store directory (default: ~/.airlock/oauth)
@@ -88,10 +92,7 @@ export async function oauthCommand(argv: string[]): Promise<CliOutput> {
     // Grants: the `<id>.json` mirrors plus any grant that so far only exists as revisions.
     const files = (await grantIds(dir)).filter((id) => !provider || id === provider);
     const holder = await writerLockFor(dir).holder();
-    const grants: Record<
-      string,
-      GrantSummary & { orphanedSuccessors?: number; foreignMirror?: boolean }
-    > = {};
+    const grants: Record<string, GrantSummary & { orphanedSuccessors?: number }> = {};
     for (const id of files) {
       const store = new OAuthGrantStore(id, 'readonly', dir);
       try {
@@ -102,7 +103,6 @@ export async function oauthCommand(argv: string[]): Promise<CliOutput> {
       }
       const orphans = (await store.listOrphans()).length;
       if (orphans) grants[id].orphanedSuccessors = orphans;
-      if (await store.mirrorIsForeign().catch(() => false)) grants[id].foreignMirror = true;
     }
     const lines = [
       holder
@@ -110,7 +110,7 @@ export async function oauthCommand(argv: string[]): Promise<CliOutput> {
         : 'Writer lock: free',
       ...Object.entries(grants).map(
         ([id, s]) =>
-          `  ${id}: ${formatSummary(s)}${s.orphanedSuccessors ? `, ${s.orphanedSuccessors} successor(s) awaiting adoption by the lock holder` : ''}${s.foreignMirror ? `, ${id}.json WAS CHANGED BY ANOTHER AIRLOCK VERSION: writes and refreshes refused until "airlock oauth import-legacy ${id}"` : ''}`
+          `  ${id}: ${formatSummary(s)}${s.orphanedSuccessors ? `, ${s.orphanedSuccessors} successor(s) awaiting adoption by the lock holder` : ''}`
       ),
     ];
     if (files.length === 0) lines.push('  (no OAuth grants stored)');
@@ -158,42 +158,48 @@ export async function oauthCommand(argv: string[]): Promise<CliOutput> {
   }
 
   if (command === 'export-legacy' || command === 'import-legacy') {
-    const ids = provider ? [provider] : await grantIds(dir);
     return withOwnership(dir, json, false, async () => {
+      // Enumerated under the lock; a listing error fails the command (never "nothing to do").
+      const ids = provider ? [provider] : await grantIds(dir);
       const results: Record<string, unknown> = {};
       const lines: string[] = [];
+      let failed = 0;
       for (const id of ids) {
-        const store = new OAuthGrantStore(id, 'writer', dir);
-        if (command === 'export-legacy') {
-          const r = await store.exportLegacy();
-          results[id] = r;
-          lines.push(
-            r.exported
-              ? `  ${id}: wrote revision ${r.rev} to ${id}.json (verified)`
-              : `  ${id}: nothing to export (no revisions)`
-          );
-        } else {
-          if (!(await store.mirrorIsForeign())) {
-            results[id] = { imported: false };
-            lines.push(`  ${id}: ${id}.json matches a stored revision; nothing to import`);
-            continue;
+        try {
+          const store = new OAuthGrantStore(id, 'writer', dir);
+          if (command === 'export-legacy') {
+            const r = await store.exportLegacy();
+            results[id] = r;
+            lines.push(
+              r.exported
+                ? `  ${id}: wrote revision ${r.rev} to ${id}.json (verified)`
+                : `  ${id}: nothing to export (no revisions; ${id}.json is already the grant)`
+            );
+          } else {
+            const r = await store.importLegacy();
+            results[id] = { imported: true, rev: r.rev };
+            lines.push(
+              `  ${id}: imported ${id}.json as revision ${r.rev} (the revision it replaced is in history)`
+            );
           }
-          const r = await store.importLegacy();
-          results[id] = { imported: true, rev: r.rev };
-          lines.push(
-            `  ${id}: imported ${id}.json as revision ${r.rev} (previous revision backed up)`
-          );
+        } catch (err) {
+          failed++;
+          results[id] = { error: describe(err, `${id}.json not found`) };
+          lines.push(`  ${id}: FAILED: ${describe(err, `${id}.json not found`)}`);
         }
       }
       return {
-        exitCode: 0,
+        exitCode: failed ? 1 : 0,
         json,
-        data: { [command]: results },
+        data: { [command]: results, failed },
         text: [
           command === 'export-legacy'
             ? 'Exported the current grants to <provider>.json for an older Airlock:'
-            : 'Imported grants written by an older Airlock:',
+            : 'Imported <provider>.json files written by an older Airlock (promoted over newer revisions):',
           ...lines,
+          ...(failed
+            ? [`${failed} provider(s) failed; nothing is complete until this succeeds.`]
+            : []),
         ].join('\n'),
       };
     });
@@ -211,14 +217,56 @@ function describe(err: unknown, enoent: string): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+/** Only a missing directory is "no entries"; any other listing error propagates. */
+async function listDir(path: string): Promise<string[]> {
+  try {
+    return await readdir(path);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw err;
+  }
+}
+
 async function grantIds(dir: string): Promise<string[]> {
   const ids = new Set(
-    (await readdir(dir).catch(() => [] as string[]))
+    (await listDir(dir))
       .filter((f) => f.endsWith('.json') && !f.startsWith('.'))
       .map((f) => f.slice(0, -'.json'.length))
   );
-  for (const id of await readdir(join(dir, REVISION_DIR)).catch(() => [] as string[])) ids.add(id);
+  for (const id of await listDir(join(dir, REVISION_DIR))) ids.add(id);
   return Array.from(ids).sort();
+}
+
+/**
+ * A one-shot CLI (e.g. `docker compose run`) cannot rely on having watched the lock before: give a
+ * holder that may have crashed the chance to age out (bounded: staleness + takeover grace +
+ * slack). A holder whose heartbeat moves meanwhile is alive: stop waiting at once.
+ */
+async function waitForAbandonedLock(lock: OAuthWriterLock): Promise<boolean> {
+  const { staleMs, takeoverGraceMs, heartbeatMs } = writerLockTimings();
+  const deadline = Date.now() + staleMs + takeoverGraceMs + 10_000;
+  const first = await lock.holder();
+  if (!first) return lock.ensure();
+  process.stderr.write(
+    `OAuth writer lock is held by pid ${first.pid} on ${first.hostname}; waiting up to ${Math.round((deadline - Date.now()) / 1000)} s to see whether it was abandoned (Ctrl-C to stop)…\n`
+  );
+  let lastReport = Date.now();
+  const poll = Math.min(2_000, Math.max(50, Math.floor(heartbeatMs / 4)));
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, poll));
+    const now = await lock.holder();
+    if (now && (now.heartbeatAt !== first.heartbeatAt || now.gen !== first.gen)) {
+      return false; // heartbeating: a live gateway
+    }
+    if (await lock.ensure()) return true;
+    if (Date.now() - lastReport >= 15_000) {
+      lastReport = Date.now();
+      process.stderr.write(
+        `  still waiting (${Math.round((deadline - Date.now()) / 1000)} s left)…\n`
+      );
+    }
+  }
+  return false;
 }
 
 /**
@@ -236,6 +284,7 @@ async function withOwnership(
   const alreadyHeld = lock.held;
   let warning: string | undefined;
   let acquired = await lock.ensure();
+  if (!acquired && !force) acquired = await waitForAbandonedLock(lock);
   if (!acquired && !force) {
     const holder = await lock.holder();
     return fail(

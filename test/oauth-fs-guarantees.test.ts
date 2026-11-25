@@ -11,12 +11,20 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const fsHooks = vi.hoisted(() => ({
   linkFails: false as false | string,
   openFails: '' as string,
+  syncFailsOnce: '' as string,
+  readdirFails: '' as string,
   synced: [] as string[],
 }));
 vi.mock('fs/promises', async (importOriginal) => {
   const real = await importOriginal<typeof import('fs/promises')>();
   return {
     ...real,
+    readdir: async (path: string, ...rest: unknown[]) => {
+      if (fsHooks.readdirFails && path === fsHooks.readdirFails) {
+        throw Object.assign(new Error('EIO: injected'), { code: 'EIO' });
+      }
+      return (real.readdir as (...a: unknown[]) => ReturnType<typeof real.readdir>)(path, ...rest);
+    },
     link: async (from: string, to: string) => {
       if (fsHooks.linkFails && to.includes('/.grants/')) {
         throw Object.assign(new Error(`${fsHooks.linkFails}: injected`), {
@@ -35,6 +43,10 @@ vi.mock('fs/promises', async (importOriginal) => {
       );
       const sync = handle.sync.bind(handle);
       handle.sync = async () => {
+        if (fsHooks.syncFailsOnce && path === fsHooks.syncFailsOnce) {
+          fsHooks.syncFailsOnce = '';
+          throw Object.assign(new Error('EIO: injected fsync'), { code: 'EIO' });
+        }
         fsHooks.synced.push(path);
         return sync();
       };
@@ -46,12 +58,15 @@ vi.mock('fs/promises', async (importOriginal) => {
 const { OAuthGrantStore } = await import('../src/pool/oauth-store.js');
 const { FileOAuthProvider } = await import('../src/pool/oauth-provider.js');
 const { releaseAllWriterLocks } = await import('../src/pool/oauth-lock.js');
+const { oauthCommand } = await import('../src/pool/oauth-cli.js');
 
 let dir = '';
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), 'airlock-oauth-fs-'));
   fsHooks.linkFails = false;
   fsHooks.openFails = '';
+  fsHooks.syncFailsOnce = '';
+  fsHooks.readdirFails = '';
   fsHooks.synced = [];
 });
 afterEach(async () => {
@@ -85,6 +100,12 @@ describe('OAuth storage — filesystem guarantees', () => {
   });
 
   it('fsyncs the parent of every directory it creates before publishing into it', async () => {
+    const root = join(dir, 'store'); // the store directory itself does not exist yet
+    const rootStore = new OAuthGrantStore('p', 'writer', root);
+    await rootStore.write(grant, 'test');
+    expect(fsHooks.synced).toContain(dir); // the new store directory's own entry
+    await releaseAllWriterLocks();
+    fsHooks.synced = [];
     const store = new OAuthGrantStore('p', 'writer', dir);
     await store.write(grant, 'test');
     expect(fsHooks.synced).toContain(dir); // `.grants` entry
@@ -97,5 +118,24 @@ describe('OAuth storage — filesystem guarantees', () => {
     fsHooks.openFails = join(dir, '.grants', 'p');
     const store = new OAuthGrantStore('p', 'writer', dir);
     await expect(store.write(grant, 'test')).rejects.toThrow('EACCES');
+  });
+
+  it('a parent fsync that failed once is redone on the next write, even though the directory exists', async () => {
+    const store = new OAuthGrantStore('p', 'writer', dir);
+    fsHooks.syncFailsOnce = join(dir, '.grants'); // fsync for the new `.grants/p` entry fails
+    await expect(store.write(grant, 'test')).rejects.toThrow('EIO');
+    fsHooks.synced = [];
+    await store.write(grant, 'test');
+    expect(fsHooks.synced).toContain(join(dir, '.grants'));
+    expect(fsHooks.synced).toContain(dir);
+  });
+
+  it('export-legacy fails (non-zero) when grants cannot be enumerated, instead of exporting nothing', async () => {
+    await new OAuthGrantStore('p', 'writer', dir).write(grant, 'test');
+    await releaseAllWriterLocks();
+    fsHooks.readdirFails = join(dir, '.grants');
+    const result = await oauthCommand(['export-legacy', '--dir', dir]);
+    expect(result.exitCode).toBe(1);
+    expect(result.text).toContain('EIO');
   });
 });

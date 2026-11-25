@@ -312,9 +312,10 @@ discovery in the same local command center.
 
 Airlock-held OAuth grants (`oauth: true`) are stored as immutable revisions in
 `~/.airlock/oauth/.grants/<provider>/` (the highest revision is the grant; the last 5 are kept).
-`~/.airlock/oauth/<provider>.json` is kept as a mirror of the current revision for tools that list or
-read it; a grant that only exists as that file (from an older Airlock) is migrated on its first
-write. Provider ids are used verbatim in these paths, so an `oauth: true` provider id must consist
+`~/.airlock/oauth/<provider>.json` is kept as a best-effort mirror of the current revision for tools
+that list or read it; a grant that only exists as that file (from an older Airlock) is migrated on
+its first write. Once revisions exist the mirror is never read and never blocks anything; Airlock
+rewrites it from the newest revision after every write and whenever it acquires the writer lock. Provider ids are used verbatim in these paths, so an `oauth: true` provider id must consist
 of letters, digits, `.`, `_` and `-` (not starting with `.`); the config check rejects other ids
 and ids that differ only in letter case.
 
@@ -341,17 +342,32 @@ The writing commands (`restore`, `export-legacy`, `import-legacy`) take the OAut
 they never race a refresh: they refuse while a gateway owns the store. Stop it and run them in a
 one-off container, for example
 `docker compose stop airlock && docker compose run --rm airlock airlock oauth restore <provider> <version>`.
-`restore --force` instead takes the lock over from a running gateway (waiting out a 35-second
-grace period): the gateway turns read-only for OAuth until it re-acquires the lock shortly after,
-and a refresh it had in flight is parked for adoption rather than lost.
+If the lock was left behind by a gateway that crashed (it no longer heartbeats), the command waits
+for it to age out — up to about 2 minutes 45 seconds, with progress output — and stops waiting at
+once if the holder's heartbeat moves (a live gateway). `restore --force` instead takes the lock over
+from a running gateway (waiting out a 35-second grace period): the gateway turns read-only for
+OAuth until it re-acquires the lock shortly after, and a refresh it had in flight is parked for
+adoption rather than lost. `--force` does not prove the gateway was stopped; it only overrides it.
 
-**Rolling back** to an Airlock build without grant revisions: stop the gateway, run
-`airlock oauth export-legacy` (it writes the newest revision of every grant to
-`<provider>.json` and verifies it), then start the older build. **Rolling forward** after an
-older build ran: the new build notices that `<provider>.json` was changed by something else after
-its last revision and refuses to write or refresh that grant (status: `… WAS CHANGED BY ANOTHER
-AIRLOCK VERSION`) instead of ignoring the newer token; stop it, run `airlock oauth import-legacy`,
-and start it again.
+**Rolling back** to an Airlock build without grant revisions is an operator step: stop the
+gateway, run `airlock oauth export-legacy` (it writes the newest revision of every grant to
+`<provider>.json` and verifies it; it fails, non-zero, if any grant could not be exported), then
+start the older build. **Rolling forward** after the older build actually ran: stop it, run
+`airlock oauth import-legacy`, then start the new build. `import-legacy` **promotes each
+`<provider>.json` over the newer revisions** (the replaced revision is kept in history): run it only
+after an older build has really used the store, never as a routine repair. Airlock never imports
+automatically.
+
+### Rename an OAuth provider
+
+OAuth provider ids are used verbatim as file names, so an `oauth: true` provider id may only use
+letters, digits, `.`, `_` and `-` (not starting with `.`), and two OAuth ids may not differ only
+in letter case; the config check names offending ids. To rename one and keep its grant:
+
+1. Stop Airlock (`docker compose stop airlock`).
+2. In the OAuth store (`~/.airlock/oauth`), rename `<old>.json` to `<new>.json` and, if present,
+   `.grants/<old>`, `.history/<old>` and `.successors/<old>` to `<new>`.
+3. Change the provider id in the config (and any policy patterns that name it), then start Airlock.
 
 Airlock never deletes a grant on its own. An issuer answering `invalid_grant`, an issuer URL change,
 or a metadata outage leaves the stored grant in place; refresh is retried with exponential backoff
