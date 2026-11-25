@@ -10,7 +10,9 @@ import { runCommandCenter, runConfigureWeb, runDashboard } from './configure-web
 import { runConfigureCli } from './configure-cli/cli.js';
 import { runIntrospection } from './introspect/cli.js';
 import { runSetupOpenclaw } from './setup-openclaw/cli.js';
+import { runOAuthCli } from './pool/oauth-cli.js';
 import { logger } from './util/logger.js';
+import { SHUTDOWN_FORCE_EXIT_MS } from './pool/oauth-refresh.js';
 
 // Handle subcommands before parseArgs
 const subcommand = process.argv[2];
@@ -45,6 +47,11 @@ if (subcommand === 'discover') {
   runGateway(process.argv.slice(3));
 } else if (subcommand === 'configure-cli') {
   runConfigureCli(process.argv.slice(3)).catch((err) => {
+    console.error(err instanceof Error ? err.message : String(err));
+    process.exit(1);
+  });
+} else if (subcommand === 'oauth') {
+  runOAuthCli(process.argv.slice(3)).catch((err) => {
     console.error(err instanceof Error ? err.message : String(err));
     process.exit(1);
   });
@@ -102,6 +109,7 @@ Usage:
   airlock who-can <tool-or-glob> [options]
   airlock tools [options]
   airlock lint [options]
+  airlock oauth <status|history|restore> [...]
 
 Options:
   -c, --config <path>    Config file path (default: ./airlock.yaml)
@@ -125,6 +133,7 @@ Subcommands:
   who-can                Reverse-lookup which agents can use a tool
   tools                  Enumerate live provider tools
   lint                   Static config hygiene warnings
+  oauth                  Inspect OAuth grants; list/restore grant backups (no secrets printed)
 
 Examples:
   # Start full gateway server
@@ -199,13 +208,15 @@ Examples:
       gateway.disableReconnect();
       // The MCP SDK's StdioClientTransport.close() escalates:
       //   stdin.end → 2s wait → SIGTERM → 2s wait → SIGKILL
-      // Give it enough time (5s) before forcing exit, otherwise
-      // process.exit() orphans children mid-cleanup.
+      // Give it enough time before forcing exit, otherwise
+      // process.exit() orphans children mid-cleanup. OAuth needs longer still: an
+      // in-flight token exchange (up to the 15 s request timeout) must be committed before exit,
+      // so the deadline is SHUTDOWN_FORCE_EXIT_MS (the container stop grace period must exceed it).
       const forceExit = setTimeout(() => {
         logger.warn('Graceful shutdown timed out, forcing exit');
         gateway.forceKill();
         process.exit(1);
-      }, 5000);
+      }, SHUTDOWN_FORCE_EXIT_MS);
       forceExit.unref();
       try {
         watcher.stop();

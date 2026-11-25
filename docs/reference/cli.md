@@ -134,6 +134,11 @@ airlock tools --provider github --grep pull --json
 
 This command may start provider clients. Static commands such as `config check`, `explain` without `--expand`, `who-can`, and `lint` do not.
 
+Provider clients started by `tools`, `lint`, `explain --expand` and the dashboard probes open OAuth
+token storage **read-only**: they use the stored access token but never refresh, rewrite, or
+invalidate a grant. Only the process holding the OAuth writer lock (the gateway, or a stdio agent
+when no gateway runs) refreshes tokens.
+
 ## Lint config hygiene
 
 Run static hygiene checks over a valid resolved config:
@@ -302,6 +307,120 @@ It accepts the same `--config`, `--port` (default 4177), `--host`,
 This editor updates the local YAML file and writes a backup before saving. Use
 `airlock run` when you also want live provider health, MCP status, and tool
 discovery in the same local command center.
+
+## Inspect and restore OAuth grants
+
+Airlock-held OAuth grants (`oauth: true`) are stored as immutable revisions in
+`~/.airlock/oauth/.grants/<provider>/` (the highest revision is the grant; the last 5 are kept).
+`~/.airlock/oauth/<provider>.json` is kept as a best-effort mirror of the current revision for tools
+that list or read it; a grant that only exists as that file (from an older Airlock) is migrated on
+its first write. Once revisions exist the mirror is never read and never blocks anything; Airlock
+rewrites it from each new revision as part of publishing that revision (so it can lag only until
+that grant's next write). Provider ids are used verbatim in these paths, so an `oauth: true` provider id must consist
+of letters, digits, `.`, `_` and `-` (not starting with `.`); the config check rejects other ids
+and ids that differ only in letter case.
+
+Each revision is published with a hard link (exclusive create), so a writer that stalled and lost
+the writer lock can never replace a newer grant. **The store directory must support hard links**;
+on a filesystem without them Airlock refuses to write or spend any refresh token, and status says
+why. Every replacement keeps the previous grant in
+`~/.airlock/oauth/.history/<provider>/` (last 10 kept, owner-only permissions). A refresh rotation
+is made durable first and its predecessor backed up afterwards; replacing a different grant (a
+restore, a new authorization) requires a durable backup first. Crash-left temporary files are
+removed after an hour.
+
+```bash
+airlock oauth status [provider]            # what is stored, unresolved refreshes, lock holder
+airlock oauth history <provider>           # backups, newest first
+airlock oauth restore <provider> <version> # put a backup back (the replaced grant is backed up too)
+airlock oauth export-legacy [provider]     # rollback step: newest revision → <provider>.json
+airlock oauth import-legacy [provider]     # roll-forward step: <provider>.json → new revision
+```
+
+None of these print token values.
+
+The writing commands (`restore`, `export-legacy`, `import-legacy`) take the OAuth writer lock, so
+they never race a refresh: they refuse while a gateway owns the store. Stop it and run them in a
+one-off container, for example
+`docker compose stop airlock && docker compose run --rm airlock airlock oauth restore <provider> <version>`.
+If the lock was left behind by a gateway that crashed (it no longer heartbeats), the command waits
+for it to age out — up to about 2 minutes 45 seconds, with progress output — and stops waiting at
+once if the holder's heartbeat moves (a live gateway). `restore --force` instead takes the lock over
+from a running gateway (waiting out a 35-second grace period): the gateway turns read-only for
+OAuth until it re-acquires the lock shortly after, and a refresh it had in flight is parked for
+adoption rather than lost. `--force` does not prove the gateway was stopped; it only overrides it.
+
+**Rolling back** to an Airlock build without grant revisions is an operator step: stop the
+gateway, run `airlock oauth export-legacy` (it writes the newest revision of every grant to
+`<provider>.json` and verifies it, after adopting any usable successor that a restart overlap left
+parked; it fails, non-zero, for any grant it could not export — unadoptable parked successors, a
+corrupt revision or corrupt legacy file, an unreadable store — without exporting that grant; if an
+adoption succeeded before a later parked entry failed, that adoption is already published and
+mirrored), then start the older build. Builds before grant revisions take no OAuth writer lock at
+all, so the new gateway must be stopped before the older build starts, and vice versa.
+**Rolling forward** after the older build actually ran: stop it, run `airlock oauth import-legacy`,
+then start the new build. If an import fails partway, fix the cause and rerun it with the gateway
+still stopped: rerunning is safe (a grant already imported only gets an identical extra revision). `import-legacy` **promotes each
+`<provider>.json` over the newer revisions** (the replaced revision is kept in history): run it only
+after an older build has really used the store, never as a routine repair. Airlock never imports
+automatically.
+
+### Rename an OAuth provider
+
+OAuth provider ids are used verbatim as file names, so an `oauth: true` provider id may only use
+letters, digits, `.`, `_` and `-` (not starting with `.`), and two OAuth ids may not differ only
+in letter case; the config check names offending ids. To rename one and keep its grant:
+
+1. Stop Airlock (`docker compose stop airlock`).
+2. Check that the new id is unused: no provider of that name in the config, and none of
+   `<new>.json`, `.grants/<new>`, `.history/<new>`, `.successors/<new>` exists in the store
+   (compare case-insensitively). If anything exists, pick another id — never merge two grants.
+3. In the OAuth store (`~/.airlock/oauth`), rename `<old>.json` to `<new>.json` and, if present,
+   `.grants/<old>`, `.history/<old>` and `.successors/<old>` to `<new>`.
+4. Change the provider id in the config (and any policy patterns that name it), then start Airlock.
+
+Airlock never deletes a grant on its own. An issuer answering `invalid_grant`, an issuer URL change,
+or a metadata outage leaves the stored grant in place; while this process owns the store, a failed
+refresh is retried with exponential backoff (1 minute, doubling to 30 minutes, with no limit on
+attempts; the first retry after an ambiguous exchange comes after 5 seconds). A pending retry
+deadline is absolute: MCP reconnects can bring it forward but never postpone it. A process that
+does not own the store (another gateway holds the lock) schedules a re-check about a minute later
+instead (a reconnect can bring it forward); the writer lock still guards every token exchange. State is reported under `oauthHealth` in `/health` and
+on the provider status, never paged:
+
+| State                 | Meaning                                                                                                      |
+| --------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `refresh_failing`     | The issuer (or the network before sending) failed; the token was not spent                                   |
+| `refresh_ambiguous`   | A refresh may have reached the issuer but the answer was lost, or a process stopped mid-exchange             |
+| `persistence_pending` | A refresh succeeded but the new grant could not be written yet; it is used from memory and the write retried |
+| `grant_rejected`      | The issuer rejected the stored grant; a browser authorization is offered and only replaces it on success     |
+
+Refreshes go to the endpoint that last refreshed the grant. When discovery advertises a new issuer
+(`issuerChanged`), the grant moves there only after the old endpoint rejects it or is gone.
+
+**Shutdown.** On SIGTERM the gateway admits no new token exchange, waits for one already sent to
+be committed (up to 20 seconds), then releases the writer lock; it forces exit after 25 seconds.
+Give the container a longer stop grace period than that, e.g. `stop_grace_period: 40s` in Compose
+(Docker's default of 10 seconds can kill the process with a rotated refresh token not yet
+written).
+
+**Lock takeover.** A gateway that crashed without releasing the lock is taken over by the next
+writer process (for example the recreated container) once its lock record has been unchanged for
+2 minutes, as observed by that process from its start (it retries every 30 seconds), plus a
+35-second grace period: at most about 3 minutes 5 seconds after the new process starts. A holder
+that stopped gracefully, or a dead process in the same pid namespace, is taken over immediately.
+Stored access tokens keep working in the meantime.
+
+**Limits.** After an ambiguous exchange the stored refresh token is the only one Airlock has, so it
+is retried — once after 5 seconds, then with backoff — at the same endpoint only. An issuer with a
+reuse grace window accepts it and the grant recovers. An issuer that strictly enforces single use
+and rotated the token before the answer was lost cannot be recovered from the client side: the
+retry gets `invalid_grant` and status says that the earlier lost exchange probably consumed it.
+If the endpoint of such an exchange stays gone or unreachable for 7 days, the grant is reported as
+`grant_rejected` (`endpoint_retired`). It stays pinned to that endpoint — retried there, never
+elsewhere — until a refresh there succeeds or a new authorization or a restore replaces the grant;
+the stored grant and the marker are never dropped.
+Airlock never spends a refresh token unless it could first durably record the attempt.
 
 ## Setup OpenClaw integration
 

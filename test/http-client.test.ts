@@ -6,8 +6,11 @@
  * transport that was already started, causing:
  *   "StreamableHTTPClientTransport already started!"
  *
- * The fix: call `this.connect()` recursively after `finishAuth()`, which creates
+ * The fix: call `this.connect()` recursively after the code exchange, which creates
  * a fresh transport with the persisted tokens.
+ *
+ * Refresh is Airlock-owned (oauth-refresh.ts) and mocked here; its real behaviour is covered by
+ * test/oauth-lifecycle.test.ts against an in-process authorization server.
  *
  * Note: the OAuth flow runs in the background (not awaited by connect()) so the
  * gateway can start listening immediately. Tests use vi.waitFor() or flushes to
@@ -35,6 +38,12 @@ const clientInstances: {
 }[] = [];
 
 const authMock = vi.hoisted(() => vi.fn());
+const refreshGrantMock = vi.hoisted(() => vi.fn());
+
+vi.mock('../src/pool/oauth-refresh.js', () => ({
+  refreshGrant: refreshGrantMock,
+  oauthFetch: vi.fn(),
+}));
 
 // Client.connect() throws UnauthorizedError only on the very first call.
 let clientConnectCallCount = 0;
@@ -78,6 +87,9 @@ let waitForTokenChangeImpl: (signal: AbortSignal) => Promise<void> = () => new P
 vi.mock('../src/pool/oauth-provider.js', () => {
   return {
     FileOAuthProvider: vi.fn().mockImplementation(() => ({
+      storageMode: 'writer',
+      tokens: vi.fn().mockResolvedValue(undefined),
+      beginAuthorization: vi.fn().mockResolvedValue(undefined),
       waitForAuthCode: vi.fn().mockImplementation(() => waitForAuthCodeImpl()),
       stopCallbackServer: vi.fn(),
       stop: vi.fn(),
@@ -89,6 +101,9 @@ vi.mock('../src/pool/oauth-provider.js', () => {
         ),
       // No refresh_token/expiry in these tests → proactive-refresh scheduling no-ops.
       msUntilRefresh: vi.fn().mockResolvedValue(undefined),
+      runExclusive: vi.fn().mockImplementation((fn: () => Promise<unknown>) => fn()),
+      persistencePending: false,
+      exchangeMarker: undefined,
     })),
   };
 });
@@ -105,7 +120,13 @@ beforeEach(() => {
   clientConnectCallCount = 0;
   waitForAuthCodeImpl = () => Promise.resolve('mock-auth-code');
   waitForTokenChangeImpl = () => new Promise(() => {});
-  authMock.mockReset().mockResolvedValue('AUTHORIZED');
+  // First auth() call prepares the browser URL; the second exchanges the callback code.
+  authMock
+    .mockReset()
+    .mockImplementation(async (_provider: unknown, opts: { authorizationCode?: string }) =>
+      opts.authorizationCode ? 'AUTHORIZED' : 'REDIRECT'
+    );
+  refreshGrantMock.mockReset().mockResolvedValue({ kind: 'no_grant', reason: 'no refresh token' });
   vi.clearAllMocks();
 });
 
@@ -144,6 +165,7 @@ describe('HttpMcpClient — OAuth reconnect', () => {
     waitForAuthCodeImpl = () => new Promise((resolve) => (resolveAuth = resolve));
     const client = new HttpMcpClient('supabase', 'https://mcp.supabase.com/mcp', undefined, true);
     await client.connect();
+    await flushOAuthFlow();
     expect(client.getConnectionStatus()).toEqual({
       status: 'auth_required',
       reason: 'OAuth authorization required',
@@ -164,18 +186,38 @@ describe('HttpMcpClient — OAuth reconnect', () => {
     expect(onReady).toHaveBeenCalledTimes(1);
   });
 
-  it('calls finishAuth on the first transport with the code from waitForAuthCode', async () => {
+  it('exchanges the code from waitForAuthCode', async () => {
     const client = new HttpMcpClient('supabase', 'https://mcp.supabase.com/mcp', undefined, true);
     await client.connect();
     await flushOAuthFlow();
-    expect(transportInstances[0].finishAuth).toHaveBeenCalledWith('mock-auth-code');
+    expect(authMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        serverUrl: 'https://mcp.supabase.com/mcp',
+        authorizationCode: 'mock-auth-code',
+      })
+    );
   });
 
-  it('does not call finishAuth on the new transport', async () => {
+  it('prepares the browser authorization without letting the SDK refresh or drop the grant', async () => {
     const client = new HttpMcpClient('supabase', 'https://mcp.supabase.com/mcp', undefined, true);
     await client.connect();
     await flushOAuthFlow();
-    expect(transportInstances[1].finishAuth).not.toHaveBeenCalled();
+    expect(authMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ forceReauthorization: true })
+    );
+    // Airlock tried its own refresh first.
+    expect(refreshGrantMock).toHaveBeenCalled();
+  });
+
+  it('reconnects without a browser when the refresh at auth-required time succeeds', async () => {
+    refreshGrantMock.mockResolvedValue({ kind: 'refreshed', issuer: 'https://as.example' });
+    const client = new HttpMcpClient('supabase', 'https://mcp.supabase.com/mcp', undefined, true);
+    await client.connect();
+    await flushOAuthFlow();
+    expect(client.isReady()).toBe(true);
+    expect(authMock).not.toHaveBeenCalled();
   });
 
   it('awaitingAuth is false after OAuth flow completes', async () => {
@@ -197,10 +239,10 @@ describe('HttpMcpClient — OAuth reconnect', () => {
     let credentialsChanged!: () => void;
     waitForAuthCodeImpl = () => new Promise(() => {});
     waitForTokenChangeImpl = () => new Promise<void>((resolve) => (credentialsChanged = resolve));
-    authMock.mockResolvedValueOnce('AUTHORIZED');
 
     const client = new HttpMcpClient('amoura', 'https://mcp.amoura.io/mcp', undefined, true);
     await client.connect();
+    await flushOAuthFlow();
     credentialsChanged();
     await flushOAuthFlow();
 
@@ -209,7 +251,7 @@ describe('HttpMcpClient — OAuth reconnect', () => {
     expect(transportInstances).toHaveLength(2);
   });
 
-  it('cancels credential polling when the callback fails', async () => {
+  it('records callback failure, keeps recovery polling alive during backoff, and aborts it on stop', async () => {
     const pollAborted = vi.fn();
     waitForTokenChangeImpl = (signal) =>
       new Promise<void>((resolve) => {
@@ -224,12 +266,18 @@ describe('HttpMcpClient — OAuth reconnect', () => {
     await client.connect();
     await flushOAuthFlow();
 
-    expect(pollAborted).toHaveBeenCalledOnce();
-    expect(authMock).not.toHaveBeenCalled();
+    expect(authMock).toHaveBeenCalledTimes(1);
+    expect(authMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ forceReauthorization: true })
+    );
     expect(client.getConnectionStatus()).toEqual({
       status: 'auth_required',
       reason: 'OAuth error: access_denied',
     });
+
+    await client.stop();
+    expect(pollAborted).toHaveBeenCalledOnce();
   });
 
   it('cancels credential polling on stop and ignores a concurrent credential update', async () => {
@@ -243,12 +291,17 @@ describe('HttpMcpClient — OAuth reconnect', () => {
 
     const client = new HttpMcpClient('spliit', 'https://mcp.example.com/mcp', undefined, true);
     await client.connect();
+    await flushOAuthFlow();
     credentialsChanged();
     await client.stop();
     await flushOAuthFlow();
 
     expect(pollSignal.aborted).toBe(true);
-    expect(authMock).not.toHaveBeenCalled();
+    expect(authMock).toHaveBeenCalledTimes(1);
+    expect(authMock).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ authorizationCode: expect.anything() })
+    );
     expect(transportInstances[0].finishAuth).not.toHaveBeenCalled();
     expect(transportInstances).toHaveLength(1);
   });
@@ -426,36 +479,68 @@ describe('HttpMcpClient — stale Streamable HTTP session recovery', () => {
   it('marks an OAuth provider auth_required when a tool call returns Unauthorized', async () => {
     clientConnectCallCount = 1;
     waitForAuthCodeImpl = () => new Promise(() => {});
-    authMock.mockResolvedValueOnce('REDIRECT');
     const client = new HttpMcpClient('amoura', 'https://mcp.amoura.io/mcp', undefined, true);
     await client.connect();
     clientInstances[0].callTool.mockRejectedValueOnce(new Error('Unauthorized'));
 
     await expect(client.callTool('health_get_health_status', {})).rejects.toThrow('Unauthorized');
+    await flushOAuthFlow();
     expect(client.isReady()).toBe(false);
     expect(client.getConnectionStatus()).toEqual({
       status: 'auth_required',
       reason: 'OAuth authorization required',
     });
-    expect(authMock).toHaveBeenCalledWith(expect.anything(), {
-      serverUrl: 'https://mcp.amoura.io/mcp',
-    });
+    expect(authMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        serverUrl: 'https://mcp.amoura.io/mcp',
+        forceReauthorization: true,
+      })
+    );
   });
 
-  it('marks an OAuth provider auth_required when proactive refresh needs reauthorization', async () => {
+  it('keeps a working connection up and retries when the issuer rejects a proactive refresh', async () => {
     clientConnectCallCount = 1;
-    waitForAuthCodeImpl = () => new Promise(() => {});
-    authMock.mockResolvedValueOnce('REDIRECT');
+    refreshGrantMock.mockResolvedValue({
+      kind: 'rejected',
+      code: 'invalid_grant',
+      message: 'invalid_grant: refresh token expired',
+      issuer: 'https://as.example',
+    });
     const client = new HttpMcpClient('amoura', 'https://mcp.amoura.io/mcp', undefined, true);
     await client.connect();
 
     await (client as unknown as { proactiveRefresh(): Promise<void> }).proactiveRefresh();
 
-    expect(client.isReady()).toBe(false);
+    // No browser flow, no dropped connection: the access token may still be valid.
+    expect(client.isReady()).toBe(true);
+    expect(authMock).not.toHaveBeenCalled();
+    const status = client.getConnectionStatus();
+    expect(status.status).toBe('up');
+    expect(status.oauth).toMatchObject({
+      state: 'grant_rejected',
+      consecutiveFailures: 1,
+      lastError: expect.stringContaining('invalid_grant'),
+    });
+    expect(status.oauth?.nextRetryAt).toBeDefined();
+    await client.stop();
+  });
+
+  it('starts the browser flow from proactive refresh only when there is no grant at all', async () => {
+    clientConnectCallCount = 1;
+    waitForAuthCodeImpl = () => new Promise(() => {});
+    const client = new HttpMcpClient('amoura', 'https://mcp.amoura.io/mcp', undefined, true);
+    await client.connect();
+    (client as unknown as { ready: boolean }).ready = false;
+
+    await (client as unknown as { proactiveRefresh(): Promise<void> }).proactiveRefresh();
+    await flushOAuthFlow();
+
     expect(client.getConnectionStatus()).toEqual({
       status: 'auth_required',
       reason: 'OAuth authorization required',
     });
+    await client.stop();
   });
 
   it('passes the configured request timeout to listTools and callTool', async () => {

@@ -156,6 +156,7 @@ export class Gateway {
     const mcpConfigs = getMcpConfigs(this.config.providers);
     this.pool = new ClientPool(mcpConfigs, {
       eventsProviders: eventEnabledProviders(this.config.agents),
+      oauthStorage: 'writer',
       oauthCallbackRouter: this.oauthCallbackRouter,
     });
     await this.pool.initialize();
@@ -380,6 +381,9 @@ export class Gateway {
       const dataPlane = await this.dataPlaneHealth();
       const mcpHealth = this.pool.healthCheck();
       const credentialHealth = this.credentialHealth.snapshot();
+      // Airlock-held OAuth grants: refresh failures, issuer rejections and issuer changes are
+      // reported here (never paged). A grant is never dropped automatically.
+      const oauthHealth = this.pool.oauthHealth();
       const pendingApprovals = this.hitlEngine.pendingCount();
       const uptime = Math.floor((Date.now() - this.startTime) / 1000);
       const status = dataPlane.status === 'ok' ? 'ok' : 'degraded';
@@ -397,6 +401,7 @@ export class Gateway {
         dataPlane,
         mcpHealth,
         credentialHealth,
+        oauthHealth,
         toolCatalog,
         eventCatalog,
         pendingApprovals,

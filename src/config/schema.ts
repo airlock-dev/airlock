@@ -163,6 +163,17 @@ export const McpServerConfig = z.discriminatedUnion('type', [
       oauth_callback_mode: z.enum(['loopback', 'gateway']).default('loopback'),
       client_id: EnvString.optional(),
       client_secret: EnvString.optional(),
+      /**
+       * With `oauth: true`: refresh the grant at least this often while a refresh token is stored
+       * (default 24 h), even when the access token is long-lived or declares no lifetime, so a
+       * refresh-token inactivity window never lapses on an idle gateway.
+       */
+      oauth_max_refresh_interval_ms: z
+        .number()
+        .int()
+        .min(60_000)
+        .max(30 * 24 * 60 * 60 * 1000)
+        .optional(),
       client_credentials: ClientCredentialsConfig.optional(),
       /**
        * Per-request MCP SDK deadline. The SDK otherwise imposes an invisible 60s default even when
