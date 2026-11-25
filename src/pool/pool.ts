@@ -4,6 +4,8 @@ import { HttpMcpClient } from './http-client.js';
 import type { OAuthGrantHealth, ProviderConnectionStatus } from './status.js';
 import type { OAuthStorageMode } from './oauth-store.js';
 import { releaseAllWriterLocks } from './oauth-lock.js';
+import { drainGrantOperations } from './oauth-store.js';
+import { OAUTH_SHUTDOWN_DRAIN_MS } from './oauth-refresh.js';
 import type { McpServerConfig } from '../config/schema.js';
 import { resolveProviderBearerFile } from '../config/provider-credentials.js';
 import type { Tool } from '@modelcontextprotocol/server';
@@ -345,8 +347,13 @@ export class ClientPool {
   async stop(): Promise<void> {
     clearInterval(this.healthTimer);
     this.disableReconnect();
+    // HTTP clients drain in-flight OAuth exchanges (commit or hand-off) in their stop(); anything
+    // else still running on a grant (a restore) gets the same deadline before the lock is released.
     await Promise.allSettled(Array.from(this.clients.values()).map((c) => c.stop()));
-    if (this.options?.oauthStorage === 'writer') await releaseAllWriterLocks();
+    if (this.options?.oauthStorage === 'writer') {
+      await drainGrantOperations(OAUTH_SHUTDOWN_DRAIN_MS);
+      await releaseAllWriterLocks();
+    }
   }
 
   /** SIGKILL any stdio child processes that survived graceful stop. */

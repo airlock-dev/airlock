@@ -29,7 +29,10 @@ export async function assertHostNotBlocked(
     throw new Error(`Blocked host: ${normalizedHostname}`);
   }
 
-  if (isIP(normalizedHostname) !== 0 || allowedLocal.some((p) => hostPatternMatches(p, normalizedHostname))) {
+  if (
+    isIP(normalizedHostname) !== 0 ||
+    allowedLocal.some((p) => hostPatternMatches(p, normalizedHostname))
+  ) {
     return normalizedHostname;
   }
 
@@ -91,7 +94,14 @@ function normalizeIpv4MappedIpv6(hostname: string): string {
 
   const high = Number.parseInt(parts[0], 16);
   const low = Number.parseInt(parts[1], 16);
-  if (!Number.isInteger(high) || !Number.isInteger(low) || high < 0 || high > 0xffff || low < 0 || low > 0xffff) {
+  if (
+    !Number.isInteger(high) ||
+    !Number.isInteger(low) ||
+    high < 0 ||
+    high > 0xffff ||
+    low < 0 ||
+    low > 0xffff
+  ) {
     return hostname;
   }
 

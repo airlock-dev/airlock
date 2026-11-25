@@ -1,7 +1,9 @@
 import { readdir } from 'fs/promises';
+import { join } from 'path';
 import { parseArgs } from 'util';
 import {
   OAuthGrantStore,
+  REVISION_DIR,
   oauthStoreDir,
   restoreGrant,
   submitRestoreRequest,
@@ -81,9 +83,16 @@ export async function oauthCommand(argv: string[]): Promise<CliOutput> {
   }
 
   if (command === 'status') {
-    const files = (await readdir(dir).catch(() => [] as string[]))
-      .filter((f) => f.endsWith('.json') && !f.startsWith('.'))
-      .map((f) => f.slice(0, -'.json'.length))
+    // Grants: the `<id>.json` mirrors plus any grant that so far only exists as revisions.
+    const ids = new Set(
+      (await readdir(dir).catch(() => [] as string[]))
+        .filter((f) => f.endsWith('.json') && !f.startsWith('.'))
+        .map((f) => f.slice(0, -'.json'.length))
+    );
+    for (const id of await readdir(join(dir, REVISION_DIR)).catch(() => [] as string[])) {
+      ids.add(id);
+    }
+    const files = Array.from(ids)
       .filter((id) => !provider || id === provider)
       .sort();
     const holder = await writerLockFor(dir).holder();

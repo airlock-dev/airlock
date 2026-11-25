@@ -8,6 +8,7 @@ import {
 } from '@modelcontextprotocol/client';
 import type { OAuthDiscoveryState, OAuthTokens } from '@modelcontextprotocol/client';
 import type { FileOAuthProvider, PersistResult } from './oauth-provider.js';
+import { randomUUID } from 'crypto';
 import type { ExchangeMarker } from './oauth-store.js';
 import { childLogger } from '../util/logger.js';
 
@@ -66,6 +67,21 @@ const NOT_SENT_CODES = new Set<string>([
 const AMBIGUOUS_STATUSES = new Set([502, 504, 520, 524]);
 /** Statuses meaning there is no token endpoint here (the request was not processed). */
 const GONE_STATUSES = new Set([404, 405, 410]);
+/**
+ * A pinned (ambiguous) exchange whose endpoint has been gone or unreachable this long is reported
+ * as `grant_rejected` (endpoint retired). The grant and the marker are still kept; nothing is
+ * dropped, and a successful refresh or a new authorization clears it.
+ */
+export const PINNED_ENDPOINT_RETIRED_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** How long shutdown waits for an in-flight token exchange to be committed (request + commit). */
+export const OAUTH_SHUTDOWN_DRAIN_MS = OAUTH_REQUEST_TIMEOUT_MS + 5_000;
+/**
+ * Graceful-shutdown deadline before a forced exit (gateway and stdio mode). Longer than the OAuth
+ * drain so an exchange in flight is committed; a container's stop grace period (Docker's default
+ * is 10 s) must be longer still, e.g. compose `stop_grace_period: 40s`.
+ */
+export const SHUTDOWN_FORCE_EXIT_MS = OAUTH_SHUTDOWN_DRAIN_MS + 5_000;
 
 export type RefreshOutcome =
   | {
@@ -75,8 +91,19 @@ export type RefreshOutcome =
       issuerChange?: { from: string; to: string };
       /** True when the grant moved to the newly advertised issuer in this refresh. */
       migrated?: boolean;
-      /** What happened to the successor on disk (see PersistResult). */
-      persistence: PersistResult;
+      /** `persisted`, or `superseded` (a different grant was stored meanwhile; result archived). */
+      persistence: Extract<PersistResult, 'persisted' | 'superseded'>;
+    }
+  /**
+   * The exchange succeeded and the successor is usable from memory, but it is NOT on disk yet
+   * (the write failed and is being retried). Not reported as a success.
+   */
+  | {
+      kind: 'unpersisted';
+      issuer?: string;
+      issuerChange?: { from: string; to: string };
+      migrated?: boolean;
+      message: string;
     }
   /** No refresh token stored: only an interactive authorization can produce a grant. */
   | { kind: 'no_grant'; reason: string }
@@ -118,6 +145,12 @@ function issuersMatch(a: string, b: string): boolean {
 
 function issuerOf(state: OAuthDiscoveryState): string {
   return state.authorizationServerMetadata?.issuer ?? String(state.authorizationServerUrl);
+}
+
+function authMethods(state: OAuthDiscoveryState): string {
+  return JSON.stringify(
+    [...(state.authorizationServerMetadata?.token_endpoint_auth_methods_supported ?? [])].sort()
+  );
 }
 
 function tokenEndpoint(state: OAuthDiscoveryState): string {
@@ -192,9 +225,9 @@ function tracingFetch(trace: WireTrace): typeof fetch {
  * - `not_sent`: provably never left this host (DNS, connect refused, TLS) → token not consumed.
  * - `gone`: no token endpoint answered there (404/405/410 without an OAuth error) → not consumed.
  * - `rejected`: the issuer answered invalid_grant/invalid_client/unauthorized_client.
- * - `failed`: the issuer (or a maintenance page) answered without issuing tokens.
+ * - `failed`: the issuer answered with an error status without issuing tokens.
  * - `ambiguous`: the request may have been processed but the answer was lost (timeout, reset after
- *   sending, a body cut off, 502/504 from a proxy, an unparseable JSON success body).
+ *   sending, a body cut off, 502/504 from a proxy, any 2xx whose body is unusable).
  */
 function classifyExchange(err: unknown, trace: WireTrace): ExchangeClass {
   if (!trace.invoked) return 'not_sent';
@@ -205,11 +238,9 @@ function classifyExchange(err: unknown, trace: WireTrace): ExchangeClass {
   if (trace.bodyFailed) return 'ambiguous';
   if (err instanceof OAuthError && REJECTION_CODES.has(err.code)) return 'rejected';
   const status = trace.status ?? 0;
-  if (status >= 200 && status < 300) {
-    // A JSON success body we could not use may have carried the successor. An HTML/text page is
-    // a maintenance or proxy page: the issuer did not answer.
-    return /json/i.test(trace.contentType ?? '') ? 'ambiguous' : 'failed';
-  }
+  // Any success status whose body we could not use may have carried the successor (whatever the
+  // content type claims): the issuer may have rotated the refresh token.
+  if (status >= 200 && status < 300) return 'ambiguous';
   if (AMBIGUOUS_STATUSES.has(status)) return 'ambiguous';
   // A 404/405/410 carrying a real OAuth error body came from the issuer; without one there is no
   // token endpoint at that URL any more.
@@ -289,6 +320,9 @@ export function refreshGrant(
   const key = provider.store.path;
   const existing = inflight.get(key);
   if (existing) return existing;
+  if (provider.closing) {
+    return Promise.resolve({ kind: 'read_only', reason: 'Airlock is shutting down' });
+  }
   const run = provider
     .runExclusive(() => doRefresh(provider, serverUrl, opts))
     .catch((err: unknown): RefreshOutcome => ({ kind: 'failed', message: describeError(err) }))
@@ -365,7 +399,15 @@ async function doRefresh(
     // The endpoint that last refreshed (or issued) this grant goes first. A newly advertised
     // endpoint is only tried when that one definitively rejects the grant or is gone.
     if (known) targets.push({ label: 'known-good', issuer: issuerOf(known), discovery: known });
-    if (live.state && (!known || tokenEndpoint(known) !== tokenEndpoint(live.state))) {
+    // Fresh metadata is a separate candidate when it points elsewhere OR changes how the client
+    // authenticates there (e.g. client_secret_basic → client_secret_post at the same URL): after an
+    // invalid_client with the stored metadata, the fresh one deserves its own attempt.
+    if (
+      live.state &&
+      (!known ||
+        tokenEndpoint(known) !== tokenEndpoint(live.state) ||
+        authMethods(known) !== authMethods(live.state))
+    ) {
       targets.push({ label: 'live', issuer: issuerOf(live.state), discovery: live.state });
     }
     if (targets.length === 0) {
@@ -388,8 +430,14 @@ async function doRefresh(
   for (const target of targets) {
     const resource = target.resource ?? resourceFor(serverUrl, grant.resource, target.discovery);
     const endpoint = tokenEndpoint(target.discovery);
+    if (provider.closing) {
+      // Shutting down: never send a token request that might not get committed.
+      return { kind: 'read_only', reason: 'Airlock is shutting down' };
+    }
+    const exchangeId = randomUUID();
     const marker: ExchangeMarker = {
       state: 'in_flight',
+      id: exchangeId,
       startedAt: Date.now(),
       issuer: target.issuer,
       tokenEndpoint: endpoint,
@@ -452,8 +500,23 @@ async function doRefresh(
         break;
       }
       // A definitive answer (or none sent): restore the previous marker (a pinned ambiguity is
-      // still unresolved) or clear the in-flight one.
-      await provider.endExchange(pinned);
+      // still unresolved) or clear the in-flight one. A pinned endpoint that is gone/unreachable
+      // starts (or continues) the retirement clock.
+      if (pinned && (cls === 'gone' || cls === 'not_sent')) {
+        const goneSince = pinned.goneSince ?? Date.now();
+        await provider.endExchange({ ...pinned, goneSince });
+        if (Date.now() - goneSince >= PINNED_ENDPOINT_RETIRED_MS) {
+          return {
+            kind: 'rejected',
+            code: 'endpoint_retired',
+            message: `the endpoint of an earlier refresh whose answer was lost (${pinned.tokenEndpoint}) has been gone or unreachable since ${new Date(goneSince).toISOString()}; the stored refresh token cannot be safely presented anywhere else — browser re-authorization required`,
+            issuer: pinned.issuer,
+            afterAmbiguous: true,
+          };
+        }
+        break;
+      }
+      await provider.endExchange(pinned ? { ...pinned, goneSince: undefined } : undefined);
       // Only a definitive "no" proves the token was not consumed; then (and when nothing was sent
       // or no endpoint exists there) the next endpoint may be tried. After a 5xx, wait.
       if (!pinned && (cls === 'rejected' || cls === 'not_sent' || cls === 'gone')) continue;
@@ -464,9 +527,30 @@ async function doRefresh(
     const persistence = await provider.commitRefresh(
       tokens,
       { issuer: target.issuer, discovery: target.discovery, ...(resource ? { resource } : {}) },
-      { refreshToken, clientInfo }
+      {
+        refreshToken,
+        clientInfo,
+        credentials: grant.credentials,
+        ...(grant.revision !== undefined ? { revision: grant.revision } : {}),
+        exchangeId,
+      }
     );
     const migrated = Boolean(issuerChange && target.label === 'live');
+    if (persistence === 'handed_off') {
+      return {
+        kind: 'read_only',
+        reason:
+          'lost the OAuth writer lock (or a newer grant revision appeared) during a refresh; the successor was parked for the owner to adopt',
+      };
+    }
+    if (persistence === 'pending') {
+      return {
+        kind: 'unpersisted',
+        issuer: target.issuer,
+        message: 'refreshed, but the new grant could not be written to disk yet (retrying)',
+        ...(issuerChange ? { issuerChange, migrated } : {}),
+      };
+    }
     if (migrated) {
       log.info(
         { serverId, previousIssuer: issuerChange!.from, newIssuer: issuerChange!.to },

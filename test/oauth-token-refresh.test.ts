@@ -1,4 +1,4 @@
-import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from 'fs/promises';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -97,9 +97,11 @@ describe('FileOAuthProvider — refresh_token preservation', () => {
     await provider.saveTokens(initial);
     const path = join(tempHome, '.airlock', 'oauth', 'test-server.json');
     const original = await readFile(path, 'utf-8');
-    const protectedParent = join(tempHome, '.airlock');
 
-    await chmod(protectedParent, 0o000);
+    // Injected (not chmod-based, which root bypasses): every grant write fails.
+    const spy = vi
+      .spyOn(provider.store, 'write')
+      .mockRejectedValue(Object.assign(new Error('EACCES: injected'), { code: 'EACCES' }));
     try {
       await provider.saveTokens({
         access_token: 'access-2',
@@ -108,10 +110,12 @@ describe('FileOAuthProvider — refresh_token preservation', () => {
         expires_in: 3600,
       });
       expect((await provider.tokens())?.refresh_token).toBe('refresh-2');
+      expect(provider.persistencePending).toBe(true);
     } finally {
-      await chmod(protectedParent, 0o700);
+      spy.mockRestore();
     }
     expect(await readFile(path, 'utf-8')).toBe(original);
+    expect(JSON.parse(await readFile(path, 'utf-8')).tokens.refresh_token).toBe('refresh-1');
   });
 });
 

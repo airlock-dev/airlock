@@ -310,10 +310,18 @@ discovery in the same local command center.
 
 ## Inspect and restore OAuth grants
 
-Airlock-held OAuth grants (`oauth: true`) live in `~/.airlock/oauth/<provider>.json`. Every
-replacement of a grant — a refresh rotation, a new authorization, a restore — keeps the previous
-version in `~/.airlock/oauth/.history/<provider>/` (last 10 kept, owner-only permissions). The new
-grant is made durable first; the backup is written afterwards and a failing backup never blocks it.
+Airlock-held OAuth grants (`oauth: true`) are stored as immutable revisions in
+`~/.airlock/oauth/.grants/<provider>/` (the highest revision is the grant; the last 5 are kept).
+`~/.airlock/oauth/<provider>.json` is kept as a mirror of the current revision for tools that list or
+read it; a grant that only exists as that file (from an older Airlock) is migrated on its first
+write. Edits to the mirror are ignored once revisions exist; use `airlock oauth restore`.
+
+Each revision is published with an exclusive create, so a writer that stalled and lost the writer
+lock can never replace a newer grant. Every replacement keeps the previous grant in
+`~/.airlock/oauth/.history/<provider>/` (last 10 kept, owner-only permissions). A refresh rotation
+is made durable first and its predecessor backed up afterwards; replacing a different grant (a
+restore, a new authorization) requires a durable backup first. Crash-left temporary files and
+abandoned restore requests are removed after an hour and ten minutes respectively.
 
 ```bash
 airlock oauth status [provider]            # what is stored, unresolved refreshes, lock holder
@@ -345,11 +353,26 @@ on the provider status, never paged:
 Refreshes go to the endpoint that last refreshed the grant. When discovery advertises a new issuer
 (`issuerChanged`), the grant moves there only after the old endpoint rejects it or is gone.
 
+**Shutdown.** On SIGTERM the gateway admits no new token exchange, waits for one already sent to
+be committed (up to 20 seconds), then releases the writer lock; it forces exit after 25 seconds.
+Give the container a longer stop grace period than that, e.g. `stop_grace_period: 40s` in Compose
+(Docker's default of 10 seconds can kill the process with a rotated refresh token not yet
+written).
+
+**Lock takeover.** A gateway that crashed without releasing the lock is taken over by the next
+writer process (for example the recreated container) once its lock record has been unchanged for
+2 minutes, as observed by that process from its start (it retries every 30 seconds), plus a
+35-second grace period: at most about 3 minutes 5 seconds after the new process starts. A holder
+that stopped gracefully, or a dead process in the same pid namespace, is taken over immediately.
+Stored access tokens keep working in the meantime.
+
 **Limits.** After an ambiguous exchange the stored refresh token is the only one Airlock has, so it
 is retried — once after 5 seconds, then with backoff — at the same endpoint only. An issuer with a
 reuse grace window accepts it and the grant recovers. An issuer that strictly enforces single use
 and rotated the token before the answer was lost cannot be recovered from the client side: the
 retry gets `invalid_grant` and status says that the earlier lost exchange probably consumed it.
+If the endpoint of such an exchange stays gone or unreachable for 7 days, the grant is reported as
+`grant_rejected` (`endpoint_retired`); the stored grant and the marker are still kept.
 Airlock never spends a refresh token unless it could first durably record the attempt.
 
 ## Setup OpenClaw integration

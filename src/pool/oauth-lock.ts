@@ -137,12 +137,18 @@ function parseRecord(raw: string, gen: number): LockRecord | undefined {
   }
 }
 
-const sleep = (ms: number) =>
-  new Promise<void>((resolve) => {
-    setTimeout(resolve, ms).unref?.();
-  });
+// Deliberately NOT unref'd: an awaited wait (the takeover grace) must keep a short-lived process
+// such as `airlock oauth restore --force` alive until it is over.
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 export type RequestHandler = (dir: string) => Promise<void>;
+export type AcquiredHook = (dir: string) => Promise<void>;
+let acquiredHook: AcquiredHook | undefined;
+
+/** Run once each time a process acquires a lock (bounded cleanup of crash leftovers). */
+export function setLockAcquiredHook(hook: AcquiredHook): void {
+  acquiredHook = hook;
+}
 
 /**
  * Single-writer lock for an OAuth store directory (`~/.airlock/oauth`).
@@ -169,12 +175,15 @@ export type RequestHandler = (dir: string) => Promise<void>;
  *   over a possibly-live holder then waits {@link LockTimings.takeoverGraceMs} (longer than any
  *   token request may run) before its first write.
  *
+ * Publication is fenced independently: grants are immutable revision files created exclusively
+ * (see OAuthGrantStore), so a frozen holder that resumes after a takeover can never replace the
+ * new owner's grant, even if it was suspended right before publishing.
+ *
  * Residual assumption: a holder that is frozen (SIGSTOP, VM pause, a blocked event loop) for longer
  * than `staleMs - heartbeatMs + takeoverGraceMs` (~125 s) *between* its fencing check and the moment
  * its token request leaves the host could still send after a new owner has started. Without an
  * issuer-side fencing token this cannot be closed client-side. If such a frozen holder later gets a
- * response, it fails the commit-time check and hands the successor to the new owner through the
- * orphan journal instead of writing the grant.
+ * response, its publication fails and it parks the successor for the new owner to adopt.
  */
 export class OAuthWriterLock {
   private nonce?: string;
@@ -186,6 +195,8 @@ export class OAuthWriterLock {
   private requestTimer?: NodeJS.Timeout;
   private requestHandler?: RequestHandler;
   private handlingRequests = false;
+  private acquireTimer?: NodeJS.Timeout;
+  private readonly acquiredListeners = new Set<() => void>();
   private acquiring?: Promise<boolean>;
   /** What this process saw as the current lock, and since when (monotonic), for staleness. */
   private observation?: { key: string; since: number };
@@ -197,6 +208,33 @@ export class OAuthWriterLock {
   /** Whether this process currently believes it holds the lock (cheap, no I/O). */
   get held(): boolean {
     return this.nonce !== undefined;
+  }
+
+  /** Subscribe to "this process just acquired the lock". Returns an unsubscribe function. */
+  onAcquired(cb: () => void): () => void {
+    this.acquiredListeners.add(cb);
+    return () => this.acquiredListeners.delete(cb);
+  }
+
+  /**
+   * Writer processes keep trying to acquire the lock in the background (every heartbeat interval)
+   * whenever they do not hold it. Staleness observation therefore starts at process start, which
+   * bounds a takeover after a crashed holder to `staleMs + heartbeatMs + takeoverGraceMs`.
+   */
+  keepAcquiring(): void {
+    if (this.acquireTimer) return;
+    const tick = () => {
+      if (!this.nonce && !this.acquiring) void this.ensure();
+    };
+    this.acquireTimer = setInterval(tick, timings.heartbeatMs);
+    this.acquireTimer.unref?.();
+    tick();
+  }
+
+  /** Stop background acquisition (shutdown). */
+  stopAcquiring(): void {
+    if (this.acquireTimer) clearInterval(this.acquireTimer);
+    this.acquireTimer = undefined;
   }
 
   /** Register the handler run periodically while this process holds the lock. */
@@ -256,6 +294,7 @@ export class OAuthWriterLock {
 
   /** Release (mark the generation released so the next process can take it at once). */
   async release(): Promise<void> {
+    this.stopAcquiring();
     this.stopTimers();
     if (!this.nonce) return;
     const nonce = this.nonce;
@@ -394,6 +433,17 @@ export class OAuthWriterLock {
     log.info({ dir: this.dir, pid: process.pid, gen }, 'Acquired OAuth writer lock');
     this.lastProblem = undefined;
     this.startRequestPolling();
+    if (acquiredHook) {
+      const hook = acquiredHook;
+      void hook(this.dir).catch(() => {});
+    }
+    for (const listener of this.acquiredListeners) {
+      try {
+        listener();
+      } catch {
+        // listeners must not break acquisition
+      }
+    }
     return true;
   }
 

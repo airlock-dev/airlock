@@ -1,13 +1,13 @@
-import { chmod, mkdir, readdir, readFile, rename, stat, unlink } from 'fs/promises';
+import { chmod, link, mkdir, open, readdir, readFile, rename, stat, unlink } from 'fs/promises';
 import { createHash, randomUUID } from 'crypto';
-import { join } from 'path';
+import { join, resolve } from 'path';
 import type {
   OAuthClientInformationFull,
   OAuthDiscoveryState,
   OAuthTokens,
 } from '@modelcontextprotocol/client';
 import { atomicWritePrivateFile } from '../util/atomic-file.js';
-import { writerLockFor, type OAuthWriterLock } from './oauth-lock.js';
+import { setLockAcquiredHook, writerLockFor, type OAuthWriterLock } from './oauth-lock.js';
 import { childLogger } from '../util/logger.js';
 
 const log = childLogger('oauth-store');
@@ -19,6 +19,17 @@ export const HISTORY_DIR = '.history';
 export const ORPHAN_DIR = '.successors';
 /** Operator requests handed to the lock holder (`airlock oauth restore` while a gateway runs). */
 export const REQUEST_DIR = '.requests';
+/**
+ * Immutable grant revisions: `.grants/<id>/r<NNNNNNNNNNNN>.json`. The highest readable revision is
+ * the grant. `<id>.json` next to it is a compatibility mirror (status tools, `ls`), never read
+ * once revisions exist.
+ */
+export const REVISION_DIR = '.grants';
+/** Revisions kept per grant (older ones are pruned after a newer one is durable). */
+export const REVISIONS_KEPT = 5;
+/** Abandoned operator requests/results and crash-left temp files are removed after these ages. */
+const REQUEST_TTL_MS = 10 * 60 * 1000;
+const TMP_TTL_MS = 60 * 60 * 1000;
 
 /**
  * Whether this process may write OAuth grant files.
@@ -51,7 +62,11 @@ export interface PendingAuthorization {
  */
 export interface ExchangeMarker {
   state: 'in_flight' | 'ambiguous';
+  /** Identifies this exchange (orphaned successors carry it). */
+  id?: string;
   startedAt: number;
+  /** First time the pinned endpoint answered as gone (404/410) or unreachable. */
+  goneSince?: number;
   /** When the exchange became ambiguous. */
   at?: number;
   reason?: string;
@@ -90,6 +105,21 @@ export class OAuthStoreReadOnlyError extends Error {
 }
 
 /** The grant file changed under this process (operator restore, another writer). */
+/** A provider id that cannot be mapped to a file inside the store directory. */
+export class OAuthStoreIdError extends Error {
+  constructor(serverId: string) {
+    super(`Invalid OAuth provider id: ${JSON.stringify(serverId)}`);
+    this.name = 'OAuthStoreIdError';
+  }
+}
+
+/** Whether a provider id maps to a file directly inside `dir` (no separators, no traversal). */
+export function isValidProviderId(dir: string, serverId: string): boolean {
+  if (!serverId || serverId === '.' || serverId === '..') return false;
+  if (/[/\\]/.test(serverId)) return false;
+  return resolve(dir, `${serverId}.json`) === join(resolve(dir), `${serverId}.json`);
+}
+
 export class OAuthStoreConflictError extends Error {
   constructor(serverId: string) {
     super(`OAuth grant file for ${serverId} changed on disk since it was read`);
@@ -208,41 +238,160 @@ export async function withGrantOperation<T>(path: string, fn: () => Promise<T>):
   }
 }
 
+// Whoever acquires a store's writer lock removes crash-left temp files there (bounded cleanup).
+setLockAcquiredHook((dir) => cleanupStaleTemp(dir));
+
+/**
+ * Wait until no grant operation (refresh exchange + commit, code exchange, restore) is running
+ * for `path` in this process, up to `timeoutMs`. Returns false on timeout. Used at shutdown, after
+ * new exchanges stopped being admitted, so a token request already sent is committed (or its
+ * successor parked) before the writer lock is released and the process exits.
+ */
+export async function drainGrantOperations(timeoutMs: number, path?: string): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const pending = path
+      ? grantOps.has(path)
+        ? [grantOps.get(path)!]
+        : []
+      : Array.from(grantOps.values());
+    if (pending.length === 0) return true;
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return false;
+    let timer: NodeJS.Timeout | undefined;
+    await Promise.race([
+      Promise.allSettled(pending),
+      new Promise((r) => (timer = setTimeout(r, remaining))),
+    ]);
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/** Fingerprint of the credentials a successor was derived from (refresh + access token + client). */
+export function credentialFingerprint(data: PersistedGrant): string {
+  return sha256(
+    JSON.stringify([
+      data.tokens?.refresh_token ?? null,
+      data.tokens?.access_token ?? null,
+      data.clientInfo?.client_id ?? null,
+    ])
+  );
+}
+
 export interface OrphanSuccessor {
   file: string;
   savedAt: number;
   /** sha256 of the refresh token that was presented to obtain this successor. */
   predecessor: string;
+  /**
+   * {@link credentialFingerprint} of the grant the exchange started from. A successor is adopted
+   * only while the stored credentials are still exactly those (marker-only revisions in between
+   * do not matter; any credential change does).
+   */
+  predecessorCredentials?: string;
+  /** Revision and exchange id the successor was derived from (diagnostics). */
+  predecessorRevision?: number;
+  exchangeId?: string;
   grant: PersistedGrant;
 }
 
+export interface StoredGrant {
+  data: PersistedGrant;
+  raw?: string;
+  corrupt?: boolean;
+  /** Revision number (0 = legacy `<id>.json` or nothing stored). */
+  rev: number;
+  hash: string | null;
+}
+
+function revFile(rev: number): string {
+  return `r${String(rev).padStart(12, '0')}.json`;
+}
+
+function parseRev(name: string): number | undefined {
+  const m = /^r(\d{12})\.json$/.exec(name);
+  return m ? Number(m[1]) : undefined;
+}
+
+async function fsyncDir(dir: string): Promise<void> {
+  let handle: Awaited<ReturnType<typeof open>>;
+  try {
+    handle = await open(dir, 'r');
+  } catch {
+    return; // platforms that cannot open directories: durability there is best-effort
+  }
+  try {
+    await handle.sync(); // a failing directory fsync is surfaced: the entry may not be durable
+  } finally {
+    await handle.close().catch(() => {});
+  }
+}
+
+/** Remove crash-left `*.tmp` files older than an hour (bounded cleanup, run by the lock holder). */
+export async function cleanupStaleTemp(dir: string): Promise<void> {
+  const dirs = [dir];
+  for (const sub of [REVISION_DIR, HISTORY_DIR, ORPHAN_DIR]) {
+    const names = await readdir(join(dir, sub)).catch(() => [] as string[]);
+    for (const name of names) dirs.push(join(dir, sub, name));
+  }
+  dirs.push(join(dir, REQUEST_DIR));
+  for (const d of dirs) {
+    const names = await readdir(d).catch(() => [] as string[]);
+    for (const name of names) {
+      if (!name.endsWith('.tmp')) continue;
+      const path = join(d, name);
+      const info = await stat(path).catch(() => undefined);
+      if (info && Date.now() - info.mtimeMs > TMP_TTL_MS) await unlink(path).catch(() => {});
+    }
+  }
+}
+
 /**
- * File-level persistence for one provider's OAuth grant: single-writer (fenced by the writer lock),
- * compare-and-swap against the version this process last saw, atomic durable replace, and a
- * rotating backup of every previous grant written *after* the new grant is durable.
+ * Persistence for one provider's OAuth grant.
+ *
+ * Each committed grant is a new immutable revision file, published with `link()` (exclusive
+ * create): exactly one writer can publish revision N, and readers take the highest revision. A
+ * writer that was frozen after its ownership check and resumes after a takeover can therefore
+ * never replace a newer grant: its publication either fails (`EEXIST`) or lands below the new
+ * owner's revisions. Writes are also fenced by the writer lock and compare-and-swap against the
+ * revision the caller last read. History backups of a same-lineage predecessor are written after
+ * the new revision is durable; replacing a different grant (restore, new authorization, a corrupt
+ * file) requires a durable backup first.
  */
 export class OAuthGrantStore {
+  /** Compatibility mirror `<id>.json` (also the legacy, pre-revision grant file). */
   readonly path: string;
+  readonly revisionDir: string;
   readonly historyDir: string;
   readonly orphanDir: string;
+  readonly validId: boolean;
   private readonly lock: OAuthWriterLock;
-  /** Serializes replacements so an older snapshot can never land after a newer one. */
+  /** Serializes publications so an older snapshot can never be published after a newer one. */
   private queue: Promise<unknown> = Promise.resolve();
   /** Backups run here, after the primary commit, and never delay it. */
-  private historyQueue: Promise<void> = Promise.resolve();
-  /** sha256 of the last content this store instance wrote. */
-  private lastWrittenHash?: string;
+  private historyQueue: Promise<unknown> = Promise.resolve();
+  /** Revision this store instance last published. */
+  private lastWrittenRev?: number;
 
   constructor(
     readonly serverId: string,
     readonly mode: OAuthStorageMode = 'writer',
     readonly dir: string = oauthStoreDir()
   ) {
+    this.validId = isValidProviderId(dir, serverId);
     this.path = join(dir, `${serverId}.json`);
+    this.revisionDir = join(dir, REVISION_DIR, sanitizeId(serverId));
     this.historyDir = join(dir, HISTORY_DIR, sanitizeId(serverId));
     this.orphanDir = join(dir, ORPHAN_DIR, sanitizeId(serverId));
     this.lock = writerLockFor(dir);
-    if (mode === 'writer') this.lock.setRequestHandler(processOperatorRequests);
+    if (mode === 'writer') {
+      this.lock.setRequestHandler(processOperatorRequests);
+      this.lock.keepAcquiring();
+    }
+  }
+
+  private assertValidId(): void {
+    if (!this.validId) throw new OAuthStoreIdError(this.serverId);
   }
 
   /** Whether this process may write right now (acquires the writer lock on demand). */
@@ -256,41 +405,91 @@ export class OAuthGrantStore {
     return this.lock.lastProblem;
   }
 
-  /** Read the grant. A missing file is `{}`; an unparseable one is reported, never overwritten. */
-  async read(): Promise<{
-    data: PersistedGrant;
-    raw?: string;
-    corrupt?: boolean;
-    hash: string | null;
-  }> {
+  /** Subscribe to "this process just acquired the writer lock". Returns an unsubscribe. */
+  onLockAcquired(cb: () => void): () => void {
+    return this.lock.onAcquired(cb);
+  }
+
+  private async revisions(): Promise<number[]> {
+    const names = await readdir(this.revisionDir).catch((err: NodeJS.ErrnoException) => {
+      if (err.code === 'ENOENT') return [] as string[];
+      throw err;
+    });
+    return names
+      .map(parseRev)
+      .filter((r): r is number => r !== undefined)
+      .sort((a, b) => b - a);
+  }
+
+  /**
+   * Read the grant: the highest revision, or the legacy `<id>.json` when no revision exists yet.
+   * A missing grant is `{}`; an unparseable one is reported (and backed up before any newer
+   * revision is published), never silently replaced.
+   */
+  async read(): Promise<StoredGrant> {
+    this.assertValidId();
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const revs = await this.revisions();
+      if (revs.length === 0) return this.readLegacy();
+      let raced = false;
+      for (const rev of revs) {
+        let raw: string;
+        try {
+          raw = await readFile(join(this.revisionDir, revFile(rev)), 'utf-8');
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+            raced = true; // pruned meanwhile: list again
+            break;
+          }
+          throw err;
+        }
+        if (raw.length === 0) continue; // O_EXCL fallback publication still being written
+        try {
+          return { data: JSON.parse(raw) as PersistedGrant, raw, rev, hash: sha256(raw) };
+        } catch {
+          return { data: {}, raw, corrupt: true, rev, hash: sha256(raw) };
+        }
+      }
+      if (!raced) return this.readLegacy();
+    }
+    throw new Error(`OAuth grant revisions for ${this.serverId} kept changing while reading`);
+  }
+
+  private async readLegacy(): Promise<StoredGrant> {
     let raw: string;
     try {
       raw = await readFile(this.path, 'utf-8');
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { data: {}, hash: null };
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { data: {}, rev: 0, hash: null };
       throw err;
     }
     try {
-      return { data: JSON.parse(raw) as PersistedGrant, raw, hash: sha256(raw) };
+      return { data: JSON.parse(raw) as PersistedGrant, raw, rev: 0, hash: sha256(raw) };
     } catch {
-      return { data: {}, raw, corrupt: true, hash: sha256(raw) };
+      return { data: {}, raw, corrupt: true, rev: 0, hash: sha256(raw) };
     }
   }
 
+  /** Test seam: runs after the new revision is fsynced and right before it is published. */
+  async beforePublish(): Promise<void> {}
+
   /**
-   * Replace the grant file. Requires (and re-verifies) the writer lock immediately before writing.
+   * Publish a new grant revision. Requires (and re-verifies) the writer lock immediately before.
    *
-   * `expectHash` makes it a compare-and-swap: the write is refused with
-   * {@link OAuthStoreConflictError} when the file is neither what the caller last read nor what
-   * this store last wrote (`null` = expect no file; omit to skip the check, e.g. a restore).
-   * The new grant is made durable first (tmp + fsync + rename + dir fsync); the previous version
-   * is copied to history afterwards, and a failing backup never fails the write.
+   * `expectRev` makes it a compare-and-swap: refused with {@link OAuthStoreConflictError} when
+   * the current revision is neither what the caller last read nor what this store last published
+   * (omit to skip the check, e.g. a restore). Publication itself is exclusive (`link()`), so a
+   * stale writer that slipped past every check still cannot replace a newer revision.
+   *
+   * `backup: 'before'` makes a durable history copy of the current grant a precondition (used
+   * when replacing a different grant); the default backs it up afterwards, best-effort.
    */
   async write(
     data: PersistedGrant,
     reason: string,
-    opts: { expectHash?: string | null } = {}
-  ): Promise<{ hash: string }> {
+    opts: { expectRev?: number; backup?: 'before' | 'after' } = {}
+  ): Promise<{ rev: number; hash: string }> {
+    this.assertValidId();
     if (this.mode === 'readonly') {
       throw new OAuthStoreReadOnlyError(this.serverId, 'read-only command');
     }
@@ -302,27 +501,109 @@ export class OAuthGrantStore {
           this.lock.lastProblem ?? 'another Airlock process holds the writer lock'
         );
       }
-      let current: { raw?: string; hash: string | null; data: PersistedGrant; corrupt?: boolean };
-      try {
-        current = await this.read();
-      } catch (err) {
-        throw err instanceof Error ? err : new Error(String(err));
-      }
+      const current = await this.read();
       if (
-        opts.expectHash !== undefined &&
-        current.hash !== opts.expectHash &&
-        (this.lastWrittenHash === undefined || current.hash !== this.lastWrittenHash)
+        opts.expectRev !== undefined &&
+        current.rev !== opts.expectRev &&
+        (this.lastWrittenRev === undefined || current.rev !== this.lastWrittenRev)
       ) {
         throw new OAuthStoreConflictError(this.serverId);
       }
-      await atomicWritePrivateFile(this.path, snapshot);
-      const hash = sha256(snapshot);
-      this.lastWrittenHash = hash;
-      this.scheduleBackup(current, data, reason);
-      return { hash };
+      const needsBackup =
+        current.raw !== undefined &&
+        (current.corrupt ||
+          ((current.data.tokens || current.data.clientInfo) &&
+            grantFingerprint(current.data) !== grantFingerprint(data)));
+      if (needsBackup && (opts.backup === 'before' || current.corrupt)) {
+        if (!(await this.enqueueHistory(current.raw!, `replaced-by-${reason}`))) {
+          throw new Error('could not durably back up the grant being replaced');
+        }
+      }
+      const rev = current.rev + 1;
+      await this.publish(rev, snapshot);
+      this.lastWrittenRev = rev;
+      await this.writeMirror(rev, snapshot);
+      await this.pruneRevisions(rev);
+      if (needsBackup && opts.backup !== 'before' && !current.corrupt) {
+        // Not awaited: the new revision is already durable; history must never delay it.
+        void this.enqueueHistory(current.raw!, reason);
+      }
+      return { rev, hash: sha256(snapshot) };
     });
     this.queue = run.catch(() => {});
     return run;
+  }
+
+  private async publish(rev: number, snapshot: string): Promise<void> {
+    await mkdir(this.revisionDir, { recursive: true, mode: 0o700 });
+    await chmod(this.revisionDir, 0o700).catch(() => {});
+    const target = join(this.revisionDir, revFile(rev));
+    const tmp = `${target}.${process.pid}.${randomUUID()}.tmp`;
+    const handle = await open(tmp, 'wx', 0o600);
+    try {
+      await handle.writeFile(snapshot, 'utf-8');
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    try {
+      await this.beforePublish();
+      try {
+        await link(tmp, target);
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code === 'EEXIST') throw new OAuthStoreConflictError(this.serverId);
+        if (code !== 'EPERM' && code !== 'ENOTSUP' && code !== 'EOPNOTSUPP' && code !== 'ENOSYS') {
+          throw err;
+        }
+        await this.publishExclusiveFallback(target, snapshot);
+      }
+    } finally {
+      await unlink(tmp).catch(() => {});
+    }
+    await fsyncDir(this.revisionDir);
+  }
+
+  /** Filesystems without hard links: O_EXCL create (readers skip it while it is empty). */
+  private async publishExclusiveFallback(target: string, snapshot: string): Promise<void> {
+    let handle: Awaited<ReturnType<typeof open>>;
+    try {
+      handle = await open(target, 'wx', 0o600);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'EEXIST') {
+        throw new OAuthStoreConflictError(this.serverId);
+      }
+      throw err;
+    }
+    try {
+      await handle.writeFile(snapshot, 'utf-8');
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+  }
+
+  /** Keep `<id>.json` in step for tools that read it. Never authoritative; failures are logged. */
+  private async writeMirror(rev: number, snapshot: string): Promise<void> {
+    try {
+      const top = (await this.revisions())[0];
+      if (top !== rev) return; // a newer revision exists; its writer mirrors it
+      await atomicWritePrivateFile(this.path, snapshot);
+    } catch (err) {
+      log.warn(
+        { serverId: this.serverId, reason: err instanceof Error ? err.message : String(err) },
+        'Could not update the OAuth grant mirror file (the grant revision itself is durable)'
+      );
+    }
+  }
+
+  private async pruneRevisions(latest: number): Promise<void> {
+    const revs = await this.revisions().catch(() => [] as number[]);
+    for (const rev of revs) {
+      if (rev <= latest - REVISIONS_KEPT) {
+        await unlink(join(this.revisionDir, revFile(rev))).catch(() => {});
+      }
+    }
   }
 
   /** Resolves once every scheduled backup has been written (or failed). */
@@ -331,25 +612,21 @@ export class OAuthGrantStore {
     await this.historyQueue;
   }
 
-  private scheduleBackup(
-    previous: { raw?: string; data: PersistedGrant; corrupt?: boolean },
-    next: PersistedGrant,
-    reason: string
-  ): void {
-    if (previous.raw === undefined) return; // nothing on disk before
-    if (!previous.corrupt && grantFingerprint(previous.data) === grantFingerprint(next)) return;
-    if (!previous.corrupt && !previous.data.tokens && !previous.data.clientInfo) return;
-    // Not awaited: the primary commit is already durable, history must never delay it.
-    void this.enqueueHistory(previous.raw, reason);
-  }
-
-  /** Keep a copy of an arbitrary grant (e.g. a superseded refresh result) in history. */
-  archive(data: PersistedGrant, reason: string): Promise<void> {
-    if (this.mode === 'readonly') return Promise.resolve();
+  /**
+   * Durably keep a copy of an arbitrary grant (e.g. a superseded refresh result) in history.
+   * Resolves true only when the copy is on disk (file and directory fsynced).
+   */
+  archive(data: PersistedGrant, reason: string): Promise<boolean> {
+    if (this.mode === 'readonly') return Promise.resolve(false);
     return this.enqueueHistory(JSON.stringify(data, null, 2), reason);
   }
 
-  private enqueueHistory(raw: string, reason: string): Promise<void> {
+  /** Test seam: write one history file (atomic + durable). */
+  async writeHistoryFile(path: string, raw: string): Promise<void> {
+    await atomicWritePrivateFile(path, raw);
+  }
+
+  private enqueueHistory(raw: string, reason: string): Promise<boolean> {
     const run = this.historyQueue.then(async () => {
       try {
         await mkdir(this.historyDir, { recursive: true, mode: 0o700 });
@@ -360,13 +637,15 @@ export class OAuthGrantStore {
         for (let i = 1; existing.has(`${version}.json`); i++) {
           version = `${stamp}-${sanitizeId(reason)}-${i}`;
         }
-        await atomicWritePrivateFile(join(this.historyDir, `${version}.json`), raw);
+        await this.writeHistoryFile(join(this.historyDir, `${version}.json`), raw);
         await this.prune();
+        return true;
       } catch (err) {
         log.warn(
           { serverId: this.serverId, reason: err instanceof Error ? err.message : String(err) },
-          'Could not back up an OAuth grant version (the current grant is unaffected)'
+          'Could not back up an OAuth grant version'
         );
+        return false;
       }
     });
     this.historyQueue = run;
@@ -415,6 +694,7 @@ export class OAuthGrantStore {
   }
 
   async readBackup(version: string): Promise<PersistedGrant> {
+    this.assertValidId();
     if (!/^[A-Za-z0-9._-]+$/.test(version)) throw new Error(`Invalid backup version: ${version}`);
     const raw = await readFile(join(this.historyDir, `${version}.json`), 'utf-8');
     return JSON.parse(raw) as PersistedGrant;
@@ -424,14 +704,28 @@ export class OAuthGrantStore {
 
   /**
    * Durably park a successor grant that this process obtained but may not commit (it lost the
-   * writer lock during the exchange). The lock holder adopts it (see FileOAuthProvider). Needs no
-   * lock: every orphan gets its own file.
+   * writer lock, or its publication lost to a newer revision). The lock holder adopts it (see
+   * FileOAuthProvider). Needs no lock: every orphan gets its own file.
    */
-  async writeOrphan(grant: PersistedGrant, presentedRefreshToken: string): Promise<string> {
+  async writeOrphan(
+    grant: PersistedGrant,
+    basis: {
+      presentedRefreshToken: string;
+      predecessorCredentials: string;
+      predecessorRevision?: number;
+      exchangeId?: string;
+    }
+  ): Promise<string> {
+    this.assertValidId();
     const file = `${historyStamp()}-${randomUUID()}.json`;
     const body: Omit<OrphanSuccessor, 'file'> = {
       savedAt: Date.now(),
-      predecessor: sha256(presentedRefreshToken),
+      predecessor: sha256(basis.presentedRefreshToken),
+      predecessorCredentials: basis.predecessorCredentials,
+      ...(basis.predecessorRevision !== undefined
+        ? { predecessorRevision: basis.predecessorRevision }
+        : {}),
+      ...(basis.exchangeId ? { exchangeId: basis.exchangeId } : {}),
       grant,
     };
     await atomicWritePrivateFile(join(this.orphanDir, file), JSON.stringify(body, null, 2));
@@ -467,20 +761,36 @@ export class OAuthGrantStore {
 
 // ─── Operator restore (serialized with refresh, through the lock holder) ────────────────────────
 
-/** Restore a backup. The caller must hold the writer lock; serialized with refresh/authorization. */
+/**
+ * Restore a backup. The caller must hold the writer lock; serialized with refresh/authorization.
+ * With `expectedRevision`, the restore is refused when the grant moved on since it was requested
+ * (so a replayed request can never put an old grant over a later rotation).
+ */
 export async function restoreGrant(
   dir: string,
   serverId: string,
-  version: string
+  version: string,
+  opts: { expectedRevision?: number } = {}
 ): Promise<GrantSummary> {
+  if (!isValidProviderId(dir, serverId)) throw new OAuthStoreIdError(serverId);
   const store = new OAuthGrantStore(serverId, 'writer', dir);
   return withGrantOperation(store.path, async () => {
     // Staged authorization state and exchange markers belong to the moment the backup was taken,
     // not to the restored grant.
     const { pending: _pending, exchange: _exchange, ...data } = await store.readBackup(version);
-    // A restore deliberately replaces whatever is current; the replaced grant goes to history.
-    await store.write(data, 'restore');
-    await store.flushHistory();
+    if (opts.expectedRevision !== undefined) {
+      const current = await store.read();
+      if (current.rev !== opts.expectedRevision) {
+        throw new Error(
+          `the grant changed since the restore was requested (revision ${opts.expectedRevision} → ${current.rev}); nothing restored`
+        );
+      }
+    }
+    // A restore replaces a possibly valid grant: it must be durably backed up first.
+    await store.write(data, 'restore', {
+      backup: 'before',
+      ...(opts.expectedRevision !== undefined ? { expectRev: opts.expectedRevision } : {}),
+    });
     log.warn({ serverId, version }, 'OAuth grant restored from backup by operator request');
     return summarizeGrant(data);
   });
@@ -488,43 +798,85 @@ export async function restoreGrant(
 
 interface OperatorRequest {
   op: 'restore';
+  /** Same as the request file's id; the result carries it back. */
+  id: string;
   provider: string;
   version: string;
+  /** Grant revision when the request was made; the restore is refused if it moved on. */
+  expectedRevision: number;
   requestedAt: number;
 }
 
 export interface OperatorResult {
+  id?: string;
   ok: boolean;
   summary?: GrantSummary;
   error?: string;
 }
 
-const REQUEST_RE = /^([A-Za-z0-9-]+)\.request\.json$/;
+const REQUEST_RE = /^([A-Za-z0-9-]+)\.(request|claimed|result)\.json$/;
+const inProgress = new Set<string>();
 
-/** Lock-holder side: apply queued operator requests. Runs from the writer lock's poll timer. */
+/**
+ * Lock-holder side: apply queued operator requests. Runs from the writer lock's poll timer.
+ *
+ * Requests a previous holder claimed but never answered (it crashed) are re-processed; the
+ * revision check makes that safe (an already-applied restore, or one overtaken by a rotation, is
+ * refused rather than re-applied). Requests, claims and results older than 10 minutes expire.
+ */
 export async function processOperatorRequests(dir: string): Promise<void> {
   const reqDir = join(dir, REQUEST_DIR);
   const names = await readdir(reqDir).catch(() => [] as string[]);
+  const results = new Set(
+    names
+      .map((n) => REQUEST_RE.exec(n))
+      .filter((m) => m?.[2] === 'result')
+      .map((m) => m![1])
+  );
   for (const name of names) {
     const match = REQUEST_RE.exec(name);
     if (!match) continue;
-    const id = match[1];
-    const claimed = join(reqDir, `${id}.claimed.json`);
-    try {
-      await rename(join(reqDir, name), claimed); // claim; the CLI cancels by unlinking first
-    } catch {
+    const [, id, kind] = match;
+    const path = join(reqDir, name);
+    const info = await stat(path).catch(() => undefined);
+    if (!info) continue;
+    if (Date.now() - info.mtimeMs > REQUEST_TTL_MS) {
+      if (!inProgress.has(id)) await unlink(path).catch(() => {});
       continue;
     }
+    if (kind === 'result' || inProgress.has(id)) continue;
+    if (kind === 'claimed' && results.has(id)) {
+      await unlink(path).catch(() => {});
+      continue;
+    }
+    const claimed = join(reqDir, `${id}.claimed.json`);
+    if (kind === 'request') {
+      try {
+        await rename(path, claimed); // claim; the CLI cancels by unlinking first
+      } catch {
+        continue;
+      }
+    }
+    inProgress.add(id);
     let result: OperatorResult;
     try {
-      const request = JSON.parse(await readFile(claimed, 'utf-8')) as OperatorRequest;
-      if (request.op !== 'restore' || !request.provider || !request.version) {
-        throw new Error('unsupported request');
+      const request = JSON.parse(await readFile(claimed, 'utf-8')) as Partial<OperatorRequest>;
+      if (
+        request.op !== 'restore' ||
+        typeof request.provider !== 'string' ||
+        typeof request.version !== 'string' ||
+        typeof request.expectedRevision !== 'number'
+      ) {
+        throw new Error('unsupported or malformed request');
       }
-      const summary = await restoreGrant(dir, request.provider, request.version);
-      result = { ok: true, summary };
+      if (!isValidProviderId(dir, request.provider)) throw new OAuthStoreIdError(request.provider);
+      const summary = await restoreGrant(dir, request.provider, request.version, {
+        expectedRevision: request.expectedRevision,
+      });
+      result = { id, ok: true, summary };
     } catch (err) {
       result = {
+        id,
         ok: false,
         error:
           (err as NodeJS.ErrnoException).code === 'ENOENT'
@@ -534,10 +886,15 @@ export async function processOperatorRequests(dir: string): Promise<void> {
               : String(err),
       };
     }
-    await atomicWritePrivateFile(join(reqDir, `${id}.result.json`), JSON.stringify(result)).catch(
-      () => {}
-    );
-    await unlink(claimed).catch(() => {});
+    try {
+      await atomicWritePrivateFile(join(reqDir, `${id}.result.json`), JSON.stringify(result));
+      await unlink(claimed).catch(() => {});
+    } catch {
+      // Leave the claim: the next poll (or holder) re-evaluates it; the revision check keeps a
+      // re-run from applying twice.
+    } finally {
+      inProgress.delete(id);
+    }
   }
 }
 
@@ -551,11 +908,20 @@ export async function submitRestoreRequest(
   version: string,
   waitMs: number
 ): Promise<OperatorResult | undefined> {
+  if (!isValidProviderId(dir, provider)) throw new OAuthStoreIdError(provider);
   const reqDir = join(dir, REQUEST_DIR);
   const id = randomUUID();
   const requestPath = join(reqDir, `${id}.request.json`);
   const resultPath = join(reqDir, `${id}.result.json`);
-  const request: OperatorRequest = { op: 'restore', provider, version, requestedAt: Date.now() };
+  const expectedRevision = (await new OAuthGrantStore(provider, 'readonly', dir).read()).rev;
+  const request: OperatorRequest = {
+    op: 'restore',
+    id,
+    provider,
+    version,
+    expectedRevision,
+    requestedAt: Date.now(),
+  };
   await atomicWritePrivateFile(requestPath, JSON.stringify(request));
   const readResult = async (): Promise<OperatorResult | undefined> => {
     try {

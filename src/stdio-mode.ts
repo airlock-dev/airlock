@@ -29,6 +29,7 @@ import { buildAdapters } from './backend/factory.js';
 import { ActivityStream } from './activity/stream.js';
 import { checkRequestSecurity, type RequestSecurityOptions } from './security/request.js';
 import { childLogger } from './util/logger.js';
+import { SHUTDOWN_FORCE_EXIT_MS } from './pool/oauth-refresh.js';
 
 const log = childLogger('stdio-mode');
 
@@ -295,13 +296,15 @@ export async function runStdioMode(
     pool.disableReconnect();
     // The MCP SDK's StdioClientTransport.close() escalates:
     //   stdin.end → 2s wait → SIGTERM → 2s wait → SIGKILL
-    // Give it enough time (5s) before forcing exit, otherwise
-    // process.exit() orphans children mid-cleanup.
+    // Give it enough time before forcing exit, otherwise
+    // process.exit() orphans children mid-cleanup. OAuth needs longer still: an
+    // in-flight token exchange (up to the 15 s request timeout) must be committed before exit,
+    // so the deadline is SHUTDOWN_FORCE_EXIT_MS (the container stop grace period must exceed it).
     const forceExit = setTimeout(() => {
       log.warn('Graceful shutdown timed out, forcing exit');
       pool.forceKill();
       process.exit(1);
-    }, 5000);
+    }, SHUTDOWN_FORCE_EXIT_MS);
     forceExit.unref();
     try {
       await cleanup();
