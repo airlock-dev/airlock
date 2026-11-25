@@ -154,6 +154,13 @@ export const McpServerConfig = z.discriminatedUnion('type', [
       oauth: z.boolean().default(false),
       oauth_callback_port: z.number().int().min(1).max(65535).default(18432),
       oauth_callback_url: z.string().url().optional(),
+      /**
+       * Who receives the browser's authorization redirect. `loopback` (default) listens on
+       * 127.0.0.1:oauth_callback_port, optionally behind an external relay at oauth_callback_url.
+       * `gateway` serves GET /oauth/callback on the gateway's own data-plane listener and expects
+       * oauth_callback_url to be that route's public HTTPS address.
+       */
+      oauth_callback_mode: z.enum(['loopback', 'gateway']).default('loopback'),
       client_id: EnvString.optional(),
       client_secret: EnvString.optional(),
       client_credentials: ClientCredentialsConfig.optional(),

@@ -150,6 +150,10 @@ Recommended edge controls:
   control-plane hook API. Split dashboard mode needs
   `management_api.enabled: true` on a trusted management route.
 - Use a narrow browser `allowed_origins` list for the gateway origin you expose.
+- For browser OAuth providers, set `oauth_callback_mode: gateway` with
+  `oauth_callback_url: https://<agent-origin>/oauth/callback` and route
+  `GET /oauth/callback` to `airlock-agent`. No callback relay container is
+  needed. See [OAuth support](../concepts/providers-and-tools.md#oauth-support).
 
 ## Extending the Image
 

@@ -1,8 +1,9 @@
 import { readFile } from 'fs/promises';
 import { join } from 'path';
 import { execFile } from 'child_process';
-import { createHash } from 'crypto';
+import { createHash, randomBytes } from 'crypto';
 import { createServer, type Server as HttpServer } from 'http';
+import { setTimeout as delay } from 'timers/promises';
 import type {
   OAuthClientProvider,
   OAuthClientMetadata,
@@ -12,6 +13,7 @@ import type {
 import { childLogger } from '../util/logger.js';
 import { atomicWritePrivateFile } from '../util/atomic-file.js';
 import { adaptiveExpiryBuffer } from './oauth-timing.js';
+import type { OAuthCallbackRouter } from './oauth-callback-router.js';
 
 const log = childLogger('oauth');
 const PERSIST_RETRY_MS = 30 * 1000;
@@ -28,6 +30,28 @@ interface PersistedData {
 }
 
 /**
+ * Where the browser's authorization redirect is received.
+ * - `loopback`: a temporary listener on 127.0.0.1:<oauth_callback_port>. With `oauth_callback_url`
+ *   set, an external relay forwards the callback there (the state carries the port).
+ * - `gateway`: the running gateway's own data-plane listener serves `GET /oauth/callback` at the
+ *   public `oauth_callback_url`, and an {@link OAuthCallbackRouter} hands the code to this provider.
+ */
+export type OAuthCallbackMode = 'loopback' | 'gateway';
+
+export interface FileOAuthProviderOptions {
+  callbackMode?: OAuthCallbackMode;
+  /** Required for `gateway` mode; supplied by the gateway that serves the callback route. */
+  callbackRouter?: OAuthCallbackRouter;
+}
+
+interface GatewayCallbackWait {
+  promise: Promise<string>;
+  resolve: (code: string) => void;
+  reject: (err: Error) => void;
+  settled: boolean;
+}
+
+/**
  * File-backed OAuthClientProvider that persists tokens to ~/.airlock/oauth/<server-id>.json
  * and opens the browser for authorization.
  */
@@ -35,7 +59,8 @@ export class FileOAuthProvider implements OAuthClientProvider {
   private storePath: string;
   private data: PersistedData = {};
   private callbackServer?: HttpServer;
-  private authCodeResolve?: (code: string) => void;
+  private rejectLoopbackCallback?: (error: Error) => void;
+  private stopped = false;
   private browserOpenedAt = 0;
   private expectedState?: string;
   /** A rotated token that is usable in memory but could not yet be committed to disk. */
@@ -43,17 +68,39 @@ export class FileOAuthProvider implements OAuthClientProvider {
   private persistenceRetryTimer?: NodeJS.Timeout;
   /** Serializes atomic replacements so an older save can never land after a newer one. */
   private saveQueue: Promise<void> = Promise.resolve();
+  private readonly callbackMode: OAuthCallbackMode;
+  private readonly callbackRouter?: OAuthCallbackRouter;
+  /** Gateway mode: the code the pending authorization is waiting for. */
+  private gatewayWait?: GatewayCallbackWait;
+  private withdrawGatewayCallback?: () => void;
+  /**
+   * Gateway mode only. The SDK sends this as the authorize request's `state`; the gateway routes
+   * the browser callback by it, so it must be present and unguessable for every authorization.
+   * Left undefined in loopback mode so existing flows keep the SDK's own behavior.
+   */
+  state?: () => string;
 
   constructor(
     private serverId: string,
     private callbackPort: number,
     private preregisteredClientId?: string,
     private preregisteredClientSecret?: string,
-    private relayCallbackUrl?: string
+    private relayCallbackUrl?: string,
+    options: FileOAuthProviderOptions = {}
   ) {
     const home = process.env.HOME ?? process.env.USERPROFILE ?? '.';
     const dir = join(home, '.airlock', 'oauth');
     this.storePath = join(dir, `${serverId}.json`);
+    this.callbackMode = options.callbackMode ?? 'loopback';
+    this.callbackRouter = options.callbackRouter;
+    if (this.callbackMode === 'gateway') {
+      if (!this.relayCallbackUrl) {
+        throw new Error(
+          `Provider "${serverId}" uses oauth_callback_mode: gateway without oauth_callback_url`
+        );
+      }
+      this.state = () => randomBytes(32).toString('base64url');
+    }
   }
 
   get redirectUrl(): string {
@@ -174,18 +221,12 @@ export class FileOAuthProvider implements OAuthClientProvider {
   /** Wait until an out-of-band OAuth helper replaces the token file. */
   async waitForTokenChange(previous: string | undefined, signal: AbortSignal): Promise<void> {
     while (!signal.aborted) {
-      await new Promise<void>((resolve) => {
-        const timer = setTimeout(resolve, TOKEN_CHANGE_POLL_MS);
-        timer.unref?.();
-        signal.addEventListener(
-          'abort',
-          () => {
-            clearTimeout(timer);
-            resolve();
-          },
-          { once: true }
-        );
-      });
+      try {
+        await delay(TOKEN_CHANGE_POLL_MS, undefined, { ref: false, signal });
+      } catch (err) {
+        if (signal.aborted) return;
+        throw err;
+      }
       if (signal.aborted) return;
       if ((await this.tokenVersion()) !== previous) return;
     }
@@ -202,19 +243,25 @@ export class FileOAuthProvider implements OAuthClientProvider {
   }
 
   redirectToAuthorization(url: URL): Promise<void> {
-    const now = Date.now();
-    if (now - this.browserOpenedAt < 30_000) {
-      log.debug({ serverId: this.serverId }, 'Skipping duplicate browser open (debounced)');
-      return Promise.resolve();
-    }
-    this.browserOpenedAt = now;
-
-    // When using an HTTPS relay, wrap the state parameter with the local port
-    // so the relay can redirect back to localhost after the OAuth provider responds.
-    const originalState = url.searchParams.get('state') ?? '';
-    this.expectedState = originalState;
-    if (this.relayCallbackUrl) {
-      url.searchParams.set('state', `${this.callbackPort}.${originalState}`);
+    if (this.stopped) return Promise.resolve();
+    if (this.callbackMode === 'gateway') {
+      // The SDK has stored a new PKCE verifier. Show the corresponding URL every time we
+      // supersede an attempt, so the operator always has a link that can complete the exchange.
+      this.armGatewayCallback(url.searchParams.get('state') ?? '');
+    } else {
+      const now = Date.now();
+      if (now - this.browserOpenedAt < 30_000) {
+        log.debug({ serverId: this.serverId }, 'Skipping duplicate browser open (debounced)');
+        return Promise.resolve();
+      }
+      this.browserOpenedAt = now;
+      // When using an HTTPS relay, wrap the state parameter with the local port
+      // so the relay can redirect back to localhost after the OAuth provider responds.
+      const originalState = url.searchParams.get('state') ?? '';
+      this.expectedState = originalState;
+      if (this.relayCallbackUrl) {
+        url.searchParams.set('state', `${this.callbackPort}.${originalState}`);
+      }
     }
 
     log.info(
@@ -237,12 +284,24 @@ export class FileOAuthProvider implements OAuthClientProvider {
   }
 
   /**
-   * Starts a temporary HTTP server to listen for the OAuth callback.
-   * Returns a promise that resolves with the authorization code.
+   * Resolves with the authorization code from the browser callback. In loopback mode this starts a
+   * temporary HTTP listener; in gateway mode it waits for the gateway's callback route to deliver
+   * the code for this provider's pending state.
    */
   waitForAuthCode(): Promise<string> {
+    if (this.stopped) return Promise.reject(new Error('OAuth callback cancelled'));
+    if (this.callbackMode === 'gateway') {
+      if (!this.callbackRouter) {
+        return Promise.reject(
+          new Error(
+            `Provider "${this.serverId}" uses oauth_callback_mode: gateway, which needs the Airlock gateway's HTTP listener`
+          )
+        );
+      }
+      return this.getGatewayWait().promise;
+    }
     return new Promise((resolve, reject) => {
-      this.authCodeResolve = resolve;
+      this.rejectLoopbackCallback = reject;
 
       this.callbackServer = createServer((req, res) => {
         const url = new URL(req.url ?? '/', `http://127.0.0.1:${this.callbackPort}`);
@@ -261,8 +320,8 @@ export class FileOAuthProvider implements OAuthClientProvider {
           res.end(
             '<html><body><h2>Authorization failed</h2><p>You can close this tab.</p></body></html>'
           );
-          this.stopCallbackServer();
           reject(new Error(`OAuth error: ${error}`));
+          this.stopCallbackServer();
           return;
         }
 
@@ -272,14 +331,14 @@ export class FileOAuthProvider implements OAuthClientProvider {
             res.end(
               '<html><body><h2>Authorization failed</h2><p>OAuth state mismatch.</p></body></html>'
             );
-            this.stopCallbackServer();
             reject(new Error('OAuth state mismatch'));
+            this.stopCallbackServer();
             return;
           }
           res.writeHead(200, { 'Content-Type': 'text/html' });
           res.end('<html><body><h2>Authorized!</h2><p>You can close this tab.</p></body></html>');
+          resolve(code);
           this.stopCallbackServer();
-          this.authCodeResolve?.(code);
           return;
         }
 
@@ -294,6 +353,7 @@ export class FileOAuthProvider implements OAuthClientProvider {
       this.callbackServer.on('error', (err) => {
         log.error({ err }, 'OAuth callback server error');
         reject(err);
+        this.stopCallbackServer();
       });
     });
   }
@@ -301,6 +361,58 @@ export class FileOAuthProvider implements OAuthClientProvider {
   stopCallbackServer(): void {
     this.callbackServer?.close();
     this.callbackServer = undefined;
+    this.withdrawGatewayCallback?.();
+    this.withdrawGatewayCallback = undefined;
+    const error = new Error('OAuth callback cancelled');
+    this.rejectLoopbackCallback?.(error);
+    this.rejectLoopbackCallback = undefined;
+    this.gatewayWait?.reject(error);
+    this.gatewayWait = undefined;
+  }
+
+  stop(): void {
+    // An SDK authorization already in progress may still call redirectToAuthorization.
+    this.stopped = true;
+    this.stopCallbackServer();
+  }
+
+  private getGatewayWait(): GatewayCallbackWait {
+    if (!this.gatewayWait) {
+      let resolve!: GatewayCallbackWait['resolve'];
+      let reject!: GatewayCallbackWait['reject'];
+      const promise = new Promise<string>((resolveCode, rejectCode) => {
+        resolve = resolveCode;
+        reject = rejectCode;
+      });
+      // A callback can fail before the client starts waiting. Preserve the rejection for it.
+      void promise.catch(() => {});
+      this.gatewayWait = { promise, resolve, reject, settled: false };
+    }
+    return this.gatewayWait;
+  }
+
+  private armGatewayCallback(state: string): void {
+    if (!this.callbackRouter) return; // waitForAuthCode reports the missing gateway listener.
+    // An existing waiter can follow a replacement state while its attempt is still pending.
+    // Once a callback has settled, a later attempt needs a fresh promise.
+    this.withdrawGatewayCallback?.();
+    this.withdrawGatewayCallback = undefined;
+    if (this.gatewayWait?.settled) this.gatewayWait = undefined;
+    const wait = this.getGatewayWait();
+    if (!state) {
+      wait.settled = true;
+      wait.reject(new Error('OAuth authorization request carried no state to route the callback'));
+      return;
+    }
+    this.withdrawGatewayCallback = this.callbackRouter.register(state, this.serverId, (outcome) => {
+      this.withdrawGatewayCallback = undefined;
+      wait.settled = true;
+      if ('code' in outcome) {
+        wait.resolve(outcome.code);
+      } else {
+        wait.reject(new Error(`OAuth error: ${outcome.error}`));
+      }
+    });
   }
 
   private isExpectedState(state: string | null): boolean {
