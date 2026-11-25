@@ -60,7 +60,12 @@ function tokenUsable(outcome: RefreshOutcome): boolean {
 }
 // Refresh retry backoff: 1m, 2m, 4m … capped at 30m, forever. Applies to transient failures and
 // to issuer rejections alike — a grant is never given up on automatically.
-const REFRESH_RETRY_MS = 60 * 1000;
+let REFRESH_RETRY_MS = 60 * 1000;
+
+/** Test hook: shorten the base refresh retry delay (default 60 s). */
+export function setRefreshRetryBaseMs(ms = 60 * 1000): void {
+  REFRESH_RETRY_MS = ms;
+}
 const MAX_REFRESH_RETRY_MS = 30 * 60 * 1000;
 // After an ambiguous exchange (answer lost) retry the same endpoint quickly once: issuers with a
 // refresh-token reuse grace window (commonly 30–60 s) then still accept the presented token.
@@ -126,6 +131,8 @@ export class HttpMcpClient {
   private ready = false;
   private reconnectTimer?: NodeJS.Timeout;
   private refreshTimer?: NodeJS.Timeout;
+  /** Absolute time the pending refreshTimer fires (proactive refresh or retry). */
+  private refreshDeadline?: number;
   private readyListeners = new Set<() => void>();
   private eventsListChangedListeners = new Set<() => void>();
 
@@ -487,7 +494,7 @@ export class HttpMcpClient {
    */
   private rearmAfterExchange(): void {
     if (this.stopped || !this.oauthProvider || this.oauthProvider.storageMode !== 'writer') return;
-    void this.scheduleProactiveRefresh().catch((err) =>
+    void this.scheduleProactiveRefresh({ reset: true }).catch((err) =>
       log.debug({ id: this.id, reason: friendlyError(err) }, 'Failed to re-arm token refresh')
     );
   }
@@ -523,8 +530,10 @@ export class HttpMcpClient {
     if (this.stopped || !this.oauthProvider) return;
     if (this.refreshTimer) clearTimeout(this.refreshTimer);
     this.nextRefreshRetryAt = Date.now() + delay;
+    this.refreshDeadline = this.nextRefreshRetryAt;
     this.refreshTimer = setTimeout(() => {
       this.refreshTimer = undefined;
+      this.refreshDeadline = undefined;
       this.nextRefreshRetryAt = undefined;
       void this.proactiveRefresh();
     }, delay);
@@ -760,14 +769,15 @@ export class HttpMcpClient {
    * itself after each refresh, and chains sub-timers for tokens whose lifetime exceeds the
    * setTimeout ceiling. No-op for non-OAuth providers or tokens without a refresh_token/expiry.
    */
-  private async scheduleProactiveRefresh(): Promise<void> {
+  private async scheduleProactiveRefresh(opts: { reset?: boolean } = {}): Promise<void> {
     if (!this.oauthProvider) return;
-    if (this.refreshTimer) {
-      clearTimeout(this.refreshTimer);
-      this.refreshTimer = undefined;
-    }
+    // Unless a refresh just completed (`reset`), never push a pending deadline later: a reconnect
+    // or a re-arm may only bring the next refresh (or retry) forward.
+    const pending = () =>
+      !opts.reset && this.refreshTimer !== undefined && this.refreshDeadline !== undefined;
     if (this.refreshFailures > 0) {
-      // Already failing: keep the backoff instead of hammering the issuer on every reconnect.
+      // Already failing: keep the backoff deadline instead of hammering (or postponing).
+      if (pending()) return;
       this.scheduleRefreshRetry();
       return;
     }
@@ -778,9 +788,12 @@ export class HttpMcpClient {
     if (untilRefresh === undefined) return;
     const beyondCeiling = untilRefresh > MAX_REFRESH_TIMER_MS;
     const delay = Math.max(Math.min(untilRefresh, MAX_REFRESH_TIMER_MS), minRefreshTimerMs);
+    if (pending() && Date.now() + delay >= this.refreshDeadline!) return;
     if (this.refreshTimer) clearTimeout(this.refreshTimer);
+    this.refreshDeadline = Date.now() + delay;
     this.refreshTimer = setTimeout(() => {
       this.refreshTimer = undefined;
+      this.refreshDeadline = undefined;
       // Still far from expiry — just re-evaluate rather than refreshing early.
       if (beyondCeiling) {
         void this.scheduleProactiveRefresh().catch((err) =>
@@ -824,7 +837,7 @@ export class HttpMcpClient {
           );
         }
         // Re-arm whatever the reconnect did: maintenance must never depend on the MCP endpoint.
-        if (!this.stopped) await this.scheduleProactiveRefresh();
+        if (!this.stopped) await this.scheduleProactiveRefresh({ reset: true });
         return;
       case 'rejected':
       case 'failed':

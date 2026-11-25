@@ -605,10 +605,14 @@ export class OAuthGrantStore {
   async exportLegacy(): Promise<{ rev: number; exported: boolean }> {
     this.assertValidId();
     const current = await this.read();
-    if (current.rev === 0 || current.raw === undefined) return { rev: 0, exported: false };
     if (current.corrupt) {
-      throw new Error(`newest revision ${current.rev} is not valid JSON; not exporting it`);
+      throw new Error(
+        current.rev === 0
+          ? `legacy file ${this.serverId}.json is not valid JSON (no revisions exist); nothing exported`
+          : `newest revision ${current.rev} is not valid JSON; not exporting it`
+      );
     }
+    if (current.rev === 0 || current.raw === undefined) return { rev: 0, exported: false };
     await this.mirrorRevision(current.rev, current.raw, { required: true });
     if ((await readFile(this.path, 'utf-8')) !== current.raw) {
       throw new Error(`verification of ${this.path} failed`);

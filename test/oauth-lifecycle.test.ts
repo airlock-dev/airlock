@@ -40,7 +40,8 @@ vi.mock('child_process', async (importOriginal) => ({
   execFile: execFileMock,
 }));
 
-const { HttpMcpClient, setProactiveRefreshFloorMs } = await import('../src/pool/http-client.js');
+const { HttpMcpClient, setProactiveRefreshFloorMs, setRefreshRetryBaseMs } =
+  await import('../src/pool/http-client.js');
 const { FileOAuthProvider } = await import('../src/pool/oauth-provider.js');
 const { refreshGrant, setOAuthRequestTimeout } = await import('../src/pool/oauth-refresh.js');
 const { oauthCommand } = await import('../src/pool/oauth-cli.js');
@@ -593,6 +594,7 @@ beforeEach(async () => {
 afterEach(async () => {
   setOAuthRequestTimeout();
   setProactiveRefreshFloorMs();
+  setRefreshRetryBaseMs();
   setPersistenceRetryMs();
   vi.restoreAllMocks();
   await releaseAllWriterLocks();
@@ -2395,5 +2397,82 @@ describe('OAuth lifecycle — round 5 (version hand-off)', () => {
     const data = result.data as { 'export-legacy': Record<string, { exported?: boolean }> };
     expect(data['export-legacy'].late).toMatchObject({ exported: true });
     expect(JSON.parse(await readFile(join(dir, 'late.json'), 'utf-8'))).toEqual(late);
+  });
+});
+
+// ─── Review round 6 ────────────────────────────────────────────────────────────────────────────
+
+describe('OAuth lifecycle — round 6', () => {
+  it('successful MCP reconnects never postpone a pending refresh retry, and backoff keeps progressing', async () => {
+    setRefreshRetryBaseMs(300); // retries at +300 ms, then +600 ms
+    await seedGrant();
+    const client = makeClient();
+    await client.connect();
+    world.failures = [503, 503]; // the issuer fails twice, then recovers
+    await (client as unknown as Internals).proactiveRefresh();
+    expect(client.getOAuthHealth()?.consecutiveFailures).toBe(1);
+    // The MCP transport keeps closing and reconnecting successfully every 100 ms.
+    let reconnecting = true;
+    const loop = (async () => {
+      while (reconnecting) {
+        await new Promise((r) => setTimeout(r, 100));
+        const internals = client as unknown as { transport?: { close(): Promise<void> } };
+        await internals.transport?.close().catch(() => {});
+        await client.connect().catch(() => {});
+      }
+    })();
+    await vi.waitFor(() => expect(refreshRequests().length).toBeGreaterThanOrEqual(3), {
+      timeout: 5_000,
+      interval: 20,
+    });
+    reconnecting = false;
+    await loop;
+    const [first, second, third] = refreshRequests().map((r) => r.startedAt);
+    // Retry 1 at the original deadline (+300 ms), retry 2 after the doubled backoff (+600 ms).
+    expect(second - first).toBeGreaterThanOrEqual(280);
+    expect(second - first).toBeLessThan(550);
+    expect(third - second).toBeGreaterThanOrEqual(580);
+    expect(third - second).toBeLessThan(1_000);
+    await vi.waitFor(() => expect(client.getOAuthHealth()?.state).toBe('ok'));
+    await client.stop();
+    await expectUsableGrant();
+  }, 15_000);
+
+  it('successful MCP reconnects never postpone a due proactive refresh', async () => {
+    setProactiveRefreshFloorMs(300); // a due refresh fires 300 ms after being armed
+    await seedGrant();
+    const data = await readGrant();
+    data.obtainedAt = Date.now() - 3_600_000; // the access token is due for refresh now
+    await writeFile(tokenFile(), JSON.stringify(data));
+    const client = makeClient();
+    await client.connect();
+    let reconnecting = true;
+    const loop = (async () => {
+      while (reconnecting) {
+        await new Promise((r) => setTimeout(r, 100));
+        const internals = client as unknown as { transport?: { close(): Promise<void> } };
+        await internals.transport?.close().catch(() => {});
+        await client.connect().catch(() => {});
+      }
+    })();
+    const started = Date.now();
+    await vi.waitFor(() => expect(refreshRequests().length).toBeGreaterThanOrEqual(1), {
+      timeout: 3_000,
+      interval: 20,
+    });
+    reconnecting = false;
+    await loop;
+    expect(refreshRequests()[0].startedAt - started).toBeLessThan(700);
+    await client.stop();
+    await expectUsableGrant();
+  }, 10_000);
+
+  it('export-legacy fails for a corrupt legacy-only grant and says which file is corrupt', async () => {
+    await mkdir(dir, { recursive: true });
+    await writeFile(tokenFile(), '{ broken');
+    const result = await oauthCommand(['export-legacy', '--dir', dir]);
+    expect(result.exitCode).toBe(1);
+    expect(result.text).toContain(`legacy file ${ID}.json is not valid JSON`);
+    expect(await readFile(tokenFile(), 'utf-8')).toBe('{ broken');
   });
 });

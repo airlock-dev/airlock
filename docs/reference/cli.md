@@ -354,9 +354,13 @@ adoption rather than lost. `--force` does not prove the gateway was stopped; it 
 gateway, run `airlock oauth export-legacy` (it writes the newest revision of every grant to
 `<provider>.json` and verifies it, after adopting any usable successor that a restart overlap left
 parked; it fails, non-zero, for any grant it could not export — unadoptable parked successors, a
-corrupt newest revision, an unreadable store — and leaves that grant's file untouched), then start
-the older build. **Rolling forward** after the older build actually ran: stop it, run
-`airlock oauth import-legacy`, then start the new build. `import-legacy` **promotes each
+corrupt revision or corrupt legacy file, an unreadable store — without exporting that grant; if an
+adoption succeeded before a later parked entry failed, that adoption is already published and
+mirrored), then start the older build. Builds before grant revisions take no OAuth writer lock at
+all, so the new gateway must be stopped before the older build starts, and vice versa.
+**Rolling forward** after the older build actually ran: stop it, run `airlock oauth import-legacy`,
+then start the new build. If an import fails partway, fix the cause and rerun it with the gateway
+still stopped: rerunning is safe (a grant already imported only gets an identical extra revision). `import-legacy` **promotes each
 `<provider>.json` over the newer revisions** (the replaced revision is kept in history): run it only
 after an older build has really used the store, never as a routine repair. Airlock never imports
 automatically.
@@ -376,8 +380,11 @@ in letter case; the config check names offending ids. To rename one and keep its
 4. Change the provider id in the config (and any policy patterns that name it), then start Airlock.
 
 Airlock never deletes a grant on its own. An issuer answering `invalid_grant`, an issuer URL change,
-or a metadata outage leaves the stored grant in place; refresh is retried with exponential backoff
-(1 minute, doubling to 30 minutes, forever). State is reported under `oauthHealth` in `/health` and
+or a metadata outage leaves the stored grant in place; while this process owns the store, a failed
+refresh is retried with exponential backoff (1 minute, doubling to 30 minutes, with no limit on
+attempts; the first retry after an ambiguous exchange comes after 5 seconds). A pending retry
+deadline is absolute: MCP reconnects can bring it forward but never postpone it. A process that
+does not own the store (another gateway holds the lock) re-checks every minute instead. State is reported under `oauthHealth` in `/health` and
 on the provider status, never paged:
 
 | State                 | Meaning                                                                                                      |

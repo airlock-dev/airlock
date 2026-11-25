@@ -1,4 +1,10 @@
-import { REVISION_DIR, isValidProviderId, oauthStoreDir } from '../pool/oauth-store.js';
+import {
+  HISTORY_DIR,
+  ORPHAN_DIR,
+  REVISION_DIR,
+  isValidProviderId,
+  oauthStoreDir,
+} from '../pool/oauth-store.js';
 import { readdirSync, readFileSync } from 'fs';
 import { isIP } from 'net';
 import { join } from 'path';
@@ -1182,10 +1188,13 @@ function oauthStoreNames(): string[] {
   } catch {
     // no store yet
   }
-  try {
-    names.push(...readdirSync(join(dir, REVISION_DIR)));
-  } catch {
-    // no revisions yet
+  // Revision, history and parked-successor directories all claim a name, even archive-only ones.
+  for (const sub of [REVISION_DIR, HISTORY_DIR, ORPHAN_DIR]) {
+    try {
+      names.push(...readdirSync(join(dir, sub)));
+    } catch {
+      // not created yet
+    }
   }
   return names;
 }

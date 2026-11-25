@@ -664,6 +664,30 @@ agents:
     expect(errors.some((d) => d.message.includes('"plain id"'))).toBe(false);
   });
 
+  it('rename suggestions skip names that exist only in OAuth history or parked successors', async () => {
+    const { mkdtempSync, mkdirSync, rmSync } = await import('fs');
+    const { tmpdir } = await import('os');
+    const { join } = await import('path');
+    const home = mkdtempSync(join(tmpdir(), 'airlock-suggest-'));
+    const originalHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      mkdirSync(join(home, '.airlock', 'oauth', '.history', 'work-chat'), { recursive: true });
+      mkdirSync(join(home, '.airlock', 'oauth', '.successors', 'work-chat-2'), { recursive: true });
+      const config = GatewayConfig.parse({
+        providers: {
+          'work chat': { type: 'http', url: 'https://mcp.example.com/mcp', oauth: true },
+        },
+        agents: { agent1: { token: 'agent-secret' } },
+      });
+      const error = validateConfig(config).find((d) => d.message.includes('"work chat"'))!;
+      expect(error.suggestion).toContain('"work-chat-3"');
+    } finally {
+      process.env.HOME = originalHome;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   it('accepts a provider with client_credentials alone', () => {
     const config = GatewayConfig.parse({
       providers: {
