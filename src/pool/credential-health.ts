@@ -300,11 +300,16 @@ export class CredentialHealthMonitor {
     });
   }
 
-  /** Re-key against a new config. Verdicts for probes that changed are dropped, not carried over. */
-  reload(probes: Record<string, CredentialProbeConfig>): void {
+  /** Re-key against a new config. Verdicts for changed or restarted providers are dropped. */
+  reload(probes: Record<string, CredentialProbeConfig>, invalidateIds?: Iterable<string>): void {
     for (const id of Array.from(this.cache.keys())) {
       const next = probes[id];
       if (!next || JSON.stringify(next) !== JSON.stringify(this.probes[id])) {
+        this.cache.delete(id);
+      }
+    }
+    if (invalidateIds) {
+      for (const id of invalidateIds) {
         this.cache.delete(id);
       }
     }

@@ -103,6 +103,8 @@ function resolveEventPostConfig(
   };
 }
 
+const MAX_PAYLOAD_DEPTH = 64;
+
 function textHasInjection(text: string): boolean {
   return EVENT_INJECTION_PATTERNS.some((pattern) => pattern.test(text));
 }
@@ -110,8 +112,12 @@ function textHasInjection(text: string): boolean {
 function transformPayloadValue(
   value: unknown,
   cfg: EffectiveEventPostConfig,
-  state: { injectionDetected: boolean; modified: boolean }
+  state: { injectionDetected: boolean; modified: boolean },
+  depth = 0
 ): unknown {
+  if (depth >= MAX_PAYLOAD_DEPTH) {
+    return value;
+  }
   if (typeof value === 'string') {
     let next = value;
 
@@ -146,7 +152,7 @@ function transformPayloadValue(
   }
 
   if (Array.isArray(value)) {
-    return value.map((item) => transformPayloadValue(item, cfg, state));
+    return value.map((item) => transformPayloadValue(item, cfg, state, depth + 1));
   }
 
   if (value && typeof value === 'object') {
@@ -155,7 +161,7 @@ function transformPayloadValue(
       if (cfg.injectionEnabled && textHasInjection(k)) {
         state.injectionDetected = true;
       }
-      out[k] = transformPayloadValue(v, cfg, state);
+      out[k] = transformPayloadValue(v, cfg, state, depth + 1);
     }
     return out;
   }
@@ -163,19 +169,20 @@ function transformPayloadValue(
   return value;
 }
 
-function scanForInjection(value: unknown, state: { injectionDetected: boolean }): void {
+function scanForInjection(value: unknown, state: { injectionDetected: boolean }, depth = 0): void {
+  if (depth >= MAX_PAYLOAD_DEPTH) return;
   if (typeof value === 'string') {
     if (textHasInjection(value)) state.injectionDetected = true;
     return;
   }
   if (Array.isArray(value)) {
-    for (const item of value) scanForInjection(item, state);
+    for (const item of value) scanForInjection(item, state, depth + 1);
     return;
   }
   if (value && typeof value === 'object') {
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
       if (textHasInjection(k)) state.injectionDetected = true;
-      scanForInjection(v, state);
+      scanForInjection(v, state, depth + 1);
     }
   }
 }

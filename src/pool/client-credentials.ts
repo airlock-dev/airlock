@@ -1,9 +1,9 @@
 import { readFile } from 'fs/promises';
 import { join } from 'path';
-import { homedir } from 'os';
 import type { ClientCredentialsConfig } from '../config/schema.js';
 import { childLogger } from '../util/logger.js';
 import { atomicWritePrivateFile } from '../util/atomic-file.js';
+import { isValidProviderId, oauthStoreDir } from './oauth-store.js';
 import { adaptiveExpiryBuffer } from './oauth-timing.js';
 
 const log = childLogger('client-credentials');
@@ -14,6 +14,7 @@ const log = childLogger('client-credentials');
  */
 const EXPIRY_BUFFER_MS = 5 * 60 * 1000;
 const PERSIST_RETRY_MS = 30 * 1000;
+const MINT_TIMEOUT_MS = 15 * 1000;
 
 /** OAuth2 error codes that mean "these credentials are wrong", not "this request went wrong". */
 const FATAL_ERROR_CODES = ['invalid_client', 'unauthorized_client', 'invalid_scope'];
@@ -51,13 +52,25 @@ export class ClientCredentialsTokenSource {
   private authFailure?: string;
   private readonly storePath: string;
   private persistenceRetryTimer?: NodeJS.Timeout;
+  private stopped = false;
 
   constructor(
     private id: string,
     private cfg: ClientCredentialsConfig,
-    storeDir = join(homedir(), '.airlock', 'oauth')
+    storeDir = oauthStoreDir()
   ) {
+    if (!isValidProviderId(id)) {
+      throw new Error(`Invalid provider id "${id}" for client-credentials cache`);
+    }
     this.storePath = join(storeDir, `${id}.client-credentials.json`);
+  }
+
+  stop(): void {
+    this.stopped = true;
+    if (this.persistenceRetryTimer) {
+      clearTimeout(this.persistenceRetryTimer);
+      this.persistenceRetryTimer = undefined;
+    }
   }
 
   /**
@@ -125,6 +138,7 @@ export class ClientCredentialsTokenSource {
           Accept: 'application/json',
         },
         body,
+        signal: AbortSignal.timeout(MINT_TIMEOUT_MS),
       });
     } catch (err) {
       // Network-level: the credentials may be perfectly good, so do NOT record an auth failure.
@@ -188,6 +202,7 @@ export class ClientCredentialsTokenSource {
   }
 
   private async save(): Promise<void> {
+    if (this.stopped) return;
     try {
       await atomicWritePrivateFile(this.storePath, JSON.stringify(this.cached, null, 2));
       if (this.persistenceRetryTimer) {
@@ -206,7 +221,7 @@ export class ClientCredentialsTokenSource {
   }
 
   private schedulePersistenceRetry(): void {
-    if (this.persistenceRetryTimer) return;
+    if (this.stopped || this.persistenceRetryTimer) return;
     this.persistenceRetryTimer = setTimeout(() => {
       this.persistenceRetryTimer = undefined;
       void this.save();

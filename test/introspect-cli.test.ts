@@ -292,7 +292,10 @@ agents:
   });
 
   it('silences lint rules with --disable and lint.disable', async () => {
-    const cliDisabled = await lintYaml(INFO_ONLY_LINT_YAML, ['--disable', 'dead-deny,unused-profile']);
+    const cliDisabled = await lintYaml(INFO_ONLY_LINT_YAML, [
+      '--disable',
+      'dead-deny,unused-profile',
+    ]);
     expect(cliDisabled.exitCode).toBe(0);
     expect(cliDisabled.text).toBe('Lint OK');
 
@@ -457,5 +460,29 @@ agents:
         }),
       ])
     );
+  });
+
+  it('recognizes event-only agents and events.arg_policy value_sets in airlock lint', async () => {
+    const result = await lintYaml(`
+providers:
+  pagerduty:
+    type: http
+    url: https://mcp.pagerduty.example/mcp
+value_sets:
+  sev:
+    - P1
+    - P2
+agents:
+  watcher:
+    events:
+      allow:
+        - "pagerduty/incident.*"
+      arg_policy:
+        "pagerduty/incident.*":
+          severity:
+            in: sev
+`);
+    expect(result.exitCode).toBe(0);
+    expect(result.text).toBe('Lint OK');
   });
 });

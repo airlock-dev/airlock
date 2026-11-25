@@ -200,7 +200,9 @@ export function createAgentServer(deps: AgentServerDeps): Server {
     // Reverse-map sanitized name back to the internal namespaced name so that
     // allowlist patterns ("provider/*") and the registry both work correctly.
     const allTools = registry.getFiltered(agentId);
-    const match = allTools.find((t) => sanitizeToolName(t.name) === sanitizedName);
+    const match =
+      allTools.find((t) => t.name === sanitizedName) ??
+      allTools.find((t) => sanitizeToolName(t.name) === sanitizedName);
     const toolName = match?.name ?? sanitizedName;
     // A view-only tool hidden from a host that renders no views is not callable through it either:
     // the spec has hosts reject such calls, and a host that cannot render views will not.
@@ -370,7 +372,11 @@ export function createAgentServer(deps: AgentServerDeps): Server {
       EVENT_METHODS.unsubscribe,
       { params: EventsUnsubscribeParamsSchema },
       (params, reqCtx) =>
-        eventService.handleUnsupportedWebhook(buildEventContext(params, reqCtx), params.name, {})
+        eventService.handleUnsupportedWebhook(
+          buildEventContext(params, reqCtx),
+          params.name,
+          params.arguments ?? {}
+        )
     );
   }
 

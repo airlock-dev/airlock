@@ -409,4 +409,24 @@ describe('OAuth loopback mode is unchanged', () => {
     expect(res.status).toBe(200);
     await expect(code).resolves.toBe('relayed');
   });
+
+  it('does not launch a browser in gateway callback mode without a gateway callbackRouter', async () => {
+    vi.mocked(execFile).mockClear();
+    const provider = new FileOAuthProvider(
+      'spliit',
+      LOOPBACK_PORT,
+      undefined,
+      undefined,
+      CALLBACK_URL,
+      {
+        callbackMode: 'gateway',
+      }
+    );
+    expect(provider.canHandleAuthCallback()).toBe(false);
+    await provider.redirectToAuthorization(
+      new URL('https://auth.example.com/authorize?client_id=abc&state=stdio-state')
+    );
+    expect(execFile).not.toHaveBeenCalled();
+    await expect(provider.waitForAuthCode()).rejects.toThrow(/needs the Airlock gateway/);
+  });
 });

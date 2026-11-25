@@ -1,4 +1,5 @@
 import type { AgentConfig } from '../config/schema.js';
+import { matches } from '../allowlist/pattern.js';
 
 const BUILTIN_NAMESPACES = new Set(['http', 'exec']);
 
@@ -36,15 +37,27 @@ export function requiredMcpsForAgent(
  * an operator has actually granted event access to them — leaving legacy 2025 stdio servers that
  * expect `initialize` as frame #1 completely untouched.
  */
-export function eventEnabledProviders(agents: Record<string, AgentConfig>): Set<string> {
+export function eventEnabledProviders(
+  agents: Record<string, AgentConfig>,
+  availableMcpIds?: string[]
+): Set<string> {
   const providers = new Set<string>();
+  const patterns: string[] = [];
   for (const agent of Object.values(agents)) {
-    const patterns = [...(agent.events?.allow ?? []), ...(agent.events?.ask ?? [])];
-    for (const pattern of patterns) {
-      const namespace = pattern.split('/')[0];
-      if (namespace && !BUILTIN_NAMESPACES.has(namespace)) {
-        providers.add(namespace);
+    patterns.push(...(agent.events?.allow ?? []), ...(agent.events?.ask ?? []));
+  }
+  for (const pattern of patterns) {
+    const namespace = pattern.split('/')[0];
+    if (!namespace || BUILTIN_NAMESPACES.has(namespace)) continue;
+    if (availableMcpIds && (namespace.includes('*') || !pattern.includes('/'))) {
+      for (const id of availableMcpIds) {
+        if (BUILTIN_NAMESPACES.has(id)) continue;
+        if (matches(namespace, id) || matches(pattern, `${id}/_`)) {
+          providers.add(id);
+        }
       }
+    } else {
+      providers.add(namespace);
     }
   }
   return providers;

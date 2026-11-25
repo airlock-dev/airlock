@@ -223,6 +223,24 @@ export class GrantStore {
     return [...this.grants.values()].filter((g) => !agentId || g.agentId === agentId);
   }
 
+  /** Check whether a grant is still active, honoring cross-process SQLite revocations. */
+  isGrantActive(id: string): boolean {
+    const local = this.grants.get(id);
+    if (!local) return false;
+    if (!this.isActive(local)) {
+      this.grants.delete(id);
+      return false;
+    }
+    if (typeof this.persistence?.getGrantById === 'function') {
+      const row = this.persistence.getGrantById(id);
+      if (!row || row.revoked_at) {
+        this.grants.delete(id);
+        return false;
+      }
+    }
+    return true;
+  }
+
   /** Find the best grant covering a subject without consuming it. */
   find(subject: ApprovalSubject, onlyIds?: Set<string>): Grant | undefined {
     this.prune();

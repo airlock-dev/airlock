@@ -266,9 +266,9 @@ export function sanitizeFilename(raw?: string): string {
   // Strip control characters, quotes, semicolons, and path-like characters.
   // eslint-disable-next-line no-control-regex
   base = base.replace(/[\x00-\x1f\x7f"';<>|*?]/g, '').trim();
-  // Prevent hidden files, "." or ".."
-  base = base.replace(/^\.+/, '').trim();
-  if (!base) return 'upload.bin';
+  // Prevent hidden files, "." or ".." (including whitespace-separated dot inputs like ". .")
+  base = base.replace(/^[\s.]+/, '').trim();
+  if (!base || base === '.' || base === '..') return 'upload.bin';
 
   const MAX_UTF8_BYTES = 180;
   if (Buffer.byteLength(base, 'utf8') > MAX_UTF8_BYTES) {

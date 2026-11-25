@@ -232,6 +232,7 @@ export class OpenApiAdapter implements BackendAdapter {
     // Execute request
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.config.timeout_ms);
+    let responseOk = false;
 
     try {
       const fetchInit: RequestInit & { duplex?: 'half' } = {
@@ -252,6 +253,7 @@ export class OpenApiAdapter implements BackendAdapter {
         assertUploadPlanActive(uploadPlan, toolCall.agentId, this.uploadStore, sessionId);
       }
       const response = await fetch(url, fetchInit);
+      responseOk = response.ok;
 
       let responseBody = '';
       let truncated = false;
@@ -298,12 +300,16 @@ export class OpenApiAdapter implements BackendAdapter {
         error: response.ok ? undefined : `HTTP ${response.status}: ${responseBody.slice(0, 200)}`,
       };
     } catch (err) {
-      closeBodyStream?.();
       if ((err as Error).name === 'AbortError') {
         return { success: false, error: `Request timed out after ${this.config.timeout_ms}ms` };
       }
       return { success: false, error: err instanceof Error ? err.message : String(err) };
     } finally {
+      // Always release verified upload file handles/inFlightRefs on errors, non-2xx early responses,
+      // or whenever fetch consumed/locked the stream.
+      if (!responseOk || (body instanceof ReadableStream && body.locked)) {
+        closeBodyStream?.();
+      }
       // Cleared only here so the deadline also covers reading the body, not just the headers.
       clearTimeout(timer);
     }

@@ -106,15 +106,15 @@ export class ClientPool {
   }
 
   private async connectClient(id: string, cfg: McpServerConfig): Promise<void> {
-    let connection: McpServerConfig;
+    let client: McpClient;
     try {
       // CLI and dashboard discovery can construct a pool from a structurally parsed config.
-      connection = resolveProviderBearerFile(cfg);
+      const connection = resolveProviderBearerFile(cfg);
+      client = this.createClient(id, connection);
     } catch (error) {
-      log.warn({ id }, error instanceof Error ? error.message : 'Invalid provider credential');
+      log.warn({ id }, error instanceof Error ? error.message : 'Invalid provider configuration');
       return;
     }
-    const client = this.createClient(id, connection);
     this.clients.set(id, client);
     client.onReady(() => this.notifyClientReady(id));
     if (client instanceof HttpMcpClient || client instanceof StdioMcpClient) {
@@ -279,26 +279,29 @@ export class ClientPool {
   async reload(
     newMcps: Record<string, McpServerConfig>,
     newEventsProviders?: Set<string>
-  ): Promise<void> {
+  ): Promise<string[]> {
     const epoch = ++this.reloadEpoch;
+    let changedIds: string[] = [];
     const run = async (): Promise<void> => {
       // Skip queued reloads superseded before they even begin so an older config never replaces a
       // newer upstream destination under the same provider ID.
       if (epoch !== this.reloadEpoch) return;
-      await this.applyReload(newMcps, newEventsProviders);
+      changedIds = await this.applyReload(newMcps, newEventsProviders);
     };
     const next = this.reloadChain.then(run, run);
     this.reloadChain = next;
-    return next;
+    await next;
+    return changedIds;
   }
 
   private async applyReload(
     newMcps: Record<string, McpServerConfig>,
     newEventsProviders?: Set<string>
-  ): Promise<void> {
+  ): Promise<string[]> {
     const oldIds = new Set(this.clients.keys());
     const newIds = new Set(Object.keys(newMcps));
     const prevEventsProviders = this.eventsProviders;
+    const changedIds: string[] = [];
     if (newEventsProviders) {
       this.eventsProviders = new Set(newEventsProviders);
     }
@@ -310,6 +313,7 @@ export class ClientPool {
         const client = this.clients.get(id)!;
         await client.stop().catch((err) => log.error({ err, id }, 'Error stopping removed MCP'));
         this.clients.delete(id);
+        changedIds.push(id);
       }
     }
 
@@ -322,9 +326,11 @@ export class ClientPool {
         cfg.type === 'stdio' && !prevEventsProviders.has(id) && this.eventsProviders.has(id);
       if (!oldIds.has(id)) {
         log.info({ id }, 'Adding new MCP from config reload');
+        changedIds.push(id);
         void this.connectClient(id, cfg);
       } else if (connectionKey(this.mcps[id]) !== connectionKey(cfg) || stdioNeedsModernUpgrade) {
         log.info({ id }, 'Restarting MCP (connection settings changed)');
+        changedIds.push(id);
         const client = this.clients.get(id);
         restarts.push(
           (client?.stop() ?? Promise.resolve())
@@ -345,6 +351,7 @@ export class ClientPool {
     await Promise.all(restarts);
 
     this.mcps = newMcps;
+    return changedIds;
   }
 
   healthCheck(): Record<string, HealthStatus> {

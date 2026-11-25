@@ -162,6 +162,8 @@ export interface GrantSummary {
 }
 
 export function oauthStoreDir(): string {
+  const override = process.env.AIRLOCK_OAUTH_DIR?.trim();
+  if (override) return override;
   const home = process.env.HOME ?? process.env.USERPROFILE ?? '.';
   return join(home, '.airlock', 'oauth');
 }

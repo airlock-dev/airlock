@@ -3,8 +3,10 @@ import type { AgentServerDeps } from '../transport/agent-server.js';
 import type { ToolCallContext } from '../middleware/types.js';
 import { buildMiddlewareChain } from '../middleware/chain-builder.js';
 import { deliveredResult } from '../middleware/response.js';
+import { isAppOnlyTool } from '../mcp-apps/ui.js';
 import { generateId } from '../util/id.js';
 import { childLogger } from '../util/logger.js';
+import { sanitizeToolName } from '../util/tool-name.js';
 import {
   checkAgentBearerAuth,
   checkBearerAuth,
@@ -39,6 +41,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 // eslint-disable-next-line @typescript-eslint/require-await
 export async function toolsApiPlugin(app: FastifyInstance, opts: ToolsApiOpts): Promise<void> {
   const { getDeps } = opts;
+  const shutdownAc = new AbortController();
+
+  app.addHook('preClose', () => {
+    shutdownAc.abort();
+  });
 
   function downstreamSessionKey(agentId: string, explicitSessionId: unknown): string | undefined {
     if (!nonEmptyString(explicitSessionId)) return undefined;
@@ -70,7 +77,7 @@ export async function toolsApiPlugin(app: FastifyInstance, opts: ToolsApiOpts): 
     }
     if (!checkAgentAuth(request, reply, deps)) return;
 
-    const tools = deps.registry.getFiltered(agentId);
+    const tools = deps.registry.getFiltered(agentId).filter((t) => !isAppOnlyTool(t));
     return reply.send({ tools });
   });
 
@@ -103,6 +110,24 @@ export async function toolsApiPlugin(app: FastifyInstance, opts: ToolsApiOpts): 
     if (!deps) {
       return reply.status(404).send({ error: `Unknown agent: ${agentId}` });
     }
+    const visibleTools = deps.registry.getFiltered(agentId);
+    const matchedTool =
+      visibleTools.find((t) => t.name === tool) ??
+      visibleTools.find((t) => sanitizeToolName(t.name) === tool);
+    if (matchedTool && isAppOnlyTool(matchedTool)) {
+      deps.auditLogger.log({
+        agent_id: agentId,
+        request_id: generateId(),
+        tool: matchedTool.name,
+        args: JSON.stringify(args),
+        result: 'denied',
+      });
+      return reply.send({
+        success: false,
+        error: `Tool not available: ${matchedTool.name}`,
+        metadata: { duration_ms: 0 },
+      });
+    }
     if (!sessionKey) {
       if (opts.requiresSessionId?.(agentId, tool)) {
         return reply.status(400).send({
@@ -120,6 +145,8 @@ export async function toolsApiPlugin(app: FastifyInstance, opts: ToolsApiOpts): 
     const agentConfig = getConfig();
     const ac = new AbortController();
     const abort = () => ac.abort();
+    if (shutdownAc.signal.aborted) ac.abort();
+    else shutdownAc.signal.addEventListener('abort', abort, { once: true });
     request.raw.once('aborted', abort);
     reply.raw.once('close', abort);
 
@@ -199,6 +226,7 @@ export async function toolsApiPlugin(app: FastifyInstance, opts: ToolsApiOpts): 
         metadata: { duration_ms },
       });
     } finally {
+      shutdownAc.signal.removeEventListener('abort', abort);
       request.raw.off('aborted', abort);
       reply.raw.off('close', abort);
     }

@@ -240,4 +240,25 @@ describe('ClientCredentialsTokenSource', () => {
     ) as { expires_at: number };
     expect(saved.expires_at).toBe(now + 2_592_000_000);
   });
+
+  it('rejects invalid path-traversal provider ids and honors AIRLOCK_OAUTH_DIR', async () => {
+    expect(() => new ClientCredentialsTokenSource('../escape', CFG, storeDir)).toThrow(
+      /Invalid provider id/
+    );
+    const prev = process.env.AIRLOCK_OAUTH_DIR;
+    process.env.AIRLOCK_OAUTH_DIR = storeDir;
+    try {
+      fetchMock.mockResolvedValue(jsonResponse({ access_token: 'tok-env', expires_in: 3600 }));
+      const source = new ClientCredentialsTokenSource('envProvider', CFG);
+      expect(await source.getToken()).toBe('tok-env');
+      const saved = JSON.parse(
+        await readFile(join(storeDir, 'envProvider.client-credentials.json'), 'utf-8')
+      ) as { access_token: string };
+      expect(saved.access_token).toBe('tok-env');
+      source.stop();
+    } finally {
+      if (prev === undefined) delete process.env.AIRLOCK_OAUTH_DIR;
+      else process.env.AIRLOCK_OAUTH_DIR = prev;
+    }
+  });
 });
