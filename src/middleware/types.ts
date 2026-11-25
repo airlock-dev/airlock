@@ -26,6 +26,12 @@ export interface ToolCallResponse {
   text: string;
   truncated?: boolean;
   fullOutputPath?: string;
+  /**
+   * Set by the untrusted-envelope middleware: the markers it wrapped `text` in. Lets delivery tell
+   * a result that was only enveloped from one whose content a middleware changed (mangled,
+   * truncated, summarised, …).
+   */
+  envelope?: { prefix: string; suffix: string };
 }
 
 export type Middleware = (

@@ -1,4 +1,4 @@
-import { Server } from '@modelcontextprotocol/server';
+import { ProtocolError, ProtocolErrorCode, Server } from '@modelcontextprotocol/server';
 import type { ContentBlock, Notification, Transport } from '@modelcontextprotocol/server';
 import type { ToolRegistry } from '../registry/registry.js';
 import type { AllowlistEngine } from '../allowlist/engine.js';
@@ -28,6 +28,13 @@ import { generateId } from '../util/id.js';
 import { sanitizeToolName } from '../util/tool-name.js';
 import { childLogger } from '../util/logger.js';
 import { VERSION } from '../version.js';
+import { isRecord } from '../util/is-record.js';
+import {
+  hostSupportsUi,
+  isAppOnlyTool,
+  toolUiResourceUri,
+  viewResultMeta,
+} from '../mcp-apps/ui.js';
 
 const log = childLogger('agent-server');
 
@@ -99,10 +106,6 @@ export function explicitSessionId(
   return undefined;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
 export function createAgentServer(deps: AgentServerDeps): Server {
   const { agentId, registry, allowlist, hitlEngine, hitlBatcher, auditLogger } = deps;
   const getConfig = deps.getAgentConfig ?? (() => deps.agentConfig);
@@ -127,16 +130,32 @@ export function createAgentServer(deps: AgentServerDeps): Server {
   const server = new Server(
     { name: 'airlock', version: VERSION },
     {
+      // `resources` serves MCP Apps views (`ui://`) of proxied tools; nothing else is exposed.
       capabilities: {
         tools: {},
+        resources: {},
         ...(advertiseEvents ? { extensions: { [EVENTS_EXTENSION_ID]: {} } } : {}),
       },
       ...(instructions ? { instructions } : {}),
     }
   );
 
-  server.setRequestHandler('tools/list', () => {
-    const tools = registry.getFiltered(agentId);
+  /** Whether this request's host renders MCP Apps (undefined: it did not say). */
+  const uiSupport = (reqCtx: { mcpReq: { envelope?: unknown } }): boolean | undefined =>
+    hostSupportsUi(
+      isRecord(reqCtx.mcpReq.envelope) ? reqCtx.mcpReq.envelope : undefined,
+      server.getClientCapabilities() as Record<string, unknown> | undefined
+    );
+
+  server.setRequestHandler('tools/list', (_request, reqCtx) => {
+    // Opted-in upstreams are told Airlock renders MCP Apps, so they may list app-only tools. A host that
+    // renders them filters those out of the model's list itself; for a host known not to, Airlock
+    // does it. When support is unknown (a 2025 client over stateless HTTP) they pass through: the
+    // host is the one that knows, and every call is policy-checked either way.
+    const hideAppOnly = uiSupport(reqCtx) === false;
+    const tools = registry
+      .getFiltered(agentId)
+      .filter((tool) => !(hideAppOnly && isAppOnlyTool(tool)));
     // outputSchema is not advertised: when a response middleware rewrites a result, its
     // structuredContent is dropped (see deliveredResult), and clients reject a tool that declares
     // an outputSchema but returns no structured content.
@@ -148,6 +167,34 @@ export function createAgentServer(deps: AgentServerDeps): Server {
     };
   });
 
+  server.setRequestHandler('resources/list', (_request, reqCtx) => ({
+    resources: registry.listUiResources(agentId, { excludeAppOnly: uiSupport(reqCtx) === false }),
+  }));
+
+  server.setRequestHandler('resources/read', async (request, reqCtx) => {
+    const { uri } = request.params;
+    // A view is code the host runs, so serving one is audited like a call.
+    const audit = (result: string, error?: string) =>
+      auditLogger.log({
+        agent_id: agentId,
+        request_id: generateId(),
+        tool: 'resources/read',
+        args: JSON.stringify({ uri }),
+        result,
+        ...(error !== undefined ? { error } : {}),
+      });
+    try {
+      const result = await registry.readUiResource(agentId, uri, {
+        excludeAppOnly: uiSupport(reqCtx) === false,
+      });
+      audit('view_served');
+      return result;
+    } catch (err) {
+      audit('view_refused', err instanceof Error ? err.message : String(err));
+      throw err;
+    }
+  });
+
   server.setRequestHandler('tools/call', async (request, reqCtx) => {
     const sanitizedName = request.params.name;
     // Reverse-map sanitized name back to the internal namespaced name so that
@@ -155,6 +202,21 @@ export function createAgentServer(deps: AgentServerDeps): Server {
     const allTools = registry.getFiltered(agentId);
     const match = allTools.find((t) => sanitizeToolName(t.name) === sanitizedName);
     const toolName = match?.name ?? sanitizedName;
+    // A view-only tool hidden from a host that renders no views is not callable through it either:
+    // the spec has hosts reject such calls, and a host that cannot render views will not.
+    if (match && isAppOnlyTool(match) && uiSupport(reqCtx) === false) {
+      auditLogger.log({
+        agent_id: agentId,
+        request_id: generateId(),
+        tool: match.name,
+        args: JSON.stringify(request.params.arguments ?? {}),
+        result: 'denied',
+      });
+      throw new ProtocolError(
+        ProtocolErrorCode.InvalidRequest,
+        `Tool not available: ${match.name}`
+      );
+    }
     const args = request.params.arguments ?? {};
     const requestMeta = isRecord(request.params._meta) ? request.params._meta : {};
     // No fallback id: over a stateless transport a per-instance random id would change on every
@@ -218,7 +280,13 @@ export function createAgentServer(deps: AgentServerDeps): Server {
     // Pass through downstream MCP response shape (content, structuredContent, isError)
     // if the result looks like a CallToolResult — with its text replaced when a response
     // middleware rewrote it. Otherwise wrap as text.
-    const result = deliveredResult(response) as Record<string, unknown> | undefined;
+    // An MCP Apps view renders from structuredContent and _meta; deliveredResult keeps them for a
+    // tool with a view as long as only the envelope touched its content.
+    const hasView = match !== undefined && toolUiResourceUri(match) !== undefined;
+    const result = deliveredResult(response, {
+      forView: hasView && uiSupport(reqCtx) !== false,
+    }) as Record<string, unknown> | undefined;
+    const meta = viewResultMeta(result?._meta);
     if (result && Array.isArray(result.content)) {
       return {
         content: result.content as ContentBlock[],
@@ -226,6 +294,7 @@ export function createAgentServer(deps: AgentServerDeps): Server {
           ? { structuredContent: result.structuredContent as Record<string, unknown> }
           : {}),
         ...(result.isError ? { isError: true } : {}),
+        ...(meta ? { _meta: meta } : {}),
       };
     }
 

@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from 'async_hooks';
 import { Client, SSEClientTransport } from '@modelcontextprotocol/client';
-import type { Tool } from '@modelcontextprotocol/client';
+import type { ReadResourceResult, Tool } from '@modelcontextprotocol/client';
 import {
   EVENTS_ERROR_CODES,
   createEventsError,
@@ -17,6 +17,7 @@ import type {
 import type { ProviderConnectionStatus } from './status.js';
 import { childLogger } from '../util/logger.js';
 import { VERSION } from '../version.js';
+import { upstreamClientCapabilities } from '../mcp-apps/ui.js';
 
 const log = childLogger('sse-client');
 
@@ -49,7 +50,9 @@ export class SseMcpClient {
   constructor(
     private id: string,
     private url: string,
-    private headers?: Record<string, string>
+    private headers?: Record<string, string>,
+    /** Declare MCP Apps support upstream (the provider's `mcp_apps` setting). */
+    private mcpApps = false
   ) {}
 
   onReady(cb: () => void): void {
@@ -80,7 +83,10 @@ export class SseMcpClient {
       },
     });
 
-    this.client = new Client({ name: 'airlock', version: VERSION });
+    this.client = new Client(
+      { name: 'airlock', version: VERSION },
+      { capabilities: upstreamClientCapabilities(this.mcpApps) }
+    );
     this.connecting = true;
 
     this.transport.onclose = () => {
@@ -173,6 +179,12 @@ export class SseMcpClient {
       `MCP provider ${this.id} uses legacy SSE transport and does not support Events`,
       { feature: 'events' }
     );
+  }
+
+  /** Read one upstream resource (MCP Apps views are fetched this way). */
+  async readResource(uri: string): Promise<ReadResourceResult> {
+    if (!this.client || !this.ready) throw new Error(`MCP ${this.id} not connected`);
+    return this.client.readResource({ uri });
   }
 
   getServerInfo(): { name: string; version: string } | undefined {

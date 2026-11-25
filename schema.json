@@ -121,6 +121,9 @@
                       "tool"
                     ],
                     "additionalProperties": false
+                  },
+                  "mcp_apps": {
+                    "type": "boolean"
                   }
                 },
                 "required": [
@@ -200,6 +203,9 @@
                       "tool"
                     ],
                     "additionalProperties": false
+                  },
+                  "mcp_apps": {
+                    "type": "boolean"
                   }
                 },
                 "required": [
@@ -345,6 +351,9 @@
                       "tool"
                     ],
                     "additionalProperties": false
+                  },
+                  "mcp_apps": {
+                    "type": "boolean"
                   }
                 },
                 "required": [

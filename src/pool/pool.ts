@@ -8,7 +8,7 @@ import { drainGrantOperations } from './oauth-store.js';
 import { OAUTH_SHUTDOWN_DRAIN_MS } from './oauth-refresh.js';
 import type { McpServerConfig } from '../config/schema.js';
 import { resolveProviderBearerFile } from '../config/provider-credentials.js';
-import type { Tool } from '@modelcontextprotocol/server';
+import type { ReadResourceResult, Tool } from '@modelcontextprotocol/server';
 import type {
   EventDescriptor,
   EventsPollParams,
@@ -161,10 +161,11 @@ export class ClientPool {
           cfg.args,
           cfg.env,
           this.options?.stdioStderr,
-          this.eventsProviders.has(id)
+          this.eventsProviders.has(id),
+          cfg.mcp_apps === true
         );
       case 'sse':
-        return new SseMcpClient(id, cfg.url, cfg.headers);
+        return new SseMcpClient(id, cfg.url, cfg.headers, cfg.mcp_apps === true);
       case 'http':
         return new HttpMcpClient(
           id,
@@ -182,6 +183,7 @@ export class ClientPool {
             oauthMaxRefreshIntervalMs: cfg.oauth_max_refresh_interval_ms,
             oauthCallbackMode: cfg.oauth_callback_mode,
             oauthCallbackRouter: this.options?.oauthCallbackRouter,
+            mcpApps: cfg.mcp_apps === true,
           }
         );
     }
@@ -231,6 +233,13 @@ export class ClientPool {
     return beforeSend
       ? client.callTool(toolName, args, requestMeta, beforeSend)
       : client.callTool(toolName, args, requestMeta);
+  }
+
+  async readResource(mcpId: string, uri: string): Promise<ReadResourceResult> {
+    const client = this.clients.get(mcpId);
+    if (!client) throw new Error(`Unknown MCP: ${mcpId}`);
+    if (!client.isReady()) throw new Error(`MCP ${mcpId} is not connected`);
+    return client.readResource(uri);
   }
 
   supportsEvents(mcpId: string): boolean {

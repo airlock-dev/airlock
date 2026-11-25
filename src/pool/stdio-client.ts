@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from 'async_hooks';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
-import type { Tool } from '@modelcontextprotocol/client';
+import type { ReadResourceResult, Tool } from '@modelcontextprotocol/client';
 import {
   EventsAwareClient,
   type UpstreamEventStreamCallbacks,
@@ -16,6 +16,7 @@ import type {
 import type { ProviderConnectionStatus } from './status.js';
 import { childLogger } from '../util/logger.js';
 import { VERSION } from '../version.js';
+import { upstreamClientCapabilities } from '../mcp-apps/ui.js';
 
 const log = childLogger('stdio-client');
 
@@ -64,7 +65,9 @@ export class StdioMcpClient {
     private args: string[],
     private env?: Record<string, string>,
     private stderr?: 'inherit' | 'ignore' | 'pipe',
-    private probeModern = false
+    private probeModern = false,
+    /** Declare MCP Apps support upstream (the provider's `mcp_apps` setting). */
+    private mcpApps = false
   ) {}
 
   onReady(cb: () => void): void {
@@ -100,10 +103,15 @@ export class StdioMcpClient {
 
     // Only probe 2026-07-28 `server/discover` on stdio when an agent has event permissions for
     // this provider; legacy 2025 stdio servers expect `initialize` as their first frame.
-    this.client = new EventsAwareClient(
-      { name: 'airlock', version: VERSION },
-      this.probeModern ? { versionNegotiation: { mode: 'auto' } } : undefined
-    );
+    const capabilities = upstreamClientCapabilities(this.mcpApps);
+    const clientOptions =
+      this.probeModern || Object.keys(capabilities).length > 0
+        ? {
+            ...(this.probeModern ? { versionNegotiation: { mode: 'auto' as const } } : {}),
+            ...(Object.keys(capabilities).length > 0 ? { capabilities } : {}),
+          }
+        : undefined;
+    this.client = new EventsAwareClient({ name: 'airlock', version: VERSION }, clientOptions);
     this.client.onEventsListChanged?.(() => {
       for (const cb of this.eventsListChangedListeners) cb();
     });
@@ -203,6 +211,12 @@ export class StdioMcpClient {
   ): Promise<UpstreamEventStreamHandle> {
     if (!this.client || !this.ready) throw new Error(`MCP ${this.id} not connected`);
     return this.client.openEventStream(params, callbacks, options);
+  }
+
+  /** Read one upstream resource (MCP Apps views are fetched this way). */
+  async readResource(uri: string): Promise<ReadResourceResult> {
+    if (!this.client || !this.ready) throw new Error(`MCP ${this.id} not connected`);
+    return this.client.readResource({ uri });
   }
 
   getServerInfo(): { name: string; version: string } | undefined {

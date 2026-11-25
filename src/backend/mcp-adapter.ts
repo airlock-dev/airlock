@@ -1,6 +1,6 @@
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import { Client } from '@modelcontextprotocol/client';
-import type { Tool } from '@modelcontextprotocol/client';
+import type { ReadResourceResult, Tool } from '@modelcontextprotocol/client';
 import { ProtocolError } from '@modelcontextprotocol/server';
 import type { ValidateFunction } from 'ajv';
 import type { BackendAdapter } from './types.js';
@@ -9,7 +9,13 @@ import type { ClientPool } from '../pool/pool.js';
 import type { McpServerConfig } from '../config/schema.js';
 import { wrapCommandWithSandbox, type ResolvedSandboxConfig } from '../sandbox/index.js';
 import { childLogger } from '../util/logger.js';
+import { isRecord } from '../util/is-record.js';
 import { VERSION } from '../version.js';
+import {
+  namespaceToolUiMeta,
+  stripToolUiMeta,
+  upstreamClientCapabilities,
+} from '../mcp-apps/ui.js';
 import {
   assertUploadPlanActive,
   materializeUploadArgs,
@@ -23,10 +29,6 @@ const DOWNSTREAM_SESSION_ID_META_KEY = 'downstreamSessionId';
 const MCP_REQUEST_META_KEY = 'mcpRequestMeta';
 
 type McpRequestMeta = Record<string, unknown>;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
 
 function nonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0;
@@ -58,10 +60,22 @@ export class McpBackendAdapter implements BackendAdapter {
   async listTools(): Promise<Tool[]> {
     if (!this.pool.isReady(this.mcpId)) return [];
     const tools = await this.pool.listTools(this.mcpId);
-    return tools.map((t) => ({
-      ...t,
-      name: `${this.mcpId}/${t.name}`,
-    }));
+    return tools.map((t) => {
+      const tool = { ...t, name: `${this.mcpId}/${t.name}` };
+      // A provider that did not opt into MCP Apps never declared support, but a server may attach
+      // UI metadata regardless; drop it so no view of an untrusted provider is ever offered.
+      return this.mcpApps ? namespaceToolUiMeta(tool, this.mcpId) : stripToolUiMeta(tool);
+    });
+  }
+
+  /** Whether this provider opted into MCP Apps passthrough (`mcp_apps: true`). */
+  get mcpApps(): boolean {
+    return this.serverConfig?.mcp_apps === true;
+  }
+
+  async readResource(uri: string): Promise<ReadResourceResult> {
+    if (!this.mcpApps) throw new Error(`Provider ${this.mcpId} does not serve MCP Apps views`);
+    return this.pool.readResource(this.mcpId, uri);
   }
 
   instructions(): string | undefined {
@@ -166,7 +180,10 @@ export class McpBackendAdapter implements BackendAdapter {
         stderr: 'pipe',
       });
 
-      client = new Client({ name: 'airlock', version: VERSION });
+      client = new Client(
+        { name: 'airlock', version: VERSION },
+        { capabilities: upstreamClientCapabilities(this.mcpApps) }
+      );
       await client.connect(transport);
 
       log.info({ mcpId: this.mcpId, toolName }, 'Ephemeral sandboxed MCP connected');

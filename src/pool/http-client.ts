@@ -5,7 +5,7 @@ import {
   extractWWWAuthenticateParams,
   UnauthorizedError,
 } from '@modelcontextprotocol/client';
-import type { AuthProvider, Tool } from '@modelcontextprotocol/client';
+import type { AuthProvider, ReadResourceResult, Tool } from '@modelcontextprotocol/client';
 import {
   EventsAwareClient,
   wrapFetchWithEventHeaders,
@@ -33,6 +33,7 @@ import {
 } from './oauth-refresh.js';
 import { childLogger } from '../util/logger.js';
 import { VERSION } from '../version.js';
+import { upstreamClientCapabilities } from '../mcp-apps/ui.js';
 
 const log = childLogger('http-client');
 
@@ -86,6 +87,8 @@ export interface HttpMcpClientOptions {
   oauthCallbackMode?: OAuthCallbackMode;
   /** Required for `oauthCallbackMode: 'gateway'`. */
   oauthCallbackRouter?: OAuthCallbackRouter;
+  /** Declare MCP Apps support upstream (the provider's `mcp_apps` setting). */
+  mcpApps?: boolean;
 }
 
 /** Whether an HTTP fetch payload is strictly an MCP `notifications/cancelled` frame. */
@@ -187,6 +190,8 @@ export class HttpMcpClient {
   private unsubscribeWriterAcquired?: () => void;
   private maintenanceArming = false;
   private readonly oauthMaxRefreshIntervalMs?: number;
+  /** Declare MCP Apps support upstream (the provider's `mcp_apps` setting). */
+  private readonly mcpApps: boolean;
   /** Consecutive ambiguous refresh failures (drives the one quick retry). */
   private ambiguousFailures = 0;
 
@@ -203,6 +208,7 @@ export class HttpMcpClient {
     private requestTimeoutMs = 60_000,
     options: HttpMcpClientOptions = {}
   ) {
+    this.mcpApps = options.mcpApps === true;
     if (this.oauth) {
       this.oauthProvider = new FileOAuthProvider(
         this.id,
@@ -285,7 +291,10 @@ export class HttpMcpClient {
     // anything else falls back to the 2025 initialize handshake, unchanged from before.
     this.client = new EventsAwareClient(
       { name: 'airlock', version: VERSION },
-      { versionNegotiation: { mode: 'auto' } }
+      {
+        versionNegotiation: { mode: 'auto' },
+        capabilities: upstreamClientCapabilities(this.mcpApps),
+      }
     );
     this.client.onEventsListChanged?.(() => {
       for (const cb of this.eventsListChangedListeners) cb();
@@ -1045,6 +1054,14 @@ export class HttpMcpClient {
         ackTimeoutMs: this.requestTimeoutMs,
         ...options,
       });
+    });
+  }
+
+  /** Read one upstream resource (MCP Apps views are fetched this way). */
+  async readResource(uri: string): Promise<ReadResourceResult> {
+    return this.withSessionRetry('readResource', async () => {
+      if (!this.client || !this.ready) throw new Error(`MCP ${this.id} not connected`);
+      return this.client.readResource({ uri }, { timeout: this.requestTimeoutMs });
     });
   }
 

@@ -26,7 +26,10 @@ export function untrustedEnvelopeMiddleware(): Middleware {
       /[&<>"]/g,
       (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!
     );
-    response.text = `<${envelopeTag} tool="${escapedTool}" call-id="${escapedCallId}">\n${response.text}\n</${envelopeTag}>`;
+    const prefix = `<${envelopeTag} tool="${escapedTool}" call-id="${escapedCallId}">\n`;
+    const suffix = `\n</${envelopeTag}>`;
+    response.text = `${prefix}${response.text}${suffix}`;
+    response.envelope = { prefix, suffix };
     return response;
   };
 }
