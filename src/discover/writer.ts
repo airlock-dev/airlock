@@ -2,7 +2,7 @@ import { stringify } from 'yaml';
 
 export function serializeDiscovery(
   data: Record<string, unknown>,
-  meta: { command: string; strategy: string }
+  meta: { command: string; strategy: string },
 ): string {
   const header = [
     '# Auto-discovered by Airlock',

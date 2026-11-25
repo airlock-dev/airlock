@@ -7,11 +7,11 @@ export async function auditApiPlugin(
   app: FastifyInstance,
   opts: {
     auditLogger: AuditLogger;
-    secret?: string;
-    authRequired?: boolean;
-    allowedOrigins?: string[];
-    getRequestSecurity?: () => RequestSecurityOptions;
-  }
+	    secret?: string;
+	    authRequired?: boolean;
+	    allowedOrigins?: string[];
+	    getRequestSecurity?: () => RequestSecurityOptions;
+	  }
 ): Promise<void> {
   const { auditLogger } = opts;
 
