@@ -1,5 +1,19 @@
+import { AsyncLocalStorage } from 'async_hooks';
 import { Client, SSEClientTransport } from '@modelcontextprotocol/client';
 import type { ReadResourceResult, Tool } from '@modelcontextprotocol/client';
+import {
+  EVENTS_ERROR_CODES,
+  createEventsError,
+  type EventDescriptor,
+  type EventsPollParams,
+  type EventsPollResult,
+  type EventsStreamParams,
+} from '../events/protocol.js';
+import type {
+  UpstreamEventStreamCallbacks,
+  UpstreamEventStreamHandle,
+  UpstreamEventStreamOptions,
+} from '../events/upstream-client.js';
 import type { ProviderConnectionStatus } from './status.js';
 import { childLogger } from '../util/logger.js';
 import { VERSION } from '../version.js';
@@ -31,6 +45,7 @@ export class SseMcpClient {
   private reconnectTimer?: NodeJS.Timeout;
   private lastError?: string;
   private readyListeners = new Set<() => void>();
+  private readonly sendGuardStorage = new AsyncLocalStorage<() => void>();
 
   constructor(
     private id: string,
@@ -47,6 +62,25 @@ export class SseMcpClient {
   async connect(): Promise<void> {
     this.transport = new SSEClientTransport(new URL(this.url), {
       requestInit: this.headers ? { headers: this.headers } : undefined,
+      fetch: (url, init) => {
+        let isCancellation = false;
+        if (typeof init?.body === 'string') {
+          try {
+            const parsed = JSON.parse(init.body) as unknown;
+            isCancellation =
+              typeof parsed === 'object' &&
+              parsed !== null &&
+              !Array.isArray(parsed) &&
+              (parsed as { method?: unknown }).method === 'notifications/cancelled';
+          } catch {
+            isCancellation = false;
+          }
+        }
+        if (!isCancellation) {
+          this.sendGuardStorage.getStore()?.();
+        }
+        return fetch(url, init);
+      },
     });
 
     this.client = new Client(
@@ -101,13 +135,50 @@ export class SseMcpClient {
   async callTool(
     name: string,
     args: Record<string, unknown>,
-    requestMeta?: McpRequestMeta
+    requestMeta?: McpRequestMeta,
+    beforeSend?: () => void
   ): Promise<unknown> {
     if (!this.client || !this.ready) throw new Error(`MCP ${this.id} not connected`);
     const request = requestMeta
       ? { name, arguments: args, _meta: requestMeta }
       : { name, arguments: args };
-    return this.client.callTool(request);
+    const invoke = (): Promise<unknown> => {
+      beforeSend?.();
+      return this.client!.callTool(request);
+    };
+    return beforeSend ? this.sendGuardStorage.run(beforeSend, invoke) : invoke();
+  }
+
+  /** Legacy SSE transport predates MCP 2026-07-28 and does not support SEP-3415 Events. */
+  supportsEvents(): boolean {
+    return false;
+  }
+
+  // eslint-disable-next-line @typescript-eslint/require-await
+  async listEvents(): Promise<EventDescriptor[]> {
+    return [];
+  }
+
+  // eslint-disable-next-line @typescript-eslint/require-await
+  async pollEvents(_params: EventsPollParams): Promise<EventsPollResult> {
+    throw createEventsError(
+      EVENTS_ERROR_CODES.Unsupported,
+      `MCP provider ${this.id} uses legacy SSE transport and does not support Events`,
+      { feature: 'events' }
+    );
+  }
+
+  // eslint-disable-next-line @typescript-eslint/require-await
+  async openEventStream(
+    _params: EventsStreamParams,
+    _callbacks: UpstreamEventStreamCallbacks,
+    _options?: UpstreamEventStreamOptions
+  ): Promise<UpstreamEventStreamHandle> {
+    throw createEventsError(
+      EVENTS_ERROR_CODES.Unsupported,
+      `MCP provider ${this.id} uses legacy SSE transport and does not support Events`,
+      { feature: 'events' }
+    );
   }
 
   /** Read one upstream resource (MCP Apps views are fetched this way). */

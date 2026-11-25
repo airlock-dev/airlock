@@ -27,7 +27,7 @@ describe('FileOAuthProvider — relay callback URL', () => {
     } else {
       process.env.HOME = originalHome;
     }
-    await rm(tempHome, { recursive: true, force: true });
+    await rm(tempHome, { recursive: true, force: true, maxRetries: 10, retryDelay: 20 });
   });
 
   describe('without relay', () => {
@@ -67,22 +67,35 @@ describe('FileOAuthProvider — relay callback URL', () => {
       expect(fileInfo.mode & 0o777).toBe(0o600);
     });
 
-    it('drops cached client registration when redirect URL changes', async () => {
+    it('registers a new client when the redirect URL changes, without deleting the grant', async () => {
       const serverId = 'stale-server';
       const staleProvider = new FileOAuthProvider(serverId, PORT);
       await staleProvider.saveClientInformation({
         client_id: 'stale-client',
         redirect_uris: [staleProvider.redirectUrl],
       });
-      await staleProvider.saveTokens({ access_token: 'old-token', token_type: 'Bearer' });
+      await staleProvider.saveTokens({
+        access_token: 'old-token',
+        token_type: 'Bearer',
+        refresh_token: 'old-refresh',
+      });
 
       const provider = new FileOAuthProvider(serverId, PORT + 1);
+      // The next authorization registers a fresh client…
       await expect(provider.clientInformation()).resolves.toBeUndefined();
+      await provider.saveClientInformation({
+        client_id: 'new-client',
+        redirect_uris: [provider.redirectUrl],
+      });
 
+      // …but the stored grant (and the registration its refresh token is bound to) stays intact
+      // until that authorization actually succeeds.
       const stored = JSON.parse(
         await readFile(join(tempHome, '.airlock', 'oauth', `${serverId}.json`), 'utf-8')
       );
-      expect(stored).toEqual({});
+      expect(stored.clientInfo.client_id).toBe('stale-client');
+      expect(stored.tokens.refresh_token).toBe('old-refresh');
+      expect(stored.pending.clientInfo.client_id).toBe('new-client');
     });
   });
 
@@ -165,9 +178,7 @@ describe('FileOAuthProvider — relay callback URL', () => {
       // Attach the rejection assertion before triggering the callback so the rejection is never
       // momentarily unhandled (the server settles it mid-fetch, before the await below is reached).
       const rejects = expect(codePromise).rejects.toThrow('OAuth state mismatch');
-      const res = await fetch(
-        `http://127.0.0.1:${PORT + 1}/oauth/callback?code=x&state=wrong`
-      );
+      const res = await fetch(`http://127.0.0.1:${PORT + 1}/oauth/callback?code=x&state=wrong`);
 
       expect(res.status).toBe(400);
       await rejects;

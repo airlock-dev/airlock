@@ -15,6 +15,7 @@ clis: # CLI tools exposed as MCP tools
 apis: # REST APIs exposed as MCP tools
 agents: # Per-agent policy and config
 approvals: # Global approval provider config
+uploads: # Staged file upload settings (disabled by default)
 security: # Blocked hosts, local-host exceptions, resource limits
 audit: # Audit log settings
 server: # Gateway server settings
@@ -72,23 +73,53 @@ providers:
 
 ### Provider fields
 
-| Field                         | Applies to             | Default    | Effect                                                                                                        |
-| ----------------------------- | ---------------------- | ---------- | ------------------------------------------------------------------------------------------------------------- |
-| `enabled`                     | all object forms       | `true`     | `false` keeps the entry in config but does not start or expose the provider                                   |
-| `command` / `args`            | `stdio`                | `args: []` | Process to spawn (used literally; no `${VAR}` substitution)                                                   |
-| `env`                         | `stdio`                | —          | Extra environment for the child process (`${VAR}` supported)                                                  |
-| `url` / `headers`             | `sse`, `http`          | —          | Endpoint and request headers (`${VAR}` supported in `headers` only)                                           |
-| `oauth`                       | `http`                 | `false`    | Run the browser authorization-code flow                                                                       |
-| `oauth_callback_port`         | `http`                 | `18432`    | Local port for the OAuth callback listener                                                                    |
-| `oauth_callback_url`          | `http`                 | —          | Public callback URL when the callback is relayed (remote or tunneled setups)                                  |
-| `client_id` / `client_secret` | `http`                 | —          | Pre-registered OAuth client credentials                                                                       |
-| `request_timeout_ms`          | `http`                 | `60000`    | Per-request MCP deadline                                                                                      |
-| `instructions`                | all object forms       | —          | Operator notes added to the gateway's instructions (see below)                                                |
-| `upstream_instructions`       | all object forms       | `include`  | `ignore` drops the provider's own advertised instructions                                                     |
-| `credential_probe`            | `stdio`, `sse`, `http` | —          | Read-only call that proves the credential works (see below)                                                   |
-| `mcp_apps`                    | `stdio`, `sse`, `http` | `false`    | Proxy the provider's MCP Apps inline views ([details](../concepts/providers-and-tools.md#mcp-apps-inline-ui)) |
+| Field                           | Applies to             | Default    | Effect                                                                                                        |
+| ------------------------------- | ---------------------- | ---------- | ------------------------------------------------------------------------------------------------------------- |
+| `enabled`                       | all object forms       | `true`     | `false` keeps the entry in config but does not start or expose the provider                                   |
+| `command` / `args`              | `stdio`                | `args: []` | Process to spawn (used literally; no `${VAR}` substitution)                                                   |
+| `env`                           | `stdio`                | —          | Extra environment for the child process (`${VAR}` supported)                                                  |
+| `url` / `headers`               | `sse`, `http`          | —          | Endpoint and request headers (`${VAR}` supported in `headers` only)                                           |
+| `bearer_token_file`             | `http`                 | —          | Absolute path to a bearer token file resolved when Airlock loads config                                       |
+| `oauth`                         | `http`                 | `false`    | Run the browser authorization-code flow                                                                       |
+| `oauth_callback_port`           | `http`                 | `18432`    | Local port for the OAuth callback listener                                                                    |
+| `oauth_callback_url`            | `http`                 | —          | Public callback URL when the callback is relayed (remote or tunneled setups)                                  |
+| `oauth_callback_mode`           | `http`                 | `loopback` | `gateway` receives the callback on the gateway's own `/oauth/callback` route                                  |
+| `client_id` / `client_secret`   | `http`                 | —          | Pre-registered OAuth client credentials                                                                       |
+| `oauth_max_refresh_interval_ms` | `http` (`oauth: true`) | 24 h       | Refresh the grant at least this often (1 min – 30 days), so refresh-token inactivity windows never lapse      |
+| `request_timeout_ms`            | `http`                 | `60000`    | Per-request MCP deadline                                                                                      |
+| `instructions`                  | all object forms       | —          | Operator notes added to the gateway's instructions (see below)                                                |
+| `upstream_instructions`         | all object forms       | `include`  | `ignore` drops the provider's own advertised instructions                                                     |
+| `credential_probe`              | `stdio`, `sse`, `http` | —          | Read-only call that proves the credential works (see below)                                                   |
+| `mcp_apps`                      | `stdio`, `sse`, `http` | `false`    | Proxy the provider's MCP Apps inline views ([details](../concepts/providers-and-tools.md#mcp-apps-inline-ui)) |
 
 Built-ins can be written as the bare string `builtin` or as `{ type: builtin, enabled: false }`.
+
+### Add an HTTP provider with a bearer token while Airlock is running
+
+Make a directory of provider credentials readable to Airlock. For a container,
+mount the directory read-only when setting up the gateway. Add the token file
+to the mounted directory, then add the provider to the watched configuration.
+
+```yaml
+providers:
+  workspace:
+    type: http
+    url: https://mcp.example.com
+    bearer_token_file: /run/provider-secrets/workspace
+```
+
+Airlock reads the token during config load. On a successful reload it connects
+the new provider while existing provider connections keep serving requests.
+The file contains one bearer token and can end with a newline. The file size
+limit is 16 KiB. Use a single authorization source for the provider. A missing
+or invalid token file fails startup config validation or preserves the previous
+configuration during a reload. `config lint` and `config check --no-resolve`
+validate the configuration structure without opening credential files.
+
+After replacing a token file, save the configuration file to trigger a reload.
+Airlock reconnects the provider whose credential changed. Requests already in
+flight to that provider may be interrupted, while other providers keep their
+connections.
 
 ### App identity: `client_credentials`
 
@@ -430,6 +461,12 @@ agents:
     http: # HTTP domain restrictions
       domain_allowlist: ['api.github.com', '*.sentry.io']
 
+    uploads: # Optional per-agent staged upload overrides (size caps, public_url pin, modes, MIME types)
+      public_url: https://airlock.tailnet.ts.net
+      max_file_bytes: 268435456
+      allowed_modes: [base64, data_uri, text, url]
+      allowed_mime_types: ['model/*', 'image/*']
+
     arg_policy: # Per-tool argument constraints
       google_workspace/manage_event:
         calendar_id:
@@ -444,6 +481,18 @@ agents:
 
     arg_scope: # Reusable argument constraints via arg_dimensions
       github_repo: airlock_repos
+
+    events: # MCP Events (SEP-3415, io.modelcontextprotocol/events) — default-deny, poll + push
+      allow:
+        - 'github/*'
+      ask:
+        - 'pagerduty/incident.created'
+      deny:
+        - 'github/repository.deleted'
+      arg_policy:
+        pagerduty/incident.created:
+          severity:
+            allow: [P1, P2]
 
     command_policy: # Route a CLI-dispatcher tool's command arg (allow/ask/deny, deny > ask > allow)
       posthog/exec:
@@ -481,6 +530,14 @@ agents:
       railway/get-logs:
         # Keeps the vendor's own description and adds a house rule after it.
         description_append: 'Always pass projectId explicitly — list-projects will not show it.'
+      forge/upload_attachment:
+        uploads:
+          content_base64: base64
+      bambuddy/upload_3mf:
+        uploads:
+          file_path:
+            mode: path
+            path_prefix: /shared/uploads
 ```
 
 `description` **replaces** the upstream description; `description_append` **adds** to whatever
@@ -654,6 +711,30 @@ Use `disable` to permanently accept a rule for a config, and `severity` to
 re-grade a rule as `info`, `warn`, or `error`. CLI flags such as
 `--disable` and `--rule` override this block for one invocation.
 
+## `uploads`
+
+Staged file upload settings for pushing local files from an agent's disk through Airlock to OpenAPI (`multipart/form-data` / binary), built-in HTTP (`multipart` / `body_upload`), upstream MCP, or CLI tools. Disabled by default. See [File Uploads](/guides/file-uploads).
+
+```yaml
+uploads:
+  enabled: true
+  dir: /data/uploads # optional; defaults to a unique per-instance temp directory
+  public_url: https://airlock.example.com # single public URL returned by airlock/prepare_upload
+  public_urls: # optional allowlist for multi-hostname gateways (matches Host / X-Forwarded-Host)
+    - https://airlock.example.com
+    - https://airlock.tailnet.ts.net
+  internal_url: http://airlock-gateway:4111 # optional base URL for one-time :url downloads
+  max_file_bytes: 52428800 # 50 MiB default per-agent limit (per-agent overrides may raise up to max_total_bytes)
+  max_total_bytes: 524288000 # 500 MiB default staging ceiling across all staged files
+  max_files_per_agent: 100 # default
+  max_inline_bytes: 10485760 # 10 MiB default for base64 / data_uri / text substitution
+  ttl_ms: 900000 # 15m staged file lifetime
+  ticket_ttl_ms: 300000 # 5m unused upload URL lifetime
+  download_ttl_ms: 120000 # 2m one-time download URL lifetime
+  allowed_modes: [base64, data_uri, text, url] # `path` is opt-in
+  allowed_mime_types: [] # empty allows all MIME types
+```
+
 ## `security`
 
 Host blocking for built-in HTTP and OpenAPI tools. Airlock resolves domain names before outbound requests and fails closed if any resolved address is blocked or DNS cannot be verified.
@@ -702,10 +783,12 @@ security:
 | `new_session_window_ms`          | `10000`  | Window for `new_session_max`                                                                                  |
 | `max_concurrent_calls_per_agent` | `8`      | Tool calls executing at once for one agent; calls waiting on approval do not count                            |
 | `call_execution_timeout_ms`      | `0`      | Deadline for one downstream execution, excluding any approval wait (`0` = none)                               |
+| `max_event_streams_per_agent`    | `16`     | Concurrent SEP-3415 `events/stream` push subscriptions one agent may hold                                     |
+| `max_event_streams_global`       | `256`    | Concurrent SEP-3415 `events/stream` push subscriptions across all agents                                      |
 
 The session fields apply only to the legacy SSE endpoint (`/agents/:agentId/sse`).
 Streamable HTTP (`/agents/:agentId/mcp`) is stateless and holds no sessions; only
-`max_concurrent_calls_per_agent` and `call_execution_timeout_ms` affect it.
+`max_concurrent_calls_per_agent`, `call_execution_timeout_ms`, and the `max_event_streams_*` caps affect it.
 
 ## `audit`
 

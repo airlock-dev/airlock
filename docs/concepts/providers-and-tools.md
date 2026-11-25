@@ -39,11 +39,12 @@ providers:
 Airlock ships with these built-in providers:
 
 - **exec** — shell command execution via `exec/run`, with per-agent command policies
-- **http** — HTTP requests via `http/get`, `http/post`, `http/put`, `http/delete`, `http/patch`, `http/head`, with domain allowlists and blocked host enforcement
-- **airlock** — notification, human prompt, approval, and agent-visible status tools:
+- **http** — HTTP requests via `http/get`, `http/post`, `http/put`, `http/delete`, `http/patch`, `http/head`, with domain allowlists, blocked host enforcement, and optional staged file uploads (`multipart` / `body_upload`)
+- **airlock** — notification, human prompt, approval, staged upload, and agent-visible status tools:
   `airlock/ask_user`, `airlock/notify_user`, `airlock/log`,
-  `airlock/status`, `airlock/list_provider_tools`, `airlock/request_approval`
-  and `airlock/await_approval`
+  `airlock/status`, `airlock/list_provider_tools`, `airlock/request_approval`,
+  `airlock/await_approval`, and (when `uploads.enabled: true`)
+  `airlock/prepare_upload` and `airlock/delete_upload`
 
 ```yaml
 providers:
@@ -150,6 +151,7 @@ For MCP servers that require browser-based OAuth authentication, the `http` tran
 
 - Automatic OAuth flows with configurable callback port
 - HTTPS relay for OAuth callbacks (for remote or tunneled setups)
+- Native gateway callbacks on the gateway's own HTTPS origin (server mode)
 - Pre-registered client credentials (`client_id` and `client_secret`)
 
 ```yaml
@@ -163,6 +165,62 @@ providers:
     oauth_callback_port: 9876
     oauth_callback_url: https://relay.example.com/callback
 ```
+
+### Where the browser callback lands
+
+`oauth_callback_mode` chooses who receives the authorization server's redirect:
+
+| Mode                 | Callback received by                                                    | Use it for                                     |
+| -------------------- | ----------------------------------------------------------------------- | ---------------------------------------------- |
+| `loopback` (default) | A temporary listener on `127.0.0.1:<oauth_callback_port>`               | Desktop and stdio use                          |
+| `loopback` + URL     | An external relay at `oauth_callback_url` that forwards to the listener | Existing relay setups (state carries the port) |
+| `gateway`            | The gateway's data-plane route `GET /oauth/callback`                    | A gateway served over HTTPS                    |
+
+With `gateway`, the redirect URI you register with the authorization server is
+the public HTTPS address of the gateway's own `/oauth/callback` route. No relay,
+sidecar or extra listener is involved:
+
+```yaml
+providers:
+  spliit:
+    type: http
+    url: https://spliit.example.com/mcp
+    oauth: true
+    oauth_callback_mode: gateway
+    oauth_callback_url: https://airlock.example.com/oauth/callback
+  trek:
+    type: http
+    url: https://trek.example.com/mcp
+    oauth: true
+    oauth_callback_mode: gateway
+    oauth_callback_url: https://airlock.example.com/oauth/callback
+```
+
+Several providers can share one callback URL. Airlock sends a fresh, random
+`state` with each authorization request and routes the callback to the provider
+that issued it. The existing PKCE exchange then completes as usual.
+
+The callback route is the only data-plane route a browser can reach without an
+agent token, because the browser arriving from the authorization server cannot
+carry one. It is narrow by design:
+
+- It answers `404` unless at least one enabled provider uses
+  `oauth_callback_mode: gateway`. `HEAD` is never served.
+- A callback is handled only when its `state` matches an authorization Airlock
+  started and is still waiting for. That covers both a code and an OAuth error.
+  Unknown, missing, superseded and replayed states get `400` and change nothing.
+- Each state is single use and is withdrawn when its flow is abandoned or a
+  newer authorization replaces it.
+- Responses are fixed pages with `Cache-Control: no-store`,
+  `Referrer-Policy: no-referrer` and a restrictive CSP. Airlock never logs the
+  authorization code, the state or the callback query string.
+- MCP, tools API and management API authentication are unchanged. The route is
+  never mounted on the management listener.
+
+Expose `/oauth/callback` from your reverse proxy alongside the agent routes. If
+the proxy mounts Airlock under a path prefix, strip it so the request reaches
+Airlock as `/oauth/callback`. Gateway mode needs a running gateway. Under
+`airlock --agent` (stdio), the flow fails with an error that names the setting.
 
 ## Security defaults
 

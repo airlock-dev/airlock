@@ -117,6 +117,37 @@ describe('approval decision routes', () => {
       expect(auditLogger.getHitlById(ticket.id)?.status).toBe('approved');
       expect(readFileSync(configPath, 'utf8')).toContain('remember_allow');
     });
+
+    it('lists and revokes active grants via /api/grants', async () => {
+      const grant = engine.createOperatorGrant({
+        agentId: 'dev',
+        scope: { kind: 'tool', tool: 'exec/run' },
+        durationMs: 600_000,
+      });
+
+      const listRes = await app!.inject({ method: 'GET', url: '/api/grants' });
+      expect(listRes.statusCode).toBe(200);
+      expect(listRes.json()).toMatchObject({
+        canRevoke: true,
+        grants: [
+          expect.objectContaining({
+            id: grant.id,
+            agentId: 'dev',
+            scope: { kind: 'tool', tool: 'exec/run' },
+          }),
+        ],
+      });
+
+      const delRes = await app!.inject({ method: 'DELETE', url: `/api/grants/${grant.id}` });
+      expect(delRes.statusCode).toBe(200);
+      expect(delRes.json()).toEqual({ ok: true });
+
+      const afterRes = await app!.inject({ method: 'GET', url: '/api/grants' });
+      expect(afterRes.json().grants).toEqual([]);
+
+      const missingRes = await app!.inject({ method: 'DELETE', url: `/api/grants/${grant.id}` });
+      expect(missingRes.statusCode).toBe(404);
+    });
   });
 
   describe('mobile decision', () => {

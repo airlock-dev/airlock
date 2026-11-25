@@ -1,14 +1,36 @@
+import { AsyncLocalStorage } from 'async_hooks';
 import {
-  Client,
   StreamableHTTPClientTransport,
   auth,
+  extractWWWAuthenticateParams,
   UnauthorizedError,
 } from '@modelcontextprotocol/client';
-import type { ReadResourceResult, Tool } from '@modelcontextprotocol/client';
-import { FileOAuthProvider } from './oauth-provider.js';
+import type { AuthProvider, ReadResourceResult, Tool } from '@modelcontextprotocol/client';
+import {
+  EventsAwareClient,
+  wrapFetchWithEventHeaders,
+  type UpstreamEventStreamCallbacks,
+  type UpstreamEventStreamHandle,
+  type UpstreamEventStreamOptions,
+} from '../events/upstream-client.js';
+import type {
+  EventDescriptor,
+  EventsPollParams,
+  EventsPollResult,
+  EventsStreamParams,
+} from '../events/protocol.js';
+import { FileOAuthProvider, type OAuthCallbackMode } from './oauth-provider.js';
+import type { OAuthCallbackRouter } from './oauth-callback-router.js';
 import { ClientCredentialsTokenSource } from './client-credentials.js';
 import type { ClientCredentialsConfig } from '../config/schema.js';
-import type { ProviderConnectionStatus } from './status.js';
+import type { OAuthGrantHealth, OAuthGrantState, ProviderConnectionStatus } from './status.js';
+import type { OAuthStorageMode } from './oauth-store.js';
+import {
+  OAUTH_SHUTDOWN_DRAIN_MS,
+  oauthFetch,
+  refreshGrant,
+  type RefreshOutcome,
+} from './oauth-refresh.js';
 import { childLogger } from '../util/logger.js';
 import { VERSION } from '../version.js';
 import { upstreamClientCapabilities } from '../mcp-apps/ui.js';
@@ -28,9 +50,62 @@ const REFRESH_BUFFER_MS = 5 * 60 * 1000;
 // re-evaluate — long-lived tokens (e.g. a 1-year access token) chain 24h checks until near expiry.
 const MAX_REFRESH_TIMER_MS = 24 * 60 * 60 * 1000;
 // Floor so a token already at/near expiry doesn't schedule a busy 0ms loop on connect.
-const MIN_REFRESH_TIMER_MS = 5 * 1000;
-// Backoff before retrying a transiently-failed proactive refresh (network blip, 5xx).
-const REFRESH_RETRY_MS = 60 * 1000;
+let minRefreshTimerMs = 5 * 1000;
+
+/** Test hook: lower the proactive-refresh timer floor (default 5 s). */
+export function setProactiveRefreshFloorMs(ms = 5 * 1000): void {
+  minRefreshTimerMs = ms;
+}
+
+/** A refresh outcome whose access token is usable now (persisted or still being written). */
+function tokenUsable(outcome: RefreshOutcome): boolean {
+  return outcome.kind === 'refreshed' || outcome.kind === 'unpersisted';
+}
+// Refresh retry backoff: 1m, 2m, 4m … capped at 30m, forever. Applies to transient failures and
+// to issuer rejections alike — a grant is never given up on automatically.
+let REFRESH_RETRY_MS = 60 * 1000;
+
+/** Test hook: shorten the base refresh retry delay (default 60 s). */
+export function setRefreshRetryBaseMs(ms = 60 * 1000): void {
+  REFRESH_RETRY_MS = ms;
+}
+const MAX_REFRESH_RETRY_MS = 30 * 60 * 1000;
+// After an ambiguous exchange (answer lost) retry the same endpoint quickly once: issuers with a
+// refresh-token reuse grace window (commonly 30–60 s) then still accept the presented token.
+const AMBIGUOUS_RETRY_MS = 5 * 1000;
+// A reactive 401 right after a successful refresh is answered by retrying, not by refreshing again.
+const RECENT_REFRESH_MS = 5 * 1000;
+
+export interface HttpMcpClientOptions {
+  /** `readonly` for CLI commands: never refresh, write, or invalidate OAuth grants. */
+  oauthStorage?: OAuthStorageMode;
+  /** Override `~/.airlock/oauth` (tests). */
+  oauthStoreDir?: string;
+  /** Refresh at least this often while a refresh token is stored (default 24 h). */
+  oauthMaxRefreshIntervalMs?: number;
+  /** Where the browser OAuth callback lands (`loopback` default, or `gateway`). */
+  oauthCallbackMode?: OAuthCallbackMode;
+  /** Required for `oauthCallbackMode: 'gateway'`. */
+  oauthCallbackRouter?: OAuthCallbackRouter;
+  /** Declare MCP Apps support upstream (the provider's `mcp_apps` setting). */
+  mcpApps?: boolean;
+}
+
+/** Whether an HTTP fetch payload is strictly an MCP `notifications/cancelled` frame. */
+function isCancellationFetch(init?: RequestInit): boolean {
+  if (typeof init?.body !== 'string') return false;
+  try {
+    const parsed = JSON.parse(init.body) as unknown;
+    return (
+      typeof parsed === 'object' &&
+      parsed !== null &&
+      !Array.isArray(parsed) &&
+      (parsed as { method?: unknown }).method === 'notifications/cancelled'
+    );
+  } catch {
+    return false;
+  }
+}
 
 /** Extract a short, human-readable reason from a connection error. */
 function friendlyError(err: unknown): string {
@@ -40,7 +115,7 @@ function friendlyError(err: unknown): string {
     return `DNS lookup failed for ${host ?? 'unknown host'}`;
   }
   if (msg.includes('InvalidGrantError') || err?.constructor?.name === 'InvalidGrantError') {
-    return 'OAuth grant expired — re-authentication required';
+    return 'OAuth issuer rejected the grant (invalid_grant)';
   }
   if (msg.includes('ECONNREFUSED')) return 'connection refused';
   return msg.split('\n')[0];
@@ -72,7 +147,7 @@ function isAuthRequiredError(err: unknown): boolean {
 }
 
 export class HttpMcpClient {
-  private client?: Client;
+  private client?: EventsAwareClient;
   private transport?: StreamableHTTPClientTransport;
   private oauthProvider?: FileOAuthProvider;
   private tokenSource?: ClientCredentialsTokenSource;
@@ -81,7 +156,11 @@ export class HttpMcpClient {
   private ready = false;
   private reconnectTimer?: NodeJS.Timeout;
   private refreshTimer?: NodeJS.Timeout;
+  /** Absolute time the pending refreshTimer fires (proactive refresh or retry). */
+  private refreshDeadline?: number;
   private readyListeners = new Set<() => void>();
+  private eventsListChangedListeners = new Set<() => void>();
+  private readonly sendGuardStorage = new AsyncLocalStorage<() => void>();
 
   private awaitingAuth = false;
   private connecting = false;
@@ -89,6 +168,32 @@ export class HttpMcpClient {
   private lastError?: string;
   /** Sticky until a successful reconnect; unlike awaitingAuth it survives callback/listener errors. */
   private authorizationRequired = false;
+
+  // OAuth grant health (see OAuthGrantHealth). Never paged; surfaced through status and /health.
+  private oauthState: OAuthGrantState = 'ok';
+  private refreshFailures = 0;
+  private lastRefreshError?: string;
+  private lastRefreshErrorAt?: number;
+  private lastRefreshAt?: number;
+  private nextRefreshRetryAt?: number;
+  private oauthIssuer?: string;
+  private issuerChanged?: { from: string; to: string; migrated: boolean; at: number };
+  private authorizationPending = false;
+  private lastRecordedOutcome?: RefreshOutcome;
+  private lastRecordedOutcomeAt = 0;
+  /** From the latest 401 challenge: where the PRM lives and which scope the resource wants. */
+  private challengeResourceMetadataUrl?: URL;
+  private challengeScope?: string;
+  private flowAbort?: AbortController;
+  /** Wakes the auth flow's current wait so it re-evaluates (e.g. after taking the writer lock). */
+  private flowWake?: () => void;
+  private unsubscribeWriterAcquired?: () => void;
+  private maintenanceArming = false;
+  private readonly oauthMaxRefreshIntervalMs?: number;
+  /** Declare MCP Apps support upstream (the provider's `mcp_apps` setting). */
+  private readonly mcpApps: boolean;
+  /** Consecutive ambiguous refresh failures (drives the one quick retry). */
+  private ambiguousFailures = 0;
 
   constructor(
     private id: string,
@@ -101,18 +206,25 @@ export class HttpMcpClient {
     private oauthCallbackUrl?: string,
     clientCredentials?: ClientCredentialsConfig,
     private requestTimeoutMs = 60_000,
-    /** Declare MCP Apps support upstream (the provider's `mcp_apps` setting). */
-    private mcpApps = false
+    options: HttpMcpClientOptions = {}
   ) {
+    this.mcpApps = options.mcpApps === true;
     if (this.oauth) {
       this.oauthProvider = new FileOAuthProvider(
         this.id,
         this.oauthCallbackPort,
         this.clientId,
         this.clientSecret,
-        this.oauthCallbackUrl
+        this.oauthCallbackUrl,
+        {
+          storage: options.oauthStorage ?? 'writer',
+          storeDir: options.oauthStoreDir,
+          callbackMode: options.oauthCallbackMode,
+          callbackRouter: options.oauthCallbackRouter,
+        }
       );
     }
+    this.oauthMaxRefreshIntervalMs = options.oauthMaxRefreshIntervalMs;
     // App-identity auth. Mutually exclusive with `oauth` (the loader rejects both together), so
     // these two never fight over the Authorization header.
     if (clientCredentials) {
@@ -124,7 +236,15 @@ export class HttpMcpClient {
     this.readyListeners.add(cb);
   }
 
+  onEventsListChanged(cb: () => void): void {
+    this.eventsListChangedListeners.add(cb);
+  }
+
   async connect(): Promise<void> {
+    if (this.stopped) return;
+    // Grant maintenance does not depend on the MCP endpoint: a down resource server must never let
+    // the refresh token reach its inactivity limit.
+    this.ensureGrantMaintenance();
     // Don't reconnect while waiting for the user to complete the browser OAuth flow
     if (this.awaitingAuth) {
       log.debug({ id: this.id }, 'Skipping connect — already awaiting OAuth');
@@ -148,24 +268,37 @@ export class HttpMcpClient {
     }
 
     if (this.oauthProvider) {
-      transportOpts.authProvider = this.oauthProvider;
+      // A minimal AuthProvider, deliberately NOT the OAuthClientProvider: handing the transport the
+      // full provider makes it run the SDK's auth() on every 401, which refreshes on its own terms
+      // and deletes credentials on invalid_grant / issuer mismatch. Airlock owns refresh instead.
+      transportOpts.authProvider = this.oauthAuthProvider();
     }
 
-    if (this.tokenSource) {
-      transportOpts.fetch = this.clientCredentialsFetch();
-    }
+    const guardedFetch: (url: string | URL, init?: RequestInit) => Promise<Response> = this
+      .tokenSource
+      ? this.clientCredentialsFetch()
+      : (url, init) => {
+          if (!isCancellationFetch(init)) {
+            this.sendGuardStorage.getStore()?.();
+          }
+          return fetch(url, init);
+        };
+    transportOpts.fetch = wrapFetchWithEventHeaders(guardedFetch);
 
     this.transport = new StreamableHTTPClientTransport(new URL(this.url), transportOpts);
 
     // Probe with server/discover and speak 2026-07-28 (stateless) to upstreams that support it;
     // anything else falls back to the 2025 initialize handshake, unchanged from before.
-    this.client = new Client(
+    this.client = new EventsAwareClient(
       { name: 'airlock', version: VERSION },
       {
         versionNegotiation: { mode: 'auto' },
         capabilities: upstreamClientCapabilities(this.mcpApps),
       }
     );
+    this.client.onEventsListChanged?.(() => {
+      for (const cb of this.eventsListChangedListeners) cb();
+    });
     this.connecting = true;
 
     this.transport.onclose = () => {
@@ -229,7 +362,7 @@ export class HttpMcpClient {
       this.connecting = false;
       this.lastError = friendlyError(err);
       if (isAuthRequiredError(err) && this.oauthProvider) {
-        this.startOAuthFlow(true);
+        this.startOAuthFlow();
         return;
       }
       log.error({ id: this.id, reason: friendlyError(err) }, 'MCP HTTP connect failed');
@@ -253,7 +386,14 @@ export class HttpMcpClient {
     const source = this.tokenSource!;
     return async (url, init) => {
       const send = async (force: boolean): Promise<Response> => {
+        const skipGuard = isCancellationFetch(init);
+        if (!skipGuard) {
+          this.sendGuardStorage.getStore()?.();
+        }
         const token = await source.getToken(force);
+        if (!skipGuard) {
+          this.sendGuardStorage.getStore()?.();
+        }
         const headers = new Headers(init?.headers);
         headers.set('Authorization', `Bearer ${token}`);
         return fetch(url, { ...init, headers });
@@ -273,91 +413,402 @@ export class HttpMcpClient {
     };
   }
 
-  /**
-   * Run the full browser OAuth flow: wait for the user to authorize in the
-   * browser, finish the auth exchange, then reconnect with fresh tokens.
-   */
-  private async runOAuthFlow(authorizationPrepared: boolean): Promise<void> {
-    this.awaitingAuth = true;
-    try {
-      if (!authorizationPrepared) {
-        const result = await auth(this.oauthProvider!, { serverUrl: this.url });
-        if (result === 'AUTHORIZED') {
-          // The reactive 401 raced a usable refresh token. Reconnect without asking the operator
-          // to complete a browser flow that is no longer necessary.
-          this.awaitingAuth = false;
-          const oldTransport = this.transport;
-          if (oldTransport) oldTransport.onclose = undefined;
-          await oldTransport?.close();
-          await this.connect();
-          return;
+  /** The transport's view of OAuth: current access token, and Airlock-owned refresh on 401. */
+  private oauthAuthProvider(): AuthProvider {
+    const provider = this.oauthProvider!;
+    return {
+      token: async () => (await provider.tokens())?.access_token,
+      onUnauthorized: async (ctx) => {
+        const challenge = extractWWWAuthenticateParams(ctx.response);
+        if (challenge.resourceMetadataUrl) {
+          this.challengeResourceMetadataUrl = challenge.resourceMetadataUrl;
         }
-      }
-      // Usually the callback completes this process's flow. A CLI/helper may instead finish OAuth
-      // and replace the shared credential file. Notice that replacement and recover immediately;
-      // previously this client waited forever until Airlock was restarted.
-      while (true) {
-        log.info({ id: this.id }, 'OAuth authorization required, waiting for browser flow');
-        const previousTokenVersion = await this.oauthProvider!.tokenVersion();
-        const tokenChangeAbort = new AbortController();
-        const outcome = await Promise.race([
-          this.oauthProvider!.waitForAuthCode().then((code) => ({ code })),
-          this.oauthProvider!.waitForTokenChange(
-            previousTokenVersion,
-            tokenChangeAbort.signal
-          ).then(() => ({ credentialsChanged: true as const })),
-        ]);
-        tokenChangeAbort.abort();
+        if (challenge.scope) this.challengeScope = challenge.scope;
+        // Another trigger refreshed moments ago: let the transport retry with the new token.
+        if (this.lastRefreshAt && Date.now() - this.lastRefreshAt < RECENT_REFRESH_MS) return;
+        const outcome = await this.refreshNow('reactive');
+        if (!tokenUsable(outcome)) {
+          if (outcome.kind === 'rejected' || outcome.kind === 'failed') this.scheduleRefreshRetry();
+          throw new UnauthorizedError(this.outcomeReason(outcome));
+        }
+      },
+    };
+  }
 
-        if ('code' in outcome) {
-          await this.transport!.finishAuth(outcome.code);
+  /** Refresh the stored grant (single-flight per token file) and record the outcome. */
+  private async refreshNow(trigger: string): Promise<RefreshOutcome> {
+    const outcome = await refreshGrant(this.oauthProvider!, this.url, {
+      resourceMetadataUrl: this.challengeResourceMetadataUrl,
+    });
+    this.recordRefreshOutcome(outcome, trigger);
+    return outcome;
+  }
+
+  private recordRefreshOutcome(outcome: RefreshOutcome, trigger: string): void {
+    // Single-flight: concurrent triggers receive the same outcome object; count it once.
+    if (outcome === this.lastRecordedOutcome) return;
+    const now = Date.now();
+    this.lastRecordedOutcome = outcome;
+    this.lastRecordedOutcomeAt = now;
+    if ('issuerChange' in outcome && outcome.issuerChange) {
+      this.issuerChanged = {
+        ...outcome.issuerChange,
+        migrated: tokenUsable(outcome) && 'migrated' in outcome && outcome.migrated === true,
+        at: now,
+      };
+    }
+    if (outcome.kind !== 'failed' || !outcome.ambiguous) this.ambiguousFailures = 0;
+    switch (outcome.kind) {
+      case 'refreshed':
+        this.refreshFailures = 0;
+        this.nextRefreshRetryAt = undefined;
+        this.lastRefreshAt = now;
+        this.oauthIssuer = outcome.issuer ?? this.oauthIssuer;
+        this.oauthState = 'ok';
+        this.lastRefreshError = undefined;
+        this.lastRefreshErrorAt = undefined;
+        log.info(
+          { id: this.id, trigger, issuer: outcome.issuer, persistence: outcome.persistence },
+          'Refreshed OAuth access token'
+        );
+        this.rearmAfterExchange();
+        return;
+      case 'unpersisted':
+        // Usable from memory, not on disk: persistence_pending (reported live from the provider).
+        this.refreshFailures = 0;
+        this.nextRefreshRetryAt = undefined;
+        this.lastRefreshAt = now;
+        this.oauthIssuer = outcome.issuer ?? this.oauthIssuer;
+        this.oauthState = 'ok';
+        this.lastRefreshError = outcome.message;
+        this.lastRefreshErrorAt = now;
+        log.warn({ id: this.id, trigger, issuer: outcome.issuer }, outcome.message);
+        this.rearmAfterExchange();
+        return;
+      case 'rejected':
+        this.oauthState = 'grant_rejected';
+        this.refreshFailures++;
+        this.lastRefreshError =
+          outcome.code === 'endpoint_retired'
+            ? `endpoint_retired: ${outcome.message} (the grant stays pinned to that endpoint until a refresh there succeeds, or a new authorization or restore replaces it)`
+            : outcome.afterAmbiguous
+              ? `issuer rejected the stored refresh grant after an earlier exchange whose answer was lost; that exchange probably consumed it, so browser re-authorization is likely required (${outcome.message})`
+              : `issuer rejected the stored refresh grant (${outcome.message})`;
+        this.lastRefreshErrorAt = now;
+        this.oauthIssuer = outcome.issuer ?? this.oauthIssuer;
+        log.warn(
+          {
+            id: this.id,
+            trigger,
+            code: outcome.code,
+            issuer: outcome.issuer,
+            consecutiveFailures: this.refreshFailures,
+            issuerChanged: outcome.issuerChange,
+          },
+          'OAuth issuer rejected the stored refresh grant; grant kept on disk, refresh will be retried with backoff'
+        );
+        return;
+      case 'failed':
+        this.oauthState = outcome.ambiguous ? 'refresh_ambiguous' : 'refresh_failing';
+        this.refreshFailures++;
+        if (outcome.ambiguous) this.ambiguousFailures++;
+        this.lastRefreshError = outcome.ambiguous
+          ? `refresh answer lost; the issuer may have rotated the refresh token (${outcome.message})`
+          : outcome.message;
+        this.lastRefreshErrorAt = now;
+        log.warn(
+          {
+            id: this.id,
+            trigger,
+            reason: outcome.message,
+            issuer: outcome.issuer,
+            consecutiveFailures: this.refreshFailures,
+          },
+          'OAuth token refresh failed; stored grant kept, retrying with backoff'
+        );
+        return;
+      case 'no_grant':
+        this.oauthState = 'missing';
+        return;
+      case 'read_only':
+        this.oauthState = 'read_only';
+        this.lastRefreshError = outcome.reason;
+        log.debug({ id: this.id, trigger, reason: outcome.reason }, 'Not refreshing OAuth token');
+        return;
+    }
+  }
+
+  /**
+   * Every successful exchange — proactive, reactive (401) or auth-flow — recomputes the proactive
+   * deadline from the new token's lifetime (recordRefreshOutcome runs once per exchange).
+   */
+  private rearmAfterExchange(): void {
+    if (this.stopped || !this.oauthProvider || this.oauthProvider.storageMode !== 'writer') return;
+    void this.scheduleProactiveRefresh({ reset: true }).catch((err) =>
+      log.debug({ id: this.id, reason: friendlyError(err) }, 'Failed to re-arm token refresh')
+    );
+  }
+
+  private outcomeReason(outcome: RefreshOutcome): string {
+    switch (outcome.kind) {
+      case 'refreshed':
+        return 'OAuth token refreshed';
+      case 'unpersisted':
+        return `OAuth token refreshed but not yet written to disk (${outcome.message})`;
+      case 'rejected':
+        return `OAuth issuer rejected the stored grant (${outcome.message}); grant kept, refresh retrying with backoff, browser re-authorization available`;
+      case 'failed':
+        return outcome.ambiguous
+          ? `OAuth token refresh answer lost (${outcome.message}); the issuer may have rotated the refresh token; retrying the same endpoint`
+          : `OAuth token refresh failing (${outcome.message}); grant kept, retrying with backoff`;
+      case 'no_grant':
+        return 'OAuth authorization required';
+      case 'read_only':
+        return `OAuth access token not usable and this process does not refresh it (${outcome.reason})`;
+    }
+  }
+
+  private refreshBackoffMs(): number {
+    const exponent = Math.max(0, this.refreshFailures - 1);
+    return Math.min(REFRESH_RETRY_MS * 2 ** Math.min(exponent, 16), MAX_REFRESH_RETRY_MS);
+  }
+
+  /** Retry the refresh later. Never gives up; the delay grows to 30 minutes. */
+  private scheduleRefreshRetry(
+    delay = this.ambiguousFailures === 1 ? AMBIGUOUS_RETRY_MS : this.refreshBackoffMs()
+  ): void {
+    if (this.stopped || !this.oauthProvider) return;
+    if (this.refreshTimer) clearTimeout(this.refreshTimer);
+    this.nextRefreshRetryAt = Date.now() + delay;
+    this.refreshDeadline = this.nextRefreshRetryAt;
+    this.refreshTimer = setTimeout(() => {
+      this.refreshTimer = undefined;
+      this.refreshDeadline = undefined;
+      this.nextRefreshRetryAt = undefined;
+      void this.proactiveRefresh();
+    }, delay);
+    this.refreshTimer.unref?.();
+  }
+
+  /**
+   * Interactive-authorization fallback. Runs while the provider is unusable:
+   *  1. try a refresh of the stored grant (a 401 often races a refresh that would succeed);
+   *  2. prepare a browser authorization — staged as `pending`, never touching the stored grant;
+   *  3. wait for the callback code, or for the token file to change (our own background refresh
+   *     retry succeeding, another process, or an operator restore) — whichever comes first.
+   * Then reconnect. Background refresh retries keep running throughout.
+   */
+  private async runOAuthFlow(): Promise<void> {
+    const provider = this.oauthProvider!;
+    const abort = new AbortController();
+    this.flowAbort = abort;
+    try {
+      let first = true;
+      while (!this.stopped && !abort.signal.aborted) {
+        // The 401 that started this flow usually just ran a refresh; don't hit the issuer twice.
+        const recent =
+          first &&
+          this.lastRecordedOutcome &&
+          Date.now() - this.lastRecordedOutcomeAt < RECENT_REFRESH_MS
+            ? this.lastRecordedOutcome
+            : undefined;
+        first = false;
+        // A just-refreshed token that the server still answers with 401 is not fixed by another
+        // refresh (that would loop, spending a rotating token each time). Back off instead.
+        const freshTokenRejected = recent !== undefined && tokenUsable(recent);
+        const outcome = recent ?? (await this.refreshNow('auth-required'));
+        if (this.stopped || abort.signal.aborted) return;
+        if (tokenUsable(outcome) && !freshTokenRejected) break;
+        if (outcome.kind === 'rejected' || outcome.kind === 'failed') {
+          if (!this.refreshTimer) this.scheduleRefreshRetry();
+        }
+        if (
+          outcome.kind === 'read_only' &&
+          provider.storageMode === 'writer' &&
+          !this.refreshTimer
+        ) {
+          // Another Airlock process owns the store; check again later in case it goes away.
+          this.scheduleRefreshRetry(REFRESH_RETRY_MS);
+        }
+        this.lastError = freshTokenRejected
+          ? 'MCP server rejected a freshly refreshed OAuth token'
+          : this.outcomeReason(outcome);
+
+        let prepared = false;
+        if (outcome.kind !== 'read_only') {
+          try {
+            const result = await this.prepareAuthorization();
+            if (this.stopped || abort.signal.aborted) return;
+            if (result === 'AUTHORIZED') break; // non-interactive grant obtained; just reconnect
+            prepared = true;
+          } catch (err) {
+            if (this.stopped || abort.signal.aborted) return;
+            log.warn(
+              { id: this.id, reason: friendlyError(err) },
+              'Could not prepare browser OAuth authorization; will retry'
+            );
+          }
+        }
+        this.authorizationPending = prepared;
+        if (prepared) {
+          log.info({ id: this.id }, 'OAuth authorization required, waiting for browser flow');
+        }
+
+        const previousTokenVersion = await provider.tokenVersion();
+        if (this.stopped || abort.signal.aborted) return;
+        const waitAbort = new AbortController();
+        const onFlowAbort = () => waitAbort.abort();
+        abort.signal.addEventListener('abort', onFlowAbort, { once: true });
+        type Waited = { code: string } | { credentialsChanged: true } | { retry: true };
+        const waits: Promise<Waited>[] = [
+          // Re-evaluate at once when something changes what this flow can do (this process just
+          // took the writer lock, a background refresh found no grant to refresh).
+          new Promise<Waited>((resolve) => {
+            this.flowWake = () => resolve({ retry: true });
+          }),
+          provider
+            .waitForTokenChange(previousTokenVersion, waitAbort.signal)
+            .then(() => ({ credentialsChanged: true as const })),
+        ];
+        if (prepared) {
+          waits.push(
+            provider.waitForAuthCode().then(
+              (code) => ({ code }),
+              (err: unknown) => {
+                if (waitAbort.signal.aborted || this.stopped) {
+                  return { retry: true as const };
+                }
+                const reason = friendlyError(err);
+                this.lastError = reason;
+                log.warn(
+                  { id: this.id, reason },
+                  'OAuth callback failed; preparing a new authorization later'
+                );
+                return sleep(this.refreshBackoffMs(), waitAbort.signal).then(() => ({
+                  retry: true as const,
+                }));
+              }
+            )
+          );
+        } else {
+          // Never wait unboundedly: a read-only wait (another process owns the store) is
+          // re-evaluated at least every minute, and at once when this process takes the lock.
+          const delay = outcome.kind === 'read_only' ? REFRESH_RETRY_MS : this.refreshBackoffMs();
+          waits.push(sleep(delay, waitAbort.signal).then(() => ({ retry: true as const })));
+        }
+        const result = await Promise.race(waits);
+        this.flowWake = undefined;
+        waitAbort.abort();
+        abort.signal.removeEventListener('abort', onFlowAbort);
+        if (this.stopped || abort.signal.aborted) return;
+
+        if ('code' in result) {
+          try {
+            await this.finishAuthorization(result.code);
+            break;
+          } catch (err) {
+            this.lastError = friendlyError(err);
+            log.warn(
+              { id: this.id, reason: this.lastError },
+              'OAuth authorization code exchange failed; stored grant kept'
+            );
+            continue;
+          }
+        }
+        provider.stopCallbackServer();
+        if ('credentialsChanged' in result) {
+          log.info({ id: this.id }, 'OAuth credentials changed on disk; reconnecting');
           break;
         }
-
-        this.oauthProvider!.stopCallbackServer();
-        const result = await auth(this.oauthProvider!, { serverUrl: this.url });
-        if (result === 'AUTHORIZED') {
-          const oldTransport = this.transport;
-          if (oldTransport) oldTransport.onclose = undefined;
-          await oldTransport?.close();
-          await this.connectAfterOAuth();
-          return;
-        }
-        // The replacement was not usable. auth() prepared a fresh authorization request; wait for
-        // that callback (or another external replacement) without latching stale state.
+        // retry: loop again (refresh + re-prepare)
       }
     } catch (err) {
+      if (this.stopped) return;
       this.lastError = friendlyError(err);
       throw err;
     } finally {
       this.awaitingAuth = false;
+      this.authorizationPending = false;
+      provider.stopCallbackServer();
+      if (this.flowAbort === abort) this.flowAbort = undefined;
     }
-    // Tokens are now persisted by the provider. Reconnect with a fresh
-    // transport — the old one was already started and cannot be reused.
-    await this.connectAfterOAuth();
-  }
-
-  /** Reconnect while runOAuthFlow still owns the awaitingAuth latch. */
-  private async connectAfterOAuth(): Promise<void> {
-    this.awaitingAuth = false;
+    if (this.stopped || abort.signal.aborted) return;
+    // Credentials are persisted. Reconnect with a fresh transport — the old one was already
+    // started and cannot be reused.
+    this.client?.closeEventStreams?.('events/stream: upstream reconnecting after OAuth');
+    const oldTransport = this.transport;
+    if (oldTransport) oldTransport.onclose = undefined;
+    await oldTransport?.close();
     await this.connect();
   }
 
+  /** Stage a new browser authorization. The stored grant stays usable for refresh meanwhile. */
+  private async prepareAuthorization(): Promise<'AUTHORIZED' | 'REDIRECT'> {
+    const provider = this.oauthProvider!;
+    await provider.beginAuthorization();
+    const result = await auth(provider, {
+      serverUrl: this.url,
+      forceReauthorization: true,
+      fetchFn: oauthFetch,
+      ...(this.challengeResourceMetadataUrl
+        ? { resourceMetadataUrl: this.challengeResourceMetadataUrl }
+        : {}),
+      ...(this.challengeScope ? { scope: this.challengeScope } : {}),
+    });
+    return result;
+  }
+
+  /** Exchange the callback code; on success the provider commits the new grant. */
+  private async finishAuthorization(code: string): Promise<void> {
+    const provider = this.oauthProvider!;
+    if (this.stopped || provider.closing) throw new Error('Airlock is shutting down');
+    // Serialized with refresh exchanges of the same grant: a refresh in flight finishes (and
+    // commits coherently) before the new grant replaces it, never after.
+    // Checked again at dispatch: a code exchange queued behind a refresh must not be sent once
+    // shutdown has begun (its result could not be committed before exit).
+    const fetchFn: typeof fetch = (input, init) => {
+      if (provider.closing && (init?.method ?? 'GET').toUpperCase() === 'POST') {
+        return Promise.reject(new Error('Airlock is shutting down; OAuth request not sent'));
+      }
+      return oauthFetch(input as string | URL, init);
+    };
+    const result = await provider.runExclusive(() =>
+      auth(provider, {
+        serverUrl: this.url,
+        authorizationCode: code,
+        fetchFn,
+        ...(this.challengeResourceMetadataUrl
+          ? { resourceMetadataUrl: this.challengeResourceMetadataUrl }
+          : {}),
+        ...(this.challengeScope ? { scope: this.challengeScope } : {}),
+      })
+    );
+    if (result !== 'AUTHORIZED') throw new UnauthorizedError('Failed to authorize');
+    this.oauthState = 'ok';
+    this.refreshFailures = 0;
+    this.lastRefreshError = undefined;
+    this.lastRefreshErrorAt = undefined;
+    this.issuerChanged = undefined;
+    this.lastRefreshAt = Date.now();
+    log.info({ id: this.id }, 'OAuth authorization completed');
+  }
+
   /**
-   * Move the provider to an honest auth_required state and start exactly one callback listener.
-   * The SDK has already generated the authorization URL/PKCE verifier by the time it surfaces an
-   * UnauthorizedError (including JSON-RPC "Unauthorized" failures), so this completes that flow.
+   * Move the provider to an honest auth_required state and start exactly one authorization flow.
+   * Refresh retries already scheduled keep running: they may recover the stored grant on their own.
    */
-  private startOAuthFlow(authorizationPrepared = false): void {
+  private startOAuthFlow(): void {
     if (!this.oauthProvider || this.stopped) return;
     this.ready = false;
     this.connecting = false;
     this.authorizationRequired = true;
-    this.lastError = 'OAuth authorization required';
-    if (this.refreshTimer) {
-      clearTimeout(this.refreshTimer);
-      this.refreshTimer = undefined;
-    }
+    const recent =
+      this.lastRecordedOutcome && Date.now() - this.lastRecordedOutcomeAt < RECENT_REFRESH_MS
+        ? this.lastRecordedOutcome
+        : undefined;
+    this.lastError =
+      recent && !tokenUsable(recent) ? this.outcomeReason(recent) : 'OAuth authorization required';
+    this.client?.closeEventStreams?.('events/stream: upstream OAuth authorization required');
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = undefined;
@@ -367,7 +818,7 @@ export class HttpMcpClient {
     // Set this synchronously before launching the promise so concurrent failed tool calls cannot
     // race multiple callback servers onto the same provider port.
     this.awaitingAuth = true;
-    void this.runOAuthFlow(authorizationPrepared).catch((oauthErr) => {
+    void this.runOAuthFlow().catch((oauthErr) => {
       this.lastError = friendlyError(oauthErr);
       log.error({ id: this.id, reason: this.lastError }, 'OAuth flow failed');
     });
@@ -378,18 +829,33 @@ export class HttpMcpClient {
    * itself after each refresh, and chains sub-timers for tokens whose lifetime exceeds the
    * setTimeout ceiling. No-op for non-OAuth providers or tokens without a refresh_token/expiry.
    */
-  private async scheduleProactiveRefresh(): Promise<void> {
+  private async scheduleProactiveRefresh(opts: { reset?: boolean } = {}): Promise<void> {
     if (!this.oauthProvider) return;
-    if (this.refreshTimer) {
-      clearTimeout(this.refreshTimer);
-      this.refreshTimer = undefined;
+    // Unless a refresh just completed (`reset`), never push a pending deadline later: a reconnect
+    // or a re-arm may only bring the next refresh (or retry) forward.
+    const pending = () =>
+      !opts.reset && this.refreshTimer !== undefined && this.refreshDeadline !== undefined;
+    if (this.refreshFailures > 0) {
+      // Already failing: keep the backoff deadline instead of hammering (or postponing).
+      if (pending()) return;
+      this.scheduleRefreshRetry();
+      return;
     }
-    const untilRefresh = await this.oauthProvider.msUntilRefresh(REFRESH_BUFFER_MS);
+    const untilRefresh = await this.oauthProvider.msUntilRefresh(
+      REFRESH_BUFFER_MS,
+      this.oauthMaxRefreshIntervalMs
+    );
+    // stop() may have run while the grant was being read; never arm a timer after shutdown.
+    if (this.stopped) return;
     if (untilRefresh === undefined) return;
     const beyondCeiling = untilRefresh > MAX_REFRESH_TIMER_MS;
-    const delay = Math.max(Math.min(untilRefresh, MAX_REFRESH_TIMER_MS), MIN_REFRESH_TIMER_MS);
+    const delay = Math.max(Math.min(untilRefresh, MAX_REFRESH_TIMER_MS), minRefreshTimerMs);
+    if (pending() && Date.now() + delay >= this.refreshDeadline!) return;
+    if (this.refreshTimer) clearTimeout(this.refreshTimer);
+    this.refreshDeadline = Date.now() + delay;
     this.refreshTimer = setTimeout(() => {
       this.refreshTimer = undefined;
+      this.refreshDeadline = undefined;
       // Still far from expiry — just re-evaluate rather than refreshing early.
       if (beyondCeiling) {
         void this.scheduleProactiveRefresh().catch((err) =>
@@ -404,39 +870,125 @@ export class HttpMcpClient {
   }
 
   /**
-   * Refresh the access token via the stored refresh_token, ahead of expiry. On success the new token
-   * is persisted and picked up on the transport's next request (it reads tokens per-request), so no
-   * reconnect is needed; then re-arm the schedule. If the refresh_token itself is no longer valid,
-   * `auth()` returns 'REDIRECT' — interactive re-auth is required and the reactive path / manual
-   * re-auth will handle it, so don't loop here.
+   * Refresh the access token via the stored refresh_token, ahead of expiry (many OAuth servers
+   * signal expiry with an application-level error rather than HTTP 401, so a reactive refresh
+   * would never fire). Also the retry path for failed refreshes. Never discards the grant: an
+   * issuer rejection is retried with backoff exactly like an outage.
    */
   private async proactiveRefresh(): Promise<void> {
-    if (this.stopped || this.awaitingAuth || !this.oauthProvider) return;
+    if (this.stopped || !this.oauthProvider) return;
+    let outcome: RefreshOutcome;
     try {
-      const result = await auth(this.oauthProvider, { serverUrl: this.url });
-      if (result === 'AUTHORIZED') {
-        log.info({ id: this.id }, 'Proactively refreshed OAuth token before expiry');
-        await this.scheduleProactiveRefresh();
-      } else {
-        log.warn(
-          { id: this.id },
-          'Proactive token refresh needs interactive re-authorization (refresh token invalid)'
-        );
-        this.startOAuthFlow(true);
-      }
+      outcome = await this.refreshNow('proactive');
     } catch (err) {
-      log.warn(
-        { id: this.id, reason: friendlyError(err) },
-        'Proactive token refresh failed; retrying'
-      );
-      if (!this.stopped) {
-        this.refreshTimer = setTimeout(() => {
-          this.refreshTimer = undefined;
-          void this.proactiveRefresh();
-        }, REFRESH_RETRY_MS);
-        this.refreshTimer.unref?.();
-      }
+      // Defensive: refreshGrant reports failures as outcomes, but never let a bug stop retries.
+      outcome = { kind: 'failed', message: friendlyError(err) };
+      this.recordRefreshOutcome(outcome, 'proactive');
     }
+    if (this.stopped) return;
+    switch (outcome.kind) {
+      case 'refreshed':
+      case 'unpersisted':
+        if (!this.ready && !this.awaitingAuth && !this.connecting) {
+          // A reactive auth failure may have suspended the connection before the issuer recovered.
+          const oldTransport = this.transport;
+          if (oldTransport) oldTransport.onclose = undefined;
+          await oldTransport?.close().catch(() => {});
+          await this.connect().catch((err) =>
+            log.warn({ id: this.id, reason: friendlyError(err) }, 'Reconnect after refresh failed')
+          );
+        }
+        // Re-arm whatever the reconnect did: maintenance must never depend on the MCP endpoint.
+        if (!this.stopped) await this.scheduleProactiveRefresh({ reset: true });
+        return;
+      case 'rejected':
+      case 'failed':
+        this.scheduleRefreshRetry();
+        return;
+      case 'read_only':
+        if (this.oauthProvider.storageMode === 'writer')
+          this.scheduleRefreshRetry(REFRESH_RETRY_MS);
+        return;
+      case 'no_grant':
+        if (!this.ready && !this.awaitingAuth) this.startOAuthFlow();
+        else this.flowWake?.(); // a waiting flow re-evaluates and prepares authorization
+        return;
+    }
+  }
+
+  /**
+   * Arm grant maintenance (proactive refresh / retries) for a writer-capable OAuth provider,
+   * independent of MCP connectivity, and re-evaluate a waiting auth flow whenever this process
+   * acquires the OAuth writer lock.
+   */
+  private ensureGrantMaintenance(): void {
+    const provider = this.oauthProvider;
+    if (!provider || provider.storageMode !== 'writer' || this.stopped) return;
+    if (!this.unsubscribeWriterAcquired) {
+      this.unsubscribeWriterAcquired = provider.onWriterAcquired?.(() => {
+        if (this.stopped) return;
+        this.flowWake?.();
+        if (!this.refreshTimer) void this.scheduleProactiveRefresh().catch(() => {});
+      });
+    }
+    if (!this.refreshTimer && !this.maintenanceArming) {
+      this.maintenanceArming = true;
+      void this.scheduleProactiveRefresh()
+        .catch((err) =>
+          log.debug({ id: this.id, reason: friendlyError(err) }, 'Failed to schedule token refresh')
+        )
+        .finally(() => {
+          this.maintenanceArming = false;
+        });
+    }
+  }
+
+  /** OAuth grant health for status and /health; undefined for non-OAuth providers. */
+  getOAuthHealth(): OAuthGrantHealth | undefined {
+    if (!this.oauthProvider) return undefined;
+    const iso = (ms?: number) => (ms ? new Date(ms).toISOString() : undefined);
+    const provider = this.oauthProvider;
+    const persistencePending = provider.persistencePending === true;
+    const marker = provider.exchangeMarker;
+    let state = this.oauthState;
+    if (persistencePending) state = 'persistence_pending';
+    else if (marker && state === 'ok') state = 'refresh_ambiguous';
+    return {
+      state,
+      storage: this.oauthProvider.storageMode,
+      consecutiveFailures: this.refreshFailures,
+      ...(this.lastRefreshError ? { lastError: this.lastRefreshError } : {}),
+      ...(this.lastRefreshErrorAt ? { lastErrorAt: iso(this.lastRefreshErrorAt) } : {}),
+      ...(this.lastRefreshAt ? { lastRefreshAt: iso(this.lastRefreshAt) } : {}),
+      ...(this.nextRefreshRetryAt ? { nextRetryAt: iso(this.nextRefreshRetryAt) } : {}),
+      ...(this.oauthIssuer ? { issuer: this.oauthIssuer } : {}),
+      ...(this.issuerChanged
+        ? { issuerChanged: { ...this.issuerChanged, at: iso(this.issuerChanged.at)! } }
+        : {}),
+      authorizationPending: this.authorizationPending,
+      persistencePending,
+      ...(marker
+        ? {
+            exchange: {
+              state:
+                marker.state === 'in_flight' ? ('interrupted' as const) : ('ambiguous' as const),
+              since: iso(marker.at ?? marker.startedAt)!,
+              tokenEndpoint: marker.tokenEndpoint,
+            },
+          }
+        : {}),
+    };
+  }
+
+  /** Only grant states that need attention are attached to connection status. */
+  private oauthStatusDetail(): { oauth?: OAuthGrantHealth } {
+    const health = this.getOAuthHealth();
+    if (!health) return {};
+    const notable =
+      (health.state !== 'ok' && health.state !== 'missing') ||
+      health.issuerChanged !== undefined ||
+      health.exchange !== undefined;
+    return notable ? { oauth: health } : {};
   }
 
   async listTools(): Promise<Tool[]> {
@@ -450,14 +1002,58 @@ export class HttpMcpClient {
   async callTool(
     name: string,
     args: Record<string, unknown>,
-    requestMeta?: McpRequestMeta
+    requestMeta?: McpRequestMeta,
+    beforeSend?: () => void
   ): Promise<unknown> {
     return this.withSessionRetry('callTool', async () => {
       if (!this.client || !this.ready) throw new Error(`MCP ${this.id} not connected`);
       const request = requestMeta
         ? { name, arguments: args, _meta: requestMeta }
         : { name, arguments: args };
-      return this.client.callTool(request, { timeout: this.requestTimeoutMs });
+      const invoke = (): Promise<unknown> => {
+        beforeSend?.();
+        return this.client!.callTool(request, { timeout: this.requestTimeoutMs });
+      };
+      return beforeSend ? this.sendGuardStorage.run(beforeSend, invoke) : invoke();
+    });
+  }
+
+  supportsEvents(): boolean {
+    return Boolean(this.client && this.ready && this.client.supportsEvents());
+  }
+
+  async listEvents(): Promise<EventDescriptor[]> {
+    return this.withSessionRetry('listEvents', async () => {
+      if (!this.client || !this.ready) throw new Error(`MCP ${this.id} not connected`);
+      return this.client.listEvents({ timeout: this.requestTimeoutMs });
+    });
+  }
+
+  async pollEvents(
+    params: EventsPollParams,
+    options?: { inputSchema?: Record<string, unknown>; signal?: AbortSignal }
+  ): Promise<EventsPollResult> {
+    return this.withSessionRetry('pollEvents', async () => {
+      if (!this.client || !this.ready) throw new Error(`MCP ${this.id} not connected`);
+      return this.client.pollEvents(params, {
+        timeout: this.requestTimeoutMs,
+        signal: options?.signal,
+        inputSchema: options?.inputSchema,
+      });
+    });
+  }
+
+  async openEventStream(
+    params: EventsStreamParams,
+    callbacks: UpstreamEventStreamCallbacks,
+    options?: UpstreamEventStreamOptions
+  ): Promise<UpstreamEventStreamHandle> {
+    return this.withSessionRetry('openEventStream', async () => {
+      if (!this.client || !this.ready) throw new Error(`MCP ${this.id} not connected`);
+      return this.client.openEventStream(params, callbacks, {
+        ackTimeoutMs: this.requestTimeoutMs,
+        ...options,
+      });
     });
   }
 
@@ -483,9 +1079,13 @@ export class HttpMcpClient {
   }
 
   getConnectionStatus(): ProviderConnectionStatus {
-    if (this.ready) return { status: 'up' };
+    if (this.ready) return { status: 'up', ...this.oauthStatusDetail() };
     if (this.authorizationRequired) {
-      return { status: 'auth_required', reason: this.lastError ?? 'OAuth authorization required' };
+      return {
+        status: 'auth_required',
+        reason: this.lastError ?? 'OAuth authorization required',
+        ...this.oauthStatusDetail(),
+      };
     }
     // A rejected client secret is a credential problem, not an outage — say so, or it hides among
     // the reconnect noise below and reads as "the provider is down".
@@ -524,6 +1124,7 @@ export class HttpMcpClient {
         'HTTP MCP session invalid, reconnecting'
       );
       this.ready = false;
+      this.client?.closeEventStreams?.('events/stream: upstream session invalid, reconnecting');
       const oldTransport = this.transport;
       if (oldTransport) oldTransport.onclose = undefined;
       await oldTransport
@@ -538,15 +1139,24 @@ export class HttpMcpClient {
 
   async stop(): Promise<void> {
     this.stopped = true;
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = undefined;
-    }
+    this.unsubscribeWriterAcquired?.();
+    this.flowWake = undefined;
+    this.flowAbort?.abort();
+    this.oauthProvider?.stop();
     if (this.refreshTimer) {
       clearTimeout(this.refreshTimer);
       this.refreshTimer = undefined;
     }
-    this.oauthProvider?.stopCallbackServer();
+    // Admit no new token exchange, and let one already sent finish its durable commit (or hand its
+    // successor off) before this process gives up the writer lock and exits.
+    if (this.oauthProvider?.storageMode === 'writer') {
+      await this.oauthProvider.close?.(OAUTH_SHUTDOWN_DRAIN_MS);
+    }
+    this.client?.closeEventStreams?.('events/stream: upstream client stopped');
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = undefined;
+    }
     // Release the session server-side before closing locally. transport.close() only tears down
     // OUR end; without the DELETE that terminateSession() sends, the server keeps the session in
     // memory forever. Servers that bound their session table then leak a slot on every gateway
@@ -558,4 +1168,20 @@ export class HttpMcpClient {
     });
     await this.transport?.close();
   }
+}
+
+function sleep(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal.aborted) return resolve();
+    const timer = setTimeout(resolve, ms);
+    timer.unref?.();
+    signal.addEventListener(
+      'abort',
+      () => {
+        clearTimeout(timer);
+        resolve();
+      },
+      { once: true }
+    );
+  });
 }

@@ -1,6 +1,18 @@
+import { AsyncLocalStorage } from 'async_hooks';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
-import { Client } from '@modelcontextprotocol/client';
 import type { ReadResourceResult, Tool } from '@modelcontextprotocol/client';
+import {
+  EventsAwareClient,
+  type UpstreamEventStreamCallbacks,
+  type UpstreamEventStreamHandle,
+  type UpstreamEventStreamOptions,
+} from '../events/upstream-client.js';
+import type {
+  EventDescriptor,
+  EventsPollParams,
+  EventsPollResult,
+  EventsStreamParams,
+} from '../events/protocol.js';
 import type { ProviderConnectionStatus } from './status.js';
 import { childLogger } from '../util/logger.js';
 import { VERSION } from '../version.js';
@@ -13,6 +25,17 @@ type McpRequestMeta = Record<string, unknown>;
 const BACKOFF_STEPS = [1000, 2000, 4000, 8000, 16000, 30000];
 const MAX_RECONNECT_ATTEMPTS = BACKOFF_STEPS.length;
 
+function isToolCallJsonRpcMessage(message: unknown): boolean {
+  if (Array.isArray(message)) {
+    return message.some((item) => isToolCallJsonRpcMessage(item));
+  }
+  return (
+    typeof message === 'object' &&
+    message !== null &&
+    (message as { method?: unknown }).method === 'tools/call'
+  );
+}
+
 /** Extract a short, human-readable reason from a connection error. */
 function friendlyError(err: unknown): string {
   const msg = err instanceof Error ? err.message : String(err);
@@ -23,7 +46,7 @@ function friendlyError(err: unknown): string {
 }
 
 export class StdioMcpClient {
-  private client?: Client;
+  private client?: EventsAwareClient;
   private transport?: StdioClientTransport;
   private reconnectAttempt = 0;
   private stopped = false;
@@ -33,6 +56,8 @@ export class StdioMcpClient {
   private reconnectTimer?: NodeJS.Timeout;
   private lastError?: string;
   private readyListeners = new Set<() => void>();
+  private eventsListChangedListeners = new Set<() => void>();
+  private readonly sendGuardStorage = new AsyncLocalStorage<() => void>();
 
   constructor(
     private id: string,
@@ -40,12 +65,21 @@ export class StdioMcpClient {
     private args: string[],
     private env?: Record<string, string>,
     private stderr?: 'inherit' | 'ignore' | 'pipe',
+    private probeModern = false,
     /** Declare MCP Apps support upstream (the provider's `mcp_apps` setting). */
     private mcpApps = false
   ) {}
 
   onReady(cb: () => void): void {
     this.readyListeners.add(cb);
+  }
+
+  onEventsListChanged(cb: () => void): void {
+    this.eventsListChangedListeners.add(cb);
+  }
+
+  setProbeModern(enabled: boolean): void {
+    this.probeModern = enabled;
   }
 
   async connect(): Promise<void> {
@@ -55,11 +89,32 @@ export class StdioMcpClient {
       env: this.env,
       stderr: this.stderr,
     });
+    const rawSend = this.transport.send.bind(this.transport);
+    this.transport.send = (message) => {
+      if (isToolCallJsonRpcMessage(message)) {
+        try {
+          this.sendGuardStorage.getStore()?.();
+        } catch (err) {
+          return Promise.reject(err instanceof Error ? err : new Error(String(err)));
+        }
+      }
+      return rawSend(message);
+    };
 
-    this.client = new Client(
-      { name: 'airlock', version: VERSION },
-      { capabilities: upstreamClientCapabilities(this.mcpApps) }
-    );
+    // Only probe 2026-07-28 `server/discover` on stdio when an agent has event permissions for
+    // this provider; legacy 2025 stdio servers expect `initialize` as their first frame.
+    const capabilities = upstreamClientCapabilities(this.mcpApps);
+    const clientOptions =
+      this.probeModern || Object.keys(capabilities).length > 0
+        ? {
+            ...(this.probeModern ? { versionNegotiation: { mode: 'auto' as const } } : {}),
+            ...(Object.keys(capabilities).length > 0 ? { capabilities } : {}),
+          }
+        : undefined;
+    this.client = new EventsAwareClient({ name: 'airlock', version: VERSION }, clientOptions);
+    this.client.onEventsListChanged?.(() => {
+      for (const cb of this.eventsListChangedListeners) cb();
+    });
     this.connecting = true;
     this.reconnectExhausted = false;
 
@@ -118,13 +173,44 @@ export class StdioMcpClient {
   async callTool(
     name: string,
     args: Record<string, unknown>,
-    requestMeta?: McpRequestMeta
+    requestMeta?: McpRequestMeta,
+    beforeSend?: () => void
   ): Promise<unknown> {
     if (!this.client || !this.ready) throw new Error(`MCP ${this.id} not connected`);
     const request = requestMeta
       ? { name, arguments: args, _meta: requestMeta }
       : { name, arguments: args };
-    return this.client.callTool(request);
+    const invoke = (): Promise<unknown> => {
+      beforeSend?.();
+      return this.client!.callTool(request);
+    };
+    return beforeSend ? this.sendGuardStorage.run(beforeSend, invoke) : invoke();
+  }
+
+  supportsEvents(): boolean {
+    return Boolean(this.client && this.ready && this.client.supportsEvents());
+  }
+
+  async listEvents(): Promise<EventDescriptor[]> {
+    if (!this.client || !this.ready) throw new Error(`MCP ${this.id} not connected`);
+    return this.client.listEvents();
+  }
+
+  async pollEvents(
+    params: EventsPollParams,
+    options?: { inputSchema?: Record<string, unknown>; signal?: AbortSignal }
+  ): Promise<EventsPollResult> {
+    if (!this.client || !this.ready) throw new Error(`MCP ${this.id} not connected`);
+    return this.client.pollEvents(params, options);
+  }
+
+  async openEventStream(
+    params: EventsStreamParams,
+    callbacks: UpstreamEventStreamCallbacks,
+    options?: UpstreamEventStreamOptions
+  ): Promise<UpstreamEventStreamHandle> {
+    if (!this.client || !this.ready) throw new Error(`MCP ${this.id} not connected`);
+    return this.client.openEventStream(params, callbacks, options);
   }
 
   /** Read one upstream resource (MCP Apps views are fetched this way). */
@@ -171,6 +257,7 @@ export class StdioMcpClient {
 
   async stop(): Promise<void> {
     this.stopped = true;
+    this.client?.closeEventStreams?.('events/stream: upstream stdio client stopped');
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = undefined;

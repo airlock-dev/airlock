@@ -10,26 +10,55 @@ import type { AgentVisibleTool } from '../registry/registry.js';
 import {
   AIRLOCK_ASK_USER_TOOL,
   AIRLOCK_AWAIT_APPROVAL_TOOL,
+  AIRLOCK_DELETE_UPLOAD_TOOL,
   AIRLOCK_LIST_PROVIDER_TOOLS_TOOL,
   AIRLOCK_LOG_TOOL,
   AIRLOCK_NOTIFY_USER_TOOL,
+  AIRLOCK_PREPARE_UPLOAD_TOOL,
   AIRLOCK_REQUEST_APPROVAL_TOOL,
   AIRLOCK_STATUS_TOOL,
   isAirlockApprovalTool,
   isAirlockTool,
+  isAirlockUploadTool,
 } from '../airlock/tools.js';
 import { extractAirlockContext } from '../airlock/context.js';
 import { fingerprintCall } from '../hitl/grants.js';
 import { sanitizeToolName } from '../util/tool-name.js';
 import type { PlanEntry } from '../hitl/engine.js';
 import { bestSpecificity, matches, specificity } from '../allowlist/pattern.js';
+import { evaluateArgPolicy, resolveArgPolicy } from '../middleware/core/arg-policy.js';
+import {
+  compileSchemaValidator,
+  formatSchemaValidationErrors,
+} from '../middleware/core/schema-validator.js';
+import { findUploadRefs } from '../uploads/refs.js';
+import {
+  buildEffectiveArgsForValidation,
+  fingerprintCallWithUploads,
+  validateCallUploads,
+  type UploadFingerprintBinding,
+} from '../uploads/resolve.js';
+import type { UploadStore } from '../uploads/store.js';
 
 export interface AirlockBackendDeps {
   hitlEngine?: HitlEngine;
   hitlBatcher?: HitlBatcher;
   activityStream?: ActivityStream;
+  uploadStore?: UploadStore;
+  /** Used for offline catalog discovery (`airlock tools` / `lint --with-catalog`) without a live UploadStore. */
+  uploadsEnabled?: boolean;
   getAgentTools?: (agentId: string) => AgentVisibleTool[];
   getAgentConfig?: (agentId: string) => AgentConfig | undefined;
+  getRawToolSchema?: (toolName: string, agentId: string) => object | undefined;
+  getToolBackendKind?: (
+    toolName: string,
+    agentId: string
+  ) => 'mcp' | 'http' | 'api' | 'cli' | 'exec' | 'airlock' | undefined;
+  nativeUploadArgKind?: (
+    toolName: string,
+    topKey: string,
+    agentId: string
+  ) => 'binary' | 'multipart' | undefined;
   getKnownProviderIds?: () => string[];
   getProviderConnectionStatus?: (providerId: string) => ProviderConnectionStatus | undefined;
 }
@@ -68,8 +97,12 @@ export class AirlockBackendAdapter implements BackendAdapter {
   ) {}
 
   listTools(): Promise<Tool[]> {
+    const uploadsEnabled = Boolean(this.deps.uploadStore?.isEnabled() ?? this.deps.uploadsEnabled);
     return Promise.resolve(
-      this.allTools().filter((tool) => !this.approvalToolsOnly || isAirlockApprovalTool(tool.name))
+      this.allTools().filter((tool) => {
+        if (isAirlockUploadTool(tool.name)) return uploadsEnabled;
+        return !this.approvalToolsOnly || isAirlockApprovalTool(tool.name);
+      })
     );
   }
 
@@ -182,10 +215,61 @@ export class AirlockBackendAdapter implements BackendAdapter {
           additionalProperties: false,
         },
       },
+      {
+        name: AIRLOCK_PREPARE_UPLOAD_TOOL,
+        description:
+          'Prepare a short-lived, single-use upload URL so you can push a local file from disk to Airlock (for example with `curl -X PUT --data-binary @/path/to/file "<upload_url>"`), without placing binary bytes in tool arguments or needing bearer tokens in shell commands. Pass the returned `airlock-upload://<id>` ref to an OpenAPI multipart/binary tool, `http/post|put|patch` (`body_upload` or `multipart`), or an upstream MCP/CLI tool (configured via tool_overrides or with an explicit suffix such as `:base64`, `:data_uri`, `:text`, `:path`, or `:url`).',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            filename: {
+              type: 'string',
+              description: 'Original filename (e.g. "bracket.3mf" or "screenshot.png").',
+            },
+            content_type: {
+              type: 'string',
+              description:
+                'Optional MIME type (e.g. "model/3mf", "image/png"). Inferred from filename when omitted.',
+            },
+            size_bytes: {
+              type: 'number',
+              description: 'Optional expected file size in bytes for early quota checks.',
+            },
+          },
+          required: ['filename'],
+          additionalProperties: false,
+        },
+      },
+      {
+        name: AIRLOCK_DELETE_UPLOAD_TOOL,
+        description: 'Delete one of this agent’s staged uploads early to free upload quota.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            upload_id: {
+              type: 'string',
+              description: 'The upload_id returned by airlock_prepare_upload (e.g. "upl_...").',
+            },
+          },
+          required: ['upload_id'],
+          additionalProperties: false,
+        },
+      },
     ];
   }
 
   async call(toolCall: ToolCall): Promise<ToolResult> {
+    if (isAirlockUploadTool(toolCall.tool)) {
+      if (!this.deps.uploadStore?.isEnabled()) {
+        return { success: false, error: 'Staged file uploads are disabled.' };
+      }
+      if (toolCall.tool === AIRLOCK_PREPARE_UPLOAD_TOOL) {
+        return this.prepareUpload(toolCall);
+      }
+      if (toolCall.tool === AIRLOCK_DELETE_UPLOAD_TOOL) {
+        return this.deleteUpload(toolCall);
+      }
+    }
     if (this.approvalToolsOnly && !isAirlockApprovalTool(toolCall.tool)) {
       return { success: false, error: `Unknown Airlock tool: ${toolCall.tool}` };
     }
@@ -289,18 +373,105 @@ export class AirlockBackendAdapter implements BackendAdapter {
       if (!entry || isAirlockTool(entry.tool.name)) {
         return { success: false, error: `calls[${index}]: tool not available: ${tool}` };
       }
-      if (entry.decision === 'allow') {
-        notRequired.push(entry.tool.name);
-        continue;
-      }
+
       // Fingerprint exactly what the gate will see: args with the _airlock context stripped.
       const args = extractAirlockContext(
         (rawArgs as Record<string, unknown> | undefined) ?? {}
       ).args;
+      let displayArgs = args;
+      let fingerprintBindings: UploadFingerprintBinding[] | undefined;
+
+      // Validate upload refs for EVERY call in the plan (including `allow` calls) so an invalid,
+      // pending, or disallowed upload ref can never sneak alongside a valid plan request.
+      if (findUploadRefs(args).length > 0) {
+        const agentConfig = this.deps.getAgentConfig?.(toolCall.agentId);
+        if (!agentConfig) {
+          return {
+            success: false,
+            error: `calls[${index}]: cannot validate staged uploads without agent configuration`,
+          };
+        }
+        const sessionId =
+          typeof toolCall.meta?.downstreamSessionId === 'string'
+            ? toolCall.meta.downstreamSessionId
+            : undefined;
+        const resolvedToolName = entry.resolvedName ?? entry.tool.name;
+        const backendKind =
+          this.deps.getToolBackendKind?.(entry.tool.name, toolCall.agentId) ??
+          inferPlanBackendKind(resolvedToolName);
+        const validation = validateCallUploads({
+          agentId: toolCall.agentId,
+          agentConfig,
+          toolName: entry.tool.name,
+          resolvedToolName,
+          args,
+          uploadStore: this.deps.uploadStore,
+          sessionId,
+          backendKind,
+          nativeUploadArgKind: (topKey) =>
+            this.deps.nativeUploadArgKind?.(entry.tool.name, topKey, toolCall.agentId),
+        });
+        if (!validation.ok) {
+          return { success: false, error: `calls[${index}]: ${validation.error}` };
+        }
+        if (validation.hasUploads && this.deps.uploadStore) {
+          const releasePin = this.deps.uploadStore.pin(
+            toolCall.agentId,
+            validation.seenIds,
+            sessionId
+          );
+          try {
+            const effective = await buildEffectiveArgsForValidation(
+              args,
+              toolCall.agentId,
+              validation.plan,
+              this.deps.uploadStore,
+              sessionId
+            );
+            if (!effective.ok) {
+              return { success: false, error: `calls[${index}]: ${effective.error}` };
+            }
+            const rawSchema =
+              this.deps.getRawToolSchema?.(entry.tool.name, toolCall.agentId) ??
+              withoutAirlockSchemaRequirement(entry.tool.inputSchema);
+            if (rawSchema) {
+              const validate = compileSchemaValidator(rawSchema);
+              if (!validate(effective.effectiveArgs)) {
+                return {
+                  success: false,
+                  error: `calls[${index}]: Invalid arguments: ${formatSchemaValidationErrors(validate)}`,
+                };
+              }
+            }
+            const argPolicy = resolveArgPolicy(agentConfig, entry.tool.name);
+            const argViolation = evaluateArgPolicy(
+              argPolicy,
+              entry.tool.name,
+              effective.effectiveArgs
+            );
+            if (argViolation) {
+              return { success: false, error: `calls[${index}]: ${argViolation}` };
+            }
+            displayArgs = validation.hitlArgs;
+            fingerprintBindings = validation.fingerprintBindings;
+          } finally {
+            releasePin();
+          }
+        }
+      }
+
+      if (entry.decision === 'allow') {
+        notRequired.push(entry.tool.name);
+        continue;
+      }
+
       plan.push({
         tool: entry.tool.name,
-        fingerprint: fingerprintCall(entry.tool.name, args),
-        args: hitlEngine.redact(args),
+        fingerprint:
+          fingerprintBindings && fingerprintBindings.length > 0
+            ? fingerprintCallWithUploads(entry.tool.name, args, fingerprintBindings)
+            : fingerprintCall(entry.tool.name, args),
+        args: hitlEngine.redact(displayArgs),
       });
     }
 
@@ -518,6 +689,102 @@ export class AirlockBackendAdapter implements BackendAdapter {
 
     return Array.from(buckets.values()).sort((a, b) => a.id.localeCompare(b.id));
   }
+
+  private prepareUpload(toolCall: ToolCall): ToolResult {
+    const uploadStore = this.deps.uploadStore;
+    if (!uploadStore?.isEnabled()) {
+      return { success: false, error: 'Staged file uploads are disabled.' };
+    }
+    const filename = optionalStringArg(toolCall.args.filename);
+    if (!filename) {
+      return {
+        success: false,
+        error: `${AIRLOCK_PREPARE_UPLOAD_TOOL} requires a non-empty filename`,
+      };
+    }
+    const contentType = optionalStringArg(toolCall.args.content_type);
+    const sizeBytes =
+      typeof toolCall.args.size_bytes === 'number' ? toolCall.args.size_bytes : undefined;
+    const agentConfig = this.deps.getAgentConfig?.(toolCall.agentId);
+    const requestHost =
+      typeof toolCall.meta?.requestHost === 'string' ? toolCall.meta.requestHost : undefined;
+    const sessionId =
+      typeof toolCall.meta?.downstreamSessionId === 'string'
+        ? toolCall.meta.downstreamSessionId
+        : undefined;
+
+    try {
+      const prepared = uploadStore.prepareUpload(toolCall.agentId, {
+        filename,
+        contentType,
+        sizeBytes,
+        agentLimits: agentConfig?.uploads,
+        requestHost,
+        sessionId,
+      });
+      return {
+        success: true,
+        data: {
+          upload_id: prepared.uploadId,
+          ref: prepared.ref,
+          upload_url: prepared.uploadUrl,
+          upload_path: prepared.uploadPath,
+          method: prepared.method,
+          filename: prepared.filename,
+          content_type: prepared.contentType,
+          expires_at: prepared.expiresAt,
+          max_bytes: prepared.maxBytes,
+          instructions: `Upload your local file with: curl -X PUT --data-binary @/path/to/file "${prepared.uploadUrl}" (or multipart -F "file=@/path/to/file"), then pass "${prepared.ref}" to your target tool.`,
+        },
+      };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
+  private deleteUpload(toolCall: ToolCall): ToolResult {
+    const uploadStore = this.deps.uploadStore;
+    if (!uploadStore?.isEnabled()) {
+      return { success: false, error: 'Staged file uploads are disabled.' };
+    }
+    const uploadId = optionalStringArg(toolCall.args.upload_id);
+    if (!uploadId) {
+      return { success: false, error: `${AIRLOCK_DELETE_UPLOAD_TOOL} requires an upload_id` };
+    }
+    const sessionId =
+      typeof toolCall.meta?.downstreamSessionId === 'string'
+        ? toolCall.meta.downstreamSessionId
+        : undefined;
+    try {
+      const deleted = uploadStore.deleteUpload(toolCall.agentId, uploadId, sessionId);
+      if (!deleted) {
+        return { success: false, error: `Unknown upload_id: ${uploadId}` };
+      }
+      return { success: true, data: { deleted: true, upload_id: uploadId } };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+}
+
+function inferPlanBackendKind(toolName: string): 'http' | 'exec' | 'mcp' {
+  if (toolName.startsWith('http/')) return 'http';
+  if (toolName.startsWith('exec/')) return 'exec';
+  return 'mcp';
+}
+
+function withoutAirlockSchemaRequirement(
+  schema: Tool['inputSchema'] | undefined
+): object | undefined {
+  if (!schema) return undefined;
+  if (!Array.isArray(schema.required) || !schema.required.includes('_airlock')) {
+    return schema;
+  }
+  const required = schema.required.filter((key) => key !== '_airlock');
+  return {
+    ...schema,
+    ...(required.length > 0 ? { required } : { required: undefined }),
+  };
 }
 
 function awaitMessage(kind: string, status: string): string {

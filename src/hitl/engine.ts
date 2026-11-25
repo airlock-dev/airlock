@@ -55,6 +55,7 @@ interface PendingRequest {
   tool: string;
   args: Record<string, unknown>;
   context?: AirlockCallContext;
+  escalationReason?: string;
   sandbox?: SandboxDisplayInfo;
   kind: ApprovalKind;
   mode: ApprovalMode;
@@ -74,6 +75,7 @@ interface StoredMeta {
   mode?: ApprovalMode;
   subject?: ApprovalSubject;
   plan?: PlanEntry[];
+  escalationReason?: string;
 }
 
 interface BatchRecord {
@@ -179,6 +181,7 @@ export class HitlEngine implements ApprovalApi {
     tool: string;
     args: Record<string, unknown>;
     context?: AirlockCallContext;
+    escalationReason?: string;
     sandbox?: SandboxDisplayInfo;
     kind?: ApprovalKind;
     mode?: ApprovalMode;
@@ -196,6 +199,7 @@ export class HitlEngine implements ApprovalApi {
       mode,
       ...(params.subject ? { subject: params.subject } : {}),
       ...(params.plan ? { plan: params.plan } : {}),
+      ...(params.escalationReason ? { escalationReason: params.escalationReason } : {}),
     };
 
     // Persist to DB synchronously before returning
@@ -219,6 +223,7 @@ export class HitlEngine implements ApprovalApi {
       tool: params.tool,
       args: approvalArgs,
       ...(params.context ? { context: params.context } : {}),
+      ...(params.escalationReason ? { escalationReason: params.escalationReason } : {}),
       ...(params.sandbox ? { sandbox: params.sandbox } : {}),
       kind,
       mode,
@@ -389,6 +394,7 @@ export class HitlEngine implements ApprovalApi {
     tier?: string;
     provider?: string;
     escalated?: boolean;
+    escalationReason?: string;
     plan?: PlanEntry[];
     batchId?: string;
     batchCode?: string;
@@ -412,6 +418,7 @@ export class HitlEngine implements ApprovalApi {
         ...(r.subject
           ? { tier: r.subject.tier, provider: r.subject.provider, escalated: r.subject.escalated }
           : {}),
+        ...(r.escalationReason ? { escalationReason: r.escalationReason } : {}),
         ...(r.plan ? { plan: r.plan } : {}),
         ...(batch ? { batchId: batch.id, batchCode: batch.code } : {}),
         ...(grantOptions.length > 0 ? { grantOptions } : {}),
@@ -636,6 +643,12 @@ export class HitlEngine implements ApprovalApi {
         'This call was flagged for review by a security check; it cannot be widened into a grant'
       );
     }
+    const isEventSubject = subject.tool.startsWith('event:');
+    if (isEventSubject && spec.scope !== 'tool') {
+      throw new GrantSpecError(
+        'Event subscription approvals only support single-event ("tool") grants'
+      );
+    }
     switch (spec.scope) {
       case 'tool':
         return { kind: 'tool', tool: subject.tool };
@@ -666,6 +679,9 @@ export class HitlEngine implements ApprovalApi {
     const subject = req.subject;
     if (req.kind !== 'call' || !subject || subject.escalated) return [];
     const options: GrantOption[] = [{ scope: 'tool', label: `Allow ${subject.tool}` }];
+    if (subject.tool.startsWith('event:')) {
+      return options;
+    }
     if (subject.tier === 'read') {
       options.push({
         scope: 'tier',
@@ -786,6 +802,7 @@ export class HitlEngine implements ApprovalApi {
       createdAt: req.createdAt,
       ...(req.expiresAt ? { expiresAt: req.expiresAt } : {}),
       kind: req.kind,
+      mode: req.mode,
       ...(req.subject
         ? {
             tier: req.subject.tier,
@@ -793,6 +810,7 @@ export class HitlEngine implements ApprovalApi {
             escalated: req.subject.escalated,
           }
         : {}),
+      ...(req.escalationReason ? { escalationReason: req.escalationReason } : {}),
       ...(req.plan ? { plan: req.plan } : {}),
       ...(grantOptions.length > 0 ? { grantOptions } : {}),
     };
@@ -854,6 +872,7 @@ export class HitlEngine implements ApprovalApi {
         tool: row.tool,
         args: cleanArgs,
         ...(context ? { context } : {}),
+        ...(meta.escalationReason ? { escalationReason: meta.escalationReason } : {}),
         kind,
         mode,
         ...(meta.subject ? { subject: meta.subject } : {}),

@@ -1,4 +1,4 @@
-import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from 'fs/promises';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -26,7 +26,7 @@ describe('FileOAuthProvider — refresh_token preservation', () => {
     } else {
       process.env.HOME = originalHome;
     }
-    await rm(tempHome, { recursive: true, force: true });
+    await rm(tempHome, { recursive: true, force: true, maxRetries: 10, retryDelay: 20 });
   });
 
   const initial: OAuthTokens = {
@@ -86,10 +86,15 @@ describe('FileOAuthProvider — refresh_token preservation', () => {
   });
 
   it('keeps a rotated token in memory when persistence fails instead of refreshing it again', async () => {
-    const provider = new FileOAuthProvider('broken\0path', 18432);
+    const provider = new FileOAuthProvider('test-server', 18432);
+    await provider.saveTokens({ ...initial, refresh_token: 'refresh-0' });
+    // Injected write failure (works as root, unlike permission tricks).
+    vi.spyOn(provider.store, 'write').mockRejectedValue(new Error('EIO: injected'));
     await expect(provider.saveTokens(initial)).resolves.toBeUndefined();
 
     expect((await provider.tokens())?.refresh_token).toBe('refresh-1');
+    expect(provider.persistencePending).toBe(true);
+    vi.restoreAllMocks();
   });
 
   it('does not truncate the last known-good token file when a replacement write fails', async () => {
@@ -97,9 +102,11 @@ describe('FileOAuthProvider — refresh_token preservation', () => {
     await provider.saveTokens(initial);
     const path = join(tempHome, '.airlock', 'oauth', 'test-server.json');
     const original = await readFile(path, 'utf-8');
-    const protectedParent = join(tempHome, '.airlock');
 
-    await chmod(protectedParent, 0o000);
+    // Injected (not chmod-based, which root bypasses): every grant write fails.
+    const spy = vi
+      .spyOn(provider.store, 'write')
+      .mockRejectedValue(Object.assign(new Error('EACCES: injected'), { code: 'EACCES' }));
     try {
       await provider.saveTokens({
         access_token: 'access-2',
@@ -108,10 +115,12 @@ describe('FileOAuthProvider — refresh_token preservation', () => {
         expires_in: 3600,
       });
       expect((await provider.tokens())?.refresh_token).toBe('refresh-2');
+      expect(provider.persistencePending).toBe(true);
     } finally {
-      await chmod(protectedParent, 0o700);
+      spy.mockRestore();
     }
     expect(await readFile(path, 'utf-8')).toBe(original);
+    expect(JSON.parse(await readFile(path, 'utf-8')).tokens.refresh_token).toBe('refresh-1');
   });
 });
 
@@ -132,7 +141,7 @@ describe('FileOAuthProvider — proactive refresh schedule (msUntilRefresh)', ()
     } else {
       process.env.HOME = originalHome;
     }
-    await rm(tempHome, { recursive: true, force: true });
+    await rm(tempHome, { recursive: true, force: true, maxRetries: 10, retryDelay: 20 });
   });
 
   it('schedules a refresh ~buffer before expiry, measured from when tokens were obtained', async () => {
@@ -156,10 +165,13 @@ describe('FileOAuthProvider — proactive refresh schedule (msUntilRefresh)', ()
     expect(await provider.msUntilRefresh(BUFFER)).toBeUndefined();
   });
 
-  it('returns undefined without expires_in (lifetime unknown)', async () => {
+  it('without expires_in (lifetime unknown) still refreshes within the maximum interval', async () => {
     const provider = new FileOAuthProvider('noexp', 18432);
     await provider.saveTokens({ access_token: 'a', token_type: 'Bearer', refresh_token: 'r' });
-    expect(await provider.msUntilRefresh(BUFFER)).toBeUndefined();
+    const ms = await provider.msUntilRefresh(BUFFER);
+    expect(ms).toBeGreaterThan(24 * 60 * 60 * 1000 - 60_000);
+    expect(ms).toBeLessThanOrEqual(24 * 60 * 60 * 1000);
+    expect(await provider.msUntilRefresh(BUFFER, 60 * 60 * 1000)).toBeLessThanOrEqual(3_600_000);
   });
 
   it('uses a proportional buffer for short-lived tokens instead of refreshing immediately', async () => {

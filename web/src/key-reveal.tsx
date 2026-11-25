@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { useStore, type RevealedKey } from './store';
-import { Button, CopyButton, cx } from './ui';
+import { Button, CopyButton } from './ui';
 
 const GATEWAY_URL_KEY = 'airlock:gatewayUrl';
 
@@ -127,106 +127,104 @@ function Hatch({
   };
 
   return (
-    <div class="hatch-scrim">
-      <div class="hatch-door hatch-door-left" aria-hidden="true" />
-      <div class="hatch-door hatch-door-right" aria-hidden="true" />
+    <div class="scrim is-dialog" style={{ paddingTop: '8vh' }}>
       <div
-        class="hatch"
+        class="sheet reveal"
         role="dialog"
         aria-modal="true"
-        aria-labelledby="hatch-title"
+        aria-labelledby="reveal-title"
         tabIndex={-1}
         ref={dialogRef}
         onKeyDown={(e) => e.key === 'Escape' && finish()}
       >
-        <header class="hatch-head">
-          <p class="hatch-kicker">
-            {item.rotated ? 'Key rotated' : 'Agent created'}
-            {position ? `, ${position}` : ''}
-          </p>
-          <h2 id="hatch-title">
-            Key for <span class="hatch-agent">{item.agentId}</span>
-          </h2>
-          <p class="hatch-once">
-            This is the only time it is shown. Airlock keeps a hash, not the key.
-            {item.rotated ? ' The previous key has stopped working.' : ''}
-          </p>
+        <header class="sheet-head">
+          <div class="sheet-head-text">
+            <h2 id="reveal-title">
+              {item.rotated ? 'New key for' : 'Key for'} {item.agentId}
+              {position ? <span class="ink-3"> · {position}</span> : null}
+            </h2>
+            <p class="sheet-sub">
+              Shown once. Airlock keeps only a hash.
+              {item.rotated ? ' The previous key has stopped working.' : ''}
+            </p>
+          </div>
         </header>
 
-        <div class="key-plate">
-          <code ref={keyRef} class="key-value" onClick={() => selectText(keyRef.current)}>
-            {item.key}
-          </code>
-          <CopyButton
-            value={item.key}
-            label="Copy key"
-            variant="primary"
-            onCopied={() => setSaved(true)}
-          />
+        <div class="sheet-body">
+          <div class="key-plate">
+            <code ref={keyRef} class="key-value" onClick={() => selectText(keyRef.current)}>
+              {item.key}
+            </code>
+            <CopyButton
+              value={item.key}
+              label="Copy key"
+              variant="primary"
+              onCopied={() => setSaved(true)}
+            />
+          </div>
+
+          <section>
+            <div class="connect-head">
+              <h3>Connect a client</h3>
+              <label class="gateway-url">
+                <span>Gateway</span>
+                <input
+                  class="input"
+                  name="gateway-url"
+                  type="url"
+                  autocomplete="off"
+                  value={gatewayUrl}
+                  spellcheck={false}
+                  readOnly={configuredUrl}
+                  title={
+                    configuredUrl
+                      ? 'Set by --public-url'
+                      : 'Remembered in this browser. Set --public-url on the dashboard to fix it for everyone.'
+                  }
+                  onInput={(e) => {
+                    const value = e.currentTarget.value;
+                    setGatewayUrl(value);
+                    try {
+                      localStorage.setItem(GATEWAY_URL_KEY, value);
+                    } catch {
+                      // Storage is optional.
+                    }
+                  }}
+                />
+              </label>
+            </div>
+            <div class="segmented" role="tablist" aria-label="Client">
+              {CLIENTS.map((c) => (
+                <button
+                  key={c.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={client === c.id}
+                  onClick={() => setClient(c.id)}
+                >
+                  {c.label}
+                </button>
+              ))}
+            </div>
+            <div class="snippet" role="tabpanel">
+              <pre class="code-block">{text}</pre>
+              <div class="snippet-foot">
+                <span>{note}</span>
+                <CopyButton value={text} onCopied={() => setSaved(true)} />
+              </div>
+            </div>
+          </section>
         </div>
 
-        <section class="connect">
-          <div class="connect-head">
-            <h3>Connect a client</h3>
-            <label class="gateway-url">
-              <span>Gateway URL</span>
-              <input
-                value={gatewayUrl}
-                spellcheck={false}
-                readOnly={configuredUrl}
-                title={
-                  configuredUrl
-                    ? 'Set by --public-url'
-                    : 'Remembered in this browser. Set --public-url on the dashboard to fix it for everyone.'
-                }
-                onInput={(e) => {
-                  const value = e.currentTarget.value;
-                  setGatewayUrl(value);
-                  try {
-                    localStorage.setItem(GATEWAY_URL_KEY, value);
-                  } catch {
-                    // Storage is optional.
-                  }
-                }}
-              />
-            </label>
-          </div>
-          <div class="tabs" role="tablist" aria-label="Client">
-            {CLIENTS.map((c) => (
-              <button
-                type="button"
-                role="tab"
-                aria-selected={client === c.id}
-                class={cx('tab', client === c.id && 'is-active')}
-                onClick={() => setClient(c.id)}
-              >
-                {c.label}
-              </button>
-            ))}
-          </div>
-          <div class="snippet" role="tabpanel">
-            <pre>{text}</pre>
-            <div class="snippet-foot">
-              <span>{note}</span>
-              <CopyButton value={text} onCopied={() => setSaved(true)} />
-            </div>
-          </div>
-        </section>
-
-        <footer class="hatch-foot">
-          <label class="check">
+        <footer class="sheet-foot">
+          <label class="check" style={{ marginRight: 'auto' }}>
             <input
               type="checkbox"
               checked={saved}
               onChange={(e) => setSaved(e.currentTarget.checked)}
             />
-            I've stored this key somewhere safe
+            I stored this key somewhere safe
           </label>
-          {confirmLeave && !saved ? (
-            <p class="hatch-warn">
-              Closing loses the key for good. You can rotate a new one from the agent page later.
-            </p>
-          ) : null}
           <Button
             variant={saved ? 'primary' : confirmLeave ? 'danger' : 'default'}
             onClick={finish}
@@ -234,6 +232,11 @@ function Hatch({
             {saved || !confirmLeave ? doneLabel : 'Close without the key'}
           </Button>
         </footer>
+        {confirmLeave && !saved ? (
+          <p class="reveal-warn" style={{ padding: '0 20px 14px', textAlign: 'right' }}>
+            Closing loses this key for good. You can rotate a new one from the agent page.
+          </p>
+        ) : null}
       </div>
     </div>
   );

@@ -107,10 +107,23 @@ export async function sseServerPlugin(
       log.info({ profileId, sessionId: transport.sessionId }, 'SSE session closed');
     };
 
+    const rawForwardedHost = request.headers['x-forwarded-host'];
+    const rawHost = request.headers.host;
+    const requestHost =
+      (Array.isArray(rawForwardedHost)
+        ? typeof rawForwardedHost[0] === 'string'
+          ? rawForwardedHost[0]
+          : undefined
+        : typeof rawForwardedHost === 'string'
+          ? rawForwardedHost
+          : undefined) ?? (typeof rawHost === 'string' ? rawHost : undefined);
+
     const server = createAgentServer({
       ...deps,
+      era: 'legacy',
       downstreamSessionId: transport.sessionId,
       signal: sessionAc.signal,
+      ...(requestHost ? { requestHost } : {}),
     });
     await connectAgentServer(server, transport);
 

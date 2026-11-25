@@ -16,10 +16,14 @@ enum DisplayDensity: String, CaseIterable {
 
     var popoverMaxHeight: CGFloat {
         switch self {
-        case .compact: return 500
-        case .comfortable: return 640
-        case .decadent: return 800
+        case .compact: return 640
+        case .comfortable: return 760
+        case .decadent: return 900
         }
+    }
+
+    var defaultWindowSize: CGSize {
+        CGSize(width: popoverWidth, height: popoverMaxHeight)
     }
 
     var displayName: String {

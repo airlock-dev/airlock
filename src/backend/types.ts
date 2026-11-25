@@ -19,4 +19,10 @@ export interface BackendAdapter {
    * serve MCP Apps views (`ui://`) for the tools it proxies.
    */
   readResource?(uri: string): Promise<ReadResourceResult>;
+  /**
+   * Report whether a tool argument natively consumes a staged upload as raw binary or multipart
+   * form data (used by OpenAPI and built-in HTTP adapters). Returning undefined means the backend
+   * uses string substitution (`base64`, `data_uri`, `text`, `path`, `url`) instead.
+   */
+  nativeUploadArgKind?(toolName: string, topKey: string): 'binary' | 'multipart' | undefined;
 }

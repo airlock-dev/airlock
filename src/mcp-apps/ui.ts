@@ -62,7 +62,8 @@ export function toolUiResourceUri(tool: WithMeta): string | undefined {
 export function toolVisibility(tool: WithMeta): UiVisibility[] {
   const raw = uiMeta(tool)?.visibility;
   if (!Array.isArray(raw)) return ['model', 'app'];
-  return raw.filter((v): v is UiVisibility => v === 'model' || v === 'app');
+  const valid = raw.filter((v): v is UiVisibility => v === 'model' || v === 'app');
+  return valid.length > 0 ? valid : ['model', 'app'];
 }
 
 /** Whether a tool is meant for the view only, never for the model. */

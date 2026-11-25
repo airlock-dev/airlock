@@ -9,6 +9,7 @@ import { executeMiddleware } from './core/execute.js';
 import { sandboxMiddleware } from './core/sandbox.js';
 import { schemaValidatorMiddleware } from './core/schema-validator.js';
 import { argPolicyMiddleware } from './core/arg-policy.js';
+import { uploadPolicyMiddleware } from './core/upload-policy.js';
 import { rateLimiterMiddleware } from './core/rate-limiter.js';
 import { untrustedEnvelopeMiddleware } from './post/untrusted-envelope.js';
 import { stripQueryParamsMiddleware } from './post/strip-query-params.js';
@@ -139,13 +140,14 @@ export function buildMiddlewareChain(agentConfig: AgentConfig): Middleware {
   const detectors = coreUserMiddleware.filter((m) => m.name !== 'schema-validator');
 
   // Core zone: fixed security-critical order
-  //   allowlist → exec-policy → command-policy → schema-validator → arg-policy → [detectors] → sandbox → hitl-gate → execute
+  //   allowlist → exec-policy → command-policy → schema-validator → arg-policy → upload-policy → [detectors] → sandbox → hitl-gate → execute
   const coreMiddlewares: Middleware[] = [
     allowlistMiddleware(),
     execPolicyMiddleware(),
     commandPolicyMiddleware(),
     ...schemaValidators.map((m) => withToolFilter(resolveMiddleware(m), m)),
     argPolicyMiddleware(),
+    uploadPolicyMiddleware(),
     ...detectors.map((m) => withToolFilter(resolveMiddleware(m), m)),
     sandboxMiddleware(),
     hitlGateMiddleware(),

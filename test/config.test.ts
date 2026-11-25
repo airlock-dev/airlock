@@ -9,6 +9,33 @@ import { rememberAllow } from '../src/config/mutator.js';
 // --- Schema / env var substitution ---
 
 describe('GatewayConfig schema', () => {
+  it('accepts a file-backed HTTP bearer as the single authorization source', () => {
+    const provider = {
+      type: 'http',
+      url: 'https://mcp.example.com',
+      bearer_token_file: join(tmpdir(), 'provider-token'),
+    };
+    const native = GatewayConfig.parse({ providers: { native: provider } });
+    expect(validateConfig(native).filter((diagnostic) => diagnostic.level === 'error')).toEqual([]);
+
+    const conflicting = GatewayConfig.parse({
+      providers: { native: { ...provider, headers: { aUtHoRiZaTiOn: 'Bearer other' } } },
+    });
+    expect(validateConfig(conflicting)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          level: 'error',
+          message: expect.stringContaining('bearer_token_file'),
+        }),
+      ])
+    );
+    expect(
+      GatewayConfig.safeParse({
+        providers: { native: { ...provider, bearer_token_file: 'relative-token' } },
+      }).success
+    ).toBe(false);
+  });
+
   it('parses a minimal valid config with all defaults', () => {
     const result = GatewayConfig.safeParse({});
     expect(result.success).toBe(true);
@@ -362,6 +389,29 @@ describe('loadConfig()', () => {
     rmSync(dir, { recursive: true });
   });
 
+  it.each([
+    ['empty file', ''],
+    ['multiple tokens', 'first\nsecond\n'],
+    ['oversized file', 'x'.repeat(16 * 1024 + 1)],
+    ['directory', null],
+  ])('rejects a bearer credential that is a %s', (_description, contents) => {
+    const tokenPath = contents === null ? dir : join(dir, 'bearer');
+    if (contents !== null) writeFileSync(tokenPath, contents, { mode: 0o600 });
+    const path = join(dir, 'gateway.yaml');
+    writeFileSync(
+      path,
+      `providers:
+  workspace:
+    type: http
+    url: https://workspace.example.com
+    bearer_token_file: ${JSON.stringify(tokenPath)}
+`
+    );
+    expect(() => loadConfig(path)).toThrow(
+      'readable file containing one bearer token up to 16 KiB'
+    );
+  });
+
   it('loads a valid YAML config file', () => {
     const yaml = `
 server:
@@ -560,6 +610,84 @@ agents:
     );
   });
 
+  it('validates oauth_max_refresh_interval_ms and warns when it is set without oauth', () => {
+    const base = { type: 'http', url: 'https://mcp.example.com/mcp' };
+    expect(
+      GatewayConfig.safeParse({
+        providers: { p: { ...base, oauth: true, oauth_max_refresh_interval_ms: 1000 } },
+      }).success
+    ).toBe(false); // below the 1-minute floor
+    const ok = GatewayConfig.parse({
+      providers: {
+        held: { ...base, oauth: true, oauth_max_refresh_interval_ms: 6 * 3600 * 1000 },
+        plain: { ...base, oauth_max_refresh_interval_ms: 6 * 3600 * 1000 },
+      },
+      agents: { agent1: { token: 'agent-secret' } },
+    });
+    const diagnostics = validateConfig(ok);
+    expect(diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          level: 'warn',
+          message: 'Provider "plain" sets oauth_max_refresh_interval_ms without oauth: true.',
+        }),
+      ])
+    );
+    expect(diagnostics.some((d) => d.message.includes('"held"'))).toBe(false);
+  });
+
+  it('rejects OAuth provider ids that cannot be used verbatim as grant file names, and case collisions', () => {
+    const base = { type: 'http', url: 'https://mcp.example.com/mcp', oauth: true };
+    const config = GatewayConfig.parse({
+      providers: {
+        'work chat': base,
+        work_chat: base,
+        Work_Chat: base,
+        'work-chat': { type: 'http', url: 'https://mcp.example.com/mcp' }, // name already taken
+        'plain id': { type: 'http', url: 'https://mcp.example.com/mcp' },
+      },
+      agents: { agent1: { token: 'agent-secret' } },
+    });
+    const errors = validateConfig(config).filter((d) => d.level === 'error');
+    expect(errors.map((d) => d.message)).toEqual(
+      expect.arrayContaining([
+        'Provider "work chat" uses oauth: true but its id cannot be used for OAuth grant storage.',
+        'OAuth providers "work_chat" and "Work_Chat" differ only in letter case.',
+      ])
+    );
+    // Suggestions are safe, unique against configured ids, and name the rename procedure.
+    const unsafe = errors.find((d) => d.message.includes('"work chat"'))!;
+    expect(unsafe.suggestion).toContain('"work-chat-2"');
+    const collision = errors.find((d) => d.message.includes('letter case'))!;
+    expect(collision.suggestion).toContain('"Work_Chat-2"');
+    expect(collision.suggestion).toContain('Rename an OAuth provider');
+    expect(errors.some((d) => d.message.includes('"plain id"'))).toBe(false);
+  });
+
+  it('rename suggestions skip names that exist only in OAuth history or parked successors', async () => {
+    const { mkdtempSync, mkdirSync, rmSync } = await import('fs');
+    const { tmpdir } = await import('os');
+    const { join } = await import('path');
+    const home = mkdtempSync(join(tmpdir(), 'airlock-suggest-'));
+    const originalHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      mkdirSync(join(home, '.airlock', 'oauth', '.history', 'work-chat'), { recursive: true });
+      mkdirSync(join(home, '.airlock', 'oauth', '.successors', 'work-chat-2'), { recursive: true });
+      const config = GatewayConfig.parse({
+        providers: {
+          'work chat': { type: 'http', url: 'https://mcp.example.com/mcp', oauth: true },
+        },
+        agents: { agent1: { token: 'agent-secret' } },
+      });
+      const error = validateConfig(config).find((d) => d.message.includes('"work chat"'))!;
+      expect(error.suggestion).toContain('"work-chat-3"');
+    } finally {
+      process.env.HOME = originalHome;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   it('accepts a provider with client_credentials alone', () => {
     const config = GatewayConfig.parse({
       providers: {
@@ -578,6 +706,99 @@ agents:
     });
 
     expect(validateConfig(config).filter((d) => d.level === 'error')).toEqual([]);
+  });
+
+  describe('oauth_callback_mode: gateway', () => {
+    const gatewayProvider = (fields: Record<string, unknown>) =>
+      GatewayConfig.parse({
+        providers: {
+          spliit: {
+            type: 'http',
+            url: 'https://mcp.example.com/mcp',
+            oauth: true,
+            oauth_callback_mode: 'gateway',
+            ...fields,
+          },
+        },
+        agents: { agent1: { token: 'agent-secret' } },
+      });
+
+    it('defaults to loopback so existing providers are unchanged', () => {
+      const config = GatewayConfig.parse({
+        providers: { cloud: { type: 'http', url: 'https://mcp.example.com/mcp', oauth: true } },
+        agents: {},
+      });
+      const cloud = config.providers.cloud;
+      expect(cloud !== 'builtin' && cloud.type === 'http' && cloud.oauth_callback_mode).toBe(
+        'loopback'
+      );
+    });
+
+    it('accepts an HTTPS callback on the gateway origin', () => {
+      const config = gatewayProvider({
+        oauth_callback_url: 'https://airlock.example.com/oauth/callback',
+      });
+      expect(validateConfig(config).filter((d) => d.level !== 'info')).toEqual([]);
+    });
+
+    it('accepts plain HTTP only for a loopback callback', () => {
+      const local = gatewayProvider({ oauth_callback_url: 'http://127.0.0.1:4111/oauth/callback' });
+      expect(validateConfig(local).filter((d) => d.level === 'error')).toEqual([]);
+
+      const remote = gatewayProvider({
+        oauth_callback_url: 'http://airlock.example.com/oauth/callback',
+      });
+      expect(validateConfig(remote)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            level: 'error',
+            message:
+              'Provider "spliit" uses oauth_callback_mode: gateway with a non-HTTPS oauth_callback_url.',
+          }),
+        ])
+      );
+    });
+
+    it('requires oauth_callback_url', () => {
+      expect(validateConfig(gatewayProvider({}))).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            level: 'error',
+            message:
+              'Provider "spliit" sets oauth_callback_mode: gateway without oauth_callback_url.',
+          }),
+        ])
+      );
+    });
+
+    it('rejects a callback URL with a query string', () => {
+      const config = gatewayProvider({
+        oauth_callback_url: 'https://airlock.example.com/oauth/callback?provider=spliit',
+      });
+      expect(validateConfig(config)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            level: 'error',
+            message: 'Provider "spliit" oauth_callback_url must not contain a query or fragment.',
+          }),
+        ])
+      );
+    });
+
+    it('warns when the provider does not use OAuth', () => {
+      const config = gatewayProvider({
+        oauth: false,
+        oauth_callback_url: 'https://airlock.example.com/oauth/callback',
+      });
+      expect(validateConfig(config)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            level: 'warn',
+            message: 'Provider "spliit" sets oauth_callback_mode: gateway without oauth: true.',
+          }),
+        ])
+      );
+    });
   });
 
   it('errors when default_profile references an unknown profile', () => {

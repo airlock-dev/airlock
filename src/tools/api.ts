@@ -125,6 +125,16 @@ export async function toolsApiPlugin(app: FastifyInstance, opts: ToolsApiOpts): 
 
     const chain = buildMiddlewareChain(agentConfig);
     const downstreamSessionId = deps.downstreamSessionId ?? sessionKey;
+    const rawForwardedHost = request.headers['x-forwarded-host'];
+    const rawHost = request.headers.host;
+    const requestHost =
+      (Array.isArray(rawForwardedHost)
+        ? typeof rawForwardedHost[0] === 'string'
+          ? rawForwardedHost[0]
+          : undefined
+        : typeof rawForwardedHost === 'string'
+          ? rawForwardedHost
+          : undefined) ?? (typeof rawHost === 'string' ? rawHost : undefined);
 
     const ctx: ToolCallContext = {
       callId: generateId(),
@@ -132,7 +142,10 @@ export async function toolsApiPlugin(app: FastifyInstance, opts: ToolsApiOpts): 
       agentConfig,
       toolName: tool,
       args,
-      meta: downstreamSessionId ? { downstreamSessionId } : {},
+      meta: {
+        ...(downstreamSessionId ? { downstreamSessionId } : {}),
+        ...(requestHost ? { requestHost } : {}),
+      },
       deps: {
         registry: deps.registry,
         allowlist: deps.allowlist,
@@ -140,6 +153,7 @@ export async function toolsApiPlugin(app: FastifyInstance, opts: ToolsApiOpts): 
         hitlBatcher: deps.hitlBatcher,
         auditLogger: deps.auditLogger,
         securityConfig: deps.securityConfig ?? { blocked_hosts: [], allowed_local: [] },
+        uploadStore: deps.uploadStore,
       },
       startedAt: Date.now(),
       signal: ac.signal,

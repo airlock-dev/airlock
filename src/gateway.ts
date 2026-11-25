@@ -3,9 +3,13 @@ import { createConnection, isIP } from 'net';
 import Fastify from 'fastify';
 import type { FastifyInstance } from 'fastify';
 import { ClientPool } from './pool/pool.js';
+import { eventEnabledProviders } from './pool/required-mcps.js';
 import { CredentialHealthMonitor } from './pool/credential-health.js';
 import { ToolRegistry } from './registry/registry.js';
 import { AllowlistEngine } from './allowlist/engine.js';
+import { EventRegistry } from './events/registry.js';
+import { EventStreamManager } from './events/stream-manager.js';
+import { EventService } from './events/service.js';
 import { HitlEngine } from './hitl/engine.js';
 import { HitlBatcher } from './hitl/batcher.js';
 import { createGrantStore, engineOptionsFromConfig, wireBatcher } from './hitl/runtime.js';
@@ -15,6 +19,8 @@ import { auditApiPlugin } from './audit/api.js';
 import { mobileApiPlugin } from './mobile/api.js';
 import { hookApiPlugin } from './hook/api.js';
 import { toolsApiPlugin } from './tools/api.js';
+import { uploadsApiPlugin } from './uploads/api.js';
+import { UploadStore } from './uploads/store.js';
 import { ApprovalDashboardRoutes } from './hitl/approval-dashboard.js';
 import { ApprovalStreamHub } from './hitl/approval-stream.js';
 import { ApprovalPreviewReader } from './hitl/preview.js';
@@ -23,6 +29,8 @@ import { sseServerPlugin } from './transport/sse-server.js';
 import { httpServerPlugin } from './transport/http-server.js';
 import { SessionLimiter, resolveLimits } from './transport/session-limiter.js';
 import { enableTcpKeepAlive } from './transport/keepalive.js';
+import { oauthCallbackPlugin } from './transport/oauth-callback.js';
+import { OAuthCallbackRouter } from './pool/oauth-callback-router.js';
 import type { AgentServerDeps } from './transport/agent-server.js';
 import type { Config } from './config/loader.js';
 import type { HitlProvider, ApprovalApi } from './hitl/providers/types.js';
@@ -56,6 +64,9 @@ export class Gateway {
   private credentialHealth!: CredentialHealthMonitor;
   private registry!: ToolRegistry;
   private allowlist!: AllowlistEngine;
+  private eventRegistry!: EventRegistry;
+  private eventStreamManager!: EventStreamManager;
+  private eventService!: EventService;
   private hitlEngine!: HitlEngine;
   private hitlBatcher!: HitlBatcher;
   private hitlProvider!: HitlProvider;
@@ -63,6 +74,7 @@ export class Gateway {
   private approvalStream!: ApprovalStreamHub;
   private approvalPreviews!: ApprovalPreviewReader;
   private auditLogger!: AuditLogger;
+  private uploadStore!: UploadStore;
   private app!: FastifyInstance;
   private managementApp?: FastifyInstance;
   /** Per agent, so one agent churning through session ids can only evict its own sessions. */
@@ -71,7 +83,10 @@ export class Gateway {
   private activityStream = new ActivityStream();
   private unsubscribeActivityNotifications?: () => void;
   private startTime = Date.now();
+  private reloadEpoch = 0;
   private dataPlaneRequestSecurity: RequestSecurityOptions = {};
+  /** Browser OAuth callbacks for providers with `oauth_callback_mode: gateway`. */
+  private oauthCallbackRouter = new OAuthCallbackRouter();
   private managementRequestSecurity: RequestSecurityOptions = {};
 
   constructor(
@@ -98,6 +113,8 @@ export class Gateway {
       deny: (id, reason) => this.hitlEngine.deny(id, reason),
       approveByCode: (code, options) => this.hitlEngine.approveByCode(code, options),
       denyByCode: (code, reason) => this.hitlEngine.denyByCode(code, reason),
+      listGrants: (agentId) => this.hitlEngine.listGrants(agentId),
+      revokeGrant: (id) => this.hitlEngine.revokeGrant(id),
     };
 
     this.approvalPreviews = new ApprovalPreviewReader({
@@ -137,7 +154,11 @@ export class Gateway {
 
     // MCP pool — only connect to actual MCP servers, not builtins
     const mcpConfigs = getMcpConfigs(this.config.providers);
-    this.pool = new ClientPool(mcpConfigs);
+    this.pool = new ClientPool(mcpConfigs, {
+      eventsProviders: eventEnabledProviders(this.config.agents),
+      oauthStorage: 'writer',
+      oauthCallbackRouter: this.oauthCallbackRouter,
+    });
     await this.pool.initialize();
 
     // Credential probes. Primed here (not on a timer) so the first /health poll after a restart
@@ -148,10 +169,14 @@ export class Gateway {
     );
     void this.credentialHealth.prime();
 
+    // Staged file upload store (active only when uploads.enabled is true)
+    const initialBaseUrl = `http://${connectableLoopbackHost(this.config.server.host)}:${this.config.server.port}`;
+    this.uploadStore = new UploadStore(this.config.uploads, initialBaseUrl);
+
     // Build adapters from config (MCP, builtins, CLIs, APIs)
     const adapters = this.buildAdapters();
 
-    // Allowlist + registry
+    // Allowlist + registry + SEP-3415 events
     this.allowlist = new AllowlistEngine(this.config.agents);
     this.registry = new ToolRegistry(
       adapters,
@@ -159,16 +184,51 @@ export class Gateway {
       this.config.agents,
       getProviderInstructions(this.config.providers)
     );
+    this.eventRegistry = new EventRegistry(this.pool, this.allowlist);
+    this.eventStreamManager = new EventStreamManager((profileId) => {
+      const resolved = resolveLimits(
+        this.config.agents[profileId]?.limits,
+        this.config.security.limits
+      );
+      // Gateway-wide ceiling must come strictly from global limits so an agent override cannot raise it.
+      const globalLimits = resolveLimits(undefined, this.config.security.limits);
+      return {
+        maxEventStreamsPerAgent: resolved.maxEventStreamsPerAgent,
+        maxEventStreamsGlobal: globalLimits.maxEventStreamsGlobal,
+      };
+    });
+    this.eventService = new EventService({
+      pool: this.pool,
+      registry: this.eventRegistry,
+      allowlist: this.allowlist,
+      streamManager: this.eventStreamManager,
+      hitlEngine: this.hitlEngine,
+      hitlBatcher: this.hitlBatcher,
+      auditLogger: this.auditLogger,
+      getAgentConfig: (profileId) => this.config.agents[profileId],
+    });
+    // Every committed event catalog refresh reconciles live streams against removals/breaking changes.
+    this.eventRegistry.onRefresh(() => this.eventService.reconcileAfterReload());
 
-    // Register callback for late-connecting MCPs (after registry exists)
+    // Register callback for late-connecting MCPs and dynamic event list changes
     this.pool.onClientReady((id) => {
-      log.info({ id }, 'MCP became ready, refreshing tool registry');
+      log.info({ id }, 'MCP became ready, refreshing tool and event registries');
       this.registry
         .refresh()
         .catch((err) => log.error({ err }, 'Failed to refresh registry after MCP ready'));
+      this.eventRegistry
+        .refresh()
+        .catch((err) => log.error({ err }, 'Failed to refresh event registry after MCP ready'));
+    });
+    this.pool.onEventsListChanged((id) => {
+      log.info({ id }, 'MCP emitted notifications/events/list_changed, refreshing event registry');
+      this.eventRegistry
+        .refresh()
+        .catch((err) => log.error({ err }, 'Failed to refresh event registry after list_changed'));
     });
 
     await this.registry.refresh();
+    await this.eventRegistry.refresh();
 
     // Agent data-plane server. Control-plane routes are registered on a
     // separate listener below and must never be added to this app.
@@ -204,6 +264,12 @@ export class Gateway {
         this.downstreamSessionIdFor(agentId, `${agentId}:${sessionId}`),
       getRequestSecurity: getDataPlaneRequestSecurity,
     });
+    // Browser OAuth redirect target for providers that opt into oauth_callback_mode: gateway.
+    // Always mounted (provider config hot-reloads), but answers 404 until a provider opts in.
+    await this.app.register(oauthCallbackPlugin, {
+      router: this.oauthCallbackRouter,
+      isEnabled: () => usesGatewayOAuthCallback(this.config),
+    });
     // Mount the HTTP tools API unless it's globally off ('none'). Registration depends ONLY on
     // the server mode, which is restart-guarded (assertReloadCompatible), so a hot-reload of
     // per-agent opt-ins can never leave the routes out of sync. Per-request gating is enforced
@@ -219,8 +285,26 @@ export class Gateway {
       });
     }
 
+    // Staged file upload endpoints (presigned PUT/POST /uploads/:token, one-time GET/HEAD
+    // /uploads/dl/:token, and direct agent-token POST/DELETE /agents/:agentId/uploads). All routes
+    // answer 404 while uploads.enabled is false so hot-reload can toggle uploads without restart.
+    await this.app.register(uploadsApiPlugin, {
+      uploadStore: this.uploadStore,
+      getAgentConfig: (agentId: string) => this.config.agents[agentId],
+      allowlist: this.allowlist,
+      resolveSessionId: (agentId: string, sessionId: string) =>
+        this.downstreamSessionIdFor(agentId, `${agentId}:${sessionId}`),
+      getRequestSecurity: getDataPlaneRequestSecurity,
+    });
+
     const { port, host } = this.config.server;
     await this.app.listen({ port, host });
+    const bound = this.app.server.address();
+    if (typeof bound === 'object' && bound !== null) {
+      const urlHost = connectableLoopbackHost(bound.address);
+      const formattedHost = urlHost.includes(':') ? `[${urlHost}]` : urlHost;
+      this.uploadStore.setRuntimeBaseUrl(`http://${formattedHost}:${bound.port}`);
+    }
     log.info({ port, host }, 'Airlock agent data-plane listening');
 
     if (this.config.server.management_api.enabled) {
@@ -297,22 +381,34 @@ export class Gateway {
       const dataPlane = await this.dataPlaneHealth();
       const mcpHealth = this.pool.healthCheck();
       const credentialHealth = this.credentialHealth.snapshot();
+      // Airlock-held OAuth grants: refresh failures, issuer rejections and issuer changes are
+      // reported here (never paged). A grant is never dropped automatically.
+      const oauthHealth = this.pool.oauthHealth();
       const pendingApprovals = this.hitlEngine.pendingCount();
       const uptime = Math.floor((Date.now() - this.startTime) / 1000);
       const status = dataPlane.status === 'ok' ? 'ok' : 'degraded';
       const sessions = this.sessionLimiter.snapshot();
+      let downstreamSessionMappings = 0;
+      for (const ids of this.downstreamSessionIds.values()) downstreamSessionMappings += ids.size;
       // Per-provider contract fingerprints. mcpHealth says a provider ANSWERS and credentialHealth
       // says its credential WORKS; neither notices the provider quietly changing what its tools
       // accept or what they tell an agent to do. Pin these downstream and you find out.
       const toolCatalog = this.registry.getCatalogSummary();
+      const eventCatalog = this.eventRegistry.getCatalogSummary();
+      const eventStreams = this.eventStreamManager.snapshot();
       return {
         status,
         dataPlane,
         mcpHealth,
         credentialHealth,
+        oauthHealth,
         toolCatalog,
+        eventCatalog,
         pendingApprovals,
         sessions,
+        eventStreams,
+        downstreamSessionMappings,
+        memory: process.memoryUsage(),
         uptime,
       };
     });
@@ -417,6 +513,11 @@ export class Gateway {
         this.config.approvals.batch_window_ms,
         newConfig.approvals.batch_window_ms,
       ],
+      ...(this.config.uploads?.enabled && newConfig.uploads?.enabled
+        ? ([['uploads.dir', this.config.uploads.dir, newConfig.uploads.dir]] as Array<
+            [string, unknown, unknown]
+          >)
+        : []),
     ];
 
     const changed = restartFields.find(([, oldValue, newValue]) => oldValue !== newValue);
@@ -467,6 +568,8 @@ export class Gateway {
       hitlProvider: this.hitlProvider,
       auditLogger: this.auditLogger,
       securityConfig: this.config.security,
+      uploadStore: this.uploadStore,
+      eventService: this.eventService,
     };
   }
 
@@ -525,20 +628,32 @@ export class Gateway {
     log.info('Reloading gateway config');
     this.assertManagementApiConfig(newConfig);
     this.assertReloadCompatible(newConfig);
+    // Apply upload store config BEFORE publishing `this.config` or allowlists so a failed
+    // exclusive directory lock leaves the gateway on its prior consistent configuration.
+    this.uploadStore.updateConfig(newConfig.uploads);
+    const reloadEpoch = ++this.reloadEpoch;
     this.config = newConfig;
     this.updateRequestSecurity(newConfig);
     this.hitlEngine.setTimeoutMs(newConfig.approvals.timeout_ms);
     this.hitlEngine.configure(engineOptionsFromConfig(newConfig, () => this.config));
-    const mcpConfigs = getMcpConfigs(newConfig.providers);
-    await this.pool.reload(mcpConfigs);
-    this.credentialHealth.reload(getCredentialProbes(newConfig.providers));
+    // Apply allowlist, per-agent upload revocations, and event-stream revocation immediately —
+    // do not wait for slow upstream pool reconnects before cutting off revoked agents or tickets.
     this.allowlist.reload(newConfig.agents);
+    this.uploadStore.reconcileAgents(newConfig.agents);
+    await this.eventService.reconcileAfterReload();
+    if (reloadEpoch !== this.reloadEpoch) return;
+    const mcpConfigs = getMcpConfigs(newConfig.providers);
+    await this.pool.reload(mcpConfigs, eventEnabledProviders(newConfig.agents));
+    if (reloadEpoch !== this.reloadEpoch) return;
+    this.credentialHealth.reload(getCredentialProbes(newConfig.providers));
     this.registry.reloadAgents(newConfig.agents, getProviderInstructions(newConfig.providers));
-    // Rebuild adapters to pick up new CLIs/APIs
+    // Rebuild adapters to pick up new CLIs/APIs and upload settings
     const adapters = this.buildAdapters();
     this.registry.setAdapters(adapters);
     await this.registry.refresh();
-    log.info('Config reloaded: providers, allowlist, registry, and agent configs updated');
+    if (reloadEpoch !== this.reloadEpoch) return;
+    await this.eventRegistry.refresh();
+    log.info('Config reloaded: providers, allowlist, registry, events, and agent configs updated');
   }
 
   /** Prevent MCP clients from reconnecting during shutdown. */
@@ -552,14 +667,16 @@ export class Gateway {
     this.credentialHealth?.stop();
     this.pool?.disableReconnect();
     await this.pool?.stop();
-    // End the approval streams (dashboard /events, /mobile/approvals/stream) first: an open SSE
-    // response never goes idle, so the listener's close() would otherwise wait on it forever.
+    // End open push event streams and approval streams first: open SSE responses never go idle,
+    // so Fastify's close() would otherwise wait on them forever.
+    await this.eventStreamManager?.closeAll();
     await this.approvalStream?.stop();
     await this.managementApp?.close();
     await this.app?.close();
     this.unsubscribeActivityNotifications?.();
     this.unsubscribeActivityNotifications = undefined;
     await this.registry?.stopAll();
+    await this.uploadStore?.stop();
     await this.hitlProvider?.stop();
     this.auditLogger?.stop();
   }
@@ -571,12 +688,26 @@ export class Gateway {
 
   private buildAdapters() {
     return buildAdapters(this.config, this.pool, {
+      uploadStore: this.uploadStore,
       airlock: {
         hitlEngine: this.hitlEngine,
         hitlBatcher: this.hitlBatcher,
         activityStream: this.activityStream,
+        uploadStore: this.uploadStore,
         getAgentTools: (agentId) => this.registry?.getFilteredWithDecisions(agentId) ?? [],
         getAgentConfig: (agentId) => this.config.agents[agentId],
+        getRawToolSchema: (toolName, agentId) => {
+          const resolved = this.registry?.resolveToolName(toolName, agentId) ?? toolName;
+          const tools = this.registry?.getAllTools() ?? [];
+          return (
+            tools.find((t) => t.name === toolName)?.inputSchema ??
+            tools.find((t) => t.name === resolved)?.inputSchema
+          );
+        },
+        getToolBackendKind: (toolName, agentId) =>
+          this.registry?.getToolBackendKind(toolName, agentId),
+        nativeUploadArgKind: (toolName, topKey, agentId) =>
+          this.registry?.nativeUploadArgKind(toolName, topKey, agentId),
         getKnownProviderIds: () => this.knownProviderIds(),
         getProviderConnectionStatus: (providerId) => this.providerConnectionStatus(providerId),
       },
@@ -613,6 +744,17 @@ function withoutDashboardProvider(
     return filtered.length === 1 ? filtered[0] : filtered;
   }
   return provider.type === 'dashboard' ? undefined : provider;
+}
+
+function usesGatewayOAuthCallback(config: Config): boolean {
+  return Object.values(config.providers).some(
+    (provider) =>
+      provider !== 'builtin' &&
+      provider.type === 'http' &&
+      provider.enabled &&
+      provider.oauth &&
+      provider.oauth_callback_mode === 'gateway'
+  );
 }
 
 function isLoopbackHost(host: string): boolean {

@@ -2,13 +2,20 @@ import { spawn } from 'child_process';
 import { readFileSync } from 'fs';
 import { parse as parseYaml } from 'yaml';
 import { z } from 'zod';
-import type { Tool } from '@modelcontextprotocol/server';
+import { ProtocolError, type Tool } from '@modelcontextprotocol/server';
+import type { ValidateFunction } from 'ajv';
 import type { BackendAdapter } from '../types.js';
 import type { ToolCall, ToolResult } from '../../types.js';
 import { CliCommandConfig, type CliConfig } from '../../config/schema.js';
 import { buildCommand } from './builder.js';
 import { childLogger } from '../../util/logger.js';
 import { wrapCommandWithSandbox, type ResolvedSandboxConfig } from '../../sandbox/index.js';
+import {
+  assertUploadPlanActive,
+  materializeUploadArgs,
+  type UploadExecutionPlan,
+} from '../../uploads/resolve.js';
+import type { UploadStore } from '../../uploads/store.js';
 
 const log = childLogger('cli-adapter');
 
@@ -26,7 +33,8 @@ export class CliBackendAdapter implements BackendAdapter {
   constructor(
     private configKey: string,
     private config: CliConfig,
-    options?: CliAdapterOptions
+    options?: CliAdapterOptions,
+    private uploadStore?: UploadStore
   ) {
     this.maxOutputBytes = options?.maxOutputBytes ?? config.max_output_bytes;
     this.id = `cli:${configKey}`;
@@ -82,9 +90,31 @@ export class CliBackendAdapter implements BackendAdapter {
       return { success: false, error: `Unknown CLI command: ${commandName}` };
     }
 
+    let effectiveArgs = toolCall.args;
+    const uploadPlan = toolCall.meta?.uploadPlan as UploadExecutionPlan | undefined;
+    const sessionId =
+      typeof toolCall.meta?.downstreamSessionId === 'string'
+        ? toolCall.meta.downstreamSessionId
+        : undefined;
+    if (uploadPlan && this.uploadStore) {
+      try {
+        effectiveArgs = await materializeUploadArgs(
+          toolCall.args,
+          toolCall.agentId,
+          uploadPlan,
+          this.uploadStore,
+          sessionId,
+          { schemaValidator: toolCall.meta?.schemaValidator as ValidateFunction | undefined }
+        );
+      } catch (err) {
+        if (err instanceof ProtocolError) throw err;
+        return { success: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    }
+
     let fullCommand: string;
     try {
-      fullCommand = buildCommand(cmdConfig, toolCall.args);
+      fullCommand = buildCommand(cmdConfig, effectiveArgs);
     } catch (err) {
       return { success: false, error: err instanceof Error ? err.message : String(err) };
     }
@@ -97,6 +127,16 @@ export class CliBackendAdapter implements BackendAdapter {
     const effectiveCommand = sandbox
       ? await wrapCommandWithSandbox(fullCommand, sandbox)
       : fullCommand;
+
+    // Final synchronous re-check right before spawn so revocation during sandbox setup cannot
+    // still execute with buffered upload content.
+    if (uploadPlan && this.uploadStore) {
+      try {
+        assertUploadPlanActive(uploadPlan, toolCall.agentId, this.uploadStore, sessionId);
+      } catch (err) {
+        return { success: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    }
 
     return this.exec(effectiveCommand, cwd, timeoutMs);
   }

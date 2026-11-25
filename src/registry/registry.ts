@@ -14,7 +14,12 @@ import { childLogger } from '../util/logger.js';
 import { tierFromAnnotations, type ToolTier } from '../hitl/grants.js';
 import { stableStringify } from '../util/stable-json.js';
 import { providerIdForTool } from '../util/tool-name.js';
-import { UI_MIME_TYPE, parseNamespacedUiUri, toolUiResourceUri } from '../mcp-apps/ui.js';
+import {
+  UI_MIME_TYPE,
+  isAppOnlyTool,
+  parseNamespacedUiUri,
+  toolUiResourceUri,
+} from '../mcp-apps/ui.js';
 
 const log = childLogger('registry');
 
@@ -237,9 +242,10 @@ export class ToolRegistry {
    * MCP Apps views this agent may load: one per `ui://` resource referenced by a tool it can see.
    * A tool the agent is denied contributes nothing, so its view stays out of reach too.
    */
-  listUiResources(agentId: string): Resource[] {
+  listUiResources(agentId: string, options: { excludeAppOnly?: boolean } = {}): Resource[] {
     const byUri = new Map<string, Resource>();
     for (const { tool } of this.getFilteredWithDecisions(agentId)) {
+      if (options.excludeAppOnly && isAppOnlyTool(tool)) continue;
       const uri = toolUiResourceUri(tool);
       if (!uri || byUri.has(uri) || !parseNamespacedUiUri(uri)) continue;
       byUri.set(uri, { uri, name: tool.title ?? tool.name, mimeType: UI_MIME_TYPE });
@@ -251,10 +257,15 @@ export class ToolRegistry {
    * Fetch an MCP Apps view from the provider that owns it. Only URIs a visible tool references are
    * served; anything else reads as not found, so an agent cannot probe an upstream's resources.
    */
-  async readUiResource(agentId: string, uri: string): Promise<ReadResourceResult> {
+  async readUiResource(
+    agentId: string,
+    uri: string,
+    options: { excludeAppOnly?: boolean } = {}
+  ): Promise<ReadResourceResult> {
     const parsed = parseNamespacedUiUri(uri);
     const referenced = this.getFilteredWithDecisions(agentId).some(
-      ({ tool }) => toolUiResourceUri(tool) === uri
+      ({ tool }) =>
+        !(options.excludeAppOnly && isAppOnlyTool(tool)) && toolUiResourceUri(tool) === uri
     );
     if (!parsed || !referenced) throw new ResourceNotFoundError(uri);
 
@@ -303,6 +314,42 @@ export class ToolRegistry {
     return agent?.tool_overrides?.[namespacedName]?.alias_of ?? namespacedName;
   }
 
+  getToolBackendKind(
+    namespacedName: string,
+    agentId: string
+  ): 'mcp' | 'http' | 'api' | 'cli' | 'exec' | 'airlock' | undefined {
+    const adapter = this.findAdapterForTool(namespacedName, agentId);
+    if (!adapter) return undefined;
+    if (adapter.id.startsWith('mcp:')) return 'mcp';
+    if (adapter.id === 'builtin:http') return 'http';
+    if (adapter.id.startsWith('api:')) return 'api';
+    if (adapter.id.startsWith('cli:')) return 'cli';
+    if (adapter.id === 'builtin:exec') return 'exec';
+    if (adapter.id === 'builtin:airlock') return 'airlock';
+    return undefined;
+  }
+
+  nativeUploadArgKind(
+    namespacedName: string,
+    topKey: string,
+    agentId: string
+  ): 'binary' | 'multipart' | undefined {
+    const resolvedName = this.resolveToolName(namespacedName, agentId);
+    const adapter = this.findAdapterForTool(namespacedName, agentId);
+    return adapter?.nativeUploadArgKind?.(resolvedName, topKey);
+  }
+
+  private findAdapterForTool(namespacedName: string, agentId: string): BackendAdapter | undefined {
+    const resolvedName = this.resolveToolName(namespacedName, agentId);
+    for (const adapter of this.adapters) {
+      const prefix = getAdapterPrefix(adapter);
+      if (prefix && resolvedName.startsWith(prefix)) {
+        return adapter;
+      }
+    }
+    return undefined;
+  }
+
   async stopAll(): Promise<void> {
     await Promise.allSettled(this.adapters.map((a) => a.stop()));
   }
@@ -317,15 +364,60 @@ function applyAgentView(
   decision: AgentVisibleTool['decision'],
   override?: ToolOverride
 ): Tool {
+  const uploadEntries = Object.entries(override?.uploads ?? {});
+  const uploadNote =
+    uploadEntries.length > 0
+      ? uploadEntries
+          .map(
+            ([argName, rule]) =>
+              `Upload parameter "${argName}": stage local files first with airlock_prepare_upload and pass the returned "airlock-upload://<id>" reference (delivered as ${rule.mode}).`
+          )
+          .join(' ')
+      : undefined;
+
+  const combinedAppend = [override?.description_append, uploadNote].filter(Boolean).join('\n\n');
   const view: Tool = {
     ...tool,
     description: composeToolDescription(
       tool.description ?? '',
       override?.description,
-      override?.description_append
+      combinedAppend || undefined
     ),
+    ...(uploadEntries.length > 0
+      ? { inputSchema: annotateSchemaUploadArgs(tool.inputSchema, override!.uploads!) }
+      : {}),
   };
   return decision === 'ask' ? addAskPolicyGuidance(view) : view;
+}
+
+function annotateSchemaUploadArgs(
+  inputSchema: Tool['inputSchema'],
+  uploads: NonNullable<ToolOverride['uploads']>
+): Tool['inputSchema'] {
+  if (!inputSchema || typeof inputSchema !== 'object' || Array.isArray(inputSchema)) {
+    return inputSchema;
+  }
+  const schema = inputSchema as Record<string, unknown>;
+  const rawProps = schema.properties;
+  if (!rawProps || typeof rawProps !== 'object' || Array.isArray(rawProps)) {
+    return inputSchema;
+  }
+  const properties: Record<string, unknown> = { ...(rawProps as Record<string, unknown>) };
+  let changed = false;
+  for (const [argName, rule] of Object.entries(uploads)) {
+    const prop = properties[argName];
+    if (!prop || typeof prop !== 'object' || Array.isArray(prop)) continue;
+    const propObj = prop as Record<string, unknown>;
+    const hint = `Accepts an Airlock upload ref ("airlock-upload://<id>") from airlock_prepare_upload (delivered as ${rule.mode}).`;
+    const existingDesc = typeof propObj.description === 'string' ? propObj.description.trim() : '';
+    properties[argName] = {
+      ...propObj,
+      description: existingDesc ? `${existingDesc} ${hint}` : hint,
+    };
+    changed = true;
+  }
+  if (!changed) return inputSchema;
+  return { ...schema, properties } as Tool['inputSchema'];
 }
 
 /**
@@ -357,9 +449,15 @@ function summarizeCatalog(tools: Tool[]): Record<string, ProviderCatalogSummary>
       hash.update('\0');
       // MCP Apps metadata decides which view a tool opens and whether the model sees it at all.
       // Hashed only when present, so fingerprints of tools without it are unchanged.
-      const ui = tool._meta?.ui ?? tool._meta?.['ui/resourceUri'];
-      if (ui !== undefined) {
-        hash.update(stableStringify(ui));
+      const ui = tool._meta?.ui;
+      const legacyUi = tool._meta?.['ui/resourceUri'];
+      if (ui !== undefined || legacyUi !== undefined) {
+        hash.update(
+          stableStringify({
+            ...(ui !== undefined ? { ui } : {}),
+            ...(legacyUi !== undefined ? { 'ui/resourceUri': legacyUi } : {}),
+          })
+        );
         hash.update('\0');
       }
     }

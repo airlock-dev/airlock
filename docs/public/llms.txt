@@ -16,6 +16,7 @@ Pages:
 - /guides/cli-discovery
 - /guides/dashboard
 - /guides/docker-deploy
+- /guides/file-uploads
 - /guides/hook-endpoint
 - /guides/http-agents
 - /guides/openclaw

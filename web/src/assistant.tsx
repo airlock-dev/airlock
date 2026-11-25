@@ -3,7 +3,8 @@ import { api } from './api';
 import { ChangeList } from './review';
 import { go, useStore } from './store';
 import type { ChatMessage, Proposal } from './types';
-import { Button, cx } from './ui';
+import { ArrowUpRight, Check, X } from 'lucide-preact';
+import { Button, Notice, cx } from './ui';
 
 interface Turn {
   message: ChatMessage;
@@ -129,21 +130,23 @@ export function AssistantDrawer() {
     <aside
       class={cx('assistant', assistantOpen && 'is-open')}
       aria-hidden={!assistantOpen}
+      inert={!assistantOpen}
       aria-label="Policy assistant"
     >
-      <header class="assistant-head">
-        <div>
-          <h2>Assistant</h2>
-          {meta?.assistant.model && <p class="dim">{meta.assistant.model}</p>}
+      <header class="sheet-head">
+        <div class="sheet-head-text">
+          <h2>Policy assistant</h2>
+          {meta?.assistant.model && <p class="sheet-sub">{meta.assistant.model}</p>}
         </div>
-        <button
-          type="button"
-          class="icon-btn"
+        <Button
+          variant="ghost"
+          icon
+          size="sm"
           aria-label="Close assistant"
           onClick={() => setAssistantOpen(false)}
         >
-          ×
-        </button>
+          <X size={16} aria-hidden="true" />
+        </Button>
       </header>
 
       {!meta?.assistant.enabled ? (
@@ -154,9 +157,10 @@ export function AssistantDrawer() {
             suggests waits for you to apply it.
           </p>
           <p>Point the dashboard at any OpenAI-compatible endpoint and restart it:</p>
-          <pre>
-            AIRLOCK_ASSISTANT_BASE_URL=https://openrouter.ai/api/v1{'\n'}
-            AIRLOCK_ASSISTANT_MODEL=your-model-id{'\n'}AIRLOCK_ASSISTANT_API_KEY=your-api-key
+          <pre class="code-block">
+            {
+              'AIRLOCK_ASSISTANT_BASE_URL=https://openrouter.ai/api/v1\nAIRLOCK_ASSISTANT_MODEL=your-model-id\nAIRLOCK_ASSISTANT_API_KEY=your-api-key'
+            }
           </pre>
         </div>
       ) : (
@@ -172,6 +176,7 @@ export function AssistantDrawer() {
                   {STARTERS.map((s) => (
                     <li key={s}>
                       <button type="button" onClick={() => send(s)}>
+                        <ArrowUpRight size={14} aria-hidden="true" />
                         {s}
                       </button>
                     </li>
@@ -182,10 +187,15 @@ export function AssistantDrawer() {
             {turns.map((turn, i) => (
               <div key={i} class={cx('turn', `is-${turn.message.role}`)}>
                 {turn.message.tool_calls?.length ? (
-                  <ul class="steps">
+                  <ul class="assistant-steps">
                     {Array.from(new Set(turn.message.tool_calls.map((c) => c.function.name))).map(
                       (name) => (
                         <li key={name} class={cx(name.endsWith(':failed') && 'is-failed')}>
+                          {name.endsWith(':failed') ? (
+                            <X size={13} aria-hidden="true" />
+                          ) : (
+                            <Check size={13} aria-hidden="true" />
+                          )}
                           {TOOL_LABEL[name] ?? name.replace(':failed', ' failed')}
                         </li>
                       )
@@ -197,17 +207,15 @@ export function AssistantDrawer() {
                   const state = decisions[proposal.id] ?? 'open';
                   return (
                     <article class={cx('proposal', `is-${state}`)} key={proposal.id}>
-                      <header>
-                        <h3>{proposal.title}</h3>
-                        {proposal.summary && <p>{proposal.summary}</p>}
-                      </header>
+                      <h3>{proposal.title}</h3>
+                      {proposal.summary && <p>{proposal.summary}</p>}
                       <ChangeList preview={proposal.preview} />
-                      <footer>
+                      <footer class="proposal-foot">
                         {state === 'open' ? (
                           <>
                             <Button
                               size="sm"
-                              variant="quiet"
+                              variant="ghost"
                               onClick={() => {
                                 setDecisions((d) => ({ ...d, [proposal.id]: 'dismissed' }));
                                 setHistory((h) => [
@@ -228,7 +236,7 @@ export function AssistantDrawer() {
                             </Button>
                           </>
                         ) : (
-                          <span class="dim">{state === 'applied' ? 'Applied' : 'Dismissed'}</span>
+                          <span class="ink-3">{state === 'applied' ? 'Applied' : 'Dismissed'}</span>
                         )}
                       </footer>
                     </article>
@@ -236,8 +244,8 @@ export function AssistantDrawer() {
                 })}
               </div>
             ))}
-            {busy && <p class="thinking">Working on it</p>}
-            {error && <p class="notice notice-error">{error}</p>}
+            {busy && <p class="thinking">Working on it…</p>}
+            {error && <Notice tone="error">{error}</Notice>}
           </div>
           <form
             class="assistant-input"
@@ -248,9 +256,11 @@ export function AssistantDrawer() {
           >
             <textarea
               ref={inputRef}
+              class="textarea"
+              name="assistant-message"
               rows={3}
               value={input}
-              placeholder="An agent for Codex on my build server that reads GitHub and Linear, and asks before writing"
+              placeholder="An agent for Codex on my build server that reads GitHub and asks before writing…"
               aria-label="Message"
               onInput={(e) => setInput(e.currentTarget.value)}
               onKeyDown={(e) => {
@@ -261,7 +271,7 @@ export function AssistantDrawer() {
               }}
             />
             <div class="assistant-input-foot">
-              <span class="dim">Proposals change nothing until you apply them.</span>
+              <span>Nothing changes until you apply a proposal.</span>
               <Button
                 type="submit"
                 variant="primary"

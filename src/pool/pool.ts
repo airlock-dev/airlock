@@ -1,9 +1,26 @@
 import { StdioMcpClient } from './stdio-client.js';
 import { SseMcpClient } from './sse-client.js';
 import { HttpMcpClient } from './http-client.js';
-import type { ProviderConnectionStatus } from './status.js';
+import type { OAuthGrantHealth, ProviderConnectionStatus } from './status.js';
+import type { OAuthStorageMode } from './oauth-store.js';
+import { releaseAllWriterLocks } from './oauth-lock.js';
+import { drainGrantOperations } from './oauth-store.js';
+import { OAUTH_SHUTDOWN_DRAIN_MS } from './oauth-refresh.js';
 import type { McpServerConfig } from '../config/schema.js';
+import { resolveProviderBearerFile } from '../config/provider-credentials.js';
 import type { ReadResourceResult, Tool } from '@modelcontextprotocol/server';
+import type {
+  EventDescriptor,
+  EventsPollParams,
+  EventsPollResult,
+  EventsStreamParams,
+} from '../events/protocol.js';
+import type {
+  UpstreamEventStreamCallbacks,
+  UpstreamEventStreamHandle,
+  UpstreamEventStreamOptions,
+} from '../events/upstream-client.js';
+import type { OAuthCallbackRouter } from './oauth-callback-router.js';
 import { childLogger } from '../util/logger.js';
 
 const log = childLogger('pool');
@@ -43,20 +60,43 @@ interface ClientPoolOptions {
   stdioStderr?: 'inherit' | 'ignore' | 'pipe';
   healthCheck?: boolean;
   retryFailedConnections?: boolean;
+  /** Provider IDs that should probe MCP 2026-07-28 (`server/discover`) even over stdio. */
+  eventsProviders?: Set<string>;
+  /**
+   * OAuth grant storage access. `writer` (gateway, stdio agent, configure-agent) refreshes and
+   * persists grants while holding the store's writer lock. `readonly` (default; `airlock tools`,
+   * `lint`, dashboard probes) never refreshes, writes, or invalidates a grant.
+   */
+  oauthStorage?: OAuthStorageMode;
+  /**
+   * Receives browser callbacks for providers with `oauth_callback_mode: gateway`. Only the
+   * gateway supplies one, because only the gateway serves the callback route.
+   */
+  oauthCallbackRouter?: OAuthCallbackRouter;
 }
 
 export class ClientPool {
   private clients = new Map<string, McpClient>();
   private healthTimer?: NodeJS.Timeout;
   private _onClientReady?: (id: string) => void;
+  private _onEventsListChanged?: (id: string) => void;
+  private eventsProviders: Set<string>;
+  private reloadChain: Promise<void> = Promise.resolve();
+  private reloadEpoch = 0;
 
   constructor(
     private mcps: Record<string, McpServerConfig>,
     private options?: ClientPoolOptions
-  ) {}
+  ) {
+    this.eventsProviders = new Set(options?.eventsProviders ?? []);
+  }
 
   onClientReady(cb: (id: string) => void): void {
     this._onClientReady = cb;
+  }
+
+  onEventsListChanged(cb: (id: string) => void): void {
+    this._onEventsListChanged = cb;
   }
 
   async initialize(): Promise<void> {
@@ -66,15 +106,34 @@ export class ClientPool {
   }
 
   private async connectClient(id: string, cfg: McpServerConfig): Promise<void> {
-    const client = this.createClient(id, cfg);
+    let connection: McpServerConfig;
+    try {
+      // CLI and dashboard discovery can construct a pool from a structurally parsed config.
+      connection = resolveProviderBearerFile(cfg);
+    } catch (error) {
+      log.warn({ id }, error instanceof Error ? error.message : 'Invalid provider credential');
+      return;
+    }
+    const client = this.createClient(id, connection);
     this.clients.set(id, client);
     client.onReady(() => this.notifyClientReady(id));
+    if (client instanceof HttpMcpClient || client instanceof StdioMcpClient) {
+      client.onEventsListChanged(() => this._onEventsListChanged?.(id));
+    }
     try {
       await client.connect();
+      if (this.clients.get(id) !== client) {
+        void client.stop().catch(() => {});
+        return;
+      }
       if (!client.isReady()) {
         log.info({ id }, 'MCP connection pending');
       }
     } catch {
+      if (this.clients.get(id) !== client) {
+        void client.stop().catch(() => {});
+        return;
+      }
       if (this.options?.retryFailedConnections === false) {
         log.warn({ id }, 'Failed to connect MCP');
       } else {
@@ -102,6 +161,7 @@ export class ClientPool {
           cfg.args,
           cfg.env,
           this.options?.stdioStderr,
+          this.eventsProviders.has(id),
           cfg.mcp_apps === true
         );
       case 'sse':
@@ -118,7 +178,13 @@ export class ClientPool {
           cfg.oauth_callback_url,
           cfg.client_credentials,
           cfg.request_timeout_ms,
-          cfg.mcp_apps === true
+          {
+            oauthStorage: this.options?.oauthStorage ?? 'readonly',
+            oauthMaxRefreshIntervalMs: cfg.oauth_max_refresh_interval_ms,
+            oauthCallbackMode: cfg.oauth_callback_mode,
+            oauthCallbackRouter: this.options?.oauthCallbackRouter,
+            mcpApps: cfg.mcp_apps === true,
+          }
         );
     }
   }
@@ -137,6 +203,17 @@ export class ClientPool {
     return this.clients.get(mcpId)?.getConnectionStatus();
   }
 
+  /** Grant health of every Airlock-held OAuth provider (for /health). */
+  oauthHealth(): Record<string, OAuthGrantHealth> {
+    const result: Record<string, OAuthGrantHealth> = {};
+    for (const [id, client] of this.clients) {
+      if (!(client instanceof HttpMcpClient)) continue;
+      const health = client.getOAuthHealth();
+      if (health) result[id] = health;
+    }
+    return result;
+  }
+
   /** Whether Airlock owns an authorization-code OAuth credential for this provider. */
   isOAuthProvider(mcpId: string): boolean {
     const cfg = this.mcps[mcpId];
@@ -147,12 +224,15 @@ export class ClientPool {
     mcpId: string,
     toolName: string,
     args: Record<string, unknown>,
-    requestMeta?: McpRequestMeta
+    requestMeta?: McpRequestMeta,
+    beforeSend?: () => void
   ): Promise<unknown> {
     const client = this.clients.get(mcpId);
     if (!client) throw new Error(`Unknown MCP: ${mcpId}`);
     if (!client.isReady()) throw new Error(`MCP ${mcpId} is not connected`);
-    return client.callTool(toolName, args, requestMeta);
+    return beforeSend
+      ? client.callTool(toolName, args, requestMeta, beforeSend)
+      : client.callTool(toolName, args, requestMeta);
   }
 
   async readResource(mcpId: string, uri: string): Promise<ReadResourceResult> {
@@ -162,9 +242,66 @@ export class ClientPool {
     return client.readResource(uri);
   }
 
-  async reload(newMcps: Record<string, McpServerConfig>): Promise<void> {
+  supportsEvents(mcpId: string): boolean {
+    return this.clients.get(mcpId)?.supportsEvents() ?? false;
+  }
+
+  async listEvents(mcpId: string): Promise<EventDescriptor[]> {
+    const client = this.clients.get(mcpId);
+    if (!client) throw new Error(`Unknown MCP: ${mcpId}`);
+    if (!client.isReady()) throw new Error(`MCP ${mcpId} is not connected`);
+    return client.listEvents();
+  }
+
+  async pollEvents(
+    mcpId: string,
+    params: EventsPollParams,
+    options?: { inputSchema?: Record<string, unknown>; signal?: AbortSignal }
+  ): Promise<EventsPollResult> {
+    const client = this.clients.get(mcpId);
+    if (!client) throw new Error(`Unknown MCP: ${mcpId}`);
+    if (!client.isReady()) throw new Error(`MCP ${mcpId} is not connected`);
+    return client.pollEvents(params, options);
+  }
+
+  async openEventStream(
+    mcpId: string,
+    params: EventsStreamParams,
+    callbacks: UpstreamEventStreamCallbacks,
+    options?: UpstreamEventStreamOptions
+  ): Promise<UpstreamEventStreamHandle> {
+    const client = this.clients.get(mcpId);
+    if (!client) throw new Error(`Unknown MCP: ${mcpId}`);
+    if (!client.isReady()) throw new Error(`MCP ${mcpId} is not connected`);
+    return client.openEventStream(params, callbacks, options);
+  }
+
+  async reload(
+    newMcps: Record<string, McpServerConfig>,
+    newEventsProviders?: Set<string>
+  ): Promise<void> {
+    const epoch = ++this.reloadEpoch;
+    const run = async (): Promise<void> => {
+      // Skip queued reloads superseded before they even begin so an older config never replaces a
+      // newer upstream destination under the same provider ID.
+      if (epoch !== this.reloadEpoch) return;
+      await this.applyReload(newMcps, newEventsProviders);
+    };
+    const next = this.reloadChain.then(run, run);
+    this.reloadChain = next;
+    return next;
+  }
+
+  private async applyReload(
+    newMcps: Record<string, McpServerConfig>,
+    newEventsProviders?: Set<string>
+  ): Promise<void> {
     const oldIds = new Set(this.clients.keys());
     const newIds = new Set(Object.keys(newMcps));
+    const prevEventsProviders = this.eventsProviders;
+    if (newEventsProviders) {
+      this.eventsProviders = new Set(newEventsProviders);
+    }
 
     // Remove MCPs that no longer exist
     for (const id of oldIds) {
@@ -177,15 +314,16 @@ export class ClientPool {
     }
 
     // Add new MCPs, and restart existing ones whose connection settings changed (url, headers,
-    // command, auth…): a client is built from its config once, so keeping it would silently ignore
-    // the edit. A restart drops the provider's in-flight calls, so edits the client never reads
-    // (instructions, credential probes) or a mere reordering of keys do not trigger one.
+    // command, auth…), or stdio providers that newly gained event permissions and need 2026-07-28
+    // `server/discover` negotiation.
     const restarts: Promise<void>[] = [];
     for (const [id, cfg] of Object.entries(newMcps)) {
+      const stdioNeedsModernUpgrade =
+        cfg.type === 'stdio' && !prevEventsProviders.has(id) && this.eventsProviders.has(id);
       if (!oldIds.has(id)) {
         log.info({ id }, 'Adding new MCP from config reload');
         void this.connectClient(id, cfg);
-      } else if (connectionKey(this.mcps[id]) !== connectionKey(cfg)) {
+      } else if (connectionKey(this.mcps[id]) !== connectionKey(cfg) || stdioNeedsModernUpgrade) {
         log.info({ id }, 'Restarting MCP (connection settings changed)');
         const client = this.clients.get(id);
         restarts.push(
@@ -196,6 +334,12 @@ export class ClientPool {
               void this.connectClient(id, cfg);
             })
         );
+      } else if (cfg.type === 'stdio') {
+        // Keep probeModern in sync so a future reconnect stops probing once event access is removed.
+        const client = this.clients.get(id);
+        if (client instanceof StdioMcpClient) {
+          client.setProbeModern(this.eventsProviders.has(id));
+        }
       }
     }
     await Promise.all(restarts);
@@ -249,7 +393,13 @@ export class ClientPool {
   async stop(): Promise<void> {
     clearInterval(this.healthTimer);
     this.disableReconnect();
+    // HTTP clients drain in-flight OAuth exchanges (commit or hand-off) in their stop(); anything
+    // else still running on a grant (a restore) gets the same deadline before the lock is released.
     await Promise.allSettled(Array.from(this.clients.values()).map((c) => c.stop()));
+    if (this.options?.oauthStorage === 'writer') {
+      await drainGrantOperations(OAUTH_SHUTDOWN_DRAIN_MS);
+      await releaseAllWriterLocks();
+    }
   }
 
   /** SIGKILL any stdio child processes that survived graceful stop. */

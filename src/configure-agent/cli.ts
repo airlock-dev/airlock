@@ -529,6 +529,9 @@ export async function runConfigureAgent(argv: string[]): Promise<void> {
 
   const pool = new ClientPool(mcpConfigs, {
     stdioStderr: values.verbose ? 'inherit' : 'ignore',
+    // Interactive setup may complete a first-time authorization. With a gateway running it
+    // cannot take the writer lock and only reads.
+    oauthStorage: 'writer',
   });
 
   // Start all connections, give them an initial 15s window

@@ -187,10 +187,12 @@ describe('MCP Apps helpers', () => {
     });
   });
 
-  it('treats visibility as model+app by default', () => {
+  it('treats visibility as model+app by default (including unusable arrays)', () => {
     expect(isAppOnlyTool({})).toBe(false);
     expect(isAppOnlyTool({ _meta: { ui: { visibility: ['app'] } } })).toBe(true);
     expect(isAppOnlyTool({ _meta: { ui: { visibility: ['model', 'app'] } } })).toBe(false);
+    expect(isAppOnlyTool({ _meta: { ui: { visibility: [] } } })).toBe(false);
+    expect(isAppOnlyTool({ _meta: { ui: { visibility: ['unknown'] } } })).toBe(false);
   });
 
   it('detects host support from the request envelope or the session', () => {
@@ -239,7 +241,17 @@ describe('MCP Apps through the gateway', () => {
     });
   });
 
-  it('hides app-only tools from a host that does not render views', async () => {
+  it('hides app-only tools and app-only views from a host that does not render views', async () => {
+    const { deps, pool } = await setup({ allow: ['wx/refresh'] });
+    const client = await connect(deps, false);
+    const { tools } = await client.listTools();
+    expect(tools).toEqual([]);
+    expect((await client.listResources()).resources).toEqual([]);
+    await expect(client.readResource({ uri: NAMESPACED_VIEW_URI })).rejects.toThrow();
+    expect(pool.readResource).not.toHaveBeenCalled();
+  });
+
+  it('still lists non-app-only tools for a host that does not render views', async () => {
     const { deps } = await setup();
     const client = await connect(deps, false);
     const { tools } = await client.listTools();
@@ -380,7 +392,7 @@ describe('MCP Apps through the gateway', () => {
     await expect(client.readResource({ uri: NAMESPACED_VIEW_URI })).rejects.toThrow(/too large/);
   });
 
-  it('moves the catalog fingerprint when a tool changes its view metadata', async () => {
+  it('moves the catalog fingerprint when a tool changes its view metadata or legacy resourceUri', async () => {
     const { registry, pool } = await setup();
     const before = registry.getCatalogSummary().wx.fingerprint;
     pool.listTools.mockResolvedValueOnce(
@@ -391,7 +403,24 @@ describe('MCP Apps through the gateway', () => {
       )
     );
     await registry.refresh();
-    expect(registry.getCatalogSummary().wx.fingerprint).not.toBe(before);
+    const afterUiChange = registry.getCatalogSummary().wx.fingerprint;
+    expect(afterUiChange).not.toBe(before);
+
+    pool.listTools.mockResolvedValueOnce(
+      upstreamTools.map((t) =>
+        t.name === 'forecast'
+          ? {
+              ...t,
+              _meta: {
+                ui: { resourceUri: VIEW_URI, visibility: ['app'] },
+                'ui/resourceUri': 'ui://weather/alt',
+              },
+            }
+          : t
+      )
+    );
+    await registry.refresh();
+    expect(registry.getCatalogSummary().wx.fingerprint).not.toBe(afterUiChange);
   });
 });
 

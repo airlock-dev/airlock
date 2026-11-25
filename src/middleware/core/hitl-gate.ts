@@ -4,7 +4,29 @@ import type { SandboxDisplayInfo } from '../../sandbox/index.js';
 import type { Middleware, ToolCallContext, ToolCallResponse } from '../types.js';
 import { serializeAuditArgs } from '../audit-args.js';
 import { fingerprintCall, type ApprovalSubject } from '../../hitl/grants.js';
+import {
+  fingerprintCallWithUploads,
+  type UploadFingerprintBinding,
+} from '../../uploads/resolve.js';
 import { providerIdForTool } from '../../util/tool-name.js';
+
+const MAX_ESCALATION_REASON_LENGTH = 240;
+
+function sanitizeEscalationReason(raw: unknown): string | undefined {
+  if (typeof raw !== 'string') return undefined;
+  // Strip control characters and collapse whitespace so untrusted detector reasoning
+  // (e.g. LLM classifier output) cannot spoof formatting or inject newlines into notifications.
+  let out = '';
+  for (let i = 0; i < raw.length; i += 1) {
+    const code = raw.charCodeAt(i);
+    out += code < 0x20 || code === 0x7f ? ' ' : raw[i];
+  }
+  const cleaned = out.replace(/\s+/g, ' ').trim();
+  if (!cleaned) return undefined;
+  return cleaned.length > MAX_ESCALATION_REASON_LENGTH
+    ? `${cleaned.slice(0, MAX_ESCALATION_REASON_LENGTH - 3)}...`
+    : cleaned;
+}
 
 function errorResponse(message: string): ToolCallResponse {
   return {
@@ -16,14 +38,25 @@ function errorResponse(message: string): ToolCallResponse {
 /** What the grant store and approval UIs need to know about this call. */
 export function approvalSubjectFor(ctx: ToolCallContext): ApprovalSubject {
   const sessionId = ctx.meta.downstreamSessionId;
+  const uploadBindings = ctx.meta.uploadFingerprintBindings as
+    | UploadFingerprintBinding[]
+    | undefined;
+  const fingerprint =
+    uploadBindings && uploadBindings.length > 0
+      ? fingerprintCallWithUploads(ctx.toolName, ctx.args, uploadBindings)
+      : fingerprintCall(ctx.toolName, ctx.args);
+  const detectorEscalated = Boolean(
+    ctx.meta.detectorEscalated === true && uploadBindings && uploadBindings.length > 0
+  );
   return {
     agentId: ctx.agentId,
     tool: ctx.toolName,
-    fingerprint: fingerprintCall(ctx.toolName, ctx.args),
+    fingerprint,
     provider: providerIdForTool(ctx.toolName),
     tier: ctx.deps.registry.toolTier?.(ctx.agentId, ctx.toolName) ?? 'destructive',
     ...(typeof sessionId === 'string' ? { sessionId } : {}),
     escalated: ctx.meta.needsApproval === true,
+    ...(detectorEscalated ? { detectorEscalated: true } : {}),
   };
 }
 
@@ -103,11 +136,14 @@ export function hitlGateMiddleware(): Middleware {
     }
 
     // The engine redacts args before they are stored or shown to the operator.
+    const displayArgs = (ctx.meta.hitlArgs as Record<string, unknown> | undefined) ?? ctx.args;
+    const escalationReason = sanitizeEscalationReason(ctx.meta.approvalReason);
     const ticket = hitlEngine.create({
       agentId: ctx.agentId,
       tool: ctx.toolName,
-      args: ctx.args,
+      args: displayArgs,
       ...(airlockContext ? { context: airlockContext } : {}),
+      ...(escalationReason ? { escalationReason } : {}),
       sandbox: sandboxInfo,
       kind: 'call',
       mode,

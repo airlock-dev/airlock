@@ -1,11 +1,29 @@
-import { readFileSync } from 'fs';
+import {
+  HISTORY_DIR,
+  ORPHAN_DIR,
+  REVISION_DIR,
+  isValidProviderId,
+  oauthStoreDir,
+} from '../pool/oauth-store.js';
+import { readdirSync, readFileSync } from 'fs';
 import { isIP } from 'net';
+import { join } from 'path';
 import { parse as parseYaml } from 'yaml';
 import { hasAgentCredential } from '../security/request.js';
-import { GatewayConfig, getBuiltinProviders, withEnvVarResolution } from './schema.js';
+import {
+  GatewayConfig,
+  getBuiltinProviders,
+  getMcpConfigs,
+  withEnvVarResolution,
+} from './schema.js';
 import { applyProfiles } from './profiles.js';
+import { hasConflictingBearerAuth, resolveProviderBearerFile } from './provider-credentials.js';
 import { matches } from '../allowlist/pattern.js';
-import { AIRLOCK_APPROVAL_TOOLS, AIRLOCK_NON_ASK_TOOLS } from '../airlock/tools.js';
+import {
+  AIRLOCK_APPROVAL_TOOLS,
+  AIRLOCK_NON_ASK_TOOLS,
+  AIRLOCK_UPLOAD_TOOLS,
+} from '../airlock/tools.js';
 import { childLogger } from '../util/logger.js';
 import type { z } from 'zod';
 
@@ -109,11 +127,28 @@ export function loadConfigDetailed(
     diagnostics.push(...validateEffectiveArgRestrictions(rawConfig, result.data));
   }
 
+  if (resolveEnv && !diagnostics.some((diagnostic) => diagnostic.level === 'error')) {
+    resolveProviderBearerFiles(result.data, diagnostics);
+  }
+
   return {
     config: result.data,
     rawConfig,
     diagnostics: dedupeDiagnostics(diagnostics),
   };
+}
+
+function resolveProviderBearerFiles(config: Config, diagnostics: ConfigDiagnostic[]): void {
+  for (const [id, provider] of Object.entries(getMcpConfigs(config.providers))) {
+    try {
+      config.providers[id] = resolveProviderBearerFile(provider);
+    } catch (error) {
+      diagnostics.push({
+        level: 'error',
+        message: `Provider "${id}": ${error instanceof Error ? error.message : 'Invalid bearer token file.'}`,
+      });
+    }
+  }
 }
 
 export function loadConfig(path: string, options: LoadConfigOptions = {}): Config {
@@ -145,7 +180,95 @@ export function loadConfig(path: string, options: LoadConfigOptions = {}): Confi
 export function validateConfig(config: Config): ConfigDiagnostic[] {
   const diagnostics: ConfigDiagnostic[] = [];
   const providerNames = new Set(Object.keys(config.providers));
+  const knownToolNamespaces = new Set([
+    ...Object.keys(config.providers),
+    ...Object.keys(config.clis),
+    ...Object.keys(config.apis),
+  ]);
+  const mcpConfigs = getMcpConfigs(config.providers);
+  const mcpProviderNames = new Set(Object.keys(mcpConfigs));
+  const sseProviderNames = new Set(
+    Object.entries(mcpConfigs)
+      .filter(([, cfg]) => cfg.type === 'sse')
+      .map(([id]) => id)
+  );
   const builtins = getBuiltinProviders(config.providers);
+
+  const validateEventRules = (
+    events: Config['agents'][string]['events'],
+    scopeLabel: string,
+    agent?: string
+  ) => {
+    if (!events) return;
+    const eventPatterns = [...events.allow, ...events.ask, ...events.deny];
+    const eventNamespaces = new Set<string>();
+    for (const pattern of eventPatterns) {
+      if (!pattern.includes('/') && !pattern.includes('*')) {
+        diagnostics.push({
+          level: 'warn',
+          ...(agent ? { agent } : {}),
+          message: `${scopeLabel} event pattern "${pattern}" has no "/" namespace separator and will never match namespaced "provider/event" names.`,
+          suggestion: `Use a namespaced pattern such as "${pattern}/*" or "${pattern}/event.name".`,
+        });
+        continue;
+      }
+      const ns = pattern.split('/')[0];
+      if (ns && !ns.includes('*')) eventNamespaces.add(ns);
+    }
+    for (const ns of eventNamespaces) {
+      if (!mcpProviderNames.has(ns)) {
+        diagnostics.push({
+          level: 'error',
+          ...(agent ? { agent } : {}),
+          message: `${scopeLabel} event pattern references unknown or non-MCP provider "${ns}".`,
+          suggestion: `Add "${ns}" as an enabled MCP provider in your providers block, or check for typos.`,
+        });
+      } else if (sseProviderNames.has(ns)) {
+        diagnostics.push({
+          level: 'warn',
+          ...(agent ? { agent } : {}),
+          message: `${scopeLabel} event pattern references legacy SSE provider "${ns}", which does not support MCP Events (SEP-3415).`,
+          suggestion: `Use a Streamable HTTP ("type: http") or stdio MCP provider for events.`,
+        });
+      }
+    }
+    for (const eventKey of Object.keys(events.arg_policy ?? {})) {
+      if (eventKey.includes('*')) {
+        diagnostics.push({
+          level: 'warn',
+          ...(agent ? { agent } : {}),
+          message: `${scopeLabel}.events.arg_policy key "${eventKey}" contains a wildcard, which will never match.`,
+          suggestion: 'Use exact namespaced event names (e.g. "pagerduty/incident.created").',
+        });
+        continue;
+      }
+      if (!eventKey.includes('/')) {
+        diagnostics.push({
+          level: 'warn',
+          ...(agent ? { agent } : {}),
+          message: `${scopeLabel}.events.arg_policy key "${eventKey}" has no "/" namespace separator and will never match.`,
+          suggestion: 'Use exact namespaced event names (e.g. "pagerduty/incident.created").',
+        });
+        continue;
+      }
+      const ns = eventKey.split('/')[0];
+      if (ns && !mcpProviderNames.has(ns)) {
+        diagnostics.push({
+          level: 'error',
+          ...(agent ? { agent } : {}),
+          message: `${scopeLabel}.events.arg_policy references unknown or non-MCP provider "${ns}" in "${eventKey}".`,
+          suggestion: `Add "${ns}" as an enabled MCP provider in your providers block, or check for typos.`,
+        });
+      } else if (ns && sseProviderNames.has(ns)) {
+        diagnostics.push({
+          level: 'warn',
+          ...(agent ? { agent } : {}),
+          message: `${scopeLabel}.events.arg_policy references legacy SSE provider "${ns}" in "${eventKey}", which does not support MCP Events.`,
+          suggestion: `Use a Streamable HTTP ("type: http") or stdio MCP provider for events.`,
+        });
+      }
+    }
+  };
 
   const profileNames = new Set(Object.keys(config.profiles));
   const sandboxPresetNames = new Set(Object.keys(config.sandbox_presets ?? {}));
@@ -286,8 +409,52 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
   // `client_credentials` is the application's (no user at all). Declaring both is not a merge — it
   // is an unanswerable question about whose name an agent's writes land under, so reject it here
   // rather than let whichever code path runs first decide silently.
+  const oauthIdsFolded = new Map<string, string>();
+  // Names a rename suggestion must avoid: every configured provider id and every name already
+  // present in the OAuth store (case-insensitively).
+  const takenIds = new Set(Object.keys(config.providers).map((id) => id.toLowerCase()));
+  for (const name of oauthStoreNames()) takenIds.add(name.toLowerCase());
   for (const [providerId, provider] of Object.entries(config.providers)) {
     if (provider === 'builtin' || provider.type !== 'http') continue;
+    if (hasConflictingBearerAuth(provider)) {
+      diagnostics.push({
+        level: 'error',
+        message: `Provider "${providerId}" sets bearer_token_file with another Authorization source.`,
+        suggestion:
+          'Use one source: bearer_token_file, an Authorization header, OAuth or client_credentials.',
+      });
+    }
+    if (provider.oauth && !isValidProviderId(providerId)) {
+      diagnostics.push({
+        level: 'error',
+        message: `Provider "${providerId}" uses oauth: true but its id cannot be used for OAuth grant storage.`,
+        suggestion: `OAuth provider ids are used verbatim as file names (letters, digits, ".", "_", "-"; not starting with "."). Rename it, e.g. to "${suggestOAuthId(providerId, takenIds)}"; to keep its stored grant, stop Airlock first and rename ~/.airlock/oauth/${providerId}.json (and .grants/, .history/, .successors/ entries of that name, if any) to the new id (see "Rename an OAuth provider" in docs/reference/cli.md).`,
+      });
+    }
+    if (provider.oauth) {
+      const folded = providerId.toLowerCase();
+      const other = oauthIdsFolded.get(folded);
+      if (other !== undefined) {
+        diagnostics.push({
+          level: 'error',
+          message: `OAuth providers "${other}" and "${providerId}" differ only in letter case.`,
+          suggestion: `Their grant files would collide on case-insensitive filesystems. Rename one (e.g. "${providerId}" → "${suggestOAuthId(providerId, takenIds)}"); to keep its stored grant, stop Airlock and rename its files as described under "Rename an OAuth provider" in docs/reference/cli.md.`,
+        });
+      } else {
+        oauthIdsFolded.set(folded, providerId);
+      }
+    }
+    if (provider.oauth_max_refresh_interval_ms !== undefined && !provider.oauth) {
+      diagnostics.push({
+        level: 'warn',
+        message: `Provider "${providerId}" sets oauth_max_refresh_interval_ms without oauth: true.`,
+        suggestion:
+          'oauth_max_refresh_interval_ms only applies to Airlock-held OAuth grants (oauth: true); remove it or enable oauth.',
+      });
+    }
+    if (provider.oauth_callback_mode === 'gateway') {
+      diagnostics.push(...gatewayOAuthCallbackDiagnostics(providerId, provider));
+    }
     if (provider.oauth && provider.client_credentials) {
       diagnostics.push({
         level: 'error',
@@ -327,6 +494,14 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
     diagnostics.push(
       ...validateArgPolicyRefs(config, agent.arg_policy, `agents.${agentId}.arg_policy`, agentId)
     );
+    diagnostics.push(
+      ...validateArgPolicyRefs(
+        config,
+        agent.events?.arg_policy,
+        `agents.${agentId}.events.arg_policy`,
+        agentId
+      )
+    );
 
     for (const presetName of agent.sandbox.presets) {
       if (!sandboxPresetNames.has(presetName)) {
@@ -360,7 +535,7 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
       }
     }
 
-    // Collect all referenced namespaces from allow/ask/deny
+    // Collect all referenced tool namespaces from allow/ask/deny
     const allPatterns = [...agent.allow, ...agent.ask, ...agent.deny];
     const referencedNamespaces = new Set<string>();
     const toolOverrideNamespaces = new Set(
@@ -370,12 +545,14 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
     );
 
     for (const pattern of allPatterns) {
-      // Without an `airlock` provider entry the gateway still serves the approval tools, so a
-      // pattern naming one of them (e.g. to deny it) refers to something real.
+      // Without an `airlock` provider entry the gateway still serves the approval tools (and the
+      // upload tools when uploads.enabled is true), so a pattern naming one of them refers to
+      // something real.
       if (
         !providerNames.has('airlock') &&
         pattern.startsWith('airlock/') &&
-        AIRLOCK_APPROVAL_TOOLS.some((tool) => matches(pattern, tool))
+        (AIRLOCK_APPROVAL_TOOLS.some((tool) => matches(pattern, tool)) ||
+          (config.uploads?.enabled && AIRLOCK_UPLOAD_TOOLS.some((tool) => matches(pattern, tool))))
       ) {
         continue;
       }
@@ -383,9 +560,26 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
       if (ns) referencedNamespaces.add(ns);
     }
 
+    if (!config.uploads?.enabled) {
+      const explicitUploadPattern = [...agent.allow, ...agent.ask].find(
+        (pattern) =>
+          pattern.startsWith('airlock/') &&
+          !pattern.includes('*') &&
+          AIRLOCK_UPLOAD_TOOLS.some((tool) => matches(pattern, tool))
+      );
+      if (explicitUploadPattern) {
+        diagnostics.push({
+          level: 'warn',
+          agent: agentId,
+          message: `"${explicitUploadPattern}" is granted while uploads.enabled is false.`,
+          suggestion: 'Set uploads.enabled: true in your config to enable staged file uploads.',
+        });
+      }
+    }
+
     // Check for unknown providers
     for (const ns of referencedNamespaces) {
-      if (!providerNames.has(ns) && !toolOverrideNamespaces.has(ns)) {
+      if (!knownToolNamespaces.has(ns) && !toolOverrideNamespaces.has(ns)) {
         diagnostics.push({
           level: 'error',
           agent: agentId,
@@ -394,6 +588,10 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
         });
       }
     }
+
+    // Validate event patterns separately: events are only served by MCP providers (never
+    // tool_overrides or builtin approval tools), and events.arg_policy matches exact event names.
+    validateEventRules(agent.events, `agents.${agentId}`, agentId);
 
     // The engine lets the most specific matching pattern win and breaks ties deny-first, so a
     // narrower allow/ask legitimately carves an exception out of a broader deny (and vice versa).
@@ -454,7 +652,13 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
     }
 
     // Check empty agent
-    if (agent.extends.length === 0 && agent.allow.length === 0 && agent.ask.length === 0) {
+    const hasEvents = (agent.events?.allow.length ?? 0) > 0 || (agent.events?.ask.length ?? 0) > 0;
+    if (
+      agent.extends.length === 0 &&
+      agent.allow.length === 0 &&
+      agent.ask.length === 0 &&
+      !hasEvents
+    ) {
       diagnostics.push({
         level: 'info',
         agent: agentId,
@@ -469,6 +673,20 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
         agent: agentId,
         message: 'http.domain_allowlist configured but "http" is not declared as a provider.',
         suggestion: 'Add http: builtin to your providers block.',
+      });
+    }
+
+    if (
+      config.uploads?.enabled &&
+      agent.uploads?.max_file_bytes !== undefined &&
+      agent.uploads.max_file_bytes > config.uploads.max_total_bytes
+    ) {
+      diagnostics.push({
+        level: 'warn',
+        agent: agentId,
+        message: `uploads.max_file_bytes (${agent.uploads.max_file_bytes}) exceeds uploads.max_total_bytes (${config.uploads.max_total_bytes}); effective limit will be capped at uploads.max_total_bytes.`,
+        suggestion:
+          'Raise uploads.max_total_bytes so it is at least as large as the largest per-agent max_file_bytes.',
       });
     }
   }
@@ -490,6 +708,14 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
     diagnostics.push(
       ...validateArgPolicyRefs(config, profile.arg_policy, `profiles.${profileId}.arg_policy`)
     );
+    diagnostics.push(
+      ...validateArgPolicyRefs(
+        config,
+        profile.events?.arg_policy,
+        `profiles.${profileId}.events.arg_policy`
+      )
+    );
+    validateEventRules(profile.events, `profiles.${profileId}`);
     for (const [toolName, override] of Object.entries(profile.tool_overrides)) {
       diagnostics.push(
         ...validateArgPolicyRefs(
@@ -848,6 +1074,13 @@ function collectArgPolicySources(config: Config): {
       agent: agentName,
       policy: agent.arg_policy,
     });
+    if (agent.events?.arg_policy) {
+      sources.push({
+        location: `agents.${agentName}.events.arg_policy`,
+        agent: agentName,
+        policy: agent.events.arg_policy,
+      });
+    }
     for (const [toolName, override] of Object.entries(agent.tool_overrides)) {
       if (!override.args) continue;
       sources.push({
@@ -860,6 +1093,12 @@ function collectArgPolicySources(config: Config): {
 
   for (const [profileName, profile] of Object.entries(config.profiles)) {
     sources.push({ location: `profiles.${profileName}.arg_policy`, policy: profile.arg_policy });
+    if (profile.events?.arg_policy) {
+      sources.push({
+        location: `profiles.${profileName}.events.arg_policy`,
+        policy: profile.events.arg_policy,
+      });
+    }
   }
 
   return sources;
@@ -960,6 +1199,51 @@ function unknownKeySuggestion(key: string, path: string[]): string | undefined {
   return undefined;
 }
 
+/**
+ * `oauth_callback_mode: gateway` makes the gateway itself the browser redirect target, so the
+ * advertised redirect URI must be a real HTTPS address (loopback HTTP is allowed for local testing)
+ * that reaches the gateway's data-plane `GET /oauth/callback` route.
+ */
+function gatewayOAuthCallbackDiagnostics(
+  providerId: string,
+  provider: { oauth: boolean; oauth_callback_url?: string }
+): ConfigDiagnostic[] {
+  const diagnostics: ConfigDiagnostic[] = [];
+  if (!provider.oauth) {
+    diagnostics.push({
+      level: 'warn',
+      message: `Provider "${providerId}" sets oauth_callback_mode: gateway without oauth: true.`,
+      suggestion: 'Set oauth: true, or remove oauth_callback_mode; it only affects browser OAuth.',
+    });
+  }
+  if (!provider.oauth_callback_url) {
+    diagnostics.push({
+      level: 'error',
+      message: `Provider "${providerId}" sets oauth_callback_mode: gateway without oauth_callback_url.`,
+      suggestion:
+        "Set oauth_callback_url to the public HTTPS address that reaches the gateway's /oauth/callback route, e.g. https://airlock.example.com/oauth/callback.",
+    });
+    return diagnostics;
+  }
+  const url = new URL(provider.oauth_callback_url);
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && isLoopbackHost(url.hostname))) {
+    diagnostics.push({
+      level: 'error',
+      message: `Provider "${providerId}" uses oauth_callback_mode: gateway with a non-HTTPS oauth_callback_url.`,
+      suggestion:
+        'Serve the callback over HTTPS (for example behind your reverse proxy); plain HTTP is only accepted for loopback hosts.',
+    });
+  }
+  if (url.search || url.hash) {
+    diagnostics.push({
+      level: 'error',
+      message: `Provider "${providerId}" oauth_callback_url must not contain a query or fragment.`,
+      suggestion: 'Use a plain URL; the authorization server appends code and state itself.',
+    });
+  }
+  return diagnostics;
+}
+
 function isLoopbackHost(host: string): boolean {
   const normalized = host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host;
   if (normalized === 'localhost') return true;
@@ -968,4 +1252,39 @@ function isLoopbackHost(host: string): boolean {
   if (ipVersion !== 4) return false;
   const firstOctet = Number(normalized.split('.')[0]);
   return firstOctet === 127;
+}
+
+/** A safe OAuth provider id close to `id`, not in `taken` (lower-cased), within the length limit. */
+function suggestOAuthId(id: string, taken: Set<string>): string {
+  const base = (id.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^[.]+/, '') || 'provider').slice(
+    0,
+    190
+  );
+  for (let i = 1; ; i++) {
+    const candidate = i === 1 ? base : `${base}-${i}`;
+    if (isValidProviderId(candidate) && !taken.has(candidate.toLowerCase())) {
+      taken.add(candidate.toLowerCase());
+      return candidate;
+    }
+  }
+}
+
+/** Names already used in the OAuth store (`<id>.json`, `.grants/<id>`); best-effort. */
+function oauthStoreNames(): string[] {
+  const dir = oauthStoreDir();
+  const names: string[] = [];
+  try {
+    for (const f of readdirSync(dir)) if (f.endsWith('.json')) names.push(f.slice(0, -5));
+  } catch {
+    // no store yet
+  }
+  // Revision, history and parked-successor directories all claim a name, even archive-only ones.
+  for (const sub of [REVISION_DIR, HISTORY_DIR, ORPHAN_DIR]) {
+    try {
+      names.push(...readdirSync(join(dir, sub)));
+    } catch {
+      // not created yet
+    }
+  }
+  return names;
 }

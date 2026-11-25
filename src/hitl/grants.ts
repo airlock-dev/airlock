@@ -76,6 +76,12 @@ export interface ApprovalSubject {
    * because the operator saw those exact arguments.
    */
   escalated: boolean;
+  /**
+   * True when an execution-time content detector escalated a call carrying staged upload content
+   * that was not visible during `request_approval` planning. Pre-approved `plan` grants must not
+   * satisfy such a call; a fresh approval showing the detector reason is required.
+   */
+  detectorEscalated?: boolean;
 }
 
 /** An operator's request to turn an approval into a grant. */
@@ -287,9 +293,14 @@ export class GrantStore {
 
     const scope = grant.scope;
     if (scope.kind === 'call') {
+      if (subject.detectorEscalated && grant.source === 'plan') return false;
       return scope.tool === subject.tool && scope.fingerprint === subject.fingerprint;
     }
     if (subject.escalated) return false;
+    // Event subscriptions (`event:<provider>/<name>`) must never be implicitly authorized by
+    // tool-level provider, tier, or profile grants — only an exact `call` or exact `tool` grant
+    // scoped to `event:<name>` may cover them.
+    if (subject.tool.startsWith('event:') && scope.kind !== 'tool') return false;
 
     switch (scope.kind) {
       case 'tool':

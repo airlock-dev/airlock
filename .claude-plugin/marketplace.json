@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
+  "name": "airlock",
+  "version": "0.3.2",
+  "description": "Permissions-aware MCP gateway with human-in-the-loop approvals and audit logging for AI agents.",
+  "owner": {
+    "name": "Charles Bine",
+    "url": "https://charlesbine.com"
+  },
+  "plugins": [
+    {
+      "name": "airlock",
+      "description": "MCP gateway plugin and policy skill for per-agent allow/ask/deny rules, HITL approvals, and CLI/API tool discovery.",
+      "version": "0.3.2",
+      "source": "./"
+    }
+  ]
+}

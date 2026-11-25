@@ -67,7 +67,11 @@ export function formatNotification(req: HitlNotification): string {
     ``,
     `Agent: ${req.agentId}`,
     `Tool:  ${req.tool}`,
-    req.escalated ? `⚠️ Flagged by a security check — review individually` : undefined,
+    req.escalated
+      ? req.escalationReason
+        ? `⚠️ Flagged by a security check: ${req.escalationReason}`
+        : `⚠️ Flagged by a security check — review individually`
+      : undefined,
     req.context?.reason ? `Request reason: ${req.context.reason}` : undefined,
     req.context?.note ? `Request note: ${req.context.note}` : undefined,
     argLines,

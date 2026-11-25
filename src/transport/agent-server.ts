@@ -7,9 +7,23 @@ import type { HitlBatcher } from '../hitl/batcher.js';
 import type { HitlProvider } from '../hitl/providers/types.js';
 import type { AuditLogger } from '../audit/logger.js';
 import type { AgentConfig, SecurityConfig } from '../config/schema.js';
+import type { UploadStore } from '../uploads/store.js';
 import type { Middleware, ToolCallContext } from '../middleware/types.js';
 import { buildMiddlewareChain } from '../middleware/chain-builder.js';
 import { deliveredResult } from '../middleware/response.js';
+import type { EventService } from '../events/service.js';
+import {
+  EVENT_METHODS,
+  EVENTS_EXTENSION_ID,
+  EventsListParamsSchema,
+  EventsListResultSchema,
+  EventsPollParamsSchema,
+  EventsPollResultSchema,
+  EventsStreamParamsSchema,
+  EventsStreamResultSchema,
+  EventsSubscribeParamsSchema,
+  EventsUnsubscribeParamsSchema,
+} from '../events/protocol.js';
 import { generateId } from '../util/id.js';
 import { sanitizeToolName } from '../util/tool-name.js';
 import { childLogger } from '../util/logger.js';
@@ -35,6 +49,9 @@ export interface AgentServerDeps {
   hitlProvider: HitlProvider;
   auditLogger: AuditLogger;
   securityConfig?: SecurityConfig;
+  uploadStore?: UploadStore;
+  /** Host header observed on the transport connection (used to select a matching upload public URL). */
+  requestHost?: string;
   chain?: Middleware;
   /** Opaque id propagated to downstream MCPs as params._meta.agentId. */
   downstreamSessionId?: string;
@@ -48,6 +65,10 @@ export interface AgentServerDeps {
   resolveSessionId?: (explicitSessionId: string) => string;
   /** Signals that the transport/session has been closed. */
   signal?: AbortSignal;
+  /** Optional SEP-3415 MCP Events service (`io.modelcontextprotocol/events`). */
+  eventService?: EventService;
+  /** Negotiated MCP protocol era; Events (SEP-3415) is only advertised and served in modern era. */
+  era?: 'legacy' | 'modern';
 }
 
 /** Per-request `_meta` key an agent can set to identify its session to Airlock. */
@@ -55,6 +76,10 @@ export const SESSION_META_KEY = 'dev.airlock/session';
 /** Header equivalent of {@link SESSION_META_KEY}, shared with the HTTP tools API. */
 export const SESSION_HEADER = 'x-airlock-session-id';
 const SESSION_ID_PATTERN = /^[A-Za-z0-9._:@-]{1,128}$/;
+
+export function isValidSessionId(value: unknown): value is string {
+  return typeof value === 'string' && SESSION_ID_PATTERN.test(value);
+}
 
 /**
  * The agent-supplied session id for one tool call: `_meta["dev.airlock/session"]`, then the
@@ -99,11 +124,18 @@ export function createAgentServer(deps: AgentServerDeps): Server {
     log.debug({ agentId, err }, 'Failed to build server instructions');
   }
 
+  const advertiseEvents =
+    deps.era !== 'legacy' && Boolean(deps.eventService?.shouldAdvertiseFor(agentId, getConfig()));
+
   const server = new Server(
     { name: 'airlock', version: VERSION },
     {
       // `resources` serves MCP Apps views (`ui://`) of proxied tools; nothing else is exposed.
-      capabilities: { tools: {}, resources: {} },
+      capabilities: {
+        tools: {},
+        resources: {},
+        ...(advertiseEvents ? { extensions: { [EVENTS_EXTENSION_ID]: {} } } : {}),
+      },
       ...(instructions ? { instructions } : {}),
     }
   );
@@ -135,11 +167,11 @@ export function createAgentServer(deps: AgentServerDeps): Server {
     };
   });
 
-  server.setRequestHandler('resources/list', () => ({
-    resources: registry.listUiResources(agentId),
+  server.setRequestHandler('resources/list', (_request, reqCtx) => ({
+    resources: registry.listUiResources(agentId, { excludeAppOnly: uiSupport(reqCtx) === false }),
   }));
 
-  server.setRequestHandler('resources/read', async (request) => {
+  server.setRequestHandler('resources/read', async (request, reqCtx) => {
     const { uri } = request.params;
     // A view is code the host runs, so serving one is audited like a call.
     const audit = (result: string, error?: string) =>
@@ -152,7 +184,9 @@ export function createAgentServer(deps: AgentServerDeps): Server {
         ...(error !== undefined ? { error } : {}),
       });
     try {
-      const result = await registry.readUiResource(agentId, uri);
+      const result = await registry.readUiResource(agentId, uri, {
+        excludeAppOnly: uiSupport(reqCtx) === false,
+      });
       audit('view_served');
       return result;
     } catch (err) {
@@ -196,6 +230,11 @@ export function createAgentServer(deps: AgentServerDeps): Server {
       deps.getDownstreamSessionId?.() ??
       deps.downstreamSessionId;
 
+    const requestHost =
+      reqCtx.http?.req?.headers.get('x-forwarded-host') ??
+      reqCtx.http?.req?.headers.get('host') ??
+      deps.requestHost;
+
     const agentConfig = getConfig();
     const chain = staticChain ?? buildMiddlewareChain(agentConfig);
 
@@ -208,6 +247,7 @@ export function createAgentServer(deps: AgentServerDeps): Server {
       meta: {
         mcpRequestMeta: requestMeta,
         ...(downstreamSessionId !== undefined ? { downstreamSessionId } : {}),
+        ...(requestHost ? { requestHost } : {}),
       },
       deps: {
         registry,
@@ -216,6 +256,7 @@ export function createAgentServer(deps: AgentServerDeps): Server {
         hitlBatcher,
         auditLogger,
         securityConfig: deps.securityConfig ?? { blocked_hosts: [], allowed_local: [] },
+        uploadStore: deps.uploadStore,
       },
       startedAt: Date.now(),
       signal: anySignal(deps.signal, reqCtx.mcpReq.signal),
@@ -261,6 +302,77 @@ export function createAgentServer(deps: AgentServerDeps): Server {
       content: [{ type: 'text', text: response.text }],
     };
   });
+
+  if (advertiseEvents && deps.eventService) {
+    const eventService = deps.eventService;
+
+    const buildEventContext = (
+      params: { _meta?: Record<string, unknown> },
+      reqCtx: {
+        mcpReq: {
+          id: string | number;
+          signal: AbortSignal;
+          notify: (notification: Notification) => Promise<void>;
+        };
+        http?: { req?: Request };
+      }
+    ) => {
+      const requestMeta = isRecord(params._meta) ? params._meta : {};
+      const explicit = deps.resolveSessionId
+        ? explicitSessionId(requestMeta, reqCtx.http?.req)
+        : undefined;
+      const downstreamSessionId =
+        (explicit !== undefined ? deps.resolveSessionId?.(explicit) : undefined) ??
+        deps.getDownstreamSessionId?.() ??
+        deps.downstreamSessionId;
+
+      return {
+        agentId,
+        agentConfig: getConfig(),
+        requestId: reqCtx.mcpReq.id,
+        downstreamSessionId,
+        httpReq: reqCtx.http?.req,
+        signal: anySignal(deps.signal, reqCtx.mcpReq.signal),
+        notify: reqCtx.mcpReq.notify,
+      };
+    };
+
+    server.setRequestHandler(
+      EVENT_METHODS.list,
+      { params: EventsListParamsSchema, result: EventsListResultSchema },
+      (params) => eventService.handleList(agentId, params)
+    );
+
+    server.setRequestHandler(
+      EVENT_METHODS.poll,
+      { params: EventsPollParamsSchema, result: EventsPollResultSchema },
+      (params, reqCtx) => eventService.handlePoll(buildEventContext(params, reqCtx), params)
+    );
+
+    server.setRequestHandler(
+      EVENT_METHODS.stream,
+      { params: EventsStreamParamsSchema, result: EventsStreamResultSchema },
+      (params, reqCtx) => eventService.handleStream(buildEventContext(params, reqCtx), params)
+    );
+
+    server.setRequestHandler(
+      EVENT_METHODS.subscribe,
+      { params: EventsSubscribeParamsSchema },
+      (params, reqCtx) =>
+        eventService.handleUnsupportedWebhook(
+          buildEventContext(params, reqCtx),
+          params.name,
+          params.arguments ?? {}
+        )
+    );
+
+    server.setRequestHandler(
+      EVENT_METHODS.unsubscribe,
+      { params: EventsUnsubscribeParamsSchema },
+      (params, reqCtx) =>
+        eventService.handleUnsupportedWebhook(buildEventContext(params, reqCtx), params.name, {})
+    );
+  }
 
   return server;
 }

@@ -13,8 +13,14 @@ export function requiredMcpsForAgent(
   const available = new Set(availableMcpIds);
   const needed = new Set<string>();
 
-  // Check both allow and ask — ask implies the tool will be used
-  for (const pattern of [...agentConfig.allow, ...agentConfig.ask]) {
+  // Check tool allow/ask and event allow/ask — either implies the provider will be used
+  const patterns = [
+    ...agentConfig.allow,
+    ...agentConfig.ask,
+    ...(agentConfig.events?.allow ?? []),
+    ...(agentConfig.events?.ask ?? []),
+  ];
+  for (const pattern of patterns) {
     const namespace = pattern.split('/')[0];
     if (namespace && !BUILTIN_NAMESPACES.has(namespace) && available.has(namespace)) {
       needed.add(namespace);
@@ -22,4 +28,24 @@ export function requiredMcpsForAgent(
   }
 
   return Array.from(needed);
+}
+
+/**
+ * Return the set of provider namespaces referenced in any agent's `events.allow` or `events.ask`.
+ * Used by `ClientPool` so stdio providers only send the 2026-07-28 `server/discover` probe when
+ * an operator has actually granted event access to them — leaving legacy 2025 stdio servers that
+ * expect `initialize` as frame #1 completely untouched.
+ */
+export function eventEnabledProviders(agents: Record<string, AgentConfig>): Set<string> {
+  const providers = new Set<string>();
+  for (const agent of Object.values(agents)) {
+    const patterns = [...(agent.events?.allow ?? []), ...(agent.events?.ask ?? [])];
+    for (const pattern of patterns) {
+      const namespace = pattern.split('/')[0];
+      if (namespace && !BUILTIN_NAMESPACES.has(namespace)) {
+        providers.add(namespace);
+      }
+    }
+  }
+  return providers;
 }

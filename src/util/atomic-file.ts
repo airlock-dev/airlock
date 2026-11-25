@@ -26,10 +26,15 @@ export async function atomicWritePrivateFile(path: string, contents: string): Pr
     await chmod(path, 0o600).catch(() => {});
     // rename() is atomic, but syncing the directory makes the replacement survive a sudden host
     // crash as well. Some platforms cannot open directories; durability there remains best-effort.
+    // A directory that opens but fails to sync is an I/O error and is reported to the caller:
+    // the new content is visible but may not survive a crash.
     const dirHandle = await open(dir, 'r').catch(() => undefined);
     if (dirHandle) {
-      await dirHandle.sync().catch(() => {});
-      await dirHandle.close().catch(() => {});
+      try {
+        await dirHandle.sync();
+      } finally {
+        await dirHandle.close().catch(() => {});
+      }
     }
   } catch (err) {
     await handle?.close().catch(() => {});

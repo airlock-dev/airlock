@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "airlock": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "airlock-bot",
+        "--agent",
+        "claude-code",
+        "--config",
+        "./airlock.yaml"
+      ]
+    }
+  }
+}

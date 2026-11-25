@@ -1,4 +1,5 @@
-import type { CommandPolicyRuleConfig } from '../../config/schema.js';
+import type { AgentConfig, CommandPolicyRuleConfig } from '../../config/schema.js';
+import { looksLikeUploadRef } from '../../uploads/refs.js';
 import type { Middleware, ToolCallResponse } from '../types.js';
 import { childLogger } from '../../util/logger.js';
 
@@ -78,6 +79,19 @@ function violationResponse(message: string): ToolCallResponse {
   };
 }
 
+export function resolveToolCommandPolicy(
+  agentConfig: Pick<AgentConfig, 'command_policy'>,
+  toolName: string,
+  resolvedToolName: string
+): ToolCommandPolicy | undefined {
+  const policies = agentConfig.command_policy;
+  if (!policies) return undefined;
+  return mergeToolPolicies(
+    resolvedToolName !== toolName ? policies[resolvedToolName] : undefined,
+    policies[toolName]
+  );
+}
+
 /**
  * General command router for tools whose privilege lives inside a string argument. For a tool with
  * a `command_policy`, each configured arg's string value is routed to allow/ask/deny by glob match.
@@ -86,18 +100,12 @@ function violationResponse(message: string): ToolCallResponse {
  */
 export function commandPolicyMiddleware(): Middleware {
   return async (ctx, next) => {
-    const policies = ctx.agentConfig.command_policy;
-    if (!policies) return next();
-
     const resolvedToolName =
       ctx.deps.registry.resolveToolName?.(ctx.toolName, ctx.agentId) ??
       ctx.agentConfig.tool_overrides?.[ctx.toolName]?.alias_of ??
       ctx.toolName;
     // Like arg_policy, an alias is bound by its base tool's policy as well as its own.
-    const policy = mergeToolPolicies(
-      resolvedToolName !== ctx.toolName ? policies[resolvedToolName] : undefined,
-      policies[ctx.toolName]
-    );
+    const policy = resolveToolCommandPolicy(ctx.agentConfig, ctx.toolName, resolvedToolName);
     if (!policy) return next();
 
     let needsApproval = false;
@@ -107,6 +115,19 @@ export function commandPolicyMiddleware(): Middleware {
 
       if (typeof value !== 'string') {
         const message = `${argName} must be a string command for ${ctx.toolName}.`;
+        ctx.deps.auditLogger.log({
+          agent_id: ctx.agentId,
+          request_id: ctx.callId,
+          tool: ctx.toolName,
+          args: JSON.stringify(ctx.args),
+          result: 'command_policy_denied',
+          error: message,
+        });
+        return violationResponse(message);
+      }
+
+      if (looksLikeUploadRef(value)) {
+        const message = `Staged upload references cannot be substituted into command_policy-controlled argument "${argName}" on ${ctx.toolName}.`;
         ctx.deps.auditLogger.log({
           agent_id: ctx.agentId,
           request_id: ctx.callId,
