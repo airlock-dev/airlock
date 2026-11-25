@@ -469,6 +469,27 @@ export const ArgDimensionConfig = z
   .strict();
 export type ArgDimensionConfig = z.infer<typeof ArgDimensionConfig>;
 
+export const UploadDeliveryMode = z.enum(['base64', 'data_uri', 'text', 'path', 'url']);
+export type UploadDeliveryMode = z.infer<typeof UploadDeliveryMode>;
+
+export const ToolUploadArgConfig = z
+  .union([
+    UploadDeliveryMode,
+    z
+      .object({
+        mode: z.literal('path'),
+        path_prefix: z.string().min(1).optional(),
+      })
+      .strict(),
+    z
+      .object({
+        mode: z.enum(['base64', 'data_uri', 'text', 'url']),
+      })
+      .strict(),
+  ])
+  .transform((value) => (typeof value === 'string' ? { mode: value } : value));
+export type ToolUploadArgConfig = z.infer<typeof ToolUploadArgConfig>;
+
 export const ToolOverride = z
   .object({
     /** Replaces the upstream description entirely. */
@@ -482,6 +503,12 @@ export const ToolOverride = z
     sandbox_presets: SandboxPresetRef.default([]),
     sandbox: SandboxOverrideConfig.optional(),
     args: z.record(z.string(), ToolArgConstraintListConfig).optional(),
+    /**
+     * Per-argument staged file upload delivery mappings (e.g. `content_base64: base64` or
+     * `file_path: { mode: path, path_prefix: /shared/uploads }`). When set, agents can pass a bare
+     * `airlock-upload://<id>` reference and Airlock annotates the tool description automatically.
+     */
+    uploads: z.record(z.string(), ToolUploadArgConfig).optional(),
     /**
      * Safety tier used by tier-scoped approval grants ("allow read-only gmail tools for 15m").
      * Overrides the tier derived from the tool's MCP annotations.
@@ -510,6 +537,69 @@ export const AgentHttpConfig = z
   })
   .strict();
 export type AgentHttpConfig = z.infer<typeof AgentHttpConfig>;
+
+export const AgentUploadsConfig = z
+  .object({
+    enabled: z.boolean().optional(),
+    public_url: z.string().url().optional(),
+    max_file_bytes: z.number().int().positive().optional(),
+    max_inline_bytes: z.number().int().positive().optional(),
+    max_files: z.number().int().positive().optional(),
+    allowed_modes: z.array(UploadDeliveryMode).optional(),
+    allowed_mime_types: z.array(z.string().min(1)).optional(),
+  })
+  .strict();
+export type AgentUploadsConfig = z.infer<typeof AgentUploadsConfig>;
+
+export const UploadsConfig = z
+  .object({
+    enabled: z.boolean().default(false),
+    dir: PathString.optional(),
+    public_url: z.string().url().optional(),
+    /**
+     * Allowlist of public base URLs agents may reach Airlock through (for multi-hostname setups
+     * such as separate Traefik and Tailscale endpoints). `prepare_upload` picks the entry matching
+     * the incoming request's Host / X-Forwarded-Host header, falling back to `public_url` or the
+     * first entry here.
+     */
+    public_urls: z.array(z.string().url()).default([]),
+    internal_url: z.string().url().optional(),
+    max_file_bytes: z
+      .number()
+      .int()
+      .positive()
+      .default(50 * 1024 * 1024), // 50 MiB default per-agent limit
+    max_total_bytes: z
+      .number()
+      .int()
+      .positive()
+      .default(500 * 1024 * 1024), // 500 MiB total staging ceiling
+    max_files_per_agent: z.number().int().positive().default(100),
+    max_inline_bytes: z
+      .number()
+      .int()
+      .positive()
+      .default(10 * 1024 * 1024), // 10 MiB
+    ttl_ms: z
+      .number()
+      .int()
+      .positive()
+      .default(15 * 60 * 1000), // 15 min
+    ticket_ttl_ms: z
+      .number()
+      .int()
+      .positive()
+      .default(5 * 60 * 1000), // 5 min
+    download_ttl_ms: z
+      .number()
+      .int()
+      .positive()
+      .default(2 * 60 * 1000), // 2 min
+    allowed_modes: z.array(UploadDeliveryMode).default(['base64', 'data_uri', 'text', 'url']),
+    allowed_mime_types: z.array(z.string().min(1)).default([]),
+  })
+  .strict();
+export type UploadsConfig = z.infer<typeof UploadsConfig>;
 
 /**
  * Per-agent / per-profile MCP Events (SEP-3415, `io.modelcontextprotocol/events`) permissions.
@@ -668,6 +758,7 @@ export const AgentConfig = z
     command_policy: CommandPolicyConfig.optional(),
     exec: AgentExecConfig.prefault({}),
     http: AgentHttpConfig.prefault({}),
+    uploads: AgentUploadsConfig.optional(),
     sandbox: SandboxConfig.prefault({}),
     middleware: z.array(MiddlewareItemConfig).optional(),
     // Per-agent opt-in for the plain-HTTP tools API (POST /agents/:id/tools/invoke).
@@ -1178,6 +1269,7 @@ export const GatewayConfig = z
     apis: z.record(z.string(), ApiConfig).prefault({}),
     agents: z.record(z.string(), AgentConfig).prefault({}),
     approvals: ApprovalsConfig.prefault({}),
+    uploads: UploadsConfig.prefault({}),
     security: SecurityConfig.prefault({}),
     audit: AuditConfig.prefault({}),
     server: ServerConfig.prefault({}),

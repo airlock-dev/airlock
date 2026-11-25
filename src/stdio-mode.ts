@@ -29,6 +29,8 @@ import { buildAdapters } from './backend/factory.js';
 import { ActivityStream } from './activity/stream.js';
 import { checkRequestSecurity, type RequestSecurityOptions } from './security/request.js';
 import { childLogger } from './util/logger.js';
+import { uploadsApiPlugin } from './uploads/api.js';
+import { UploadStore } from './uploads/store.js';
 
 const log = childLogger('stdio-mode');
 
@@ -142,13 +144,78 @@ export async function runStdioMode(
   await pool.initialize();
 
   const allowlist = new AllowlistEngine(config.agents);
+  const uploadStore = new UploadStore(config.uploads);
+  let uploadApp: FastifyInstance | undefined;
+  let uploadListenerSync: Promise<void> = Promise.resolve();
+  let shuttingDown = false;
+  let cleanedUp = false;
+  let reloadEpoch = 0;
+
+  const bindStdioUploadListener = async (): Promise<{ app: FastifyInstance; baseUrl: string }> => {
+    const app = Fastify({ logger: false });
+    // Expose only single-use presigned upload/download routes on the ephemeral loopback listener;
+    // direct agent-token routes belong to the authenticated HTTP gateway plane.
+    await app.register(uploadsApiPlugin, {
+      uploadStore,
+      enableDirectRoutes: false,
+    });
+    await app.listen({ port: 0, host: '127.0.0.1' });
+    const bound = app.server.address();
+    const baseUrl =
+      typeof bound === 'object' && bound !== null
+        ? `http://127.0.0.1:${bound.port}`
+        : uploadStore.getPublicBaseUrl();
+    return { app, baseUrl };
+  };
+
+  const syncStdioUploadListener = (): Promise<void> => {
+    const run = async (): Promise<void> => {
+      if (!uploadStore.isEnabled() || shuttingDown || cleanedUp) {
+        if (uploadApp) {
+          const closing = uploadApp;
+          uploadApp = undefined;
+          await closing.close().catch(() => {});
+        }
+        return;
+      }
+      if (uploadApp) return;
+      const { app, baseUrl } = await bindStdioUploadListener();
+      // Re-check after async listen in case uploads were disabled or shutdown started mid-startup.
+      if (!uploadStore.isEnabled() || shuttingDown || cleanedUp) {
+        await app.close().catch(() => {});
+        return;
+      }
+      uploadStore.setRuntimeBaseUrl(baseUrl);
+      uploadApp = app;
+      log.info(
+        { url: uploadStore.getPublicBaseUrl() },
+        'Airlock stdio ephemeral upload listener ready'
+      );
+    };
+    uploadListenerSync = uploadListenerSync.then(run, run);
+    return uploadListenerSync;
+  };
+  await syncStdioUploadListener();
 
   const airlockDeps = () => ({
     hitlEngine,
     hitlBatcher,
     activityStream,
+    uploadStore,
     getAgentTools: (id: string) => registryRef.current?.getFilteredWithDecisions(id) ?? [],
     getAgentConfig: (id: string) => activeConfig.agents[id],
+    getRawToolSchema: (toolName: string, id: string) => {
+      const resolved = registryRef.current?.resolveToolName(toolName, id) ?? toolName;
+      const tools = registryRef.current?.getAllTools() ?? [];
+      return (
+        tools.find((t) => t.name === toolName)?.inputSchema ??
+        tools.find((t) => t.name === resolved)?.inputSchema
+      );
+    },
+    getToolBackendKind: (toolName: string, id: string) =>
+      registryRef.current?.getToolBackendKind(toolName, id),
+    nativeUploadArgKind: (toolName: string, topKey: string, id: string) =>
+      registryRef.current?.nativeUploadArgKind(toolName, topKey, id),
     getKnownProviderIds: () => knownProviderIds(activeConfig),
     getProviderConnectionStatus: (providerId: string) =>
       providerConnectionStatus(activeConfig, pool, providerId),
@@ -156,6 +223,7 @@ export async function runStdioMode(
 
   // Build adapters from config (MCP, builtins, CLIs, APIs)
   const adapters = buildAdapters(config, pool, {
+    uploadStore,
     airlock: airlockDeps(),
   });
 
@@ -227,40 +295,108 @@ export async function runStdioMode(
     });
   }
 
+  const applyReloadedConfig = (
+    newConfig: Config,
+    myEpoch: number,
+    preboundListener?: { app: FastifyInstance; baseUrl: string }
+  ): void => {
+    // Apply upload store config BEFORE publishing `activeConfig` or allowlists so a failed
+    // exclusive directory lock leaves stdio mode on its prior consistent configuration.
+    uploadStore.updateConfig(newConfig.uploads);
+    if (preboundListener) {
+      uploadStore.setRuntimeBaseUrl(preboundListener.baseUrl);
+      uploadApp = preboundListener.app;
+      log.info(
+        { url: uploadStore.getPublicBaseUrl() },
+        'Airlock stdio ephemeral upload listener ready'
+      );
+    }
+    if (newConfig.agents[agentId]) {
+      currentAgentConfig = newConfig.agents[agentId];
+    }
+    activeConfig = newConfig;
+    hitlEngine.setTimeoutMs(newConfig.approvals.timeout_ms);
+    hitlEngine.configure(engineOptionsFromConfig(newConfig, getConfig));
+    updateManagementRequestSecurity(newConfig, managementRequestSecurity);
+    // Apply allowlist, per-agent upload revocations, and event-stream revocation immediately
+    // before waiting on slow provider-pool reconnects.
+    allowlist.reload(newConfig.agents);
+    uploadStore.reconcileAgents(newConfig.agents);
+    if (!newConfig.uploads?.enabled) {
+      const closing = uploadApp;
+      uploadApp = undefined;
+      if (closing) {
+        uploadListenerSync = uploadListenerSync.then(
+          () => closing.close().catch(() => {}),
+          () => closing.close().catch(() => {})
+        );
+      }
+    }
+    void eventService
+      .reconcileAfterReload()
+      .catch((err) => log.error({ err }, 'Failed to reconcile event streams on reload'));
+    // Filtered like the initial pool: the unfiltered map would connect every configured provider.
+    const newMcpConfigs = selectMcps(newConfig, currentAgentConfig);
+    pool
+      .reload(newMcpConfigs, eventEnabledProviders({ [agentId]: currentAgentConfig }))
+      .then(async () => {
+        if (myEpoch !== reloadEpoch || shuttingDown || cleanedUp) return;
+        registry.reloadAgents(newConfig.agents, getProviderInstructions(newConfig.providers));
+        const newAdapters = buildAdapters(newConfig, pool, {
+          uploadStore,
+          airlock: airlockDeps(),
+        });
+        registry.setAdapters(newAdapters);
+        await Promise.all([registry.refresh(), eventRegistry.refresh()]);
+        if (myEpoch !== reloadEpoch || shuttingDown || cleanedUp) return;
+        log.info('Config reloaded: providers, allowlist, agent config, security');
+      })
+      .catch((err) => {
+        log.error({ err }, 'Failed to apply reloaded config');
+      });
+  };
+
   // Hot reload — allowlists, agent config, security (not MCP connections or approval provider)
   const watcher = new ConfigWatcher(configPath);
   watcher.on('reload', (newConfig) => {
     try {
-      if (newConfig.agents[agentId]) {
-        currentAgentConfig = newConfig.agents[agentId];
+      if (
+        activeConfig.uploads?.enabled &&
+        newConfig.uploads?.enabled &&
+        activeConfig.uploads.dir !== newConfig.uploads.dir
+      ) {
+        log.error(
+          'uploads.dir changed while uploads are enabled; restart Airlock to apply the new staging directory'
+        );
+        return;
       }
-      activeConfig = newConfig;
-      hitlEngine.setTimeoutMs(newConfig.approvals.timeout_ms);
-      hitlEngine.configure(engineOptionsFromConfig(newConfig, getConfig));
-      updateManagementRequestSecurity(newConfig, managementRequestSecurity);
-      // Apply allowlist + revoke disallowed event streams immediately before waiting on pool reload.
-      allowlist.reload(newConfig.agents);
-      void eventService
-        .reconcileAfterReload()
-        .catch((err) => log.error({ err }, 'Failed to reconcile event streams on reload'));
-      // Filtered like the initial pool: the unfiltered map would connect every configured provider.
-      const newMcpConfigs = selectMcps(newConfig, currentAgentConfig);
-      pool
-        .reload(newMcpConfigs, eventEnabledProviders({ [agentId]: currentAgentConfig }))
-        .then(() => {
-          registry.reloadAgents(newConfig.agents, getProviderInstructions(newConfig.providers));
-          const newAdapters = buildAdapters(newConfig, pool, {
-            airlock: airlockDeps(),
+      const myEpoch = ++reloadEpoch;
+      // When enabling uploads without an active loopback listener, bind the listener BEFORE
+      // enabling the store or publishing `activeConfig`/allowlist so bind failures never leave
+      // uploads enabled issuing unusable URLs.
+      if (newConfig.uploads?.enabled && !uploadApp) {
+        void bindStdioUploadListener()
+          .then(async (bound) => {
+            if (myEpoch !== reloadEpoch || shuttingDown || cleanedUp) {
+              await bound.app.close().catch(() => {});
+              return;
+            }
+            try {
+              applyReloadedConfig(newConfig, myEpoch, bound);
+            } catch (err) {
+              await bound.app.close().catch(() => {});
+              log.error({ err }, 'Failed to apply reloaded config');
+            }
+          })
+          .catch((err) => {
+            log.error(
+              { err },
+              'Failed to bind stdio upload listener on reload; keeping previous config'
+            );
           });
-          registry.setAdapters(newAdapters);
-          return Promise.all([registry.refresh(), eventRegistry.refresh()]);
-        })
-        .then(() => {
-          log.info('Config reloaded: providers, allowlist, agent config, security');
-        })
-        .catch((err) => {
-          log.error({ err }, 'Failed to apply reloaded config');
-        });
+        return;
+      }
+      applyReloadedConfig(newConfig, myEpoch);
     } catch (err) {
       log.error({ err }, 'Failed to apply reloaded config');
     }
@@ -268,8 +404,6 @@ export async function runStdioMode(
   watcher.start();
 
   // Graceful shutdown
-  let shuttingDown = false;
-  let cleanedUp = false;
   const cleanup = async () => {
     if (cleanedUp) return;
     cleanedUp = true;
@@ -278,6 +412,10 @@ export async function runStdioMode(
     await eventStreamManager.closeAll();
     await approvalStream.stop();
     await managementApp?.close().catch(() => {});
+    await uploadListenerSync.catch(() => {});
+    await uploadApp?.close().catch(() => {});
+    uploadApp = undefined;
+    await uploadStore.stop();
     await pool.stop();
     await registry.stopAll();
     await hitlProvider.stop();
@@ -327,6 +465,7 @@ export async function runStdioMode(
       hitlProvider,
       auditLogger,
       securityConfig: config.security,
+      uploadStore,
       eventService,
     });
   } finally {

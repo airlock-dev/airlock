@@ -248,6 +248,42 @@ export class ToolRegistry {
     return agent?.tool_overrides?.[namespacedName]?.alias_of ?? namespacedName;
   }
 
+  getToolBackendKind(
+    namespacedName: string,
+    agentId: string
+  ): 'mcp' | 'http' | 'api' | 'cli' | 'exec' | 'airlock' | undefined {
+    const adapter = this.findAdapterForTool(namespacedName, agentId);
+    if (!adapter) return undefined;
+    if (adapter.id.startsWith('mcp:')) return 'mcp';
+    if (adapter.id === 'builtin:http') return 'http';
+    if (adapter.id.startsWith('api:')) return 'api';
+    if (adapter.id.startsWith('cli:')) return 'cli';
+    if (adapter.id === 'builtin:exec') return 'exec';
+    if (adapter.id === 'builtin:airlock') return 'airlock';
+    return undefined;
+  }
+
+  nativeUploadArgKind(
+    namespacedName: string,
+    topKey: string,
+    agentId: string
+  ): 'binary' | 'multipart' | undefined {
+    const resolvedName = this.resolveToolName(namespacedName, agentId);
+    const adapter = this.findAdapterForTool(namespacedName, agentId);
+    return adapter?.nativeUploadArgKind?.(resolvedName, topKey);
+  }
+
+  private findAdapterForTool(namespacedName: string, agentId: string): BackendAdapter | undefined {
+    const resolvedName = this.resolveToolName(namespacedName, agentId);
+    for (const adapter of this.adapters) {
+      const prefix = getAdapterPrefix(adapter);
+      if (prefix && resolvedName.startsWith(prefix)) {
+        return adapter;
+      }
+    }
+    return undefined;
+  }
+
   async stopAll(): Promise<void> {
     await Promise.allSettled(this.adapters.map((a) => a.stop()));
   }
@@ -262,15 +298,60 @@ function applyAgentView(
   decision: AgentVisibleTool['decision'],
   override?: ToolOverride
 ): Tool {
+  const uploadEntries = Object.entries(override?.uploads ?? {});
+  const uploadNote =
+    uploadEntries.length > 0
+      ? uploadEntries
+          .map(
+            ([argName, rule]) =>
+              `Upload parameter "${argName}": stage local files first with airlock_prepare_upload and pass the returned "airlock-upload://<id>" reference (delivered as ${rule.mode}).`
+          )
+          .join(' ')
+      : undefined;
+
+  const combinedAppend = [override?.description_append, uploadNote].filter(Boolean).join('\n\n');
   const view: Tool = {
     ...tool,
     description: composeToolDescription(
       tool.description ?? '',
       override?.description,
-      override?.description_append
+      combinedAppend || undefined
     ),
+    ...(uploadEntries.length > 0
+      ? { inputSchema: annotateSchemaUploadArgs(tool.inputSchema, override!.uploads!) }
+      : {}),
   };
   return decision === 'ask' ? addAskPolicyGuidance(view) : view;
+}
+
+function annotateSchemaUploadArgs(
+  inputSchema: Tool['inputSchema'],
+  uploads: NonNullable<ToolOverride['uploads']>
+): Tool['inputSchema'] {
+  if (!inputSchema || typeof inputSchema !== 'object' || Array.isArray(inputSchema)) {
+    return inputSchema;
+  }
+  const schema = inputSchema as Record<string, unknown>;
+  const rawProps = schema.properties;
+  if (!rawProps || typeof rawProps !== 'object' || Array.isArray(rawProps)) {
+    return inputSchema;
+  }
+  const properties: Record<string, unknown> = { ...(rawProps as Record<string, unknown>) };
+  let changed = false;
+  for (const [argName, rule] of Object.entries(uploads)) {
+    const prop = properties[argName];
+    if (!prop || typeof prop !== 'object' || Array.isArray(prop)) continue;
+    const propObj = prop as Record<string, unknown>;
+    const hint = `Accepts an Airlock upload ref ("airlock-upload://<id>") from airlock_prepare_upload (delivered as ${rule.mode}).`;
+    const existingDesc = typeof propObj.description === 'string' ? propObj.description.trim() : '';
+    properties[argName] = {
+      ...propObj,
+      description: existingDesc ? `${existingDesc} ${hint}` : hint,
+    };
+    changed = true;
+  }
+  if (!changed) return inputSchema;
+  return { ...schema, properties } as Tool['inputSchema'];
 }
 
 /**

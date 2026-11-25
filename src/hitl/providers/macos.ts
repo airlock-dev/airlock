@@ -123,6 +123,11 @@ export class MacosHitlProvider implements HitlProvider {
     const giveUp = giveUpClause(req.timeoutMs);
     const tool = req.tool.replace(/^[^/]+\//, '');
     const contextLines = [
+      req.escalated
+        ? req.escalationReason
+          ? `⚠️ Security check: ${req.escalationReason}`
+          : '⚠️ Flagged by a security check — review individually'
+        : undefined,
       req.context?.reason ? `Request reason: ${req.context.reason}` : undefined,
       req.context?.note ? `Request note:   ${req.context.note}` : undefined,
     ].filter((line): line is string => Boolean(line));

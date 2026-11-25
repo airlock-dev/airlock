@@ -25,6 +25,8 @@ export interface HitlNotification {
   provider?: string;
   /** Flagged by a detector or command policy: excluded from approve-all and grants. */
   escalated?: boolean;
+  /** Sanitized reason why a detector or security check escalated this request. */
+  escalationReason?: string;
   /** For kind=plan: the calls being approved up front. */
   plan?: Array<{ tool: string; args: Record<string, unknown> }>;
   /** Grant scopes the operator can pick to also allow similar future calls. */

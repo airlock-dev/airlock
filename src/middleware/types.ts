@@ -4,6 +4,7 @@ import type { HitlEngine } from '../hitl/engine.js';
 import type { HitlBatcher } from '../hitl/batcher.js';
 import type { AuditLogger } from '../audit/logger.js';
 import type { AgentConfig, SecurityConfig } from '../config/schema.js';
+import type { UploadStore } from '../uploads/store.js';
 
 export interface ToolCallContext {
   callId: string;
@@ -39,4 +40,5 @@ export interface MiddlewareDeps {
   hitlBatcher: HitlBatcher;
   auditLogger: AuditLogger;
   securityConfig: SecurityConfig;
+  uploadStore?: UploadStore;
 }

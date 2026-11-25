@@ -161,4 +161,45 @@ describe('ClientPool.reload', () => {
     expect(connected).toEqual([]);
     expect(stop).toHaveBeenCalledTimes(1);
   });
+
+  it('serializes concurrent reloads so an older slow stop cannot restore a stale upstream destination', async () => {
+    const connected: string[] = [];
+    vi.spyOn(HttpMcpClient.prototype, 'connect').mockImplementation(async function (
+      this: HttpMcpClient
+    ) {
+      connected.push((this as unknown as { url: string }).url);
+    });
+
+    let releaseFirstStop!: () => void;
+    let stopCount = 0;
+    vi.spyOn(HttpMcpClient.prototype, 'stop').mockImplementation(() => {
+      stopCount += 1;
+      if (stopCount === 1) {
+        return new Promise<void>((resolve) => {
+          releaseFirstStop = resolve;
+        });
+      }
+      return Promise.resolve();
+    });
+
+    const pool = new ClientPool({ svc: http('http://127.0.0.1:1/v1') }, { healthCheck: false });
+    await pool.initialize();
+    connected.length = 0;
+
+    // Reload #1 starts stopping v1 -> v2; reload #2 (v3) and reload #3 (v4) arrive concurrently.
+    const r1 = pool.reload({ svc: http('http://127.0.0.1:1/v2') });
+    await vi.waitFor(() => expect(stopCount).toBe(1));
+    const r2 = pool.reload({ svc: http('http://127.0.0.1:1/v3') });
+    const r3 = pool.reload({ svc: http('http://127.0.0.1:1/v4') });
+
+    releaseFirstStop();
+    await Promise.all([r1, r2, r3]);
+
+    // Reload #2 was superseded while queued (never connected v3), and the final client MUST be v4.
+    expect(connected).not.toContain('http://127.0.0.1:1/v3');
+    const activeClient = (pool as unknown as { clients: Map<string, { url: string }> }).clients.get(
+      'svc'
+    );
+    expect(activeClient?.url).toBe('http://127.0.0.1:1/v4');
+  });
 });

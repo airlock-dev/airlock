@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'async_hooks';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import type { Tool } from '@modelcontextprotocol/client';
 import {
@@ -23,6 +24,17 @@ type McpRequestMeta = Record<string, unknown>;
 const BACKOFF_STEPS = [1000, 2000, 4000, 8000, 16000, 30000];
 const MAX_RECONNECT_ATTEMPTS = BACKOFF_STEPS.length;
 
+function isToolCallJsonRpcMessage(message: unknown): boolean {
+  if (Array.isArray(message)) {
+    return message.some((item) => isToolCallJsonRpcMessage(item));
+  }
+  return (
+    typeof message === 'object' &&
+    message !== null &&
+    (message as { method?: unknown }).method === 'tools/call'
+  );
+}
+
 /** Extract a short, human-readable reason from a connection error. */
 function friendlyError(err: unknown): string {
   const msg = err instanceof Error ? err.message : String(err);
@@ -44,6 +56,7 @@ export class StdioMcpClient {
   private lastError?: string;
   private readyListeners = new Set<() => void>();
   private eventsListChangedListeners = new Set<() => void>();
+  private readonly sendGuardStorage = new AsyncLocalStorage<() => void>();
 
   constructor(
     private id: string,
@@ -73,6 +86,17 @@ export class StdioMcpClient {
       env: this.env,
       stderr: this.stderr,
     });
+    const rawSend = this.transport.send.bind(this.transport);
+    this.transport.send = (message) => {
+      if (isToolCallJsonRpcMessage(message)) {
+        try {
+          this.sendGuardStorage.getStore()?.();
+        } catch (err) {
+          return Promise.reject(err instanceof Error ? err : new Error(String(err)));
+        }
+      }
+      return rawSend(message);
+    };
 
     // Only probe 2026-07-28 `server/discover` on stdio when an agent has event permissions for
     // this provider; legacy 2025 stdio servers expect `initialize` as their first frame.
@@ -141,13 +165,18 @@ export class StdioMcpClient {
   async callTool(
     name: string,
     args: Record<string, unknown>,
-    requestMeta?: McpRequestMeta
+    requestMeta?: McpRequestMeta,
+    beforeSend?: () => void
   ): Promise<unknown> {
     if (!this.client || !this.ready) throw new Error(`MCP ${this.id} not connected`);
     const request = requestMeta
       ? { name, arguments: args, _meta: requestMeta }
       : { name, arguments: args };
-    return this.client.callTool(request);
+    const invoke = (): Promise<unknown> => {
+      beforeSend?.();
+      return this.client!.callTool(request);
+    };
+    return beforeSend ? this.sendGuardStorage.run(beforeSend, invoke) : invoke();
   }
 
   supportsEvents(): boolean {
