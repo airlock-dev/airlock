@@ -141,7 +141,19 @@ function parseRecord(raw: string, gen: number): LockRecord | undefined {
 
 // Deliberately NOT unref'd: an awaited wait (the takeover grace) must keep a short-lived process
 // such as `airlock oauth restore --force` alive until it is over.
-const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+const sleep = (ms: number, signal?: AbortSignal) =>
+  new Promise<void>((resolve) => {
+    if (signal?.aborted) return resolve();
+    const timer = setTimeout(resolve, ms);
+    signal?.addEventListener(
+      'abort',
+      () => {
+        clearTimeout(timer);
+        resolve();
+      },
+      { once: true }
+    );
+  });
 
 export type AcquiredHook = (dir: string) => Promise<void>;
 let acquiredHook: AcquiredHook | undefined;
@@ -196,6 +208,8 @@ export class OAuthWriterLock {
   private acquireTimer?: NodeJS.Timeout;
   private readonly acquiredListeners = new Set<() => void>();
   private acquiring?: Promise<boolean>;
+  private graceAbort?: AbortController;
+  private releasing = false;
   /** What this process saw as the current lock, and since when (monotonic), for staleness. */
   private observation?: { key: string; since: number };
   /** Why the last ensure()/verify() returned false (for status output). */
@@ -286,14 +300,25 @@ export class OAuthWriterLock {
 
   /** Release (mark the generation released so the next process can take it at once). */
   async release(): Promise<void> {
+    this.releasing = true;
     this.stopAcquiring();
-    this.stopTimers();
-    if (!this.nonce) return;
-    const nonce = this.nonce;
-    this.nonce = undefined;
-    const top = await this.top();
-    if (top === 'unreadable' || !top || top.gen !== this.gen || top.record?.nonce !== nonce) return;
-    await this.writeOwn({ ...this.record(nonce), released: true }).catch(() => {});
+    this.graceAbort?.abort();
+    try {
+      // Wait for an in-flight acquisition (e.g. from startup keepAcquiring) so we also release a
+      // lock it just acquired and never race shutdown/teardown with its temp/lock files.
+      if (this.acquiring) await this.acquiring.catch(() => {});
+      this.stopTimers();
+      if (!this.nonce) return;
+      const nonce = this.nonce;
+      this.nonce = undefined;
+      const top = await this.top();
+      if (top === 'unreadable' || !top || top.gen !== this.gen || top.record?.nonce !== nonce) {
+        return;
+      }
+      await this.writeOwn({ ...this.record(nonce), released: true }).catch(() => {});
+    } finally {
+      this.releasing = false;
+    }
   }
 
   // ─── internals ────────────────────────────────────────────────────────────────────────────────
@@ -358,7 +383,9 @@ export class OAuthWriterLock {
   }
 
   private async acquireInner(force: boolean): Promise<boolean> {
+    if (this.releasing) return false;
     await mkdir(this.dir, { recursive: true, mode: 0o700 });
+    if (this.releasing) return false;
     const top = await this.top();
     if (top === 'unreadable') {
       this.lastProblem = 'writer lock is unreadable';
@@ -419,9 +446,17 @@ export class OAuthWriterLock {
         { dir: this.dir, graceMs: timings.takeoverGraceMs },
         'Waiting out the takeover grace period before writing OAuth grants'
       );
-      await sleep(timings.takeoverGraceMs);
+      const graceAbort = new AbortController();
+      this.graceAbort = graceAbort;
+      try {
+        await sleep(timings.takeoverGraceMs, graceAbort.signal);
+      } finally {
+        if (this.graceAbort === graceAbort) this.graceAbort = undefined;
+      }
+      if (graceAbort.signal.aborted || this.releasing) return false;
       if (!(await this.checkOwnership())) return false;
     }
+    if (this.releasing) return false;
     log.info({ dir: this.dir, pid: process.pid, gen }, 'Acquired OAuth writer lock');
     this.lastProblem = undefined;
     if (acquiredHook) {

@@ -3,6 +3,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { FileOAuthProvider } from '../src/pool/oauth-provider.js';
+import { releaseAllWriterLocks } from '../src/pool/oauth-lock.js';
 
 // Prevent actual browser opens
 vi.mock('child_process', () => ({
@@ -22,6 +23,7 @@ describe('FileOAuthProvider — relay callback URL', () => {
   });
 
   afterEach(async () => {
+    await releaseAllWriterLocks();
     if (originalHome === undefined) {
       delete process.env.HOME;
     } else {
