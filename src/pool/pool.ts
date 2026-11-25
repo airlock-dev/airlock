@@ -159,7 +159,10 @@ export class ClientPool {
           cfg.oauth_callback_url,
           cfg.client_credentials,
           cfg.request_timeout_ms,
-          { oauthStorage: this.options?.oauthStorage ?? 'readonly' }
+          {
+            oauthStorage: this.options?.oauthStorage ?? 'readonly',
+            oauthMaxRefreshIntervalMs: cfg.oauth_max_refresh_interval_ms,
+          }
         );
     }
   }

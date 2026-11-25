@@ -7,7 +7,8 @@ import {
   resourceUrlFromServerUrl,
 } from '@modelcontextprotocol/client';
 import type { OAuthDiscoveryState, OAuthTokens } from '@modelcontextprotocol/client';
-import type { FileOAuthProvider } from './oauth-provider.js';
+import type { FileOAuthProvider, PersistResult } from './oauth-provider.js';
+import type { ExchangeMarker } from './oauth-store.js';
 import { childLogger } from '../util/logger.js';
 
 const log = childLogger('oauth-refresh');
@@ -35,8 +36,48 @@ const REJECTION_CODES = new Set<string>([
   OAuthErrorCode.UnauthorizedClient,
 ]);
 
+/**
+ * Error codes (anywhere in an error's `cause` chain) that prove the token request never left this
+ * host: name resolution, connection establishment, TLS verification.
+ */
+const NOT_SENT_CODES = new Set<string>([
+  'ENOTFOUND',
+  'EAI_AGAIN',
+  'EAI_NONAME',
+  'EAI_FAIL',
+  'ECONNREFUSED',
+  'EHOSTUNREACH',
+  'ENETUNREACH',
+  'EHOSTDOWN',
+  'EADDRNOTAVAIL',
+  'UND_ERR_CONNECT_TIMEOUT',
+  'CERT_HAS_EXPIRED',
+  'CERT_NOT_YET_VALID',
+  'ERR_TLS_CERT_ALTNAME_INVALID',
+  'DEPTH_ZERO_SELF_SIGNED_CERT',
+  'SELF_SIGNED_CERT_IN_CHAIN',
+  'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+  'UNABLE_TO_GET_ISSUER_CERT_LOCALLY',
+  'ERR_SSL_WRONG_VERSION_NUMBER',
+  'ERR_INVALID_URL',
+]);
+
+/** Statuses from a proxy in front of the issuer that do not tell whether the issuer processed it. */
+const AMBIGUOUS_STATUSES = new Set([502, 504, 520, 524]);
+/** Statuses meaning there is no token endpoint here (the request was not processed). */
+const GONE_STATUSES = new Set([404, 405, 410]);
+
 export type RefreshOutcome =
-  | { kind: 'refreshed'; issuer?: string; issuerChange?: { from: string; to: string } }
+  | {
+      kind: 'refreshed';
+      issuer?: string;
+      /** Set when discovery advertises a different issuer than the stored grant's. */
+      issuerChange?: { from: string; to: string };
+      /** True when the grant moved to the newly advertised issuer in this refresh. */
+      migrated?: boolean;
+      /** What happened to the successor on disk (see PersistResult). */
+      persistence: PersistResult;
+    }
   /** No refresh token stored: only an interactive authorization can produce a grant. */
   | { kind: 'no_grant'; reason: string }
   /** The issuer explicitly rejected the grant (invalid_grant & co). The grant is kept on disk. */
@@ -46,22 +87,29 @@ export type RefreshOutcome =
       message: string;
       issuer?: string;
       issuerChange?: { from: string; to: string };
+      /** The rejection followed an ambiguous exchange: the token was probably consumed then. */
+      afterAmbiguous?: boolean;
     }
-  /** Anything else: network, 5xx, timeout, malformed response, discovery outage. */
+  /** Anything else: network, 5xx, timeout, malformed response, discovery outage, storage. */
   | {
       kind: 'failed';
       message: string;
       issuer?: string;
       issuerChange?: { from: string; to: string };
+      /** The request may have reached the issuer; the refresh token may have been rotated. */
+      ambiguous?: boolean;
     }
   /** This process may not write the grant (read-only command, or another process holds the lock). */
   | { kind: 'read_only'; reason: string };
 
 interface Target {
-  label: 'live' | 'known-good';
+  label: 'known-good' | 'live' | 'pinned';
   issuer: string;
   discovery: OAuthDiscoveryState;
+  resource?: string;
 }
+
+type ExchangeClass = 'not_sent' | 'gone' | 'rejected' | 'failed' | 'ambiguous';
 
 function issuersMatch(a: string, b: string): boolean {
   const strip = (s: string) => (s.endsWith('/') ? s.slice(0, -1) : s);
@@ -81,8 +129,94 @@ function tokenEndpoint(state: OAuthDiscoveryState): string {
 
 function describeError(err: unknown): string {
   if (err instanceof OAuthError) return `${err.code}: ${err.message}`.slice(0, 300);
-  if (err instanceof Error) return (err.message.split('\n')[0] ?? err.name).slice(0, 300);
+  if (err instanceof Error) {
+    const code = errorCode(err);
+    const first = err.message.split('\n')[0] ?? err.name;
+    return (code && !first.includes(code) ? `${first} (${code})` : first).slice(0, 300);
+  }
   return String(err).slice(0, 300);
+}
+
+function errorCode(err: unknown): string | undefined {
+  for (let e: unknown = err, depth = 0; e && depth < 5; depth++) {
+    const code = (e as { code?: unknown }).code;
+    if (typeof code === 'string') return code;
+    e = (e as { cause?: unknown }).cause;
+  }
+  return undefined;
+}
+
+/** What the token request did on the wire, for telling "never sent" from "answer lost". */
+interface WireTrace {
+  invoked: boolean;
+  responded: boolean;
+  status?: number;
+  contentType?: string;
+  bodyFailed?: boolean;
+  error?: unknown;
+}
+
+/** oauthFetch that records the wire trace and reads the body itself (to see a mid-body reset). */
+function tracingFetch(trace: WireTrace): typeof fetch {
+  return (async (url: string | URL | Request, init?: RequestInit) => {
+    trace.invoked = true;
+    let res: Response;
+    try {
+      res = await oauthFetch(url as string | URL, init);
+    } catch (err) {
+      trace.error = err;
+      throw err;
+    }
+    trace.responded = true;
+    trace.status = res.status;
+    trace.contentType = res.headers.get('content-type') ?? '';
+    let body: string;
+    try {
+      body = await res.text();
+    } catch (err) {
+      trace.bodyFailed = true;
+      trace.error = err;
+      throw err;
+    }
+    const nullBody = res.status === 204 || res.status === 205 || res.status === 304;
+    return new Response(nullBody ? null : body, {
+      status: res.status,
+      statusText: res.statusText,
+      headers: res.headers,
+    });
+  }) as typeof fetch;
+}
+
+/**
+ * Classify a failed token request:
+ * - `not_sent`: provably never left this host (DNS, connect refused, TLS) → token not consumed.
+ * - `gone`: no token endpoint answered there (404/405/410 without an OAuth error) → not consumed.
+ * - `rejected`: the issuer answered invalid_grant/invalid_client/unauthorized_client.
+ * - `failed`: the issuer (or a maintenance page) answered without issuing tokens.
+ * - `ambiguous`: the request may have been processed but the answer was lost (timeout, reset after
+ *   sending, a body cut off, 502/504 from a proxy, an unparseable JSON success body).
+ */
+function classifyExchange(err: unknown, trace: WireTrace): ExchangeClass {
+  if (!trace.invoked) return 'not_sent';
+  if (!trace.responded) {
+    const code = errorCode(trace.error);
+    return code && NOT_SENT_CODES.has(code) ? 'not_sent' : 'ambiguous';
+  }
+  if (trace.bodyFailed) return 'ambiguous';
+  if (err instanceof OAuthError && REJECTION_CODES.has(err.code)) return 'rejected';
+  const status = trace.status ?? 0;
+  if (status >= 200 && status < 300) {
+    // A JSON success body we could not use may have carried the successor. An HTML/text page is
+    // a maintenance or proxy page: the issuer did not answer.
+    return /json/i.test(trace.contentType ?? '') ? 'ambiguous' : 'failed';
+  }
+  if (AMBIGUOUS_STATUSES.has(status)) return 'ambiguous';
+  // A 404/405/410 carrying a real OAuth error body came from the issuer; without one there is no
+  // token endpoint at that URL any more.
+  const issuerErrorBody =
+    err instanceof OAuthError && !err.message.includes('Invalid OAuth error response');
+  if (GONE_STATUSES.has(status) && !issuerErrorBody) return 'gone';
+  return 'failed';
 }
 
 /**
@@ -141,10 +275,11 @@ function resourceFor(
 const inflight = new Map<string, Promise<RefreshOutcome>>();
 
 /**
- * Refresh the stored grant. Single-flight per token file: concurrent proactive and reactive
- * refreshes share one token request, so a rotating refresh token is never spent twice.
+ * Refresh the stored grant. Single-flight per token file (concurrent proactive and reactive
+ * refreshes share one token request), and serialized with authorization-code exchanges and
+ * restores of the same grant (see `withGrantOperation`).
  *
- * Never deletes or overwrites the stored grant except with a successful refresh result.
+ * Never deletes or overwrites the stored grant except with a coherent, successful refresh result.
  */
 export function refreshGrant(
   provider: FileOAuthProvider,
@@ -154,7 +289,10 @@ export function refreshGrant(
   const key = provider.store.path;
   const existing = inflight.get(key);
   if (existing) return existing;
-  const run = doRefresh(provider, serverUrl, opts).finally(() => inflight.delete(key));
+  const run = provider
+    .runExclusive(() => doRefresh(provider, serverUrl, opts))
+    .catch((err: unknown): RefreshOutcome => ({ kind: 'failed', message: describeError(err) }))
+    .finally(() => inflight.delete(key));
   inflight.set(key, run);
   return run;
 }
@@ -169,128 +307,204 @@ async function doRefresh(
     return { kind: 'read_only', reason: 'read-only command; the gateway owns token refresh' };
   }
   if (!(await provider.canWrite())) {
-    return { kind: 'read_only', reason: 'another Airlock process holds the OAuth writer lock' };
+    return {
+      kind: 'read_only',
+      reason: `another Airlock process owns OAuth token refresh (${provider.store.lockProblem ?? 'writer lock held elsewhere'})`,
+    };
   }
 
+  await provider.adoptOrphanedSuccessors();
   const grant = await provider.grant();
   const refreshToken = grant.tokens?.refresh_token;
   if (!refreshToken) return { kind: 'no_grant', reason: 'no refresh token stored' };
   if (!grant.clientInfo) return { kind: 'no_grant', reason: 'no OAuth client registration stored' };
+  const clientInfo = grant.clientInfo;
 
   const known = grant.discovery;
-  const live = await liveDiscovery(serverUrl, known, opts.resourceMetadataUrl);
+  const storedIssuer = grant.issuer ?? (known ? issuerOf(known) : undefined);
+  // An exchange with no definitive answer (ambiguous, or interrupted by a crash): the stored token
+  // may already have been rotated there. It is still the only token we have, so present it again,
+  // but only to the same endpoint — never fan it out to another issuer.
+  const pinned: ExchangeMarker | undefined = grant.exchange
+    ? grant.exchange.state === 'in_flight'
+      ? { ...grant.exchange, state: 'ambiguous', at: Date.now(), reason: 'exchange interrupted' }
+      : grant.exchange
+    : undefined;
 
-  // Decide where to send the refresh, in order of preference.
   const targets: Target[] = [];
   let issuerChange: { from: string; to: string } | undefined;
-  const storedIssuer = grant.issuer ?? (known ? issuerOf(known) : undefined);
-  if (live.state) {
-    const liveIssuer = issuerOf(live.state);
-    if (storedIssuer && !issuersMatch(storedIssuer, liveIssuer)) {
-      issuerChange = { from: storedIssuer, to: liveIssuer };
+  if (pinned) {
+    log.warn(
+      {
+        serverId,
+        tokenEndpoint: pinned.tokenEndpoint,
+        since: new Date(pinned.at ?? pinned.startedAt).toISOString(),
+        reason: pinned.reason,
+      },
+      'Previous OAuth refresh exchange has no definitive answer; retrying the stored refresh token at the same endpoint only'
+    );
+    targets.push({
+      label: 'pinned',
+      issuer: pinned.issuer,
+      discovery: pinned.discovery,
+      resource: pinned.resource,
+    });
+  } else {
+    const live = await liveDiscovery(serverUrl, known, opts.resourceMetadataUrl);
+    if (live.state) {
+      const liveIssuer = issuerOf(live.state);
+      if (storedIssuer && !issuersMatch(storedIssuer, liveIssuer)) {
+        issuerChange = { from: storedIssuer, to: liveIssuer };
+      }
+    } else if (known) {
       log.warn(
-        { serverId, previousIssuer: storedIssuer, newIssuer: liveIssuer },
-        'OAuth authorization server issuer changed; trying the stored refresh token against the new issuer (stored grant kept)'
+        { serverId, problem: live.problem, issuer: issuerOf(known) },
+        'OAuth discovery failed; refreshing with the last known-good authorization server metadata'
       );
     }
-    targets.push({ label: 'live', issuer: liveIssuer, discovery: live.state });
-    // Fall back to what worked last time when it points somewhere else (previous issuer, or a
-    // token endpoint the live metadata no longer advertises).
-    if (known && (issuerChange || tokenEndpoint(known) !== tokenEndpoint(live.state))) {
-      targets.push({ label: 'known-good', issuer: issuerOf(known), discovery: known });
+    // The endpoint that last refreshed (or issued) this grant goes first. A newly advertised
+    // endpoint is only tried when that one definitively rejects the grant or is gone.
+    if (known) targets.push({ label: 'known-good', issuer: issuerOf(known), discovery: known });
+    if (live.state && (!known || tokenEndpoint(known) !== tokenEndpoint(live.state))) {
+      targets.push({ label: 'live', issuer: issuerOf(live.state), discovery: live.state });
     }
-  } else if (known) {
-    log.warn(
-      { serverId, problem: live.problem, issuer: issuerOf(known) },
-      'OAuth discovery failed; refreshing with the last known-good authorization server metadata'
-    );
-    targets.push({ label: 'known-good', issuer: issuerOf(known), discovery: known });
-  } else {
-    return {
-      kind: 'failed',
-      message: `OAuth discovery failed and no known-good discovery is stored (${live.problem ?? 'unknown'})`,
-    };
+    if (targets.length === 0) {
+      return {
+        kind: 'failed',
+        message: `OAuth discovery failed and no known-good discovery is stored (${live.problem ?? 'unknown'})`,
+      };
+    }
+    if (issuerChange) {
+      log.warn(
+        { serverId, previousIssuer: issuerChange.from, advertisedIssuer: issuerChange.to },
+        known
+          ? 'OAuth authorization server issuer changed; refreshing at the known-good endpoint first, the new issuer only if that one rejects the grant or is gone'
+          : 'OAuth authorization server issuer changed; refreshing against the advertised issuer (stored grant kept)'
+      );
+    }
   }
 
-  const failures: Array<{ target: Target; err: unknown; rejection: boolean }> = [];
+  const failures: Array<{ target: Target; err: unknown; cls: ExchangeClass }> = [];
   for (const target of targets) {
-    const resource = resourceFor(serverUrl, grant.resource, target.discovery);
+    const resource = target.resource ?? resourceFor(serverUrl, grant.resource, target.discovery);
+    const endpoint = tokenEndpoint(target.discovery);
+    const marker: ExchangeMarker = {
+      state: 'in_flight',
+      startedAt: Date.now(),
+      issuer: target.issuer,
+      tokenEndpoint: endpoint,
+      discovery: target.discovery,
+      ...(resource ? { resource } : {}),
+    };
+    // Fencing + intent: re-verifies the writer lock and durably records the attempt. If either
+    // fails, the refresh token is not spent.
+    const begun = await provider.beginExchange(marker);
+    if (!begun.ok) {
+      if (begun.kind === 'read_only') return { kind: 'read_only', reason: begun.message };
+      return {
+        kind: 'failed',
+        message:
+          begun.kind === 'conflict'
+            ? 'OAuth grant changed on disk before the refresh was sent; retrying with the new grant'
+            : `OAuth store not writable; refresh token not spent until storage recovers (${begun.message})`,
+        issuer: target.issuer,
+        ...(issuerChange ? { issuerChange } : {}),
+      };
+    }
+
+    const trace: WireTrace = { invoked: false, responded: false };
     let tokens: OAuthTokens;
     try {
       tokens = await refreshAuthorization(target.discovery.authorizationServerUrl, {
         metadata: target.discovery.authorizationServerMetadata,
-        clientInformation: grant.clientInfo,
+        clientInformation: clientInfo,
         refreshToken,
         ...(resource ? { resource } : {}),
-        fetchFn: oauthFetch,
+        fetchFn: tracingFetch(trace),
       });
     } catch (err) {
-      const rejection = err instanceof OAuthError && REJECTION_CODES.has(err.code);
-      failures.push({ target, err, rejection });
+      const cls = classifyExchange(err, trace);
+      failures.push({ target, err, cls });
       log.warn(
         {
           serverId,
           target: target.label,
           issuer: target.issuer,
+          tokenEndpoint: endpoint,
           resource,
           error: describeError(err),
-          rejection,
+          class: cls,
         },
-        rejection
+        cls === 'rejected'
           ? 'OAuth issuer rejected the stored refresh grant; keeping it on disk'
-          : 'OAuth token refresh request failed; keeping the stored grant'
+          : cls === 'ambiguous'
+            ? 'OAuth token refresh may have reached the issuer but the answer was lost; the refresh token may have been rotated'
+            : 'OAuth token refresh request failed; keeping the stored grant'
       );
-      // Only an explicit rejection proves the refresh token was not consumed. After a timeout or
-      // 5xx the issuer may have rotated it already; presenting it elsewhere could look like reuse
-      // (and trip refresh-token family revocation), so wait for the next retry instead.
-      if (!rejection) break;
-      continue;
+      if (cls === 'ambiguous') {
+        await provider.endExchange({
+          ...marker,
+          state: 'ambiguous',
+          startedAt: pinned?.startedAt ?? marker.startedAt,
+          at: Date.now(),
+          reason: describeError(err),
+        });
+        break;
+      }
+      // A definitive answer (or none sent): restore the previous marker (a pinned ambiguity is
+      // still unresolved) or clear the in-flight one.
+      await provider.endExchange(pinned);
+      // Only a definitive "no" proves the token was not consumed; then (and when nothing was sent
+      // or no endpoint exists there) the next endpoint may be tried. After a 5xx, wait.
+      if (!pinned && (cls === 'rejected' || cls === 'not_sent' || cls === 'gone')) continue;
+      break;
     }
 
-    // A refresh response's `resource`-less success at the new issuer is still bound to the new
-    // issuer: stamp it, and remember the discovery that worked as known-good.
-    await provider.commitRefresh(tokens, {
-      issuer: target.issuer,
-      discovery: target.discovery,
-      ...(resource ? { resource } : {}),
-    });
-    if (issuerChange && target.label === 'known-good') {
-      log.warn(
-        { serverId, issuer: target.issuer, advertisedIssuer: issuerChange.to },
-        'OAuth refresh succeeded only against the previous issuer; keeping it'
-      );
-    } else if (issuerChange) {
+    // Successful exchange: commit immediately (coherence-checked, fenced, durable).
+    const persistence = await provider.commitRefresh(
+      tokens,
+      { issuer: target.issuer, discovery: target.discovery, ...(resource ? { resource } : {}) },
+      { refreshToken, clientInfo }
+    );
+    const migrated = Boolean(issuerChange && target.label === 'live');
+    if (migrated) {
       log.info(
-        { serverId, previousIssuer: issuerChange.from, newIssuer: issuerChange.to },
+        { serverId, previousIssuer: issuerChange!.from, newIssuer: issuerChange!.to },
         'OAuth refresh succeeded against the new issuer; grant re-stamped'
       );
     }
     return {
       kind: 'refreshed',
       issuer: target.issuer,
-      ...(issuerChange && target.label === 'live' ? { issuerChange } : {}),
+      persistence,
+      ...(issuerChange ? { issuerChange, migrated } : {}),
     };
   }
 
-  // Every target failed. Only call it a rejection when every attempt was an explicit rejection;
-  // if any target was merely unreachable, the right AS may simply be down.
-  const first = failures[0];
-  const allRejected = failures.every((f) => f.rejection);
-  if (allRejected) {
-    const err = first.err as OAuthError;
+  const ambiguous = failures.some((f) => f.cls === 'ambiguous');
+  const rejection = failures.find((f) => f.cls === 'rejected');
+  // A rejection is reported as such only when every endpoint rejected the grant or no longer
+  // exists; if one was merely unreachable or erroring, the right AS may simply be down.
+  if (rejection && failures.every((f) => f.cls === 'rejected' || f.cls === 'gone')) {
+    const err = rejection.err as OAuthError;
     return {
       kind: 'rejected',
       code: err.code,
       message: describeError(err),
-      issuer: first.target.issuer,
+      issuer: rejection.target.issuer,
       ...(issuerChange ? { issuerChange } : {}),
+      ...(pinned ? { afterAmbiguous: true } : {}),
     };
   }
-  const transient = failures.find((f) => !f.rejection) ?? first;
+  const reported =
+    failures.find((f) => f.cls === 'ambiguous') ??
+    failures.find((f) => f.cls !== 'rejected') ??
+    failures[0];
   return {
     kind: 'failed',
-    message: describeError(transient.err),
-    issuer: transient.target.issuer,
+    message: describeError(reported.err),
+    issuer: reported.target.issuer,
     ...(issuerChange ? { issuerChange } : {}),
+    ...(ambiguous || pinned ? { ambiguous: true } : {}),
   };
 }

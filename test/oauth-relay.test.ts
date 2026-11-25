@@ -27,7 +27,7 @@ describe('FileOAuthProvider — relay callback URL', () => {
     } else {
       process.env.HOME = originalHome;
     }
-    await rm(tempHome, { recursive: true, force: true });
+    await rm(tempHome, { recursive: true, force: true, maxRetries: 10, retryDelay: 20 });
   });
 
   describe('without relay', () => {

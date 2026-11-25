@@ -402,6 +402,14 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
           'Use one source: bearer_token_file, an Authorization header, OAuth or client_credentials.',
       });
     }
+    if (provider.oauth_max_refresh_interval_ms !== undefined && !provider.oauth) {
+      diagnostics.push({
+        level: 'warn',
+        message: `Provider "${providerId}" sets oauth_max_refresh_interval_ms without oauth: true.`,
+        suggestion:
+          'oauth_max_refresh_interval_ms only applies to Airlock-held OAuth grants (oauth: true); remove it or enable oauth.',
+      });
+    }
     if (provider.oauth && provider.client_credentials) {
       diagnostics.push({
         level: 'error',

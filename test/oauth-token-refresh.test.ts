@@ -26,7 +26,7 @@ describe('FileOAuthProvider — refresh_token preservation', () => {
     } else {
       process.env.HOME = originalHome;
     }
-    await rm(tempHome, { recursive: true, force: true });
+    await rm(tempHome, { recursive: true, force: true, maxRetries: 10, retryDelay: 20 });
   });
 
   const initial: OAuthTokens = {
@@ -132,7 +132,7 @@ describe('FileOAuthProvider — proactive refresh schedule (msUntilRefresh)', ()
     } else {
       process.env.HOME = originalHome;
     }
-    await rm(tempHome, { recursive: true, force: true });
+    await rm(tempHome, { recursive: true, force: true, maxRetries: 10, retryDelay: 20 });
   });
 
   it('schedules a refresh ~buffer before expiry, measured from when tokens were obtained', async () => {
@@ -156,10 +156,13 @@ describe('FileOAuthProvider — proactive refresh schedule (msUntilRefresh)', ()
     expect(await provider.msUntilRefresh(BUFFER)).toBeUndefined();
   });
 
-  it('returns undefined without expires_in (lifetime unknown)', async () => {
+  it('without expires_in (lifetime unknown) still refreshes within the maximum interval', async () => {
     const provider = new FileOAuthProvider('noexp', 18432);
     await provider.saveTokens({ access_token: 'a', token_type: 'Bearer', refresh_token: 'r' });
-    expect(await provider.msUntilRefresh(BUFFER)).toBeUndefined();
+    const ms = await provider.msUntilRefresh(BUFFER);
+    expect(ms).toBeGreaterThan(24 * 60 * 60 * 1000 - 60_000);
+    expect(ms).toBeLessThanOrEqual(24 * 60 * 60 * 1000);
+    expect(await provider.msUntilRefresh(BUFFER, 60 * 60 * 1000)).toBeLessThanOrEqual(3_600_000);
   });
 
   it('uses a proportional buffer for short-lived tokens instead of refreshing immediately', async () => {

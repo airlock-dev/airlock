@@ -47,6 +47,9 @@ const MIN_REFRESH_TIMER_MS = 5 * 1000;
 // to issuer rejections alike — a grant is never given up on automatically.
 const REFRESH_RETRY_MS = 60 * 1000;
 const MAX_REFRESH_RETRY_MS = 30 * 60 * 1000;
+// After an ambiguous exchange (answer lost) retry the same endpoint quickly once: issuers with a
+// refresh-token reuse grace window (commonly 30–60 s) then still accept the presented token.
+const AMBIGUOUS_RETRY_MS = 5 * 1000;
 // A reactive 401 right after a successful refresh is answered by retrying, not by refreshing again.
 const RECENT_REFRESH_MS = 5 * 1000;
 
@@ -55,6 +58,8 @@ export interface HttpMcpClientOptions {
   oauthStorage?: OAuthStorageMode;
   /** Override `~/.airlock/oauth` (tests). */
   oauthStoreDir?: string;
+  /** Refresh at least this often while a refresh token is stored (default 24 h). */
+  oauthMaxRefreshIntervalMs?: number;
 }
 
 /** Extract a short, human-readable reason from a connection error. */
@@ -124,7 +129,7 @@ export class HttpMcpClient {
   private lastRefreshAt?: number;
   private nextRefreshRetryAt?: number;
   private oauthIssuer?: string;
-  private issuerChanged?: { from: string; to: string; at: number };
+  private issuerChanged?: { from: string; to: string; migrated: boolean; at: number };
   private authorizationPending = false;
   private lastRecordedOutcome?: RefreshOutcome;
   private lastRecordedOutcomeAt = 0;
@@ -132,6 +137,9 @@ export class HttpMcpClient {
   private challengeResourceMetadataUrl?: URL;
   private challengeScope?: string;
   private flowAbort?: AbortController;
+  private readonly oauthMaxRefreshIntervalMs?: number;
+  /** Consecutive ambiguous refresh failures (drives the one quick retry). */
+  private ambiguousFailures = 0;
 
   constructor(
     private id: string,
@@ -156,6 +164,7 @@ export class HttpMcpClient {
         { storage: options.oauthStorage ?? 'writer', storeDir: options.oauthStoreDir }
       );
     }
+    this.oauthMaxRefreshIntervalMs = options.oauthMaxRefreshIntervalMs;
     // App-identity auth. Mutually exclusive with `oauth` (the loader rejects both together), so
     // these two never fight over the Authorization header.
     if (clientCredentials) {
@@ -363,23 +372,41 @@ export class HttpMcpClient {
     this.lastRecordedOutcome = outcome;
     this.lastRecordedOutcomeAt = now;
     if ('issuerChange' in outcome && outcome.issuerChange) {
-      this.issuerChanged = { ...outcome.issuerChange, at: now };
+      this.issuerChanged = {
+        ...outcome.issuerChange,
+        migrated: outcome.kind === 'refreshed' && outcome.migrated === true,
+        at: now,
+      };
     }
+    if (outcome.kind !== 'failed' || !outcome.ambiguous) this.ambiguousFailures = 0;
     switch (outcome.kind) {
       case 'refreshed':
-        this.oauthState = 'ok';
         this.refreshFailures = 0;
-        this.lastRefreshError = undefined;
-        this.lastRefreshErrorAt = undefined;
         this.nextRefreshRetryAt = undefined;
         this.lastRefreshAt = now;
         this.oauthIssuer = outcome.issuer ?? this.oauthIssuer;
-        log.info({ id: this.id, trigger, issuer: outcome.issuer }, 'Refreshed OAuth access token');
+        if (outcome.persistence === 'handed_off') {
+          this.oauthState = 'read_only';
+          this.lastRefreshError =
+            'lost the OAuth writer lock during a refresh; the successor was handed to the lock holder';
+          this.lastRefreshErrorAt = now;
+        } else {
+          // `pending` (disk write failed, retrying) is reported live from the provider.
+          this.oauthState = 'ok';
+          this.lastRefreshError = undefined;
+          this.lastRefreshErrorAt = undefined;
+        }
+        log.info(
+          { id: this.id, trigger, issuer: outcome.issuer, persistence: outcome.persistence },
+          'Refreshed OAuth access token'
+        );
         return;
       case 'rejected':
         this.oauthState = 'grant_rejected';
         this.refreshFailures++;
-        this.lastRefreshError = `issuer rejected the stored refresh grant (${outcome.message})`;
+        this.lastRefreshError = outcome.afterAmbiguous
+          ? `issuer rejected the stored refresh grant after an earlier exchange whose answer was lost; that exchange probably consumed it, so browser re-authorization is likely required (${outcome.message})`
+          : `issuer rejected the stored refresh grant (${outcome.message})`;
         this.lastRefreshErrorAt = now;
         this.oauthIssuer = outcome.issuer ?? this.oauthIssuer;
         log.warn(
@@ -395,9 +422,12 @@ export class HttpMcpClient {
         );
         return;
       case 'failed':
-        this.oauthState = 'refresh_failing';
+        this.oauthState = outcome.ambiguous ? 'refresh_ambiguous' : 'refresh_failing';
         this.refreshFailures++;
-        this.lastRefreshError = outcome.message;
+        if (outcome.ambiguous) this.ambiguousFailures++;
+        this.lastRefreshError = outcome.ambiguous
+          ? `refresh answer lost; the issuer may have rotated the refresh token (${outcome.message})`
+          : outcome.message;
         this.lastRefreshErrorAt = now;
         log.warn(
           {
@@ -428,7 +458,9 @@ export class HttpMcpClient {
       case 'rejected':
         return `OAuth issuer rejected the stored grant (${outcome.message}); grant kept, refresh retrying with backoff, browser re-authorization available`;
       case 'failed':
-        return `OAuth token refresh failing (${outcome.message}); grant kept, retrying with backoff`;
+        return outcome.ambiguous
+          ? `OAuth token refresh answer lost (${outcome.message}); the issuer may have rotated the refresh token; retrying the same endpoint`
+          : `OAuth token refresh failing (${outcome.message}); grant kept, retrying with backoff`;
       case 'no_grant':
         return 'OAuth authorization required';
       case 'read_only':
@@ -442,7 +474,9 @@ export class HttpMcpClient {
   }
 
   /** Retry the refresh later. Never gives up; the delay grows to 30 minutes. */
-  private scheduleRefreshRetry(delay = this.refreshBackoffMs()): void {
+  private scheduleRefreshRetry(
+    delay = this.ambiguousFailures === 1 ? AMBIGUOUS_RETRY_MS : this.refreshBackoffMs()
+  ): void {
     if (this.stopped || !this.oauthProvider) return;
     if (this.refreshTimer) clearTimeout(this.refreshTimer);
     this.nextRefreshRetryAt = Date.now() + delay;
@@ -607,15 +641,20 @@ export class HttpMcpClient {
 
   /** Exchange the callback code; on success the provider commits the new grant. */
   private async finishAuthorization(code: string): Promise<void> {
-    const result = await auth(this.oauthProvider!, {
-      serverUrl: this.url,
-      authorizationCode: code,
-      fetchFn: oauthFetch,
-      ...(this.challengeResourceMetadataUrl
-        ? { resourceMetadataUrl: this.challengeResourceMetadataUrl }
-        : {}),
-      ...(this.challengeScope ? { scope: this.challengeScope } : {}),
-    });
+    const provider = this.oauthProvider!;
+    // Serialized with refresh exchanges of the same grant: a refresh in flight finishes (and
+    // commits coherently) before the new grant replaces it, never after.
+    const result = await provider.runExclusive(() =>
+      auth(provider, {
+        serverUrl: this.url,
+        authorizationCode: code,
+        fetchFn: oauthFetch,
+        ...(this.challengeResourceMetadataUrl
+          ? { resourceMetadataUrl: this.challengeResourceMetadataUrl }
+          : {}),
+        ...(this.challengeScope ? { scope: this.challengeScope } : {}),
+      })
+    );
     if (result !== 'AUTHORIZED') throw new UnauthorizedError('Failed to authorize');
     this.oauthState = 'ok';
     this.refreshFailures = 0;
@@ -675,7 +714,10 @@ export class HttpMcpClient {
       this.scheduleRefreshRetry();
       return;
     }
-    const untilRefresh = await this.oauthProvider.msUntilRefresh(REFRESH_BUFFER_MS);
+    const untilRefresh = await this.oauthProvider.msUntilRefresh(
+      REFRESH_BUFFER_MS,
+      this.oauthMaxRefreshIntervalMs
+    );
     if (untilRefresh === undefined) return;
     const beyondCeiling = untilRefresh > MAX_REFRESH_TIMER_MS;
     const delay = Math.max(Math.min(untilRefresh, MAX_REFRESH_TIMER_MS), MIN_REFRESH_TIMER_MS);
@@ -744,8 +786,14 @@ export class HttpMcpClient {
   getOAuthHealth(): OAuthGrantHealth | undefined {
     if (!this.oauthProvider) return undefined;
     const iso = (ms?: number) => (ms ? new Date(ms).toISOString() : undefined);
+    const provider = this.oauthProvider;
+    const persistencePending = provider.persistencePending === true;
+    const marker = provider.exchangeMarker;
+    let state = this.oauthState;
+    if (persistencePending) state = 'persistence_pending';
+    else if (marker && state === 'ok') state = 'refresh_ambiguous';
     return {
-      state: this.oauthState,
+      state,
       storage: this.oauthProvider.storageMode,
       consecutiveFailures: this.refreshFailures,
       ...(this.lastRefreshError ? { lastError: this.lastRefreshError } : {}),
@@ -757,6 +805,17 @@ export class HttpMcpClient {
         ? { issuerChanged: { ...this.issuerChanged, at: iso(this.issuerChanged.at)! } }
         : {}),
       authorizationPending: this.authorizationPending,
+      persistencePending,
+      ...(marker
+        ? {
+            exchange: {
+              state:
+                marker.state === 'in_flight' ? ('interrupted' as const) : ('ambiguous' as const),
+              since: iso(marker.at ?? marker.startedAt)!,
+              tokenEndpoint: marker.tokenEndpoint,
+            },
+          }
+        : {}),
     };
   }
 
@@ -765,10 +824,9 @@ export class HttpMcpClient {
     const health = this.getOAuthHealth();
     if (!health) return {};
     const notable =
-      health.state === 'refresh_failing' ||
-      health.state === 'grant_rejected' ||
-      health.state === 'read_only' ||
-      health.issuerChanged !== undefined;
+      (health.state !== 'ok' && health.state !== 'missing') ||
+      health.issuerChanged !== undefined ||
+      health.exchange !== undefined;
     return notable ? { oauth: health } : {};
   }
 

@@ -311,24 +311,46 @@ discovery in the same local command center.
 ## Inspect and restore OAuth grants
 
 Airlock-held OAuth grants (`oauth: true`) live in `~/.airlock/oauth/<provider>.json`. Every
-replacement of a grant — a refresh rotation, a new authorization, a restore — first copies the
-previous version to `~/.airlock/oauth/.history/<provider>/` (last 10 kept, owner-only permissions).
+replacement of a grant — a refresh rotation, a new authorization, a restore — keeps the previous
+version in `~/.airlock/oauth/.history/<provider>/` (last 10 kept, owner-only permissions). The new
+grant is made durable first; the backup is written afterwards and a failing backup never blocks it.
 
 ```bash
-airlock oauth status [provider]            # what is stored + who holds the writer lock
+airlock oauth status [provider]            # what is stored, unresolved refreshes, lock holder
 airlock oauth history <provider>           # backups, newest first
 airlock oauth restore <provider> <version> # put a backup back (the replaced grant is backed up too)
 ```
 
-None of these print token values. A running gateway picks up a restored grant on its next token
-read or refresh retry.
+None of these print token values.
+
+A restore never races a refresh. When another process (normally the gateway, also when you run the
+command through `docker exec`) holds the OAuth writer lock, the restore is handed to that process,
+which applies it between refreshes; the command waits for the answer (`--wait <seconds>`, default
+30). With no live holder the command takes the lock for the duration of the restore. `--force`
+takes the lock over from a holder that does not answer: that process turns read-only for OAuth until
+it re-acquires the lock, and a refresh it had in flight is parked for adoption rather than lost.
 
 Airlock never deletes a grant on its own. An issuer answering `invalid_grant`, an issuer URL change,
 or a metadata outage leaves the stored grant in place; refresh is retried with exponential backoff
-(1 minute, doubling to 30 minutes, forever) and the state is reported under `oauthHealth` in
-`/health` and on the provider status (`refresh_failing`, `grant_rejected`, `issuerChanged`). When the
-access token is no longer usable a browser authorization is also prepared; it only replaces the
-stored grant once it completes.
+(1 minute, doubling to 30 minutes, forever). State is reported under `oauthHealth` in `/health` and
+on the provider status, never paged:
+
+| State                 | Meaning                                                                                                      |
+| --------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `refresh_failing`     | The issuer (or the network before sending) failed; the token was not spent                                   |
+| `refresh_ambiguous`   | A refresh may have reached the issuer but the answer was lost, or a process stopped mid-exchange             |
+| `persistence_pending` | A refresh succeeded but the new grant could not be written yet; it is used from memory and the write retried |
+| `grant_rejected`      | The issuer rejected the stored grant; a browser authorization is offered and only replaces it on success     |
+
+Refreshes go to the endpoint that last refreshed the grant. When discovery advertises a new issuer
+(`issuerChanged`), the grant moves there only after the old endpoint rejects it or is gone.
+
+**Limits.** After an ambiguous exchange the stored refresh token is the only one Airlock has, so it
+is retried — once after 5 seconds, then with backoff — at the same endpoint only. An issuer with a
+reuse grace window accepts it and the grant recovers. An issuer that strictly enforces single use
+and rotated the token before the answer was lost cannot be recovered from the client side: the
+retry gets `invalid_grant` and status says that the earlier lost exchange probably consumed it.
+Airlock never spends a refresh token unless it could first durably record the attempt.
 
 ## Setup OpenClaw integration
 

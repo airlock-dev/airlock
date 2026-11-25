@@ -72,21 +72,22 @@ providers:
 
 ### Provider fields
 
-| Field                         | Applies to             | Default    | Effect                                                                       |
-| ----------------------------- | ---------------------- | ---------- | ---------------------------------------------------------------------------- |
-| `enabled`                     | all object forms       | `true`     | `false` keeps the entry in config but does not start or expose the provider  |
-| `command` / `args`            | `stdio`                | `args: []` | Process to spawn (used literally; no `${VAR}` substitution)                  |
-| `env`                         | `stdio`                | —          | Extra environment for the child process (`${VAR}` supported)                 |
-| `url` / `headers`             | `sse`, `http`          | —          | Endpoint and request headers (`${VAR}` supported in `headers` only)          |
-| `bearer_token_file`           | `http`                 | —          | Absolute path to a bearer token file resolved when Airlock loads config      |
-| `oauth`                       | `http`                 | `false`    | Run the browser authorization-code flow                                      |
-| `oauth_callback_port`         | `http`                 | `18432`    | Local port for the OAuth callback listener                                   |
-| `oauth_callback_url`          | `http`                 | —          | Public callback URL when the callback is relayed (remote or tunneled setups) |
-| `client_id` / `client_secret` | `http`                 | —          | Pre-registered OAuth client credentials                                      |
-| `request_timeout_ms`          | `http`                 | `60000`    | Per-request MCP deadline                                                     |
-| `instructions`                | all object forms       | —          | Operator notes added to the gateway's instructions (see below)               |
-| `upstream_instructions`       | all object forms       | `include`  | `ignore` drops the provider's own advertised instructions                    |
-| `credential_probe`            | `stdio`, `sse`, `http` | —          | Read-only call that proves the credential works (see below)                  |
+| Field                           | Applies to             | Default    | Effect                                                                                                   |
+| ------------------------------- | ---------------------- | ---------- | -------------------------------------------------------------------------------------------------------- |
+| `enabled`                       | all object forms       | `true`     | `false` keeps the entry in config but does not start or expose the provider                              |
+| `command` / `args`              | `stdio`                | `args: []` | Process to spawn (used literally; no `${VAR}` substitution)                                              |
+| `env`                           | `stdio`                | —          | Extra environment for the child process (`${VAR}` supported)                                             |
+| `url` / `headers`               | `sse`, `http`          | —          | Endpoint and request headers (`${VAR}` supported in `headers` only)                                      |
+| `bearer_token_file`             | `http`                 | —          | Absolute path to a bearer token file resolved when Airlock loads config                                  |
+| `oauth`                         | `http`                 | `false`    | Run the browser authorization-code flow                                                                  |
+| `oauth_callback_port`           | `http`                 | `18432`    | Local port for the OAuth callback listener                                                               |
+| `oauth_callback_url`            | `http`                 | —          | Public callback URL when the callback is relayed (remote or tunneled setups)                             |
+| `client_id` / `client_secret`   | `http`                 | —          | Pre-registered OAuth client credentials                                                                  |
+| `oauth_max_refresh_interval_ms` | `http` (`oauth: true`) | 24 h       | Refresh the grant at least this often (1 min – 30 days), so refresh-token inactivity windows never lapse |
+| `request_timeout_ms`            | `http`                 | `60000`    | Per-request MCP deadline                                                                                 |
+| `instructions`                  | all object forms       | —          | Operator notes added to the gateway's instructions (see below)                                           |
+| `upstream_instructions`         | all object forms       | `include`  | `ignore` drops the provider's own advertised instructions                                                |
+| `credential_probe`              | `stdio`, `sse`, `http` | —          | Read-only call that proves the credential works (see below)                                              |
 
 Built-ins can be written as the bare string `builtin` or as `{ type: builtin, enabled: false }`.
 

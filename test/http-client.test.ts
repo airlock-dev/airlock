@@ -96,6 +96,9 @@ vi.mock('../src/pool/oauth-provider.js', () => {
       waitForTokenChange: vi.fn().mockImplementation(() => waitForTokenChangeImpl()),
       // No refresh_token/expiry in these tests → proactive-refresh scheduling no-ops.
       msUntilRefresh: vi.fn().mockResolvedValue(undefined),
+      runExclusive: vi.fn().mockImplementation((fn: () => Promise<unknown>) => fn()),
+      persistencePending: false,
+      exchangeMarker: undefined,
     })),
   };
 });

@@ -610,6 +610,32 @@ agents:
     );
   });
 
+  it('validates oauth_max_refresh_interval_ms and warns when it is set without oauth', () => {
+    const base = { type: 'http', url: 'https://mcp.example.com/mcp' };
+    expect(
+      GatewayConfig.safeParse({
+        providers: { p: { ...base, oauth: true, oauth_max_refresh_interval_ms: 1000 } },
+      }).success
+    ).toBe(false); // below the 1-minute floor
+    const ok = GatewayConfig.parse({
+      providers: {
+        held: { ...base, oauth: true, oauth_max_refresh_interval_ms: 6 * 3600 * 1000 },
+        plain: { ...base, oauth_max_refresh_interval_ms: 6 * 3600 * 1000 },
+      },
+      agents: { agent1: { token: 'agent-secret' } },
+    });
+    const diagnostics = validateConfig(ok);
+    expect(diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          level: 'warn',
+          message: 'Provider "plain" sets oauth_max_refresh_interval_ms without oauth: true.',
+        }),
+      ])
+    );
+    expect(diagnostics.some((d) => d.message.includes('"held"'))).toBe(false);
+  });
+
   it('accepts a provider with client_credentials alone', () => {
     const config = GatewayConfig.parse({
       providers: {

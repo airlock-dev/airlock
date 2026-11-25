@@ -12,7 +12,12 @@ import { childLogger } from '../util/logger.js';
 import { adaptiveExpiryBuffer } from './oauth-timing.js';
 import {
   OAuthGrantStore,
+  OAuthStoreConflictError,
+  OAuthStoreReadOnlyError,
   grantIssuer,
+  sha256,
+  withGrantOperation,
+  type ExchangeMarker,
   type OAuthStorageMode,
   type PersistedGrant,
 } from './oauth-store.js';
@@ -20,6 +25,44 @@ import {
 const log = childLogger('oauth');
 const PERSIST_RETRY_MS = 30 * 1000;
 const TOKEN_CHANGE_POLL_MS = 2 * 1000;
+/**
+ * Refresh at least this often while a refresh token is stored, even when the access token is
+ * long-lived or has no declared lifetime, so refresh-token inactivity windows never lapse on an
+ * idle gateway. Per provider: `oauth_max_refresh_interval_ms`.
+ */
+export const DEFAULT_MAX_REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * What happened to a committed token change.
+ * - `persisted`: durably written.
+ * - `pending`: usable in memory, the disk write failed; retried until it succeeds.
+ * - `superseded`: a different grant was stored meanwhile (new authorization, operator restore);
+ *   the result was archived to history instead of overwriting it.
+ * - `handed_off`: this process lost the writer lock during the exchange; the successor was parked
+ *   for the lock holder, which adopts it.
+ */
+export type PersistResult = 'persisted' | 'pending' | 'superseded' | 'handed_off';
+
+export type BeginExchangeResult =
+  | { ok: true }
+  | { ok: false; kind: 'read_only' | 'unwritable' | 'conflict'; message: string };
+
+/** Refresh token + client the exchange was made with (commit coherence check). */
+export interface RefreshBasis {
+  refreshToken: string;
+  clientInfo: OAuthClientInformationFull;
+}
+
+function sameExceptIssuer(a: object, b: object): boolean {
+  const ra = a as Record<string, unknown>;
+  const rb = b as Record<string, unknown>;
+  const keys = new Set([...Object.keys(ra), ...Object.keys(rb)]);
+  keys.delete('issuer');
+  for (const key of keys) {
+    if (JSON.stringify(ra[key]) !== JSON.stringify(rb[key])) return false;
+  }
+  return true;
+}
 
 export interface FileOAuthProviderOptions {
   /** `readonly` for CLI commands that must never refresh/write/invalidate. Default `writer`. */
@@ -36,6 +79,7 @@ export interface GrantSnapshot {
   discovery?: OAuthDiscoveryState;
   resource?: string;
   obtainedAt?: number;
+  exchange?: ExchangeMarker;
 }
 
 export interface RefreshCommit {
@@ -66,6 +110,12 @@ type StampedClient = OAuthClientInformationFull & { issuer?: string };
  * Invariant: nothing in here deletes a grant. `invalidateCredentials()` only discards staged
  * pending state; an operator restore (`airlock oauth restore`) or a successful new authorization
  * are the only ways a stored grant is replaced, and every replacement is backed up first.
+ *
+ * In-memory state vs disk: every mutation bumps `mutationGen`; a successful save records the
+ * generation it wrote in `persistedGen`. While they differ, memory is authoritative and `load()`
+ * does not read the file; a read that started before a mutation is discarded when it completes.
+ * Saves are compare-and-swap against the file version memory was derived from, so an operator
+ * restore (or any other writer) is never silently overwritten by stale memory.
  */
 export class FileOAuthProvider implements OAuthClientProvider {
   readonly store: OAuthGrantStore;
@@ -74,8 +124,12 @@ export class FileOAuthProvider implements OAuthClientProvider {
   private authCodeResolve?: (code: string) => void;
   private browserOpenedAt = 0;
   private expectedState?: string;
-  /** A rotated token that is usable in memory but could not yet be committed to disk. */
-  private persistenceDirty = false;
+  private mutationGen = 0;
+  private persistedGen = 0;
+  /** sha256 of the file content memory was derived from (null: no file; undefined: unknown). */
+  private diskHash: string | null | undefined;
+  /** The last save failed and memory holds changes that are not on disk yet. */
+  private persistFailing = false;
   private persistenceRetryTimer?: NodeJS.Timeout;
 
   constructor(
@@ -96,6 +150,28 @@ export class FileOAuthProvider implements OAuthClientProvider {
   /** Whether this process may refresh/write this grant right now (holds the writer lock). */
   canWrite(): Promise<boolean> {
     return this.store.canWrite();
+  }
+
+  /**
+   * Run a grant operation (refresh exchange, authorization-code exchange) exclusively for this
+   * grant file within the process. See {@link withGrantOperation}.
+   */
+  runExclusive<T>(fn: () => Promise<T>): Promise<T> {
+    return withGrantOperation(this.store.path, fn);
+  }
+
+  /** A token change is held in memory because the disk write failed (retrying). */
+  get persistencePending(): boolean {
+    return this.persistFailing && this.mutationGen !== this.persistedGen;
+  }
+
+  /** The unresolved refresh exchange recorded in the grant, if any (as last loaded). */
+  get exchangeMarker(): ExchangeMarker | undefined {
+    return this.data.exchange;
+  }
+
+  private touched(): void {
+    this.mutationGen++;
   }
 
   get redirectUrl(): string {
@@ -162,6 +238,7 @@ export class FileOAuthProvider implements OAuthClientProvider {
       // A new registration while a grant exists: stage it until the new authorization succeeds.
       this.data.pending = { startedAt: Date.now(), ...this.data.pending, clientInfo: info };
     }
+    this.touched();
     await this.save('client-registration');
   }
 
@@ -179,11 +256,13 @@ export class FileOAuthProvider implements OAuthClientProvider {
     await this.load();
     const stamped = tokens as StampedTokens;
     const current = this.data.tokens as StampedTokens | undefined;
-    if (current && current.access_token === stamped.access_token) {
-      // Same token; the SDK is only stamping the issuer (SEP-2352).
+    if (current && sameExceptIssuer(current, stamped)) {
+      // Identical credentials; the SDK is only stamping the issuer (SEP-2352). Anything else (a
+      // different refresh token, a completed authorization) is a real commit below.
       if (stamped.issuer && current.issuer !== stamped.issuer) {
         this.data.tokens = { ...current, issuer: stamped.issuer } as OAuthTokens;
         this.data.issuer ??= stamped.issuer;
+        this.touched();
         await this.persistGrant('issuer-stamp');
       }
       return;
@@ -204,6 +283,7 @@ export class FileOAuthProvider implements OAuthClientProvider {
         ...(pending.discovery ? { discovery: pending.discovery } : {}),
         ...(pending.resource ? { resource: pending.resource } : {}),
       };
+      this.touched();
       log.info(
         {
           serverId: this.serverId,
@@ -246,6 +326,7 @@ export class FileOAuthProvider implements OAuthClientProvider {
     if (scope === 'verifier') delete pending.codeVerifier;
     if (scope === 'discovery') delete pending.discovery;
     if (scope === 'tokens') return;
+    this.touched();
     await this.save('authorization-reset').catch(() => {});
   }
 
@@ -279,6 +360,7 @@ export class FileOAuthProvider implements OAuthClientProvider {
     await this.load();
     this.data.pending = { startedAt: Date.now(), ...this.data.pending, codeVerifier: verifier };
     delete this.data.codeVerifier;
+    this.touched();
     await this.save('authorization-start');
   }
 
@@ -296,6 +378,7 @@ export class FileOAuthProvider implements OAuthClientProvider {
   async saveDiscoveryState(state: OAuthDiscoveryState): Promise<void> {
     await this.load();
     this.data.pending = { startedAt: Date.now(), ...this.data.pending, discovery: state };
+    this.touched();
     await this.save('authorization-discovery');
   }
 
@@ -303,6 +386,7 @@ export class FileOAuthProvider implements OAuthClientProvider {
     await this.load();
     if (this.data.pending?.resource === resourceUrl) return;
     this.data.pending = { startedAt: Date.now(), ...this.data.pending, resource: resourceUrl };
+    this.touched();
     await this.save('authorization-resource');
   }
 
@@ -310,6 +394,7 @@ export class FileOAuthProvider implements OAuthClientProvider {
     await this.load();
     if (this.data.pending?.issuer === issuer) return;
     this.data.pending = { startedAt: Date.now(), ...this.data.pending, issuer };
+    this.touched();
     await this.save('authorization-issuer');
   }
 
@@ -318,6 +403,7 @@ export class FileOAuthProvider implements OAuthClientProvider {
     await this.load();
     this.data.pending = { startedAt: Date.now() };
     delete this.data.codeVerifier;
+    this.touched();
     await this.save('authorization-start');
   }
 
@@ -332,14 +418,122 @@ export class FileOAuthProvider implements OAuthClientProvider {
       discovery: this.data.discovery,
       resource: this.data.resource,
       obtainedAt: this.data.obtainedAt,
+      ...(this.data.exchange ? { exchange: this.data.exchange } : {}),
     };
   }
 
-  /** Persist tokens obtained by refreshing the stored grant. */
-  async commitRefresh(tokens: OAuthTokens, meta: RefreshCommit = {}): Promise<void> {
+  /**
+   * Durably record that a refresh exchange is about to be sent. This is also the fencing check:
+   * the write re-verifies the writer lock. When it fails nothing may be sent — a refresh token
+   * must never be spent unless its successor can be committed.
+   */
+  async beginExchange(marker: ExchangeMarker): Promise<BeginExchangeResult> {
+    await this.load();
+    const wasClean = this.mutationGen === this.persistedGen;
+    const previous = this.data.exchange;
+    this.data.exchange = marker;
+    this.touched();
+    try {
+      await this.save('refresh-start');
+      return { ok: true };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (err instanceof OAuthStoreConflictError) return { ok: false, kind: 'conflict', message };
+      if (previous) this.data.exchange = previous;
+      else delete this.data.exchange;
+      this.touched();
+      // The file still holds the pre-marker state; if memory was clean before, it is clean again.
+      if (wasClean) this.persistedGen = this.mutationGen;
+      return {
+        ok: false,
+        kind: err instanceof OAuthStoreReadOnlyError ? 'read_only' : 'unwritable',
+        message,
+      };
+    }
+  }
+
+  /** Replace (or clear) the exchange marker after an exchange without a successor. */
+  async endExchange(next: ExchangeMarker | undefined): Promise<void> {
+    await this.load();
+    if (next) this.data.exchange = next;
+    else delete this.data.exchange;
+    this.touched();
+    await this.persistGrant(next ? 'refresh-ambiguous' : 'refresh-end');
+  }
+
+  /**
+   * Adopt successors parked by a process that lost the writer lock mid-exchange (call while
+   * holding the lock, inside {@link runExclusive}). A successor whose predecessor is the stored
+   * refresh token replaces it; any other is archived to history, never dropped.
+   */
+  async adoptOrphanedSuccessors(): Promise<void> {
+    const orphans = await this.store.listOrphans();
+    if (orphans.length === 0) return;
+    await this.load();
+    for (const orphan of orphans) {
+      const current = this.data.tokens?.refresh_token;
+      if (current && sha256(current) === orphan.predecessor) {
+        const { pending: _pending, exchange: _exchange, ...grant } = orphan.grant;
+        this.data = { ...grant, ...(this.data.pending ? { pending: this.data.pending } : {}) };
+        this.touched();
+        const result = await this.persistGrant('adopt-successor');
+        if (result !== 'persisted') return; // keep the orphan file until the adoption is durable
+        log.warn(
+          { serverId: this.serverId },
+          'Adopted an OAuth successor grant left by a process that lost the writer lock mid-refresh'
+        );
+      } else {
+        await this.store.archive(orphan.grant, 'orphan-successor');
+        log.warn(
+          { serverId: this.serverId },
+          'Archived an orphaned OAuth successor that no longer matches the stored grant (kept in history)'
+        );
+      }
+      await this.store.removeOrphan(orphan.file);
+    }
+  }
+
+  /**
+   * Persist tokens obtained by refreshing the stored grant. With a `basis`, the commit is checked
+   * for coherence first: when the stored grant is no longer the one that was refreshed (a new
+   * authorization or a restore landed meanwhile) the result is archived instead of mixing one
+   * grant's refresh token with another grant's client registration.
+   */
+  async commitRefresh(
+    tokens: OAuthTokens,
+    meta: RefreshCommit = {},
+    basis?: RefreshBasis
+  ): Promise<PersistResult> {
     // A fresh provider instance must load the persisted refresh token before handling a refresh
     // response that may omit it.
     await this.load();
+    if (basis) {
+      const currentClientId =
+        this.preregisteredClient()?.client_id ?? this.data.clientInfo?.client_id;
+      if (
+        this.data.tokens?.refresh_token !== basis.refreshToken ||
+        currentClientId !== basis.clientInfo.client_id
+      ) {
+        await this.store.archive(
+          {
+            clientInfo: basis.clientInfo,
+            tokens: tokens.refresh_token
+              ? tokens
+              : { ...tokens, refresh_token: basis.refreshToken },
+            obtainedAt: Date.now(),
+            ...(meta.issuer ? { issuer: meta.issuer } : {}),
+            ...(meta.discovery ? { discovery: meta.discovery } : {}),
+            ...(meta.resource ? { resource: meta.resource } : {}),
+          },
+          'superseded-refresh'
+        );
+        log.warn(
+          { serverId: this.serverId },
+          'A different OAuth grant was stored while a refresh was in flight; kept the stored grant and archived the refresh result to history'
+        );
+        return 'superseded';
+      }
+    }
     const previous = this.data.tokens;
     const previousObtainedAt = this.data.obtainedAt;
     const refreshTokenReturned = Boolean(tokens.refresh_token);
@@ -365,31 +559,44 @@ export class FileOAuthProvider implements OAuthClientProvider {
     }
     if (meta.discovery) this.data.discovery = meta.discovery;
     if (meta.resource && !this.data.resource) this.data.resource = meta.resource;
-    await this.persistGrant('refresh', {
-      refreshTokenReturned,
-      refreshTokenRotated,
-      accessExpiresInSec: tokens.expires_in,
-      previousTokenAgeSec: previousObtainedAt
-        ? Math.floor((this.data.obtainedAt - previousObtainedAt) / 1000)
-        : undefined,
-    });
+    delete this.data.exchange; // committed in the same write that stores the successor
+    this.touched();
+    return this.persistGrant(
+      'refresh',
+      {
+        refreshTokenReturned,
+        refreshTokenRotated,
+        accessExpiresInSec: tokens.expires_in,
+        previousTokenAgeSec: previousObtainedAt
+          ? Math.floor((this.data.obtainedAt - previousObtainedAt) / 1000)
+          : undefined,
+      },
+      basis?.refreshToken
+    );
   }
 
   /**
-   * How long (ms) until the access token should be proactively refreshed — i.e. `bufferMs` before it
-   * expires. Returns `undefined` when there is nothing to schedule (no refresh_token, so a refresh is
-   * impossible, or no `expires_in`, so the lifetime is unknown). Never negative. Tokens persisted
-   * before `obtainedAt` existed report `0` (refresh promptly) rather than trusting a stale baseline.
+   * How long (ms) until the grant should be proactively refreshed: `bufferMs` before the access
+   * token expires, and in any case no later than `maxIntervalMs` after the tokens were obtained (so
+   * a refresh token with an inactivity window is exercised even when the access token is
+   * long-lived or declares no lifetime). Returns `undefined` only without a refresh_token. Never
+   * negative. Tokens persisted before `obtainedAt` existed report `0` (refresh promptly).
    */
-  async msUntilRefresh(bufferMs: number): Promise<number | undefined> {
+  async msUntilRefresh(
+    bufferMs: number,
+    maxIntervalMs: number = DEFAULT_MAX_REFRESH_INTERVAL_MS
+  ): Promise<number | undefined> {
     await this.load();
     const tokens = this.data.tokens;
-    if (!tokens?.refresh_token || !tokens.expires_in) return undefined;
+    if (!tokens?.refresh_token) return undefined;
     const obtainedAt = this.data.obtainedAt ?? 0;
-    const lifetimeMs = tokens.expires_in * 1000;
-    const expiresAt = obtainedAt + lifetimeMs;
-    const effectiveBufferMs = adaptiveExpiryBuffer(lifetimeMs, bufferMs);
-    return Math.max(0, expiresAt - effectiveBufferMs - Date.now());
+    let dueAt = obtainedAt + maxIntervalMs;
+    if (tokens.expires_in) {
+      const lifetimeMs = tokens.expires_in * 1000;
+      const effectiveBufferMs = adaptiveExpiryBuffer(lifetimeMs, bufferMs);
+      dueAt = Math.min(dueAt, obtainedAt + lifetimeMs - effectiveBufferMs);
+    }
+    return Math.max(0, dueAt - Date.now());
   }
 
   /** Whether the stored access token is past its declared expiry (unknown lifetime → false). */
@@ -509,33 +716,52 @@ export class FileOAuthProvider implements OAuthClientProvider {
   }
 
   private async load(): Promise<void> {
-    // Never replace a newer rotated token held in memory with the stale on-disk token merely
-    // because the previous disk commit failed.
-    if (this.persistenceDirty) return;
+    // Memory with changes that are not on disk yet (a rotated token whose commit failed, staged
+    // state being written) is authoritative: never replace it with the older file.
+    if (this.mutationGen !== this.persistedGen) return;
+    const generation = this.mutationGen;
+    let result: Awaited<ReturnType<OAuthGrantStore['read']>>;
     try {
-      const { data, corrupt } = await this.store.read();
-      if (corrupt) {
-        log.error(
-          { serverId: this.serverId, path: this.store.path },
-          'OAuth grant file is not valid JSON; leaving it untouched (it is backed up before any replacement)'
-        );
-      }
-      this.data = data;
+      result = await this.store.read();
     } catch (err) {
       log.warn(
         { serverId: this.serverId, reason: err instanceof Error ? err.message : String(err) },
         'Could not read OAuth grant file; using the last state held in memory'
       );
+      return;
     }
+    // A mutation landed while the read was in flight: the read is stale, discard it.
+    if (this.mutationGen !== generation || this.mutationGen !== this.persistedGen) return;
+    if (result.corrupt) {
+      log.error(
+        { serverId: this.serverId, path: this.store.path },
+        'OAuth grant file is not valid JSON; leaving it untouched (it is backed up before any replacement)'
+      );
+    }
+    this.data = result.data;
+    this.diskHash = result.hash;
   }
 
   private async save(reason: string): Promise<void> {
-    const snapshot = JSON.stringify(this.data);
-    await this.store.write(this.data, reason);
-    // A newer mutation may have arrived while this snapshot waited on the write queue. Only
-    // declare the store clean when the file we just committed still represents current memory.
-    if (snapshot === JSON.stringify(this.data)) {
-      this.persistenceDirty = false;
+    const generation = this.mutationGen;
+    const snapshot = JSON.parse(JSON.stringify(this.data)) as PersistedGrant;
+    let hash: string;
+    try {
+      ({ hash } = await this.store.write(
+        snapshot,
+        reason,
+        this.diskHash === undefined ? {} : { expectHash: this.diskHash }
+      ));
+    } catch (err) {
+      if (err instanceof OAuthStoreConflictError) await this.resolveConflict(reason);
+      throw err;
+    }
+    if (generation >= this.persistedGen) {
+      this.persistedGen = generation;
+      this.diskHash = hash;
+    }
+    if (this.persistedGen === this.mutationGen) {
+      this.persistFailing = false;
       if (this.persistenceRetryTimer) {
         clearTimeout(this.persistenceRetryTimer);
         this.persistenceRetryTimer = undefined;
@@ -543,9 +769,38 @@ export class FileOAuthProvider implements OAuthClientProvider {
     }
   }
 
-  /** Commit a token change; on storage failure hold it in memory and retry only the disk write. */
-  private async persistGrant(reason: string, fields: Record<string, unknown> = {}): Promise<void> {
-    this.persistenceDirty = true;
+  /**
+   * The file changed under us (operator restore, another writer). Keep what we had in history —
+   * never drop it — then follow the file.
+   */
+  private async resolveConflict(reason: string): Promise<void> {
+    if (this.mutationGen !== this.persistedGen && (this.data.tokens || this.data.clientInfo)) {
+      const { pending: _pending, exchange: _exchange, ...unsaved } = this.data;
+      await this.store.archive(unsaved, `unsaved-${reason}`);
+    }
+    log.warn(
+      { serverId: this.serverId, reason },
+      'OAuth grant file changed on disk (operator restore or another writer); following the file, unsaved in-memory state archived to history'
+    );
+    this.persistedGen = this.mutationGen;
+    this.persistFailing = false;
+    if (this.persistenceRetryTimer) {
+      clearTimeout(this.persistenceRetryTimer);
+      this.persistenceRetryTimer = undefined;
+    }
+    this.diskHash = undefined;
+    await this.load();
+  }
+
+  /**
+   * Commit a token change. On storage failure hold it in memory and retry only the disk write;
+   * when this process lost the writer lock during the exchange, park it for the lock holder.
+   */
+  private async persistGrant(
+    reason: string,
+    fields: Record<string, unknown> = {},
+    presentedRefreshToken?: string
+  ): Promise<PersistResult> {
     try {
       await this.save(reason);
       // Record the refresh chain without logging token values or token-derived fingerprints.
@@ -559,19 +814,52 @@ export class FileOAuthProvider implements OAuthClientProvider {
         },
         'OAuth tokens saved'
       );
+      return 'persisted';
     } catch (err) {
+      if (err instanceof OAuthStoreConflictError) return 'superseded';
+      const error = err instanceof Error ? err.message : String(err);
+      if (err instanceof OAuthStoreReadOnlyError && presentedRefreshToken) {
+        const { pending: _pending, exchange: _exchange, ...successor } = this.data;
+        try {
+          await this.store.writeOrphan(successor, presentedRefreshToken);
+          // The holder owns the grant now; follow the file from here on.
+          this.persistedGen = this.mutationGen;
+          this.diskHash = undefined;
+          log.warn(
+            { serverId: this.serverId, reason, error },
+            'Lost the OAuth writer lock during a refresh; parked the successor for the lock holder to adopt'
+          );
+          return 'handed_off';
+        } catch (orphanErr) {
+          log.warn(
+            {
+              serverId: this.serverId,
+              error: orphanErr instanceof Error ? orphanErr.message : String(orphanErr),
+            },
+            'Could not park an OAuth successor for the lock holder; holding it in memory'
+          );
+        }
+      }
       // The fresh token still works in this process. Do not make anyone re-run the token request:
       // with rotating refresh tokens that would spend the new token too. Retry only the disk write.
       log.warn(
-        {
-          serverId: this.serverId,
-          reason,
-          ...fields,
-          error: err instanceof Error ? err.message : String(err),
-        },
+        { serverId: this.serverId, reason, ...fields, error },
         'Could not persist OAuth tokens; holding them in memory and retrying storage'
       );
+      this.persistFailing = true;
       this.schedulePersistenceRetry();
+      return 'pending';
+    }
+  }
+
+  /** Retry a pending disk write now (also used by tests). */
+  async retryPersistenceNow(): Promise<boolean> {
+    if (this.mutationGen === this.persistedGen) return true;
+    try {
+      await this.save('persistence-retry');
+      return this.mutationGen === this.persistedGen;
+    } catch {
+      return false;
     }
   }
 
@@ -579,11 +867,14 @@ export class FileOAuthProvider implements OAuthClientProvider {
     if (this.persistenceRetryTimer) return;
     this.persistenceRetryTimer = setTimeout(() => {
       this.persistenceRetryTimer = undefined;
+      if (this.mutationGen === this.persistedGen) return;
       void this.save('persistence-retry').catch((err) => {
+        if (err instanceof OAuthStoreConflictError) return;
         log.warn(
           { serverId: this.serverId, reason: err instanceof Error ? err.message : String(err) },
           'OAuth token persistence still unavailable; retrying'
         );
+        this.persistFailing = true;
         this.schedulePersistenceRetry();
       });
     }, PERSIST_RETRY_MS);

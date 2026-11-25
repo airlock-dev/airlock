@@ -255,6 +255,11 @@
                   "client_secret": {
                     "type": "string"
                   },
+                  "oauth_max_refresh_interval_ms": {
+                    "type": "integer",
+                    "minimum": 60000,
+                    "maximum": 2592000000
+                  },
                   "client_credentials": {
                     "type": "object",
                     "properties": {

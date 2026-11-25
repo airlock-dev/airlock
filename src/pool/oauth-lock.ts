@@ -1,31 +1,100 @@
-import { mkdir, open, readFile, rename, unlink, chmod } from 'fs/promises';
-import { hostname } from 'os';
+import { readFileSync, readlinkSync } from 'fs';
+import { link, mkdir, open, readdir, readFile, rename, unlink } from 'fs/promises';
+import { hostname, uptime } from 'os';
 import { join } from 'path';
+import { performance } from 'perf_hooks';
 import { randomUUID } from 'crypto';
 import { childLogger } from '../util/logger.js';
 
 const log = childLogger('oauth-lock');
 
-/** Name of the advisory writer lock inside the OAuth store directory. */
-export const WRITER_LOCK_FILE = '.writer.lock';
-/** How often the holder re-stamps its heartbeat. */
-const HEARTBEAT_MS = 30 * 1000;
-/** A lock whose holder has not re-stamped for this long is considered abandoned. */
-export const STALE_LOCK_MS = 2 * 60 * 1000;
+/**
+ * Generation files of the writer lock inside the OAuth store directory: `.writer.lock.<gen>`. The
+ * highest existing generation is the lock; each takeover creates the next generation exclusively.
+ */
+export const WRITER_LOCK_PREFIX = '.writer.lock.';
+/** Pre-generation lock file (earlier builds). Read as generation 0; removed by the next owner. */
+export const LEGACY_WRITER_LOCK_FILE = '.writer.lock';
+
+interface LockTimings {
+  /** How often the holder re-stamps its record. */
+  heartbeatMs: number;
+  /**
+   * A record must be observed UNCHANGED for this long (on the observer's monotonic clock) before
+   * it may be taken over. Wall-clock timestamps are never compared across processes.
+   */
+  staleMs: number;
+  /**
+   * After taking over a record whose holder might still be alive, wait this long before the first
+   * write. It outlasts any token request the previous holder could have had in flight.
+   */
+  takeoverGraceMs: number;
+  /** How often the holder looks for operator requests (e.g. `airlock oauth restore`). */
+  requestPollMs: number;
+}
+
+const DEFAULT_TIMINGS: LockTimings = {
+  heartbeatMs: 30_000,
+  staleMs: 2 * 60_000,
+  // Two full OAuth request timeouts (15 s each) plus slack.
+  takeoverGraceMs: 35_000,
+  requestPollMs: 2_000,
+};
+let timings: LockTimings = { ...DEFAULT_TIMINGS };
+
+/** Test hook: shorten lock timings. Call with no argument to restore the defaults. */
+export function setWriterLockTimings(overrides?: Partial<LockTimings>): void {
+  timings = { ...DEFAULT_TIMINGS, ...(overrides ?? {}) };
+}
+
+export const STALE_LOCK_MS = DEFAULT_TIMINGS.staleMs;
 
 interface LockRecord {
   pid: number;
   hostname: string;
+  /** hostname | boot id | pid namespace. Pids are only comparable when this matches. */
+  ns?: string;
   nonce: string;
+  gen: number;
   acquiredAt: number;
   heartbeatAt: number;
+  released?: boolean;
 }
 
 export interface LockHolder {
   pid: number;
   hostname: string;
+  gen: number;
   acquiredAt: number;
   heartbeatAt: number;
+}
+
+interface Observed {
+  gen: number;
+  file: string;
+  raw: string;
+  record?: LockRecord;
+}
+
+let cachedNamespace: string | undefined;
+
+/** Identity of the pid space this process lives in: same host, same boot, same pid namespace. */
+export function lockNamespace(): string {
+  if (cachedNamespace) return cachedNamespace;
+  let boot: string;
+  let pidns: string;
+  try {
+    boot = readFileSync('/proc/sys/kernel/random/boot_id', 'utf-8').trim();
+  } catch {
+    boot = `boot~${Math.round((Date.now() / 1000 - uptime()) / 60)}`;
+  }
+  try {
+    pidns = readlinkSync('/proc/self/ns/pid');
+  } catch {
+    pidns = process.platform;
+  }
+  cachedNamespace = `${hostname()}|${boot}|${pidns}`;
+  return cachedNamespace;
 }
 
 function processAlive(pid: number): boolean {
@@ -38,173 +107,330 @@ function processAlive(pid: number): boolean {
   }
 }
 
+function genFile(gen: number): string {
+  return `${WRITER_LOCK_PREFIX}${String(gen).padStart(12, '0')}`;
+}
+
+function parseGen(name: string): number | undefined {
+  if (name === LEGACY_WRITER_LOCK_FILE) return 0;
+  if (!name.startsWith(WRITER_LOCK_PREFIX)) return undefined;
+  const suffix = name.slice(WRITER_LOCK_PREFIX.length);
+  return /^\d{1,15}$/.test(suffix) ? Number(suffix) : undefined;
+}
+
+function parseRecord(raw: string, gen: number): LockRecord | undefined {
+  try {
+    const parsed = JSON.parse(raw) as Partial<LockRecord>;
+    if (typeof parsed.pid !== 'number' || typeof parsed.nonce !== 'string') return undefined;
+    return {
+      pid: parsed.pid,
+      hostname: parsed.hostname ?? '',
+      ...(typeof parsed.ns === 'string' ? { ns: parsed.ns } : {}),
+      nonce: parsed.nonce,
+      gen,
+      acquiredAt: parsed.acquiredAt ?? 0,
+      heartbeatAt: parsed.heartbeatAt ?? 0,
+      ...(parsed.released ? { released: true } : {}),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+const sleep = (ms: number) =>
+  new Promise<void>((resolve) => {
+    setTimeout(resolve, ms).unref?.();
+  });
+
+export type RequestHandler = (dir: string) => Promise<void>;
+
 /**
- * Advisory single-writer lock for `~/.airlock/oauth`.
+ * Single-writer lock for an OAuth store directory (`~/.airlock/oauth`).
  *
- * Only the process holding this lock refreshes, rotates, or otherwise writes OAuth grants. A second
- * Airlock process sharing the directory (the `airlock tools` CLI, a stdio-mode agent, a dashboard
- * probe) reads the token files but never writes them — before this lock existed such a process
- * could run its own refresh, get `invalid_grant` for a token the gateway had just rotated, and
- * delete the gateway's grant.
+ * Only the holder refreshes, rotates, or otherwise writes OAuth grants. Other Airlock processes
+ * sharing the directory (`airlock tools`, `lint`, a stdio agent while the gateway runs, the next
+ * container during a recreate) read the token files but never write them.
  *
- * The lock is a small JSON file holding `{pid, hostname, nonce, heartbeatAt}`. It is considered
- * stale (and may be taken over) when its holder is the current pid on this host (a restarted
- * container re-uses pid 1), when the holder pid is gone on this host, or when the heartbeat is
- * older than {@link STALE_LOCK_MS}.
+ * Design (no native addon, so no flock/fcntl):
+ *
+ * - **Atomic takeover.** The lock is the highest-numbered `.writer.lock.<gen>` file. Acquiring or
+ *   taking over creates generation `top + 1` with `link()` (falls back to `O_EXCL`), which exactly
+ *   one process can win. A process owns the lock iff its generation is the highest present and the
+ *   file carries its nonce, so two processes can never both pass the ownership check. Heartbeats
+ *   rewrite only the holder's own generation file and so can never overwrite a newer owner.
+ * - **Clock-independent staleness.** A record is abandoned only when (a) it was released, (b) its
+ *   pid is provably dead (same host, same boot, same pid namespace), or (c) an observer saw the
+ *   record's bytes unchanged for {@link LockTimings.staleMs} on its own monotonic clock. Wall-clock
+ *   values are display-only, so clock jumps on either side cannot make a live writer look stale.
+ * - **Fencing.** {@link verify} is called (through the store) immediately before every token
+ *   request and again before committing its result. It renews the heartbeat when the last
+ *   successful one is older than one heartbeat interval, so at the moment a request leaves, the
+ *   holder's record has been fresh for at least `staleMs - heartbeatMs` more. A process that takes
+ *   over a possibly-live holder then waits {@link LockTimings.takeoverGraceMs} (longer than any
+ *   token request may run) before its first write.
+ *
+ * Residual assumption: a holder that is frozen (SIGSTOP, VM pause, a blocked event loop) for longer
+ * than `staleMs - heartbeatMs + takeoverGraceMs` (~125 s) *between* its fencing check and the moment
+ * its token request leaves the host could still send after a new owner has started. Without an
+ * issuer-side fencing token this cannot be closed client-side. If such a frozen holder later gets a
+ * response, it fails the commit-time check and hands the successor to the new owner through the
+ * orphan journal instead of writing the grant.
  */
 export class OAuthWriterLock {
   private nonce?: string;
+  private gen = 0;
   private acquiredAt = 0;
+  /** Monotonic time at which the last successful heartbeat write started. */
+  private lastBeatMono = 0;
   private heartbeatTimer?: NodeJS.Timeout;
+  private requestTimer?: NodeJS.Timeout;
+  private requestHandler?: RequestHandler;
+  private handlingRequests = false;
   private acquiring?: Promise<boolean>;
-  private readonly path: string;
+  /** What this process saw as the current lock, and since when (monotonic), for staleness. */
+  private observation?: { key: string; since: number };
+  /** Why the last ensure()/verify() returned false (for status output). */
+  lastProblem?: string;
 
-  constructor(private readonly dir: string) {
-    this.path = join(dir, WRITER_LOCK_FILE);
-  }
+  constructor(private readonly dir: string) {}
 
   /** Whether this process currently believes it holds the lock (cheap, no I/O). */
   get held(): boolean {
     return this.nonce !== undefined;
   }
 
+  /** Register the handler run periodically while this process holds the lock. */
+  setRequestHandler(handler: RequestHandler): void {
+    this.requestHandler = handler;
+    if (this.nonce) this.startRequestPolling();
+  }
+
   /**
-   * Acquire the lock if it is free or stale; confirm ownership if already held. Returns false when
-   * another live process holds it. Never throws.
+   * Acquire the lock if it is free or abandoned; when already held, re-verify ownership (fencing
+   * check). Returns false when another process holds it or ownership cannot be proven. Never throws.
    */
-  async ensure(): Promise<boolean> {
+  ensure(): Promise<boolean> {
+    return this.single(() => (this.nonce ? this.verifyInner() : this.acquireInner(false)));
+  }
+
+  /** Fencing check only: true iff this process holds the lock right now. Never acquires. */
+  verify(): Promise<boolean> {
+    return this.single(() => (this.nonce ? this.verifyInner() : Promise.resolve(false)));
+  }
+
+  /**
+   * Take the lock over even from a live holder (operator `--force`). The previous holder becomes
+   * read-only at its next fencing check; this process still waits out the takeover grace period.
+   */
+  forceAcquire(): Promise<boolean> {
+    return this.single(() => (this.nonce ? this.verifyInner() : this.acquireInner(true)));
+  }
+
+  private single(fn: () => Promise<boolean>): Promise<boolean> {
     if (this.acquiring) return this.acquiring;
-    this.acquiring = this.ensureInner().finally(() => {
-      this.acquiring = undefined;
-    });
+    this.acquiring = fn()
+      .catch((err: unknown) => {
+        this.lastProblem = err instanceof Error ? err.message : String(err);
+        log.warn({ dir: this.dir, reason: this.lastProblem }, 'OAuth writer lock check failed');
+        return false;
+      })
+      .finally(() => {
+        this.acquiring = undefined;
+      });
     return this.acquiring;
   }
 
-  private async ensureInner(): Promise<boolean> {
-    try {
-      if (this.nonce) {
-        const current = await this.read();
-        if (current === 'unreadable') return true; // I/O trouble: keep our in-memory claim.
-        if (current?.nonce === this.nonce) return true;
-        // Someone took the lock over (we were considered stale). Do not fight for it silently.
-        log.warn(
-          { dir: this.dir, holderPid: current?.pid, holderHost: current?.hostname },
-          'OAuth writer lock was taken over by another process; this process is now read-only'
-        );
-        this.stopHeartbeat();
-        this.nonce = undefined;
-      }
-
-      await mkdir(this.dir, { recursive: true, mode: 0o700 });
-      const existing = await this.read();
-      if (existing === 'unreadable') return false;
-      if (existing && !this.isStale(existing)) return false;
-
-      const record: LockRecord = {
-        pid: process.pid,
-        hostname: hostname(),
-        nonce: randomUUID(),
-        acquiredAt: Date.now(),
-        heartbeatAt: Date.now(),
-      };
-      if (existing) {
-        log.info(
-          { dir: this.dir, previousPid: existing.pid, previousHost: existing.hostname },
-          'Taking over stale OAuth writer lock'
-        );
-        await this.replace(record);
-      } else {
-        try {
-          const handle = await open(this.path, 'wx', 0o600);
-          try {
-            await handle.writeFile(JSON.stringify(record), 'utf-8');
-            await handle.sync();
-          } finally {
-            await handle.close();
-          }
-        } catch (err) {
-          if ((err as NodeJS.ErrnoException).code === 'EEXIST') return false; // lost the race
-          throw err;
-        }
-      }
-      // Verify: a concurrent takeover may have renamed over us.
-      const confirmed = await this.read();
-      if (confirmed === 'unreadable' || confirmed?.nonce !== record.nonce) return false;
-      this.nonce = record.nonce;
-      this.acquiredAt = record.acquiredAt;
-      this.startHeartbeat();
-      log.info({ dir: this.dir, pid: process.pid }, 'Acquired OAuth writer lock');
-      return true;
-    } catch (err) {
-      log.warn(
-        { dir: this.dir, reason: err instanceof Error ? err.message : String(err) },
-        'Could not acquire OAuth writer lock'
-      );
-      return this.nonce !== undefined;
-    }
-  }
-
-  /** Who holds the lock right now (for status/CLI), or undefined when free/unreadable. */
+  /** Who holds the lock right now (for status/CLI), or undefined when free/released/unreadable. */
   async holder(): Promise<LockHolder | undefined> {
-    const record = await this.read();
-    if (!record || record === 'unreadable' || this.isStale(record)) return undefined;
+    const top = await this.top();
+    if (!top || top === 'unreadable' || !top.record || top.record.released) return undefined;
+    const r = top.record;
     return {
-      pid: record.pid,
-      hostname: record.hostname,
-      acquiredAt: record.acquiredAt,
-      heartbeatAt: record.heartbeatAt,
+      pid: r.pid,
+      hostname: r.hostname,
+      gen: top.gen,
+      acquiredAt: r.acquiredAt,
+      heartbeatAt: r.heartbeatAt,
     };
   }
 
+  /** Release (mark the generation released so the next process can take it at once). */
   async release(): Promise<void> {
-    this.stopHeartbeat();
+    this.stopTimers();
     if (!this.nonce) return;
     const nonce = this.nonce;
     this.nonce = undefined;
-    const current = await this.read();
-    if (current !== 'unreadable' && current?.nonce === nonce) {
-      await unlink(this.path).catch(() => {});
-    }
+    const top = await this.top();
+    if (top === 'unreadable' || !top || top.gen !== this.gen || top.record?.nonce !== nonce) return;
+    await this.writeOwn({ ...this.record(nonce), released: true }).catch(() => {});
   }
 
-  private isStale(record: LockRecord): boolean {
-    if (record.hostname === hostname()) {
-      // Our own pid can only be us (or a dead predecessor that had the same pid, e.g. pid 1 in a
-      // restarted container); either way the record does not represent another live writer.
-      if (record.pid === process.pid) return true;
-      if (!processAlive(record.pid)) return true;
-    }
-    return Date.now() - record.heartbeatAt > STALE_LOCK_MS;
+  // ─── internals ────────────────────────────────────────────────────────────────────────────────
+
+  private record(nonce: string): LockRecord {
+    return {
+      pid: process.pid,
+      hostname: hostname(),
+      ns: lockNamespace(),
+      nonce,
+      gen: this.gen,
+      acquiredAt: this.acquiredAt,
+      heartbeatAt: Date.now(),
+    };
   }
 
-  private async read(): Promise<LockRecord | undefined | 'unreadable'> {
-    let raw: string;
-    try {
-      raw = await readFile(this.path, 'utf-8');
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
-      return 'unreadable';
-    }
-    try {
-      const parsed = JSON.parse(raw) as Partial<LockRecord>;
-      if (typeof parsed.pid !== 'number' || typeof parsed.nonce !== 'string') {
-        // A corrupt lock is treated as stale: replace it.
-        return { pid: -1, hostname: '', nonce: '', acquiredAt: 0, heartbeatAt: 0 };
+  /** The highest generation present, re-listing when a file vanishes between readdir and read. */
+  private async top(): Promise<Observed | undefined | 'unreadable'> {
+    for (let attempt = 0; attempt < 5; attempt++) {
+      let names: string[];
+      try {
+        names = await readdir(this.dir);
+      } catch (err) {
+        return (err as NodeJS.ErrnoException).code === 'ENOENT' ? undefined : 'unreadable';
       }
-      return {
-        pid: parsed.pid,
-        hostname: parsed.hostname ?? '',
-        nonce: parsed.nonce,
-        acquiredAt: parsed.acquiredAt ?? 0,
-        heartbeatAt: parsed.heartbeatAt ?? 0,
-      };
-    } catch {
-      return { pid: -1, hostname: '', nonce: '', acquiredAt: 0, heartbeatAt: 0 };
+      let best: { gen: number; file: string } | undefined;
+      for (const name of names) {
+        const gen = parseGen(name);
+        if (gen === undefined) continue;
+        if (!best || gen > best.gen) best = { gen, file: name };
+      }
+      if (!best) return undefined;
+      let raw: string;
+      try {
+        raw = await readFile(join(this.dir, best.file), 'utf-8');
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === 'ENOENT') continue;
+        return 'unreadable';
+      }
+      return { ...best, raw, record: parseRecord(raw, best.gen) };
     }
+    return 'unreadable';
   }
 
-  private async replace(record: LockRecord): Promise<void> {
-    const tmp = `${this.path}.${process.pid}.${randomUUID()}.tmp`;
+  /**
+   * Whether the observed top record may be replaced: 'free' (released or provably dead), 'stale'
+   * (unchanged for staleMs on our monotonic clock; its holder might merely be frozen), or 'live'.
+   */
+  private judge(top: Observed): 'free' | 'stale' | 'live' {
+    const r = top.record;
+    if (r?.released) return 'free';
+    if (r?.ns && r.ns === lockNamespace()) {
+      if (r.pid === process.pid || !processAlive(r.pid)) return 'free';
+    }
+    const key = `${top.gen}\n${top.raw}`;
+    const now = performance.now();
+    if (this.observation?.key !== key) {
+      this.observation = { key, since: now };
+      return 'live';
+    }
+    return now - this.observation.since >= timings.staleMs ? 'stale' : 'live';
+  }
+
+  private async acquireInner(force: boolean): Promise<boolean> {
+    await mkdir(this.dir, { recursive: true, mode: 0o700 });
+    const top = await this.top();
+    if (top === 'unreadable') {
+      this.lastProblem = 'writer lock is unreadable';
+      return false;
+    }
+    let grace = false;
+    if (top) {
+      const verdict = this.judge(top);
+      if (verdict === 'live' && !force) {
+        this.lastProblem = `held by pid ${top.record?.pid ?? '?'} on ${top.record?.hostname ?? '?'}`;
+        return false;
+      }
+      grace = verdict !== 'free';
+      if (verdict !== 'free') {
+        log.warn(
+          {
+            dir: this.dir,
+            previousPid: top.record?.pid,
+            previousHost: top.record?.hostname,
+            forced: force,
+          },
+          force
+            ? 'Forcibly taking over the OAuth writer lock'
+            : 'Taking over an OAuth writer lock whose holder stopped heartbeating'
+        );
+      }
+    }
+
+    const gen = (top?.gen ?? 0) + 1;
+    const nonce = randomUUID();
+    const startedMono = performance.now();
+    this.gen = gen;
+    this.acquiredAt = Date.now();
+    const record = this.record(nonce);
+    if (!(await this.createExclusive(gen, record))) {
+      this.lastProblem = 'lost the race for the writer lock';
+      return false;
+    }
+    // Ownership is "highest generation carries my nonce". Confirm nobody created a higher one.
+    const confirmed = await this.top();
+    if (confirmed === 'unreadable' || !confirmed || confirmed.gen !== gen) {
+      this.lastProblem = 'lost the race for the writer lock';
+      return false;
+    }
+    if (confirmed.record?.nonce !== nonce) {
+      this.lastProblem = 'lost the race for the writer lock';
+      return false;
+    }
+    this.nonce = nonce;
+    this.lastBeatMono = startedMono;
+    this.observation = undefined;
+    this.startHeartbeat();
+    await this.cleanupBelow(gen);
+    if (grace && timings.takeoverGraceMs > 0) {
+      // The previous holder might be frozen mid token request. Let any such request finish (or
+      // time out) before this process sends one of its own.
+      log.info(
+        { dir: this.dir, graceMs: timings.takeoverGraceMs },
+        'Waiting out the takeover grace period before writing OAuth grants'
+      );
+      await sleep(timings.takeoverGraceMs);
+      if (!(await this.checkOwnership())) return false;
+    }
+    log.info({ dir: this.dir, pid: process.pid, gen }, 'Acquired OAuth writer lock');
+    this.lastProblem = undefined;
+    this.startRequestPolling();
+    return true;
+  }
+
+  private async verifyInner(): Promise<boolean> {
+    if (performance.now() - this.lastBeatMono >= timings.heartbeatMs) {
+      if (!(await this.beat())) return false;
+    }
+    return this.checkOwnership();
+  }
+
+  private async checkOwnership(): Promise<boolean> {
+    if (!this.nonce) return false;
+    const top = await this.top();
+    if (top === 'unreadable') {
+      // Cannot prove ownership: refuse to write (or spend a refresh token) until we can.
+      this.lastProblem = 'writer lock is unreadable';
+      return false;
+    }
+    if (top && top.gen === this.gen && top.record?.nonce === this.nonce) return true;
+    this.lost(top);
+    return false;
+  }
+
+  private lost(top: Observed | undefined): void {
+    log.warn(
+      { dir: this.dir, holderPid: top?.record?.pid, holderHost: top?.record?.hostname },
+      'OAuth writer lock was taken over by another process; this process is now read-only'
+    );
+    this.lastProblem = 'writer lock was taken over by another process';
+    this.stopTimers();
+    this.nonce = undefined;
+  }
+
+  /** Create a generation file with its full content, failing if it already exists. */
+  private async createExclusive(gen: number, record: LockRecord): Promise<boolean> {
+    const path = join(this.dir, genFile(gen));
+    const tmp = `${path}.${process.pid}.${randomUUID()}.tmp`;
     const handle = await open(tmp, 'wx', 0o600);
     try {
       await handle.writeFile(JSON.stringify(record), 'utf-8');
@@ -212,38 +438,115 @@ export class OAuthWriterLock {
     } finally {
       await handle.close();
     }
-    await rename(tmp, this.path);
-    await chmod(this.path, 0o600).catch(() => {});
+    try {
+      await link(tmp, path);
+      return true;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === 'EEXIST') return false;
+      if (code !== 'EPERM' && code !== 'ENOTSUP' && code !== 'EOPNOTSUPP' && code !== 'ENOSYS') {
+        throw err;
+      }
+      // Filesystem without hard links: O_EXCL create (readers may briefly see an empty file).
+      try {
+        const excl = await open(path, 'wx', 0o600);
+        try {
+          await excl.writeFile(JSON.stringify(record), 'utf-8');
+          await excl.sync();
+        } finally {
+          await excl.close();
+        }
+        return true;
+      } catch (exclErr) {
+        if ((exclErr as NodeJS.ErrnoException).code === 'EEXIST') return false;
+        throw exclErr;
+      }
+    } finally {
+      await unlink(tmp).catch(() => {});
+    }
+  }
+
+  /** Atomically rewrite this process's own generation file (never another generation's). */
+  private async writeOwn(record: LockRecord): Promise<void> {
+    const path = join(this.dir, genFile(this.gen));
+    const tmp = `${path}.${process.pid}.${randomUUID()}.tmp`;
+    const handle = await open(tmp, 'wx', 0o600);
+    try {
+      await handle.writeFile(JSON.stringify(record), 'utf-8');
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    try {
+      await rename(tmp, path);
+    } catch (err) {
+      await unlink(tmp).catch(() => {});
+      throw err;
+    }
+  }
+
+  private async cleanupBelow(gen: number): Promise<void> {
+    const names = await readdir(this.dir).catch(() => [] as string[]);
+    for (const name of names) {
+      const g = parseGen(name);
+      if (g !== undefined && g < gen) await unlink(join(this.dir, name)).catch(() => {});
+    }
   }
 
   private startHeartbeat(): void {
-    this.stopHeartbeat();
+    if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
     this.heartbeatTimer = setInterval(() => {
-      void this.beat();
-    }, HEARTBEAT_MS);
+      // Not routed through single(): a heartbeat must keep running while an acquisition waits out
+      // its takeover grace period. Concurrent beats only ever rewrite our own generation file.
+      void this.beat().catch(() => {});
+    }, timings.heartbeatMs);
     this.heartbeatTimer.unref?.();
   }
 
-  private stopHeartbeat(): void {
-    if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
-    this.heartbeatTimer = undefined;
+  private startRequestPolling(): void {
+    if (!this.requestHandler || this.requestTimer) return;
+    this.requestTimer = setInterval(() => {
+      void this.pollRequests();
+    }, timings.requestPollMs);
+    this.requestTimer.unref?.();
   }
 
-  private async beat(): Promise<void> {
-    if (!this.nonce) return;
-    const current = await this.read();
-    if (current === 'unreadable') return;
-    if (current?.nonce !== this.nonce) {
-      // Re-validate (and log) through ensure() on the next write instead of here.
-      return;
+  private async pollRequests(): Promise<void> {
+    if (this.handlingRequests || !this.nonce || !this.requestHandler) return;
+    this.handlingRequests = true;
+    try {
+      await this.requestHandler(this.dir);
+    } catch (err) {
+      log.warn(
+        { dir: this.dir, reason: err instanceof Error ? err.message : String(err) },
+        'Could not process OAuth operator requests'
+      );
+    } finally {
+      this.handlingRequests = false;
     }
-    await this.replace({
-      pid: process.pid,
-      hostname: hostname(),
-      nonce: this.nonce,
-      acquiredAt: this.acquiredAt,
-      heartbeatAt: Date.now(),
-    }).catch(() => {});
+  }
+
+  private stopTimers(): void {
+    if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
+    if (this.requestTimer) clearInterval(this.requestTimer);
+    this.heartbeatTimer = undefined;
+    this.requestTimer = undefined;
+  }
+
+  /** Re-stamp our own generation, after confirming it is still the lock. */
+  private async beat(): Promise<boolean> {
+    if (!this.nonce) return false;
+    const started = performance.now();
+    if (!(await this.checkOwnership())) return false;
+    try {
+      await this.writeOwn(this.record(this.nonce));
+    } catch (err) {
+      this.lastProblem = `could not write heartbeat: ${err instanceof Error ? err.message : String(err)}`;
+      return false;
+    }
+    this.lastBeatMono = started;
+    await this.cleanupBelow(this.gen);
+    return true;
   }
 }
 
