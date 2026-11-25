@@ -12,7 +12,7 @@ Airlock (`airlock-bot`) is a permissions-aware MCP gateway sitting between AI ag
 - Top-level keys: `providers` (not `mcps`), `profiles` (reusable rule sets inherited via `extends`), `agents`, `approvals` (not `hitl`), `audit`.
 - Agent policy buckets: `allow`, `ask` (human approval required), `deny`.
 - Precedence: most specific matching pattern wins; ties break `deny > remember_allow > ask > allow`; unmatched tools default to deny.
-- Stdio mode (`--agent <name>`) uses stdin/stdout for MCP, so never pair `--agent` with `approvals.provider.type: stdio`. Use `dashboard`, `tui`, `macos`, `telegram`, or `openclaw`.
+- Stdio mode (`--agent <name>`) uses stdin/stdout for MCP, so never pair `--agent` with `approvals.provider.type: stdio`. Use `dashboard`, `macos`, `telegram`, `slack`, or `openclaw` (`tui` requires an interactive controlling terminal and is unsuitable for headless MCP hosts).
 
 ## Essential CLI Commands
 

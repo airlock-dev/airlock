@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import type { AirlockActivityEvent } from '../../activity/stream.js';
-import { createConfigureWebApp } from '../../configure-web/cli.js';
+import { assertSafeWebBindHost, createConfigureWebApp } from '../../configure-web/cli.js';
 import { assistantOptionsFromEnv } from '../../configure-web/assistant.js';
 import { childLogger } from '../../util/logger.js';
 import { ApprovalDashboardRoutes } from '../approval-dashboard.js';
@@ -13,6 +13,7 @@ const log = childLogger('hitl-dashboard');
 export interface DashboardHitlConfig {
   host: string;
   port: number;
+  insecure_remote_bind?: boolean;
   config_path?: string;
 }
 
@@ -33,6 +34,8 @@ export class DashboardHitlProvider implements HitlProvider {
       return;
     }
 
+    assertSafeWebBindHost(this.config.host, this.config.insecure_remote_bind === true);
+
     this.approvalRoutes = new ApprovalDashboardRoutes(
       this.approvalApi,
       this.approvalStream,
@@ -42,6 +45,7 @@ export class DashboardHitlProvider implements HitlProvider {
       approvals: this.approvalRoutes,
       assistant: assistantOptionsFromEnv(),
       publicGatewayUrl: process.env['AIRLOCK_PUBLIC_URL'],
+      bindHost: this.config.host,
     });
 
     try {

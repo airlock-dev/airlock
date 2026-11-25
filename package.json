@@ -6,14 +6,17 @@
   "license": "MIT",
   "type": "module",
   "bin": {
-    "airlock": "./dist/index.js"
+    "airlock": "./dist/index.js",
+    "airlock-bot": "./dist/index.js"
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "files": [
     "dist",
     "examples",
-    "extensions",
+    "extensions/openclaw/index.ts",
+    "extensions/openclaw/openclaw.plugin.json",
+    "extensions/openclaw/package.json",
     "schema.json",
     "airlock.service"
   ],

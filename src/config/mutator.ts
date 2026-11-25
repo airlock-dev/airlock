@@ -1,5 +1,7 @@
-import { readFileSync, writeFileSync } from 'fs';
+import { readFileSync } from 'fs';
 import { parse as parseYaml } from 'yaml';
+import { atomicWriteTextFileSync } from '../util/atomic-file.js';
+import { GatewayConfig, withEnvVarResolution } from './schema.js';
 import { stringifyPreservingComments } from './yaml-merge.js';
 
 export type RememberAllowMode = 'always' | 'temporary';
@@ -47,6 +49,11 @@ function rememberAllowRules(value: unknown, now: Date): RememberAllowRuleYaml[] 
 }
 
 export function rememberAllow(options: RememberAllowOptions): RememberAllowResult {
+  if (options.tool.startsWith('event:')) {
+    throw new Error(
+      'Event subscription approvals cannot be persisted as tool allow rules; add them under events.allow in airlock.yaml'
+    );
+  }
   const now = options.now ?? new Date();
   const raw = readFileSync(options.configPath, 'utf8');
   const parsed = parseYaml(raw) as unknown;
@@ -85,7 +92,13 @@ export function rememberAllow(options: RememberAllowOptions): RememberAllowResul
   }
 
   doc.agents[options.agentId] = agent;
-  writeFileSync(options.configPath, stringifyPreservingComments(raw, doc));
+  const validation = withEnvVarResolution(false, () => GatewayConfig.safeParse(doc));
+  if (!validation.success) {
+    throw new Error(
+      `Refusing to write invalid config: ${validation.error.issues.map((i) => i.message).join('; ')}`
+    );
+  }
+  atomicWriteTextFileSync(options.configPath, stringifyPreservingComments(raw, doc));
 
   return {
     agentId: options.agentId,

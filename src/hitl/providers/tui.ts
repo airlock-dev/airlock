@@ -1,4 +1,4 @@
-import { createReadStream } from 'fs';
+import { closeSync, createReadStream, openSync } from 'fs';
 import { childLogger } from '../../util/logger.js';
 import type { HitlProvider, HitlNotification, ApprovalApi } from './types.js';
 
@@ -20,43 +20,63 @@ interface PendingItem {
 }
 
 export class TuiHitlProvider implements HitlProvider {
-  private tty: ReturnType<typeof createReadStream>;
+  private tty?: { destroy?: () => void; setRawMode?: (mode: boolean) => void };
   private items: PendingItem[] = [];
   private selected = 0;
   private active = false;
 
-  constructor(private approvalApi: ApprovalApi) {
-    // Read keystrokes from /dev/tty — doesn't touch stdin/stdout
-    this.tty = createReadStream('/dev/tty', { encoding: 'utf8' });
-  }
+  constructor(private approvalApi: ApprovalApi) {}
 
   async init(): Promise<void> {
     this.active = true;
 
-    // Put tty in raw mode to get individual keypresses
-    const fd = (this.tty as { fd?: unknown }).fd;
-    if (typeof fd === 'number') {
-      try {
-        const tty = await import('tty');
-        if (tty.isatty(fd)) {
-          // We need the actual tty fd for raw mode
-          const { openSync } = await import('fs');
-          const ttyFd = openSync('/dev/tty', 'r');
-          const ttyReadStream = new tty.ReadStream(ttyFd);
-          ttyReadStream.setRawMode(true);
-          ttyReadStream.setEncoding('utf8');
-          ttyReadStream.on('data', (key: string) => this.handleKey(key));
-          ttyReadStream.resume();
-          this.tty = ttyReadStream as unknown as ReturnType<typeof createReadStream>;
-        }
-      } catch {
-        // Fallback: line-based input
-        this.tty.setEncoding('utf8');
-        this.tty.on('data', (chunk: Buffer | string) => {
+    // Open /dev/tty only during init() so headless MCP hosts (Claude Code, Cursor, Desktop) do not
+    // crash on startup with an unhandled ENXIO error from createReadStream('/dev/tty').
+    let ttyFd: number | undefined;
+    try {
+      ttyFd = openSync('/dev/tty', 'r');
+    } catch (err) {
+      log.warn(
+        { reason: err instanceof Error ? err.message : String(err) },
+        'TUI HITL provider has no controlling terminal (/dev/tty unavailable); use approvals.provider.type: dashboard, macos, telegram, or slack for headless MCP hosts'
+      );
+      return;
+    }
+
+    try {
+      const ttyMod = await import('tty');
+      if (ttyMod.isatty(ttyFd)) {
+        const ttyReadStream = new ttyMod.ReadStream(ttyFd);
+        ttyReadStream.setRawMode(true);
+        ttyReadStream.setEncoding('utf8');
+        ttyReadStream.on('data', (key: string) => this.handleKey(key));
+        ttyReadStream.on('error', (err) => {
+          log.warn({ err }, 'TUI /dev/tty stream error');
+        });
+        ttyReadStream.resume();
+        this.tty = ttyReadStream;
+      } else {
+        const stream = createReadStream('', { fd: ttyFd, encoding: 'utf8', autoClose: true });
+        stream.on('data', (chunk: Buffer | string) => {
           for (const ch of String(chunk)) this.handleKey(ch);
         });
-        this.tty.resume();
+        stream.on('error', (err) => {
+          log.warn({ err }, 'TUI stream error');
+        });
+        stream.resume();
+        this.tty = stream;
       }
+    } catch (err) {
+      try {
+        closeSync(ttyFd);
+      } catch {
+        /* ignore */
+      }
+      log.warn(
+        { reason: err instanceof Error ? err.message : String(err) },
+        'Failed to initialize TUI /dev/tty reader'
+      );
+      return;
     }
 
     log.info('TUI HITL provider ready — approve/deny from your terminal');
@@ -65,10 +85,16 @@ export class TuiHitlProvider implements HitlProvider {
   stop(): Promise<void> {
     this.active = false;
     try {
-      (this.tty as { destroy?: () => void }).destroy?.();
+      this.tty?.setRawMode?.(false);
     } catch {
       /* swallow */
     }
+    try {
+      this.tty?.destroy?.();
+    } catch {
+      /* swallow */
+    }
+    this.tty = undefined;
     return Promise.resolve();
   }
 

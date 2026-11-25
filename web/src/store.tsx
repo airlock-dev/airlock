@@ -173,27 +173,31 @@ export function StoreProvider({ children }: { children: ComponentChildren }) {
   const refreshPending = useCallback(async () => {
     const [logs, events] = await Promise.all([api.logs({ limit: '1' }), api.activity()]);
     const incoming = (logs.pending ?? []).map(normalizePending);
-    setPending((prev) => {
-      const byId = new Map(prev.map((item) => [item.id, item]));
-      return incoming.map((item) => {
-        const live = byId.get(item.id);
-        if (!live) return item;
-        return {
-          ...item,
-          expiresAt: item.expiresAt ?? live.expiresAt,
-          timeoutMs: item.timeoutMs || live.timeoutMs,
-          grantOptions: item.grantOptions ?? live.grantOptions,
-          batchId: item.batchId ?? live.batchId,
-          batchCode: item.batchCode ?? live.batchCode,
-          batchSize: item.batchSize ?? live.batchSize,
-          tier: item.tier ?? live.tier,
-          provider: item.provider ?? live.provider,
-          escalated: item.escalated ?? live.escalated,
-          mode: item.mode ?? live.mode,
-          plan: item.plan ?? live.plan,
-        };
+    // In-process dashboard with `:memory:` audit DB cannot read pending items from disk;
+    // keep the SSE-maintained list intact instead of wiping it with [].
+    if (logs.dbPath !== ':memory:' || incoming.length > 0) {
+      setPending((prev) => {
+        const byId = new Map(prev.map((item) => [item.id, item]));
+        return incoming.map((item) => {
+          const live = byId.get(item.id);
+          if (!live) return item;
+          return {
+            ...item,
+            expiresAt: item.expiresAt ?? live.expiresAt,
+            timeoutMs: item.timeoutMs || live.timeoutMs,
+            grantOptions: item.grantOptions ?? live.grantOptions,
+            batchId: item.batchId ?? live.batchId,
+            batchCode: item.batchCode ?? live.batchCode,
+            batchSize: item.batchSize ?? live.batchSize,
+            tier: item.tier ?? live.tier,
+            provider: item.provider ?? live.provider,
+            escalated: item.escalated ?? live.escalated,
+            mode: item.mode ?? live.mode,
+            plan: item.plan ?? live.plan,
+          };
+        });
       });
-    });
+    }
     setActivity((prev) => (events.events?.length ? events.events : prev));
   }, []);
 
@@ -227,11 +231,17 @@ export function StoreProvider({ children }: { children: ComponentChildren }) {
     let source: EventSource | null = null;
     let retry = 1000;
     let timer: ReturnType<typeof setTimeout>;
+    let hasConnected = false;
+    const notifiedIds = new Set<string>();
     const connect = () => {
       source = new EventSource('/events');
       source.onopen = () => {
         retry = 1000;
         setLiveState('live');
+        if (hasConnected) {
+          refreshPending().catch(() => {});
+        }
+        hasConnected = true;
       };
       source.onmessage = (event) => {
         const message = JSON.parse(event.data);
@@ -239,8 +249,12 @@ export function StoreProvider({ children }: { children: ComponentChildren }) {
           const request = normalizePending(message.request);
           setPending((list) => [request, ...list.filter((p) => p.id !== request.id)]);
           setEventTick((t) => t + 1);
-          notify(`${request.agentId} wants ${request.tool}`, request.reason ?? '');
+          if (!notifiedIds.has(request.id)) {
+            notifiedIds.add(request.id);
+            notify(`${request.agentId} wants ${request.tool}`, request.reason ?? '', request.id);
+          }
         } else if (message.type === 'resolved') {
+          if (typeof message.id === 'string') notifiedIds.delete(message.id);
           setPending((list) => list.filter((p) => p.id !== message.id && p.code !== message.code));
           setEventTick((t) => t + 1);
           refreshGrants().catch(() => {});
@@ -262,7 +276,7 @@ export function StoreProvider({ children }: { children: ComponentChildren }) {
       clearTimeout(timer);
       source?.close();
     };
-  }, [liveApprovals, refreshGrants]);
+  }, [liveApprovals, refreshGrants, refreshPending]);
 
   const store = useMemo<Store>(
     () => ({
@@ -325,11 +339,11 @@ export function StoreProvider({ children }: { children: ComponentChildren }) {
   return <StoreContext.Provider value={store}>{children}</StoreContext.Provider>;
 }
 
-function notify(title: string, body: string) {
+function notify(title: string, body: string, tag?: string) {
   try {
     if (localStorage.getItem('airlock:notifs') !== 'true') return;
     if (!('Notification' in window) || Notification.permission !== 'granted') return;
-    new Notification(`Airlock: ${title}`, { body });
+    new Notification(`Airlock: ${title}`, { body, ...(tag ? { tag } : {}) });
   } catch {
     // Notifications are a convenience; ignore storage or permission failures.
   }

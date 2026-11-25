@@ -20,6 +20,7 @@ interface ProviderForm {
   url: string;
   headers: KvRow[];
   oauth: boolean;
+  bearerTokenFile: string;
   isNew: boolean;
 }
 
@@ -47,6 +48,7 @@ function blankForm(): ProviderForm {
     url: '',
     headers: [],
     oauth: false,
+    bearerTokenFile: '',
     isNew: true,
   };
 }
@@ -62,6 +64,7 @@ function formFor(id: string, provider: Provider): ProviderForm {
     url: provider.url ?? '',
     headers: recordToRows(provider.headers),
     oauth: Boolean(provider.oauth),
+    bearerTokenFile: provider.bearerTokenFile ?? '',
     isNew: false,
   };
 }
@@ -124,7 +127,10 @@ export function Providers() {
       } else if (form.type === 'http' || form.type === 'sse') {
         payload.url = form.url;
         payload.headers = rowsToRecord(form.headers);
-        if (form.type === 'http') payload.oauth = form.oauth;
+        if (form.type === 'http') {
+          payload.oauth = form.oauth;
+          payload.bearer_token_file = form.bearerTokenFile.trim();
+        }
       }
       const next = await api.saveProvider(payload);
       setForm(null);
@@ -274,7 +280,7 @@ export function Providers() {
                                 </span>
                               )}
                             </span>
-                            {runtime?.error && health === 'down' && (
+                            {runtime?.error && (health === 'down' || health === 'degraded') && (
                               <span class="prov-error">{runtime.error}</span>
                             )}
                           </th>
@@ -282,24 +288,33 @@ export function Providers() {
                           <td>
                             <span
                               class="result"
-                              style={{ color: health === 'down' ? 'var(--deny-ink)' : undefined }}
+                              style={{
+                                color:
+                                  health === 'down'
+                                    ? 'var(--deny-ink)'
+                                    : health === 'degraded'
+                                      ? 'var(--ask-ink)'
+                                      : undefined,
+                              }}
                             >
                               <span
                                 class={cx(
                                   'dot',
                                   health === 'ok' && 'is-ok',
-                                  health === 'down' && 'is-down',
+                                  (health === 'down' || health === 'degraded') && 'is-down',
                                   health === 'disabled' && 'is-off'
                                 )}
                                 aria-hidden="true"
                               />
                               {health === 'ok'
                                 ? 'Healthy'
-                                : health === 'down'
-                                  ? 'Down'
-                                  : health === 'disabled'
-                                    ? 'Disabled'
-                                    : 'Checking…'}
+                                : health === 'degraded'
+                                  ? 'Degraded'
+                                  : health === 'down'
+                                    ? 'Down'
+                                    : health === 'disabled'
+                                      ? 'Disabled'
+                                      : 'Checking…'}
                             </span>
                           </td>
                           <td class="col-num ink-2">
@@ -380,7 +395,13 @@ export function Providers() {
                 />
                 Enabled
               </label>
-              <Button variant="ghost" onClick={() => setForm(null)}>
+              <Button
+                variant="ghost"
+                onClick={() => {
+                  setForm(null);
+                  setFormError(null);
+                }}
+              >
                 Cancel
               </Button>
               <Button variant="primary" busy={busy} onClick={save}>
@@ -489,14 +510,34 @@ export function Providers() {
                   />
                 </label>
                 {form.type === 'http' && (
-                  <label class="check">
-                    <input
-                      type="checkbox"
-                      checked={form.oauth}
-                      onChange={(e) => setForm({ ...form, oauth: e.currentTarget.checked })}
-                    />
-                    Sign in with OAuth
-                  </label>
+                  <>
+                    <label class="check">
+                      <input
+                        type="checkbox"
+                        checked={form.oauth}
+                        onChange={(e) => setForm({ ...form, oauth: e.currentTarget.checked })}
+                      />
+                      Sign in with OAuth
+                    </label>
+                    <label class="field">
+                      <span class="field-label">Bearer token file (optional)</span>
+                      <input
+                        class="input is-mono"
+                        name="bearer-token-file"
+                        value={form.bearerTokenFile}
+                        placeholder="/config/secrets/provider.token"
+                        autocomplete="off"
+                        spellcheck={false}
+                        onInput={(e) =>
+                          setForm({ ...form, bearerTokenFile: e.currentTarget.value })
+                        }
+                      />
+                      <span class="field-help">
+                        Path to a file containing a single bearer token (mutually exclusive with
+                        OAuth or an Authorization header).
+                      </span>
+                    </label>
+                  </>
                 )}
                 <div class="field">
                   <span class="field-label">Headers</span>

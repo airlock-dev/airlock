@@ -344,7 +344,7 @@ None of these print token values.
 The writing commands (`restore`, `export-legacy`, `import-legacy`) take the OAuth writer lock, so
 they never race a refresh: they refuse while a gateway owns the store. Stop it and run them in a
 one-off container, for example
-`docker compose stop airlock && docker compose run --rm airlock airlock oauth restore <provider> <version>`.
+`docker compose stop airlock-gateway && docker compose run --rm airlock-gateway oauth restore <provider> <version>`.
 If the lock was left behind by a gateway that crashed (it no longer heartbeats), the command waits
 for it to age out — up to about 2 minutes 45 seconds, with progress output — and stops waiting at
 once if the holder's heartbeat moves (a live gateway). `restore --force` instead takes the lock over

@@ -6,6 +6,8 @@ services:
     image: airlock-bot:local
     command: gateway --config /config/airlock.yaml
     restart: unless-stopped
+    # Give graceful shutdown enough room to finish an in-flight OAuth refresh and release the writer lock.
+    stop_grace_period: 40s
     env_file:
       - .env
     environment:
@@ -34,7 +36,7 @@ services:
 
   airlock-dashboard:
     image: airlock-bot:local
-    command: dashboard --config /config/airlock.yaml --host 0.0.0.0 --port 4112 --gateway-url http://airlock-gateway:4113
+    command: dashboard --config /config/airlock.yaml --host 0.0.0.0 --port 4112 --insecure-remote-bind --gateway-url http://airlock-gateway:4113
     restart: unless-stopped
     env_file:
       - .env

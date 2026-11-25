@@ -40,7 +40,6 @@ jobs:
           registry-url: https://registry.npmjs.org
 
       - run: npm ci
-      - run: npm run build
       - run: npm publish --provenance --access public
 
   publish-mcp-registry:
@@ -54,16 +53,17 @@ jobs:
 
       - name: Install mcp-publisher
         run: |
-          curl -sSL https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_linux_amd64.tar.gz \
+          curl -fsSL https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_linux_amd64.tar.gz \
             | tar -xz mcp-publisher
           chmod +x mcp-publisher
 
       - name: Wait for npm version to become visible
         run: |
           VERSION=$(node -p "require('./package.json').version")
-          for i in $(seq 1 12); do
+          for i in $(seq 1 24); do
             if curl -fsSL "https://registry.npmjs.org/airlock-bot/${VERSION}" >/dev/null 2>&1; then
               echo "airlock-bot@${VERSION} is live on npm"
+              sleep 10
               exit 0
             fi
             sleep 5
@@ -74,4 +74,11 @@ jobs:
       - name: Authenticate via GitHub OIDC and publish server.json
         run: |
           ./mcp-publisher login github-oidc
-          ./mcp-publisher publish
+          for attempt in 1 2 3; do
+            if ./mcp-publisher publish; then
+              exit 0
+            fi
+            echo "mcp-publisher publish attempt ${attempt} failed; retrying in 10s..."
+            sleep 10
+          done
+          exit 1

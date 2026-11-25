@@ -1,4 +1,5 @@
 import { chmod, mkdir, open, rename, unlink } from 'fs/promises';
+import { renameSync, statSync, unlinkSync, writeFileSync } from 'fs';
 import { randomUUID } from 'crypto';
 import { dirname } from 'path';
 
@@ -39,6 +40,37 @@ export async function atomicWritePrivateFile(path: string, contents: string): Pr
   } catch (err) {
     await handle?.close().catch(() => {});
     await unlink(temporaryPath).catch(() => {});
+    throw err;
+  }
+}
+
+/**
+ * Synchronously replace a text config file via sibling temp file + atomic rename so a crash or
+ * ENOSPC never leaves a truncated YAML file behind. Preserves the original file mode and falls
+ * back to in-place write only on single-file bind mounts (`EXDEV`/`EROFS`/`EPERM`/`EBUSY`).
+ */
+export function atomicWriteTextFileSync(path: string, contents: string): void {
+  let mode: number | undefined;
+  try {
+    mode = statSync(path).mode & 0o777;
+  } catch {
+    mode = undefined;
+  }
+  const temporaryPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    writeFileSync(temporaryPath, contents, { encoding: 'utf8', mode, flag: 'wx' });
+    renameSync(temporaryPath, path);
+  } catch (err) {
+    try {
+      unlinkSync(temporaryPath);
+    } catch {
+      /* ignore */
+    }
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'EXDEV' || code === 'EROFS' || code === 'EPERM' || code === 'EBUSY') {
+      writeFileSync(path, contents, 'utf8');
+      return;
+    }
     throw err;
   }
 }

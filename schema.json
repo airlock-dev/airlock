@@ -2648,6 +2648,9 @@
                       "type": "integer",
                       "minimum": 1,
                       "maximum": 65535
+                    },
+                    "insecure_remote_bind": {
+                      "type": "boolean"
                     }
                   },
                   "required": [
@@ -2850,6 +2853,9 @@
                         "type": "integer",
                         "minimum": 1,
                         "maximum": 65535
+                      },
+                      "insecure_remote_bind": {
+                        "type": "boolean"
                       }
                     },
                     "required": [

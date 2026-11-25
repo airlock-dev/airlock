@@ -105,12 +105,15 @@ function Shell() {
         pendingG = 0;
         if (jump[e.key]) {
           e.preventDefault();
+          e.stopPropagation();
           window.location.hash = `/${jump[e.key]}`;
           return;
         }
       }
-      if (e.key === 'g' && section !== 'inbox') {
+      if (e.key === 'g' && !document.querySelector('.scrim, .menu, .assistant.is-open')) {
         pendingG = Date.now();
+        e.preventDefault();
+        e.stopPropagation();
         return;
       }
       if (e.key === '/') {
@@ -137,8 +140,8 @@ function Shell() {
         }
       }
     };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
   }, [section, second]);
 
   const down = status?.summary.down ?? 0;

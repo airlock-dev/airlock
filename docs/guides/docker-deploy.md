@@ -54,11 +54,10 @@ you want the MCP-facing gateway to have read-only config, use split mode.
 Start from the example:
 
 ```bash
-cp examples/docker-gateway.yaml examples/airlock.yaml
 cp examples/docker-compose.yaml examples/compose.yaml
 cd examples
 mkdir -p airlock-config
-cp airlock.yaml airlock-config/airlock.yaml
+cp docker-gateway.yaml airlock-config/airlock.yaml
 docker compose -f compose.yaml up --build -d
 ```
 
@@ -126,6 +125,7 @@ approvals:
     type: dashboard
     host: 0.0.0.0
     port: 4112
+    insecure_remote_bind: true
 ```
 
 ## Reverse Proxy
@@ -153,7 +153,10 @@ Recommended edge controls:
 - For browser OAuth providers, set `oauth_callback_mode: gateway` with
   `oauth_callback_url: https://<agent-origin>/oauth/callback` and route
   `GET /oauth/callback` to `airlock-agent`. No callback relay container is
-  needed. See [OAuth support](../concepts/providers-and-tools.md#oauth-support).
+  needed. The image sets `AIRLOCK_OAUTH_DIR=/data/oauth` so grants and the
+  single-writer lock persist on the `/data` volume (keep `stop_grace_period: 40s`
+  on `airlock-gateway` so in-flight refreshes finish before shutdown). See
+  [OAuth support](../concepts/providers-and-tools.md#oauth-support).
 
 ## Extending the Image
 
