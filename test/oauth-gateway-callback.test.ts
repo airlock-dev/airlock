@@ -29,6 +29,7 @@ vi.mock('../src/util/logger.js', () => {
 });
 
 const { FileOAuthProvider } = await import('../src/pool/oauth-provider.js');
+const { releaseAllWriterLocks } = await import('../src/pool/oauth-lock.js');
 const { OAuthCallbackRouter } = await import('../src/pool/oauth-callback-router.js');
 const { oauthCallbackPlugin } = await import('../src/transport/oauth-callback.js');
 const { httpServerPlugin } = await import('../src/transport/http-server.js');
@@ -98,6 +99,7 @@ describe('OAuth gateway callback mode', () => {
 
   afterEach(async () => {
     await app.close();
+    await releaseAllWriterLocks();
     if (originalHome === undefined) delete process.env.HOME;
     else process.env.HOME = originalHome;
     await rm(tempHome, { recursive: true, force: true });
@@ -368,6 +370,7 @@ describe('OAuth loopback mode is unchanged', () => {
   });
 
   afterEach(async () => {
+    await releaseAllWriterLocks();
     if (originalHome === undefined) delete process.env.HOME;
     else process.env.HOME = originalHome;
     await rm(tempHome, { recursive: true, force: true });

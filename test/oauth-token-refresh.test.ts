@@ -3,6 +3,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { FileOAuthProvider } from '../src/pool/oauth-provider.js';
+import { releaseAllWriterLocks } from '../src/pool/oauth-lock.js';
 import type { OAuthTokens } from '@modelcontextprotocol/server';
 
 // Prevent actual browser opens
@@ -21,6 +22,7 @@ describe('FileOAuthProvider — refresh_token preservation', () => {
   });
 
   afterEach(async () => {
+    await releaseAllWriterLocks();
     if (originalHome === undefined) {
       delete process.env.HOME;
     } else {
@@ -136,6 +138,7 @@ describe('FileOAuthProvider — proactive refresh schedule (msUntilRefresh)', ()
   });
 
   afterEach(async () => {
+    await releaseAllWriterLocks();
     if (originalHome === undefined) {
       delete process.env.HOME;
     } else {
