@@ -1,7 +1,7 @@
 {
   "name": "airlock-bot",
   "mcpName": "io.github.airlock-dev/airlock",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "description": "Permissions-aware MCP gateway with human-in-the-loop approval for AI agents",
   "license": "MIT",
   "type": "module",
