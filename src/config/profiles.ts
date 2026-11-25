@@ -113,12 +113,17 @@ function mergeToolOverrides(
       existing.sandbox && override.sandbox
         ? mergeSandboxOverride(existing.sandbox, override.sandbox)
         : (override.sandbox ?? existing.sandbox);
+    const uploads =
+      existing.uploads || override.uploads
+        ? { ...(existing.uploads ?? {}), ...(override.uploads ?? {}) }
+        : undefined;
 
     target[toolName] = {
       ...existing,
       ...override,
       sandbox_presets: presets,
       ...(sandbox ? { sandbox } : {}),
+      ...(uploads ? { uploads } : {}),
       ...(appended ? { description_append: appended } : {}),
     };
   }

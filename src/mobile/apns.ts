@@ -43,7 +43,13 @@ export interface ApnsApprovalBatch {
   size: number;
   /** Number of members a security check flagged; "approve all" skips these. */
   flagged: number;
-  items: Array<{ id: string; code: string; tool: string; summary: string }>;
+  items: Array<{
+    id: string;
+    code: string;
+    tool: string;
+    summary: string;
+    escalationReason?: string;
+  }>;
 }
 
 export interface ApnsApprovalContext {
@@ -60,6 +66,7 @@ export interface ApnsApprovalContext {
   tier?: string;
   provider?: string;
   escalated?: boolean;
+  escalationReason?: string;
   /** Grant scopes the companion can offer ("allow read-only gmail tools for 15m"). */
   grantOptions?: Array<{ scope: string; label: string; tier?: string; profile?: string }>;
 }

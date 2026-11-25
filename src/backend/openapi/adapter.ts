@@ -1,9 +1,21 @@
-import type { Tool } from '@modelcontextprotocol/server';
+import { ProtocolError, type Tool } from '@modelcontextprotocol/server';
+import type { ValidateFunction } from 'ajv';
 import type { BackendAdapter } from '../types.js';
 import type { ToolCall, ToolResult } from '../../types.js';
 import type { ApiConfig, SecurityConfig } from '../../config/schema.js';
 import { parseOpenApiSpec, type ParsedApi, type ParsedOperation } from './parser.js';
 import { assertHostNotBlocked } from '../../security/blocked-hosts.js';
+import { parseUploadRef } from '../../uploads/refs.js';
+import {
+  assertUploadPlanActive,
+  materializeUploadArgs,
+  type UploadExecutionPlan,
+} from '../../uploads/resolve.js';
+import type {
+  MultipartFieldSpec,
+  StreamingMultipartBody,
+  UploadStore,
+} from '../../uploads/store.js';
 
 function stringifyParameterValue(paramName: string, value: unknown): string {
   if (typeof value === 'string') return value;
@@ -14,6 +26,13 @@ function stringifyParameterValue(paramName: string, value: unknown): string {
   throw new Error(`Parameter "${paramName}" must be a scalar or an array of scalars`);
 }
 
+function stringifyFormFieldValue(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return value.toString();
+  if (value === null || value === undefined) return '';
+  return JSON.stringify(value);
+}
+
 export class OpenApiAdapter implements BackendAdapter {
   readonly id: string;
   private parsedApi?: ParsedApi;
@@ -22,9 +41,25 @@ export class OpenApiAdapter implements BackendAdapter {
   constructor(
     private configKey: string,
     private config: ApiConfig,
-    private security: SecurityConfig
+    private security: SecurityConfig,
+    private uploadStore?: UploadStore
   ) {
     this.id = `api:${configKey}`;
+  }
+
+  nativeUploadArgKind(toolName: string, topKey: string): 'binary' | 'multipart' | undefined {
+    const op = this.operationMap.get(toolName);
+    if (!op) return undefined;
+    if (
+      op.bodyKind === 'multipart' &&
+      (op.fileFields.includes(topKey) || op.arrayFileFields.includes(topKey))
+    ) {
+      return 'multipart';
+    }
+    if (op.bodyKind === 'binary' && op.binaryArgName === topKey) {
+      return 'binary';
+    }
+    return undefined;
   }
 
   async listTools(): Promise<Tool[]> {
@@ -58,13 +93,38 @@ export class OpenApiAdapter implements BackendAdapter {
       return { success: false, error: `Unknown operation: ${toolCall.tool}` };
     }
 
+    // Materialize any configured/suffix upload refs once up front so path params, query params,
+    // ordinary multipart fields, and JSON bodies all use the exact validated effective values.
+    // Native multipart file fields and binary bodies are excluded from uploadPlan by uploadPolicy.
+    const sessionId =
+      typeof toolCall.meta?.downstreamSessionId === 'string'
+        ? toolCall.meta.downstreamSessionId
+        : undefined;
+    let effectiveArgs = toolCall.args;
+    const uploadPlan = toolCall.meta?.uploadPlan as UploadExecutionPlan | undefined;
+    if (uploadPlan && this.uploadStore) {
+      try {
+        effectiveArgs = await materializeUploadArgs(
+          toolCall.args,
+          toolCall.agentId,
+          uploadPlan,
+          this.uploadStore,
+          sessionId,
+          { schemaValidator: toolCall.meta?.schemaValidator as ValidateFunction | undefined }
+        );
+      } catch (err) {
+        if (err instanceof ProtocolError) throw err;
+        return { success: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    }
+
     // Build URL
     let url = this.parsedApi!.baseUrl + op.path;
 
     try {
       // Replace path params
       for (const paramName of op.pathParams) {
-        const value = toolCall.args[paramName];
+        const value = effectiveArgs[paramName];
         if (value === undefined) {
           return { success: false, error: `Missing required path parameter: ${paramName}` };
         }
@@ -77,7 +137,7 @@ export class OpenApiAdapter implements BackendAdapter {
       // Add query params
       const queryParts: string[] = [];
       for (const paramName of op.queryParams) {
-        const value = toolCall.args[paramName];
+        const value = effectiveArgs[paramName];
         if (value !== undefined) {
           queryParts.push(
             `${encodeURIComponent(paramName)}=${encodeURIComponent(stringifyParameterValue(paramName, value))}`
@@ -110,7 +170,10 @@ export class OpenApiAdapter implements BackendAdapter {
     }
 
     // Build headers
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    const headers: Record<string, string> = {};
+    if (op.bodyKind !== 'multipart' && op.bodyKind !== 'binary') {
+      headers['Content-Type'] = 'application/json';
+    }
     if (this.config.auth) {
       if (this.config.auth.type === 'bearer') {
         headers['Authorization'] = `Bearer ${this.config.auth.token}`;
@@ -120,20 +183,50 @@ export class OpenApiAdapter implements BackendAdapter {
     }
 
     // Build request body (exclude path/query params from body)
-    let body: string | undefined;
-    if (op.bodyIsValue) {
-      if (toolCall.args.body !== undefined) body = JSON.stringify(toolCall.args.body);
-    } else if (op.hasBody) {
-      const bodyArgs: Record<string, unknown> = {};
-      const paramNames = new Set([...op.pathParams, ...op.queryParams]);
-      for (const [key, value] of Object.entries(toolCall.args)) {
-        if (!paramNames.has(key)) {
-          bodyArgs[key] = value;
+    let body: string | ReadableStream<Uint8Array> | undefined;
+    let closeBodyStream: (() => void) | undefined;
+    let needsDuplex = false;
+    try {
+      if (op.bodyKind === 'multipart') {
+        const mp = await this.buildMultipartBody(op, toolCall.agentId, effectiveArgs, sessionId);
+        headers['Content-Type'] = mp.contentType;
+        headers['Content-Length'] = String(mp.contentLength);
+        body = mp.stream;
+        closeBodyStream = mp.close;
+        needsDuplex = true;
+      } else if (op.bodyKind === 'binary') {
+        const binary = await this.buildBinaryBody(op, toolCall.agentId, effectiveArgs, sessionId);
+        if (binary) {
+          headers['Content-Type'] = binary.contentType;
+          headers['Content-Length'] = String(binary.sizeBytes);
+          body = binary.stream;
+          closeBodyStream = binary.close;
+          needsDuplex = true;
+        }
+      } else {
+        if (op.bodyIsValue) {
+          if (effectiveArgs.body !== undefined) body = JSON.stringify(effectiveArgs.body);
+        } else if (op.hasBody) {
+          const bodyArgs: Record<string, unknown> = {};
+          const paramNames = new Set([...op.pathParams, ...op.queryParams]);
+          for (const [key, value] of Object.entries(effectiveArgs)) {
+            if (!paramNames.has(key)) {
+              Object.defineProperty(bodyArgs, key, {
+                value,
+                enumerable: true,
+                writable: true,
+                configurable: true,
+              });
+            }
+          }
+          if (Object.keys(bodyArgs).length > 0) {
+            body = JSON.stringify(bodyArgs);
+          }
         }
       }
-      if (Object.keys(bodyArgs).length > 0) {
-        body = JSON.stringify(bodyArgs);
-      }
+    } catch (err) {
+      closeBodyStream?.();
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
     }
 
     // Execute request
@@ -141,13 +234,24 @@ export class OpenApiAdapter implements BackendAdapter {
     const timer = setTimeout(() => controller.abort(), this.config.timeout_ms);
 
     try {
-      const response = await fetch(url, {
+      const fetchInit: RequestInit & { duplex?: 'half' } = {
         method: op.method.toUpperCase(),
         headers,
         body: ['post', 'put', 'patch'].includes(op.method) ? body : undefined,
         signal: controller.signal,
         redirect: 'manual',
-      });
+      };
+      if (needsDuplex && fetchInit.body) {
+        fetchInit.duplex = 'half';
+      } else if (!fetchInit.body) {
+        closeBodyStream?.();
+      }
+      // Final synchronous re-check right before fetch so revocation during DNS host verification
+      // or body setup cannot still dispatch buffered upload bytes upstream.
+      if (uploadPlan && this.uploadStore) {
+        assertUploadPlanActive(uploadPlan, toolCall.agentId, this.uploadStore, sessionId);
+      }
+      const response = await fetch(url, fetchInit);
 
       let responseBody = '';
       let truncated = false;
@@ -194,6 +298,7 @@ export class OpenApiAdapter implements BackendAdapter {
         error: response.ok ? undefined : `HTTP ${response.status}: ${responseBody.slice(0, 200)}`,
       };
     } catch (err) {
+      closeBodyStream?.();
       if ((err as Error).name === 'AbortError') {
         return { success: false, error: `Request timed out after ${this.config.timeout_ms}ms` };
       }
@@ -205,4 +310,107 @@ export class OpenApiAdapter implements BackendAdapter {
   }
 
   async stop(): Promise<void> {}
+
+  private parseNativeUploadId(fieldName: string, raw: unknown): string {
+    if (!this.uploadStore?.isEnabled()) {
+      throw new Error(
+        `Field "${fieldName}" requires staged file uploads (set uploads.enabled: true).`
+      );
+    }
+    const parsed = parseUploadRef(raw);
+    if (!parsed || parsed.mode) {
+      throw new Error(
+        `Field "${fieldName}" expects a bare Airlock upload ref ("airlock-upload://<id>") from airlock_prepare_upload.`
+      );
+    }
+    return parsed.id;
+  }
+
+  private async buildMultipartBody(
+    op: ParsedOperation,
+    agentId: string,
+    effectiveArgs: Record<string, unknown>,
+    sessionId?: string
+  ): Promise<StreamingMultipartBody> {
+    const paramNames = new Set([...op.pathParams, ...op.queryParams]);
+    const singleFiles = new Set(op.fileFields);
+    const arrayFiles = new Set(op.arrayFileFields);
+    const parts: MultipartFieldSpec[] = [];
+
+    for (const [key, value] of Object.entries(effectiveArgs)) {
+      if (paramNames.has(key) || value === undefined) continue;
+      if (singleFiles.has(key)) {
+        // Explicit null on a nullable OpenAPI 3.1 file field omits the optional file part.
+        if (value === null) continue;
+        parts.push({ kind: 'upload', name: key, uploadId: this.parseNativeUploadId(key, value) });
+      } else if (arrayFiles.has(key)) {
+        if (value === null) continue;
+        const refs = Array.isArray(value) ? value : [value];
+        for (const item of refs) {
+          if (item === null || item === undefined) continue;
+          parts.push({ kind: 'upload', name: key, uploadId: this.parseNativeUploadId(key, item) });
+        }
+      } else if (Array.isArray(value)) {
+        for (const item of value) {
+          parts.push({ kind: 'text', name: key, value: stringifyFormFieldValue(item) });
+        }
+      } else {
+        parts.push({ kind: 'text', name: key, value: stringifyFormFieldValue(value) });
+      }
+    }
+
+    if (!this.uploadStore) {
+      // Allow multipart endpoints with only text fields (no file refs) even without an UploadStore.
+      if (parts.some((part) => part.kind === 'upload')) {
+        throw new Error(
+          'Multipart file uploads require staged file uploads (uploads.enabled: true).'
+        );
+      }
+      const { buildStreamingMultipartFromParts } = await import('../../uploads/store.js');
+      return buildStreamingMultipartFromParts(parts);
+    }
+    return this.uploadStore.openStreamingMultipart(agentId, parts, sessionId);
+  }
+
+  private async buildBinaryBody(
+    op: ParsedOperation,
+    agentId: string,
+    effectiveArgs: Record<string, unknown>,
+    sessionId?: string
+  ): Promise<
+    | {
+        stream: ReadableStream<Uint8Array>;
+        contentType: string;
+        sizeBytes: number;
+        close: () => void;
+      }
+    | undefined
+  > {
+    const argName = op.binaryArgName ?? 'file';
+    const raw = effectiveArgs[argName];
+    if (raw === undefined || raw === null) return undefined;
+    if (!this.uploadStore?.isEnabled()) {
+      throw new Error(
+        `Argument "${argName}" requires staged file uploads (set uploads.enabled: true).`
+      );
+    }
+    const parsed = parseUploadRef(raw);
+    if (!parsed || parsed.mode) {
+      throw new Error(
+        `Argument "${argName}" expects a bare Airlock upload ref ("airlock-upload://<id>") from airlock_prepare_upload.`
+      );
+    }
+    const { record, stream, close } = await this.uploadStore.openVerifiedStream(
+      agentId,
+      parsed.id,
+      sessionId
+    );
+    const contentType =
+      record.contentType !== 'application/octet-stream'
+        ? record.contentType
+        : op.bodyContentType && !op.bodyContentType.includes('*')
+          ? op.bodyContentType
+          : 'application/octet-stream';
+    return { stream, contentType, sizeBytes: record.sizeBytes, close };
+  }
 }

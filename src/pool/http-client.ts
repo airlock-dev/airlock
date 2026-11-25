@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'async_hooks';
 import {
   StreamableHTTPClientTransport,
   auth,
@@ -18,7 +19,8 @@ import type {
   EventsPollResult,
   EventsStreamParams,
 } from '../events/protocol.js';
-import { FileOAuthProvider } from './oauth-provider.js';
+import { FileOAuthProvider, type OAuthCallbackMode } from './oauth-provider.js';
+import type { OAuthCallbackRouter } from './oauth-callback-router.js';
 import { ClientCredentialsTokenSource } from './client-credentials.js';
 import type { ClientCredentialsConfig } from '../config/schema.js';
 import type { OAuthGrantHealth, OAuthGrantState, ProviderConnectionStatus } from './status.js';
@@ -80,6 +82,26 @@ export interface HttpMcpClientOptions {
   oauthStoreDir?: string;
   /** Refresh at least this often while a refresh token is stored (default 24 h). */
   oauthMaxRefreshIntervalMs?: number;
+  /** Where the browser OAuth callback lands (`loopback` default, or `gateway`). */
+  oauthCallbackMode?: OAuthCallbackMode;
+  /** Required for `oauthCallbackMode: 'gateway'`. */
+  oauthCallbackRouter?: OAuthCallbackRouter;
+}
+
+/** Whether an HTTP fetch payload is strictly an MCP `notifications/cancelled` frame. */
+function isCancellationFetch(init?: RequestInit): boolean {
+  if (typeof init?.body !== 'string') return false;
+  try {
+    const parsed = JSON.parse(init.body) as unknown;
+    return (
+      typeof parsed === 'object' &&
+      parsed !== null &&
+      !Array.isArray(parsed) &&
+      (parsed as { method?: unknown }).method === 'notifications/cancelled'
+    );
+  } catch {
+    return false;
+  }
 }
 
 /** Extract a short, human-readable reason from a connection error. */
@@ -135,6 +157,7 @@ export class HttpMcpClient {
   private refreshDeadline?: number;
   private readyListeners = new Set<() => void>();
   private eventsListChangedListeners = new Set<() => void>();
+  private readonly sendGuardStorage = new AsyncLocalStorage<() => void>();
 
   private awaitingAuth = false;
   private connecting = false;
@@ -187,7 +210,12 @@ export class HttpMcpClient {
         this.clientId,
         this.clientSecret,
         this.oauthCallbackUrl,
-        { storage: options.oauthStorage ?? 'writer', storeDir: options.oauthStoreDir }
+        {
+          storage: options.oauthStorage ?? 'writer',
+          storeDir: options.oauthStoreDir,
+          callbackMode: options.oauthCallbackMode,
+          callbackRouter: options.oauthCallbackRouter,
+        }
       );
     }
     this.oauthMaxRefreshIntervalMs = options.oauthMaxRefreshIntervalMs;
@@ -207,6 +235,7 @@ export class HttpMcpClient {
   }
 
   async connect(): Promise<void> {
+    if (this.stopped) return;
     // Grant maintenance does not depend on the MCP endpoint: a down resource server must never let
     // the refresh token reach its inactivity limit.
     this.ensureGrantMaintenance();
@@ -239,11 +268,16 @@ export class HttpMcpClient {
       transportOpts.authProvider = this.oauthAuthProvider();
     }
 
-    if (this.tokenSource) {
-      transportOpts.fetch = wrapFetchWithEventHeaders(this.clientCredentialsFetch());
-    } else {
-      transportOpts.fetch = wrapFetchWithEventHeaders();
-    }
+    const guardedFetch: (url: string | URL, init?: RequestInit) => Promise<Response> = this
+      .tokenSource
+      ? this.clientCredentialsFetch()
+      : (url, init) => {
+          if (!isCancellationFetch(init)) {
+            this.sendGuardStorage.getStore()?.();
+          }
+          return fetch(url, init);
+        };
+    transportOpts.fetch = wrapFetchWithEventHeaders(guardedFetch);
 
     this.transport = new StreamableHTTPClientTransport(new URL(this.url), transportOpts);
 
@@ -343,7 +377,14 @@ export class HttpMcpClient {
     const source = this.tokenSource!;
     return async (url, init) => {
       const send = async (force: boolean): Promise<Response> => {
+        const skipGuard = isCancellationFetch(init);
+        if (!skipGuard) {
+          this.sendGuardStorage.getStore()?.();
+        }
         const token = await source.getToken(force);
+        if (!skipGuard) {
+          this.sendGuardStorage.getStore()?.();
+        }
         const headers = new Headers(init?.headers);
         headers.set('Authorization', `Bearer ${token}`);
         return fetch(url, { ...init, headers });
@@ -567,6 +608,7 @@ export class HttpMcpClient {
         // refresh (that would loop, spending a rotating token each time). Back off instead.
         const freshTokenRejected = recent !== undefined && tokenUsable(recent);
         const outcome = recent ?? (await this.refreshNow('auth-required'));
+        if (this.stopped || abort.signal.aborted) return;
         if (tokenUsable(outcome) && !freshTokenRejected) break;
         if (outcome.kind === 'rejected' || outcome.kind === 'failed') {
           if (!this.refreshTimer) this.scheduleRefreshRetry();
@@ -587,9 +629,11 @@ export class HttpMcpClient {
         if (outcome.kind !== 'read_only') {
           try {
             const result = await this.prepareAuthorization();
+            if (this.stopped || abort.signal.aborted) return;
             if (result === 'AUTHORIZED') break; // non-interactive grant obtained; just reconnect
             prepared = true;
           } catch (err) {
+            if (this.stopped || abort.signal.aborted) return;
             log.warn(
               { id: this.id, reason: friendlyError(err) },
               'Could not prepare browser OAuth authorization; will retry'
@@ -602,6 +646,7 @@ export class HttpMcpClient {
         }
 
         const previousTokenVersion = await provider.tokenVersion();
+        if (this.stopped || abort.signal.aborted) return;
         const waitAbort = new AbortController();
         const onFlowAbort = () => waitAbort.abort();
         abort.signal.addEventListener('abort', onFlowAbort, { once: true });
@@ -621,8 +666,13 @@ export class HttpMcpClient {
             provider.waitForAuthCode().then(
               (code) => ({ code }),
               (err: unknown) => {
+                if (waitAbort.signal.aborted || this.stopped) {
+                  return { retry: true as const };
+                }
+                const reason = friendlyError(err);
+                this.lastError = reason;
                 log.warn(
-                  { id: this.id, reason: friendlyError(err) },
+                  { id: this.id, reason },
                   'OAuth callback failed; preparing a new authorization later'
                 );
                 return sleep(this.refreshBackoffMs(), waitAbort.signal).then(() => ({
@@ -664,6 +714,7 @@ export class HttpMcpClient {
         // retry: loop again (refresh + re-prepare)
       }
     } catch (err) {
+      if (this.stopped) return;
       this.lastError = friendlyError(err);
       throw err;
     } finally {
@@ -942,14 +993,19 @@ export class HttpMcpClient {
   async callTool(
     name: string,
     args: Record<string, unknown>,
-    requestMeta?: McpRequestMeta
+    requestMeta?: McpRequestMeta,
+    beforeSend?: () => void
   ): Promise<unknown> {
     return this.withSessionRetry('callTool', async () => {
       if (!this.client || !this.ready) throw new Error(`MCP ${this.id} not connected`);
       const request = requestMeta
         ? { name, arguments: args, _meta: requestMeta }
         : { name, arguments: args };
-      return this.client.callTool(request, { timeout: this.requestTimeoutMs });
+      const invoke = (): Promise<unknown> => {
+        beforeSend?.();
+        return this.client!.callTool(request, { timeout: this.requestTimeoutMs });
+      };
+      return beforeSend ? this.sendGuardStorage.run(beforeSend, invoke) : invoke();
     });
   }
 
@@ -1069,6 +1125,7 @@ export class HttpMcpClient {
     this.unsubscribeWriterAcquired?.();
     this.flowWake = undefined;
     this.flowAbort?.abort();
+    this.oauthProvider?.stop();
     if (this.refreshTimer) {
       clearTimeout(this.refreshTimer);
       this.refreshTimer = undefined;
@@ -1083,11 +1140,6 @@ export class HttpMcpClient {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = undefined;
     }
-    if (this.refreshTimer) {
-      clearTimeout(this.refreshTimer);
-      this.refreshTimer = undefined;
-    }
-    this.oauthProvider?.stopCallbackServer();
     // Release the session server-side before closing locally. transport.close() only tears down
     // OUR end; without the DELETE that terminateSession() sends, the server keeps the session in
     // memory forever. Servers that bound their session table then leak a slot on every gateway

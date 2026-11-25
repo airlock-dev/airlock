@@ -1758,6 +1758,42 @@ describe('OAuth lifecycle — durable copies before anything is dropped', () => 
     expect(copies.some((raw) => raw.includes(successor))).toBe(true);
     expect(original.refresh).not.toBe(successor);
   });
+
+  it('a non-retry conflict that cannot archive immediately keeps its persistence retry timer running', async () => {
+    await seedGrant();
+    setPersistenceRetryMs(80);
+    const p = provider();
+    await p.tokens(); // observe initial disk revision
+    const current = await readGrant();
+    // Race an external restore into the window after loadForMutation() and before store.write().
+    const realWrite = p.store.write.bind(p.store);
+    let racedRestore = false;
+    vi.spyOn(p.store, 'write').mockImplementation(async (data, reason, opts) => {
+      if (!racedRestore && reason === 'authorization-start') {
+        racedRestore = true;
+        await new OAuthGrantStore(ID, 'writer', dir).write(
+          { ...current, tokens: { ...current.tokens, access_token: 'at-external' } },
+          'restore'
+        );
+      }
+      return realWrite(data, reason, opts);
+    });
+    // Nowhere to put the conflicting unsaved state when resolveConflict() runs.
+    const hist = vi.spyOn(p.store, 'writeHistoryFile').mockRejectedValue(new Error('EIO'));
+    const orph = vi.spyOn(p.store, 'writeOrphan').mockRejectedValue(new Error('EIO'));
+    // Direct (non-retry) mutation hits OAuthStoreConflictError -> resolveConflict() -> preserve() fails.
+    await expect(p.beginAuthorization()).rejects.toThrow(/changed on disk/);
+    expect(p.persistencePending).toBe(true);
+    // Restore history writes; the timer scheduled by preserve() must still flush automatically.
+    hist.mockRestore();
+    orph.mockRestore();
+    await vi.waitFor(() => expect(p.persistencePending).toBe(false), {
+      timeout: 3_000,
+      interval: 20,
+    });
+    expect(await historyReasons()).toContain('unsaved-authorization-start');
+    await p.close(1_000);
+  });
 });
 
 describe('OAuth lifecycle — fenced publication', () => {

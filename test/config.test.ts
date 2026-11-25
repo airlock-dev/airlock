@@ -708,6 +708,99 @@ agents:
     expect(validateConfig(config).filter((d) => d.level === 'error')).toEqual([]);
   });
 
+  describe('oauth_callback_mode: gateway', () => {
+    const gatewayProvider = (fields: Record<string, unknown>) =>
+      GatewayConfig.parse({
+        providers: {
+          spliit: {
+            type: 'http',
+            url: 'https://mcp.example.com/mcp',
+            oauth: true,
+            oauth_callback_mode: 'gateway',
+            ...fields,
+          },
+        },
+        agents: { agent1: { token: 'agent-secret' } },
+      });
+
+    it('defaults to loopback so existing providers are unchanged', () => {
+      const config = GatewayConfig.parse({
+        providers: { cloud: { type: 'http', url: 'https://mcp.example.com/mcp', oauth: true } },
+        agents: {},
+      });
+      const cloud = config.providers.cloud;
+      expect(cloud !== 'builtin' && cloud.type === 'http' && cloud.oauth_callback_mode).toBe(
+        'loopback'
+      );
+    });
+
+    it('accepts an HTTPS callback on the gateway origin', () => {
+      const config = gatewayProvider({
+        oauth_callback_url: 'https://airlock.example.com/oauth/callback',
+      });
+      expect(validateConfig(config).filter((d) => d.level !== 'info')).toEqual([]);
+    });
+
+    it('accepts plain HTTP only for a loopback callback', () => {
+      const local = gatewayProvider({ oauth_callback_url: 'http://127.0.0.1:4111/oauth/callback' });
+      expect(validateConfig(local).filter((d) => d.level === 'error')).toEqual([]);
+
+      const remote = gatewayProvider({
+        oauth_callback_url: 'http://airlock.example.com/oauth/callback',
+      });
+      expect(validateConfig(remote)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            level: 'error',
+            message:
+              'Provider "spliit" uses oauth_callback_mode: gateway with a non-HTTPS oauth_callback_url.',
+          }),
+        ])
+      );
+    });
+
+    it('requires oauth_callback_url', () => {
+      expect(validateConfig(gatewayProvider({}))).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            level: 'error',
+            message:
+              'Provider "spliit" sets oauth_callback_mode: gateway without oauth_callback_url.',
+          }),
+        ])
+      );
+    });
+
+    it('rejects a callback URL with a query string', () => {
+      const config = gatewayProvider({
+        oauth_callback_url: 'https://airlock.example.com/oauth/callback?provider=spliit',
+      });
+      expect(validateConfig(config)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            level: 'error',
+            message: 'Provider "spliit" oauth_callback_url must not contain a query or fragment.',
+          }),
+        ])
+      );
+    });
+
+    it('warns when the provider does not use OAuth', () => {
+      const config = gatewayProvider({
+        oauth: false,
+        oauth_callback_url: 'https://airlock.example.com/oauth/callback',
+      });
+      expect(validateConfig(config)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            level: 'warn',
+            message: 'Provider "spliit" sets oauth_callback_mode: gateway without oauth: true.',
+          }),
+        ])
+      );
+    });
+  });
+
   it('errors when default_profile references an unknown profile', () => {
     const config = GatewayConfig.parse({
       default_profile: 'nonexistent',

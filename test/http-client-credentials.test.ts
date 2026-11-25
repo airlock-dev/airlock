@@ -10,6 +10,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { ClientCredentialsConfig } from '../src/config/schema.js';
 
 const transportOptions: Array<Record<string, unknown>> = [];
+const mockClientInstances: Array<{
+  connect: ReturnType<typeof vi.fn>;
+  callTool: ReturnType<typeof vi.fn>;
+}> = [];
+let nextConnectImpl: (() => Promise<void>) | undefined;
+let nextCallToolImpl: ((req: unknown, opts?: unknown) => Promise<unknown>) | undefined;
 
 // v2 exports Client and the transport from one module; keep the real exports (auth,
 // UnauthorizedError, ...) and override only the two symbols HttpMcpClient constructs.
@@ -24,13 +30,26 @@ vi.mock('@modelcontextprotocol/client', async (importOriginal) => ({
       terminateSession: vi.fn().mockResolvedValue(undefined),
     };
   }),
-  Client: vi.fn().mockImplementation(() => ({
-    connect: vi.fn().mockResolvedValue(undefined),
-    listTools: vi.fn().mockResolvedValue({ tools: [] }),
-    callTool: vi.fn().mockResolvedValue({ content: [] }),
-    getServerVersion: vi.fn(),
-    getInstructions: vi.fn(),
-  })),
+  Client: vi.fn().mockImplementation(() => {
+    const connect = vi.fn().mockImplementation(() => {
+      const impl = nextConnectImpl;
+      nextConnectImpl = undefined;
+      return impl ? impl() : Promise.resolve(undefined);
+    });
+    const callTool = vi.fn().mockImplementation((req: unknown, opts?: unknown) => {
+      const impl = nextCallToolImpl;
+      nextCallToolImpl = undefined;
+      return impl ? impl(req, opts) : Promise.resolve({ content: [] });
+    });
+    mockClientInstances.push({ connect, callTool });
+    return {
+      connect,
+      listTools: vi.fn().mockResolvedValue({ tools: [] }),
+      callTool,
+      getServerVersion: vi.fn(),
+      getInstructions: vi.fn(),
+    };
+  }),
 }));
 
 let getToken: ReturnType<typeof vi.fn>;
@@ -57,6 +76,9 @@ let fetchMock: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
   transportOptions.length = 0;
+  mockClientInstances.length = 0;
+  nextConnectImpl = undefined;
+  nextCallToolImpl = undefined;
   lastAuthFailure = undefined;
   getToken = vi.fn().mockResolvedValue('tok-1');
   fetchMock = vi.fn().mockResolvedValue(new Response('{}', { status: 200 }));
@@ -176,5 +198,119 @@ describe('HttpMcpClient with client_credentials', () => {
       status: 'auth_required',
       reason: 'client credentials rejected: invalid_client',
     });
+  });
+
+  it('re-runs beforeSend after token mint and before 401 retry in clientCredentialsFetch', async () => {
+    let active = true;
+    getToken = vi
+      .fn()
+      .mockImplementationOnce(async () => {
+        // Initial token mint succeeds while upload is still active
+        return 'tok-1';
+      })
+      .mockImplementationOnce(async () => {
+        // Revoke during 401 re-mint — the retry fetch MUST NOT fire
+        active = false;
+        return 'tok-2';
+      });
+    fetchMock
+      .mockResolvedValueOnce(new Response('unauthorized', { status: 401 }))
+      .mockResolvedValueOnce(new Response('{}', { status: 200 }));
+
+    const client = new HttpMcpClient(
+      'linearBot',
+      'https://mcp.example.com/mcp',
+      undefined,
+      false,
+      18432,
+      undefined,
+      undefined,
+      undefined,
+      CC
+    );
+    await client.connect();
+    const authedFetch = transportOptions[0].fetch as (
+      url: string,
+      init?: RequestInit
+    ) => Promise<Response>;
+
+    nextCallToolImpl = async () => {
+      await authedFetch('https://mcp.example.com/mcp', { method: 'POST', body: '{"secret":1}' });
+      return { content: [] };
+    };
+
+    await expect(
+      client.callTool('upload', { data: 'bytes' }, undefined, () => {
+        if (!active) throw new Error('Upload revoked');
+      })
+    ).rejects.toThrow(/Upload revoked/);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    // Also block the very first fetch when revoked during the initial token fetch
+    fetchMock.mockClear();
+    let initialActive = true;
+    getToken = vi.fn().mockImplementationOnce(async () => {
+      initialActive = false;
+      return 'tok-late';
+    });
+    nextCallToolImpl = async () => {
+      await authedFetch('https://mcp.example.com/mcp', { method: 'POST', body: '{"secret":2}' });
+      return { content: [] };
+    };
+    await expect(
+      client.callTool('upload', { data: 'bytes' }, undefined, () => {
+        if (!initialActive) throw new Error('Upload revoked during initial mint');
+      })
+    ).rejects.toThrow(/Upload revoked during initial mint/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('re-runs beforeSend after session-invalid reconnect before resending callTool', async () => {
+    const client = new HttpMcpClient('plain', 'https://mcp.example.com/mcp');
+    await client.connect();
+
+    let active = true;
+    nextCallToolImpl = async () => {
+      throw new Error('Invalid or expired session ID');
+    };
+    nextConnectImpl = async () => {
+      // Revoke while the HTTP transport is reconnecting
+      active = false;
+    };
+
+    await expect(
+      client.callTool('upload', { data: 'bytes' }, undefined, () => {
+        if (!active) throw new Error('Upload revoked during reconnect');
+      })
+    ).rejects.toThrow(/Upload revoked during reconnect/);
+
+    // Reconnect succeeded for the pool, but the second client instance NEVER dispatched callTool
+    expect(mockClientInstances).toHaveLength(2);
+    expect(mockClientInstances[0].callTool).toHaveBeenCalledTimes(1);
+    expect(mockClientInstances[1].callTool).not.toHaveBeenCalled();
+  });
+
+  it('guards plain transport fetch calls with beforeSend across async boundaries', async () => {
+    const client = new HttpMcpClient('plain', 'https://mcp.example.com/mcp');
+    await client.connect();
+    const guardedFetch = transportOptions[0].fetch as (
+      url: string,
+      init?: RequestInit
+    ) => Promise<Response>;
+
+    let active = true;
+    nextCallToolImpl = async () => {
+      await Promise.resolve();
+      active = false;
+      await guardedFetch('https://mcp.example.com/mcp', { method: 'POST', body: '{"data":1}' });
+      return { content: [] };
+    };
+
+    await expect(
+      client.callTool('upload', { data: 'bytes' }, undefined, () => {
+        if (!active) throw new Error('Upload revoked before transport fetch');
+      })
+    ).rejects.toThrow(/Upload revoked before transport fetch/);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

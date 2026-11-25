@@ -2,11 +2,18 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { mkdtempSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { execFile } from 'child_process';
 import { SlackHitlProvider } from '../src/hitl/providers/slack.js';
 import { WebhookHitlProvider } from '../src/hitl/providers/webhook.js';
 import { IOSHitlProvider } from '../src/hitl/providers/ios.js';
+import { MacosHitlProvider } from '../src/hitl/providers/macos.js';
 import { ApnsClient } from '../src/mobile/apns.js';
 import type { HitlNotification } from '../src/hitl/providers/types.js';
+
+vi.mock('child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('child_process')>();
+  return { ...actual, execFile: vi.fn() };
+});
 
 function makeNotification(overrides: Partial<HitlNotification> = {}): HitlNotification {
   return {
@@ -102,6 +109,49 @@ describe('IOSHitlProvider', () => {
       value: '{"ok":true}',
     });
     expect(sendApproval.mock.calls[0][1].context?.expiresAt).toEqual(expect.any(String));
+  });
+
+  it('includes escalationReason in the iOS push body and structured APNs context', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'airlock-apns-test-'));
+    const keyPath = join(dir, 'AuthKey_TEST.p8');
+    writeFileSync(keyPath, 'test-key');
+
+    const sendApproval = vi
+      .spyOn(ApnsClient.prototype, 'sendApproval')
+      .mockResolvedValue({ ok: true, status: 200 });
+    const auditLogger = {
+      getActiveMobileDevices: vi
+        .fn()
+        .mockReturnValue([{ id: 'device-1', push_token: 'apns-token' }]),
+    } as unknown as import('../src/audit/logger.js').AuditLogger;
+
+    const provider = new IOSHitlProvider(
+      {
+        teamId: 'TEAMID',
+        keyId: 'KEYID',
+        keyPath,
+        bundleId: 'bot.airlock.companion',
+        production: false,
+      },
+      auditLogger
+    );
+
+    await provider.notify([
+      makeNotification({
+        escalated: true,
+        escalationReason: 'High sensitivity data detected (score: 0.95, aws_access_key)',
+      }),
+    ]);
+
+    expect(sendApproval).toHaveBeenCalledOnce();
+    const push = sendApproval.mock.calls[0][1];
+    expect(push.body).toContain(
+      'Security check: High sensitivity data detected (score: 0.95, aws_access_key)'
+    );
+    expect(push.context?.escalated).toBe(true);
+    expect(push.context?.escalationReason).toBe(
+      'High sensitivity data detected (score: 0.95, aws_access_key)'
+    );
   });
 
   it('sends APNs alerts for notification activity but ignores log activity', async () => {
@@ -364,5 +414,38 @@ describe('WebhookHitlProvider', () => {
 
     const provider = new WebhookHitlProvider({ url: 'https://example.com/hitl', headers: {} });
     await expect(provider.notify([makeNotification()])).resolves.not.toThrow();
+  });
+});
+
+// ─── MacosHitlProvider ────────────────────────────────────────────────────────
+
+describe('MacosHitlProvider', () => {
+  it('displays escalationReason in the macOS approval dialog script', async () => {
+    const execFileMock = vi.mocked(execFile);
+    execFileMock.mockReset();
+    execFileMock.mockImplementation(((_file: unknown, _args: unknown, cb: unknown) => {
+      (cb as (err: Error | null, stdout: string) => void)(null, 'button returned:Approve');
+      return {} as ReturnType<typeof execFile>;
+    }) as typeof execFile);
+
+    const approvalApi = {
+      approve: vi.fn(),
+      deny: vi.fn(),
+      approveByCode: vi.fn(),
+      denyByCode: vi.fn(),
+    };
+    const provider = new MacosHitlProvider(approvalApi);
+
+    await provider.notify([
+      makeNotification({
+        escalated: true,
+        escalationReason: 'Prompt injection detected in tool arguments',
+      }),
+    ]);
+
+    expect(execFileMock).toHaveBeenCalledOnce();
+    const args = execFileMock.mock.calls[0][1] as string[];
+    expect(args[1]).toContain('Security check: Prompt injection detected in tool arguments');
+    expect(approvalApi.approveByCode).toHaveBeenCalledWith('ABC123');
   });
 });

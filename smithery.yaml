@@ -1,0 +1,31 @@
+startCommand:
+  type: stdio
+  configSchema:
+    type: object
+    required:
+      - agent
+      - configPath
+    properties:
+      agent:
+        type: string
+        default: claude-code
+        description: Agent profile name defined in your airlock.yaml
+      configPath:
+        type: string
+        default: ./airlock.yaml
+        description: Path to your Airlock YAML policy file
+  commandFunction: |-
+    (config) => ({
+      command: "npx",
+      args: [
+        "-y",
+        "airlock-bot",
+        "--agent",
+        config.agent || "claude-code",
+        "--config",
+        config.configPath || "./airlock.yaml"
+      ]
+    })
+  exampleConfig:
+    agent: claude-code
+    configPath: ./airlock.yaml

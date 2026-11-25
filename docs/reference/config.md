@@ -15,6 +15,7 @@ clis: # CLI tools exposed as MCP tools
 apis: # REST APIs exposed as MCP tools
 agents: # Per-agent policy and config
 approvals: # Global approval provider config
+uploads: # Staged file upload settings (disabled by default)
 security: # Blocked hosts, local-host exceptions, resource limits
 audit: # Audit log settings
 server: # Gateway server settings
@@ -82,6 +83,7 @@ providers:
 | `oauth`                         | `http`                 | `false`    | Run the browser authorization-code flow                                                                  |
 | `oauth_callback_port`           | `http`                 | `18432`    | Local port for the OAuth callback listener                                                               |
 | `oauth_callback_url`            | `http`                 | —          | Public callback URL when the callback is relayed (remote or tunneled setups)                             |
+| `oauth_callback_mode`           | `http`                 | `loopback` | `gateway` receives the callback on the gateway's own `/oauth/callback` route                             |
 | `client_id` / `client_secret`   | `http`                 | —          | Pre-registered OAuth client credentials                                                                  |
 | `oauth_max_refresh_interval_ms` | `http` (`oauth: true`) | 24 h       | Refresh the grant at least this often (1 min – 30 days), so refresh-token inactivity windows never lapse |
 | `request_timeout_ms`            | `http`                 | `60000`    | Per-request MCP deadline                                                                                 |
@@ -458,6 +460,12 @@ agents:
     http: # HTTP domain restrictions
       domain_allowlist: ['api.github.com', '*.sentry.io']
 
+    uploads: # Optional per-agent staged upload overrides (size caps, public_url pin, modes, MIME types)
+      public_url: https://airlock.tailnet.ts.net
+      max_file_bytes: 268435456
+      allowed_modes: [base64, data_uri, text, url]
+      allowed_mime_types: ['model/*', 'image/*']
+
     arg_policy: # Per-tool argument constraints
       google_workspace/manage_event:
         calendar_id:
@@ -521,6 +529,14 @@ agents:
       railway/get-logs:
         # Keeps the vendor's own description and adds a house rule after it.
         description_append: 'Always pass projectId explicitly — list-projects will not show it.'
+      forge/upload_attachment:
+        uploads:
+          content_base64: base64
+      bambuddy/upload_3mf:
+        uploads:
+          file_path:
+            mode: path
+            path_prefix: /shared/uploads
 ```
 
 `description` **replaces** the upstream description; `description_append` **adds** to whatever
@@ -693,6 +709,30 @@ lint:
 Use `disable` to permanently accept a rule for a config, and `severity` to
 re-grade a rule as `info`, `warn`, or `error`. CLI flags such as
 `--disable` and `--rule` override this block for one invocation.
+
+## `uploads`
+
+Staged file upload settings for pushing local files from an agent's disk through Airlock to OpenAPI (`multipart/form-data` / binary), built-in HTTP (`multipart` / `body_upload`), upstream MCP, or CLI tools. Disabled by default. See [File Uploads](/guides/file-uploads).
+
+```yaml
+uploads:
+  enabled: true
+  dir: /data/uploads # optional; defaults to a unique per-instance temp directory
+  public_url: https://airlock.example.com # single public URL returned by airlock/prepare_upload
+  public_urls: # optional allowlist for multi-hostname gateways (matches Host / X-Forwarded-Host)
+    - https://airlock.example.com
+    - https://airlock.tailnet.ts.net
+  internal_url: http://airlock-gateway:4111 # optional base URL for one-time :url downloads
+  max_file_bytes: 52428800 # 50 MiB default per-agent limit (per-agent overrides may raise up to max_total_bytes)
+  max_total_bytes: 524288000 # 500 MiB default staging ceiling across all staged files
+  max_files_per_agent: 100 # default
+  max_inline_bytes: 10485760 # 10 MiB default for base64 / data_uri / text substitution
+  ttl_ms: 900000 # 15m staged file lifetime
+  ticket_ttl_ms: 300000 # 5m unused upload URL lifetime
+  download_ttl_ms: 120000 # 2m one-time download URL lifetime
+  allowed_modes: [base64, data_uri, text, url] # `path` is opt-in
+  allowed_mime_types: [] # empty allows all MIME types
+```
 
 ## `security`
 

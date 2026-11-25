@@ -41,6 +41,7 @@ export default defineConfig({
         items: [
           { text: 'CLI Discovery', link: '/guides/cli-discovery' },
           { text: 'API Discovery', link: '/guides/api-discovery' },
+          { text: 'File Uploads', link: '/guides/file-uploads' },
           { text: 'Composable Profiles', link: '/guides/profiles' },
           { text: 'Dashboard', link: '/guides/dashboard' },
           { text: 'Sandboxed Python Variants', link: '/guides/sandboxed-python' },

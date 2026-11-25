@@ -19,7 +19,11 @@ import {
 import { applyProfiles } from './profiles.js';
 import { hasConflictingBearerAuth, resolveProviderBearerFile } from './provider-credentials.js';
 import { matches } from '../allowlist/pattern.js';
-import { AIRLOCK_APPROVAL_TOOLS, AIRLOCK_NON_ASK_TOOLS } from '../airlock/tools.js';
+import {
+  AIRLOCK_APPROVAL_TOOLS,
+  AIRLOCK_NON_ASK_TOOLS,
+  AIRLOCK_UPLOAD_TOOLS,
+} from '../airlock/tools.js';
 import { childLogger } from '../util/logger.js';
 import type { z } from 'zod';
 
@@ -176,6 +180,11 @@ export function loadConfig(path: string, options: LoadConfigOptions = {}): Confi
 export function validateConfig(config: Config): ConfigDiagnostic[] {
   const diagnostics: ConfigDiagnostic[] = [];
   const providerNames = new Set(Object.keys(config.providers));
+  const knownToolNamespaces = new Set([
+    ...Object.keys(config.providers),
+    ...Object.keys(config.clis),
+    ...Object.keys(config.apis),
+  ]);
   const mcpConfigs = getMcpConfigs(config.providers);
   const mcpProviderNames = new Set(Object.keys(mcpConfigs));
   const sseProviderNames = new Set(
@@ -443,6 +452,9 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
           'oauth_max_refresh_interval_ms only applies to Airlock-held OAuth grants (oauth: true); remove it or enable oauth.',
       });
     }
+    if (provider.oauth_callback_mode === 'gateway') {
+      diagnostics.push(...gatewayOAuthCallbackDiagnostics(providerId, provider));
+    }
     if (provider.oauth && provider.client_credentials) {
       diagnostics.push({
         level: 'error',
@@ -533,12 +545,14 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
     );
 
     for (const pattern of allPatterns) {
-      // Without an `airlock` provider entry the gateway still serves the approval tools, so a
-      // pattern naming one of them (e.g. to deny it) refers to something real.
+      // Without an `airlock` provider entry the gateway still serves the approval tools (and the
+      // upload tools when uploads.enabled is true), so a pattern naming one of them refers to
+      // something real.
       if (
         !providerNames.has('airlock') &&
         pattern.startsWith('airlock/') &&
-        AIRLOCK_APPROVAL_TOOLS.some((tool) => matches(pattern, tool))
+        (AIRLOCK_APPROVAL_TOOLS.some((tool) => matches(pattern, tool)) ||
+          (config.uploads?.enabled && AIRLOCK_UPLOAD_TOOLS.some((tool) => matches(pattern, tool))))
       ) {
         continue;
       }
@@ -546,9 +560,26 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
       if (ns) referencedNamespaces.add(ns);
     }
 
+    if (!config.uploads?.enabled) {
+      const explicitUploadPattern = [...agent.allow, ...agent.ask].find(
+        (pattern) =>
+          pattern.startsWith('airlock/') &&
+          !pattern.includes('*') &&
+          AIRLOCK_UPLOAD_TOOLS.some((tool) => matches(pattern, tool))
+      );
+      if (explicitUploadPattern) {
+        diagnostics.push({
+          level: 'warn',
+          agent: agentId,
+          message: `"${explicitUploadPattern}" is granted while uploads.enabled is false.`,
+          suggestion: 'Set uploads.enabled: true in your config to enable staged file uploads.',
+        });
+      }
+    }
+
     // Check for unknown providers
     for (const ns of referencedNamespaces) {
-      if (!providerNames.has(ns) && !toolOverrideNamespaces.has(ns)) {
+      if (!knownToolNamespaces.has(ns) && !toolOverrideNamespaces.has(ns)) {
         diagnostics.push({
           level: 'error',
           agent: agentId,
@@ -642,6 +673,20 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
         agent: agentId,
         message: 'http.domain_allowlist configured but "http" is not declared as a provider.',
         suggestion: 'Add http: builtin to your providers block.',
+      });
+    }
+
+    if (
+      config.uploads?.enabled &&
+      agent.uploads?.max_file_bytes !== undefined &&
+      agent.uploads.max_file_bytes > config.uploads.max_total_bytes
+    ) {
+      diagnostics.push({
+        level: 'warn',
+        agent: agentId,
+        message: `uploads.max_file_bytes (${agent.uploads.max_file_bytes}) exceeds uploads.max_total_bytes (${config.uploads.max_total_bytes}); effective limit will be capped at uploads.max_total_bytes.`,
+        suggestion:
+          'Raise uploads.max_total_bytes so it is at least as large as the largest per-agent max_file_bytes.',
       });
     }
   }
@@ -1152,6 +1197,51 @@ function unknownKeySuggestion(key: string, path: string[]): string | undefined {
   if (key === 'hitl')
     return 'Use "ask" for agent tool routing or "approvals" for approval providers.';
   return undefined;
+}
+
+/**
+ * `oauth_callback_mode: gateway` makes the gateway itself the browser redirect target, so the
+ * advertised redirect URI must be a real HTTPS address (loopback HTTP is allowed for local testing)
+ * that reaches the gateway's data-plane `GET /oauth/callback` route.
+ */
+function gatewayOAuthCallbackDiagnostics(
+  providerId: string,
+  provider: { oauth: boolean; oauth_callback_url?: string }
+): ConfigDiagnostic[] {
+  const diagnostics: ConfigDiagnostic[] = [];
+  if (!provider.oauth) {
+    diagnostics.push({
+      level: 'warn',
+      message: `Provider "${providerId}" sets oauth_callback_mode: gateway without oauth: true.`,
+      suggestion: 'Set oauth: true, or remove oauth_callback_mode; it only affects browser OAuth.',
+    });
+  }
+  if (!provider.oauth_callback_url) {
+    diagnostics.push({
+      level: 'error',
+      message: `Provider "${providerId}" sets oauth_callback_mode: gateway without oauth_callback_url.`,
+      suggestion:
+        "Set oauth_callback_url to the public HTTPS address that reaches the gateway's /oauth/callback route, e.g. https://airlock.example.com/oauth/callback.",
+    });
+    return diagnostics;
+  }
+  const url = new URL(provider.oauth_callback_url);
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && isLoopbackHost(url.hostname))) {
+    diagnostics.push({
+      level: 'error',
+      message: `Provider "${providerId}" uses oauth_callback_mode: gateway with a non-HTTPS oauth_callback_url.`,
+      suggestion:
+        'Serve the callback over HTTPS (for example behind your reverse proxy); plain HTTP is only accepted for loopback hosts.',
+    });
+  }
+  if (url.search || url.hash) {
+    diagnostics.push({
+      level: 'error',
+      message: `Provider "${providerId}" oauth_callback_url must not contain a query or fragment.`,
+      suggestion: 'Use a plain URL; the authorization server appends code and state itself.',
+    });
+  }
+  return diagnostics;
 }
 
 function isLoopbackHost(host: string): boolean {

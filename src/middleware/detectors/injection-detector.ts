@@ -81,8 +81,12 @@ export function injectionDetectorMiddleware(opts: InjectionDetectorOptions = {})
   const { backend = 'regex', mode = 'detect', inference_url, threshold = 0.8 } = opts;
 
   return async (ctx, next) => {
-    // Pre-execution: scan args
-    const argsText = JSON.stringify(ctx.args);
+    // Pre-execution: scan args (plus any staged :text upload content validated before detectors)
+    const uploadText =
+      typeof ctx.meta.uploadTextForDetectors === 'string' ? ctx.meta.uploadTextForDetectors : '';
+    const argsText = uploadText
+      ? `${JSON.stringify(ctx.args)}\n${uploadText}`
+      : JSON.stringify(ctx.args);
     let preInjection: boolean;
 
     if (backend === 'deberta' && inference_url) {
@@ -100,6 +104,7 @@ export function injectionDetectorMiddleware(opts: InjectionDetectorOptions = {})
         preInjection = classifyWithRegex(argsText).isInjection;
         if (mode === 'escalate') {
           ctx.meta.needsApproval = true;
+          ctx.meta.detectorEscalated = true;
           ctx.meta.approvalReason = 'DeBERTa inference unavailable — escalating as precaution';
         }
       }
@@ -125,6 +130,7 @@ export function injectionDetectorMiddleware(opts: InjectionDetectorOptions = {})
 
       if (mode === 'escalate') {
         ctx.meta.needsApproval = true;
+        ctx.meta.detectorEscalated = true;
         ctx.meta.approvalReason = 'Prompt injection detected in tool arguments';
       }
     }

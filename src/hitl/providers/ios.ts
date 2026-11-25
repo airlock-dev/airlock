@@ -183,6 +183,7 @@ function batchPayload(members: HitlNotification[]): ApnsApprovalPayload {
     code: member.code,
     tool: member.tool,
     summary: oneLineSummary(member),
+    ...(member.escalationReason ? { escalationReason: member.escalationReason } : {}),
   }));
   const flagged = members.filter((member) => member.escalated).length;
   const lines = items.map((item) => `• ${item.tool}${item.summary ? ` — ${item.summary}` : ''}`);
@@ -215,6 +216,11 @@ function oneLineSummary(request: HitlNotification): string {
 function approvalBody(request: HitlNotification): string {
   const entries = Object.entries(request.args).sort(([a], [b]) => a.localeCompare(b));
   const contextLines = [
+    request.escalated
+      ? request.escalationReason
+        ? `⚠️ Security check: ${request.escalationReason}`
+        : '⚠️ Flagged by a security check'
+      : undefined,
     request.context?.reason ? `Request reason: ${request.context.reason}` : undefined,
     request.context?.note ? `Request note: ${request.context.note}` : undefined,
   ].filter((line): line is string => Boolean(line));
@@ -252,6 +258,7 @@ function approvalContext(request: HitlNotification): ApnsApprovalContext {
     ...(request.tier ? { tier: request.tier } : {}),
     ...(request.provider ? { provider: request.provider } : {}),
     ...(request.escalated ? { escalated: true } : {}),
+    ...(request.escalationReason ? { escalationReason: request.escalationReason } : {}),
     ...(request.grantOptions?.length ? { grantOptions: request.grantOptions } : {}),
   };
 }

@@ -33,6 +33,8 @@ apis:
 
 Each endpoint becomes a namespaced tool like `petstore/listPets`, `petstore/getPetById`, etc. These tools appear in the agent's tool list and follow the same allow/ask/deny rules as any other tool.
 
+OpenAPI endpoints with `multipart/form-data` or binary (`application/octet-stream`, `image/*`, etc.) request bodies are automatically mapped to staged file upload parameters accepting `airlock-upload://<id>` handles from `airlock/prepare_upload`. See [File Uploads](/guides/file-uploads).
+
 ## Auth options
 
 The `auth` block supports:

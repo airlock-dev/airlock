@@ -14,4 +14,10 @@ export interface BackendAdapter {
    * the provider's `instructions` config key.
    */
   instructions?(): string | undefined;
+  /**
+   * Report whether a tool argument natively consumes a staged upload as raw binary or multipart
+   * form data (used by OpenAPI and built-in HTTP adapters). Returning undefined means the backend
+   * uses string substitution (`base64`, `data_uri`, `text`, `path`, `url`) instead.
+   */
+  nativeUploadArgKind?(toolName: string, topKey: string): 'binary' | 'multipart' | undefined;
 }

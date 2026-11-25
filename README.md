@@ -98,6 +98,15 @@ Or without a global install:
 }
 ```
 
+Or install as a Claude Code plugin directly from GitHub:
+
+```bash
+/plugin marketplace add airlock-dev/airlock
+/plugin install airlock@airlock
+```
+
+Airlock is also packaged for the Official MCP Registry under `io.github.airlock-dev/airlock` (`airlock-bot` on npm).
+
 See [`examples/claude-code-setup.md`](examples/claude-code-setup.md) for a full walkthrough.
 
 ## Discovery

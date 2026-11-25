@@ -1,0 +1,22 @@
+{
+  "name": "airlock",
+  "version": "0.3.2",
+  "description": "Permissions-aware MCP gateway with per-agent allow/ask/deny policy, human-in-the-loop approvals, CLI/OpenAPI discovery, and SQLite audit logging.",
+  "author": {
+    "name": "Charles Bine",
+    "url": "https://charlesbine.com"
+  },
+  "homepage": "https://airlock.bot",
+  "repository": "https://github.com/airlock-dev/airlock",
+  "license": "MIT",
+  "keywords": [
+    "mcp",
+    "mcp-gateway",
+    "model-context-protocol",
+    "human-in-the-loop",
+    "security",
+    "policy",
+    "audit",
+    "claude-code"
+  ]
+}
