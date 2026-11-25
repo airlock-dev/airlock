@@ -428,7 +428,7 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
       const modeLabel = provider.oauth ? 'oauth: true' : 'client_credentials';
       diagnostics.push({
         level: 'error',
-        message: `Provider "${providerId}" uses ${modeLabel} but its id cannot be used for OAuth token storage.`,
+        message: `Provider "${providerId}" uses ${modeLabel} but its id cannot be used for OAuth grant storage.`,
         suggestion: `OAuth provider ids are used verbatim as file names (letters, digits, ".", "_", "-"; not starting with "."). Rename it, e.g. to "${suggestOAuthId(providerId, takenIds)}"; to keep its stored grant, stop Airlock first and rename ~/.airlock/oauth/${providerId}.json (and .grants/, .history/, .successors/ entries of that name, if any) to the new id (see "Rename an OAuth provider" in docs/reference/cli.md).`,
       });
     }
