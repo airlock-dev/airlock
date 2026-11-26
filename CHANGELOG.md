@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.4.0...airlock-bot-v0.4.1) (2026-11-26)
+
+
+### Features
+
+* add permanent audit retention, per-tool redaction, and provider compatibility options ([#210](https://github.com/airlock-dev/airlock/issues/210)) ([aac668b](https://github.com/airlock-dev/airlock/commit/aac668bfcf53a7de9899e66a2c031d3b7b47ae59))
+
 ## [0.4.0](https://github.com/airlock-dev/airlock/compare/airlock-bot-v0.3.2...airlock-bot-v0.4.0) (2026-11-25)
 
 ### ⚠ BREAKING CHANGES
