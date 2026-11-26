@@ -87,6 +87,7 @@ providers:
 | `client_id` / `client_secret`   | `http`                 | —          | Pre-registered OAuth client credentials                                                                       |
 | `oauth_max_refresh_interval_ms` | `http` (`oauth: true`) | 24 h       | Refresh the grant at least this often (1 min – 30 days), so refresh-token inactivity windows never lapse      |
 | `request_timeout_ms`            | `http`                 | `60000`    | Per-request MCP deadline                                                                                      |
+| `protocol_mode`                 | `http`                 | `auto`     | `legacy` skips modern `server/discover` negotiation for servers that expose tools only over legacy initialize |
 | `instructions`                  | all object forms       | —          | Operator notes added to the gateway's instructions (see below)                                                |
 | `upstream_instructions`         | all object forms       | `include`  | `ignore` drops the provider's own advertised instructions                                                     |
 | `credential_probe`              | `stdio`, `sse`, `http` | —          | Read-only call that proves the credential works (see below)                                                   |
@@ -142,12 +143,13 @@ providers:
       scope: read,write # verbatim — separator is the issuer's to define
 ```
 
-| Field           | Effect                                                                |
-| --------------- | --------------------------------------------------------------------- |
-| `token_url`     | The issuer's token endpoint                                           |
-| `client_id`     | App client id (`${ENV}` supported)                                    |
-| `client_secret` | App client secret (`${ENV}` supported)                                |
-| `scope`         | Optional; passed through untouched, so use the issuer's own separator |
+| Field           | Effect                                                                                  |
+| --------------- | --------------------------------------------------------------------------------------- |
+| `token_url`     | The issuer's token endpoint                                                             |
+| `client_id`     | App client id (`${ENV}` supported)                                                      |
+| `client_secret` | App client secret (`${ENV}` supported)                                                  |
+| `auth_method`   | `client_secret_basic` (default, HTTP Basic) or `client_secret_post` (form-encoded body) |
+| `scope`         | Optional; passed through untouched, so use the issuer's own separator                   |
 
 Tokens are minted on demand, cached under `~/.airlock/oauth/<provider>.client-credentials.json` at
 `0600`, re-minted inside a 5-minute expiry buffer, and force-re-minted once on a `401` (rotating an
@@ -472,6 +474,7 @@ agents:
         calendar_id:
           equals: work-calendar-id@group.calendar.google.com
           label: Work
+          retry_hint: 'Use the shared work calendar ID from the team runbook.' # optional custom denial hint
         action:
           allow: [create, update, delete]
       github/push_files:
@@ -797,17 +800,25 @@ Audit log settings.
 ```yaml
 audit:
   db_path: ./audit.db # default; SQLite file (supports ~)
-  retention_days: 90 # default
+  retention_days: 90 # default; set to 0 for permanent retention
   redact_fields:
     - password
     - token
     - secret
     - authorization
     - api_key
+  redact_tool_fields: # optional exact top-level argument keys redacted for specific tools
+    uploads/put_file:
+      - content
 ```
 
-`redact_fields` defaults to `password`, `token`, `secret`, `key`, and
-`authorization`; setting it replaces that list.
+`retention_days` defaults to `90`. Setting `retention_days: 0` disables automatic pruning for
+audit logs, approval history, and grant records.
+
+`redact_fields` defaults to `password`, `token`, `secret`, `key`, and `authorization`; setting it
+replaces that list. `redact_tool_fields` targets exact top-level argument keys on specific tools
+(matched by `provider/tool` or `provider_tool`) in both direct calls and `airlock/request_approval`
+plans without globally redacting common names like `content` on unrelated tools.
 
 ## `server`
 

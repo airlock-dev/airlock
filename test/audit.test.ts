@@ -281,6 +281,45 @@ describe('AuditDb', () => {
     expect(rows.every((r) => r.tool !== 'old')).toBe(true);
     expect(rows.some((r) => r.tool === 'new')).toBe(true);
   });
+
+  it('cleanup(0) retains audit, approval, and grant history permanently', () => {
+    db.insertAudit({
+      ts: '2000-01-01T00:00:00Z',
+      agent_id: 'retention-check',
+      tool: 'test/read',
+      args: '{}',
+      result: 'success',
+    });
+    db.insertHitl({
+      id: 'historical-approval',
+      code: 'HIST01',
+      agent_id: 'retention-check',
+      tool: 'test/read',
+      args: '{}',
+      status: 'approved',
+      created_at: '2000-01-01T00:00:00Z',
+    });
+    db.insertGrant({
+      id: 'historical-grant',
+      agent_id: 'retention-check',
+      session_id: null,
+      scope: '{"kind":"tool","tool":"test/read"}',
+      source: 'operator',
+      approval_id: null,
+      label: null,
+      created_at: '2000-01-01T00:00:00Z',
+      expires_at: '2000-01-02T00:00:00Z',
+      uses_remaining: 0,
+      revoked_at: '2000-01-01T12:00:00Z',
+    });
+
+    db.cleanup(0);
+    expect(db.queryAudit({})).toHaveLength(1);
+    expect(db.getHitlById('historical-approval')).toBeDefined();
+    expect(db.getGrantById('historical-grant')).toBeDefined();
+    expect(() => db.cleanup(-1)).toThrow(RangeError);
+    expect(() => db.cleanup(1.5)).toThrow(RangeError);
+  });
 });
 
 // ─── AuditLogger ──────────────────────────────────────────────────────────────
@@ -341,6 +380,43 @@ describe('AuditLogger', () => {
     logger.log({ agent_id: 'a', tool: 't', args: 'not-json', result: 'success' });
     const rows = logger.recent(1);
     expect(rows[0].args).toBe('not-json');
+  });
+
+  it('redacts configured tool fields in direct calls and approval plans only', () => {
+    logger.stop();
+    const tool = 'uploads/put_file';
+    const other = 'other/update';
+    logger = new AuditLogger(makeConfig({ redact_tool_fields: { [tool]: ['content'] } }));
+    const upload = { id: 7, filename: 'sample.pdf', content: 'dGVzdA==' };
+    const safe = { ...upload, content: '[REDACTED]' };
+
+    expect(logger.redactArgs(upload, tool)).toEqual(safe);
+    expect(logger.redactArgs(upload, 'uploads_put_file')).toEqual(safe);
+    expect(logger.redactArgs(upload, other)).toEqual(upload);
+
+    logger.log({
+      agent_id: 'agent1',
+      tool: 'airlock/request_approval',
+      args: JSON.stringify({
+        calls: [
+          { tool: 'uploads_put_file', arguments: upload },
+          { tool: other, arguments: upload },
+        ],
+      }),
+      result: 'received',
+    });
+    expect(JSON.parse(logger.recent(1)[0].args).calls).toEqual([
+      { tool: 'uploads_put_file', arguments: safe },
+      { tool: other, arguments: upload },
+    ]);
+    expect(upload.content).toBe('dGVzdA==');
+  });
+
+  it('does not schedule cleanup timer when retention_days is 0', () => {
+    logger.stop();
+    logger = new AuditLogger(makeConfig({ retention_days: 0 }));
+    logger.startDailyCleanup();
+    expect((logger as unknown as { cleanupTimer?: NodeJS.Timeout }).cleanupTimer).toBeUndefined();
   });
 
   it('query filters work', () => {

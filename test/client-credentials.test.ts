@@ -55,6 +55,25 @@ describe('ClientCredentialsTokenSource', () => {
     expect(String(init.body)).toBe('grant_type=client_credentials&scope=read%2Cwrite');
   });
 
+  it('mints with form body credentials when auth_method is client_secret_post', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ access_token: 'tok-post', expires_in: 3600 }));
+
+    const source = new ClientCredentialsTokenSource(
+      'postBot',
+      { ...CFG, auth_method: 'client_secret_post' },
+      storeDir
+    );
+    expect(await source.getToken()).toBe('tok-post');
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(CFG.token_url);
+    const headers = init.headers as Record<string, string>;
+    expect(headers.Authorization).toBeUndefined();
+    expect(String(init.body)).toBe(
+      'grant_type=client_credentials&scope=read%2Cwrite&client_id=cid&client_secret=csecret'
+    );
+  });
+
   it('reuses a cached token instead of minting again', async () => {
     fetchMock.mockResolvedValue(jsonResponse({ access_token: 'tok-1', expires_in: 3600 }));
 

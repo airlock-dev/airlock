@@ -84,7 +84,12 @@ describe('McpBackendAdapter sandbox', () => {
     });
 
     expect(result.success).toBe(true);
-    expect(pool.callTool).toHaveBeenCalledWith('github', 'create_pr', { repo: 'test' });
+    expect(pool.callTool).toHaveBeenCalledWith(
+      'github',
+      'create_pr',
+      { repo: 'test' },
+      { agentId: 'agent1', authenticatedAgentId: 'agent1' }
+    );
   });
 
   it('uses pool for call with empty meta', async () => {
@@ -154,6 +159,7 @@ describe('McpBackendAdapter sandbox', () => {
     expect(mockCallTool).toHaveBeenCalledWith({
       name: 'create_pr',
       arguments: { repo: 'test' },
+      _meta: { agentId: 'agent1', authenticatedAgentId: 'agent1' },
     });
   });
 
@@ -211,6 +217,7 @@ describe('McpBackendAdapter sandbox', () => {
     expect(mockCallTool).toHaveBeenCalledWith({
       name: 'deep/tool_name',
       arguments: { x: 1 },
+      _meta: { agentId: 'agent1', authenticatedAgentId: 'agent1' },
     });
   });
 
@@ -234,7 +241,11 @@ describe('McpBackendAdapter sandbox', () => {
     expect(mockCallTool).toHaveBeenCalledWith({
       name: 'get_chat_messages',
       arguments: { chat_guid: 'chat-1' },
-      _meta: { progressToken: 'progress-1', agentId: 'session-agent-1' },
+      _meta: {
+        progressToken: 'progress-1',
+        agentId: 'session-agent-1',
+        authenticatedAgentId: 'agent1',
+      },
     });
   });
 

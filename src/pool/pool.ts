@@ -184,6 +184,7 @@ export class ClientPool {
             oauthCallbackMode: cfg.oauth_callback_mode,
             oauthCallbackRouter: this.options?.oauthCallbackRouter,
             mcpApps: cfg.mcp_apps === true,
+            protocolMode: cfg.protocol_mode,
           }
         );
     }

@@ -34,14 +34,17 @@ function nonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0;
 }
 
-function mcpRequestMeta(meta: Record<string, unknown> | undefined): McpRequestMeta | undefined {
+function mcpRequestMeta(toolCall: ToolCall): McpRequestMeta {
+  const meta = toolCall.meta;
   const downstreamSessionId = meta?.[DOWNSTREAM_SESSION_ID_META_KEY];
-  if (!nonEmptyString(downstreamSessionId)) return undefined;
-
   const existing = meta?.[MCP_REQUEST_META_KEY];
+  // Keep the session-scoped agentId contract for provider watermarks while also
+  // stamping a durable authenticatedAgentId across sessions and restarts.
+  // Both fields are written after caller metadata so clients cannot forge either.
   return {
     ...(isRecord(existing) ? existing : {}),
-    agentId: downstreamSessionId,
+    agentId: nonEmptyString(downstreamSessionId) ? downstreamSessionId : toolCall.agentId,
+    authenticatedAgentId: toolCall.agentId,
   };
 }
 
@@ -93,7 +96,7 @@ export class McpBackendAdapter implements BackendAdapter {
     }
     const originalName = toolCall.tool.slice(prefix.length);
     const sandbox = toolCall.meta?.sandbox as ResolvedSandboxConfig | undefined;
-    const requestMeta = mcpRequestMeta(toolCall.meta);
+    const requestMeta = mcpRequestMeta(toolCall);
     const uploadPlan = toolCall.meta?.uploadPlan as UploadExecutionPlan | undefined;
 
     const sessionId =

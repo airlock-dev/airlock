@@ -2,16 +2,23 @@ import { AuditDb } from './db.js';
 import { redactFields } from './redactor.js';
 import type { ApprovalGrantEntry, AuditEntry, HitlQueueEntry, MobileDeviceEntry } from './db.js';
 import type { AuditConfig } from '../config/schema.js';
+import { AIRLOCK_REQUEST_APPROVAL_TOOL } from '../airlock/tools.js';
+import { sanitizeToolName } from '../util/tool-name.js';
 
 export class AuditLogger {
   private db: AuditDb;
   private redactPatterns: string[];
+  private toolFields = new Map<string, string[]>();
   private retentionDays: number;
   private cleanupTimer?: NodeJS.Timeout;
 
   constructor(config: AuditConfig) {
     this.db = new AuditDb(config.db_path);
     this.redactPatterns = config.redact_fields;
+    for (const [tool, fields] of Object.entries(config.redact_tool_fields ?? {})) {
+      this.toolFields.set(tool, fields);
+      this.toolFields.set(sanitizeToolName(tool), fields);
+    }
     this.retentionDays = config.retention_days;
   }
 
@@ -19,7 +26,7 @@ export class AuditLogger {
     let args = entry.args;
     try {
       const parsed = JSON.parse(args) as Record<string, unknown>;
-      const redacted = redactFields(parsed, this.redactPatterns);
+      const redacted = this.redactArgs(parsed, entry.tool);
       args = JSON.stringify(redacted);
     } catch {
       // not valid JSON, store as-is
@@ -27,8 +34,35 @@ export class AuditLogger {
     this.db.insertAudit({ ...entry, args, ts: new Date().toISOString() });
   }
 
-  redactArgs(args: Record<string, unknown>): Record<string, unknown> {
-    return redactFields(args, this.redactPatterns) as Record<string, unknown>;
+  redactArgs(args: Record<string, unknown>, tool?: string): Record<string, unknown> {
+    const redacted = redactFields(args, this.redactPatterns) as Record<string, unknown>;
+    if (!tool || !redacted || typeof redacted !== 'object') return redacted;
+    this.redactToolFields(tool, redacted);
+    if (
+      (tool === AIRLOCK_REQUEST_APPROVAL_TOOL ||
+        tool === sanitizeToolName(AIRLOCK_REQUEST_APPROVAL_TOOL)) &&
+      Array.isArray(redacted.calls)
+    ) {
+      for (const call of redacted.calls as unknown[]) {
+        if (!call || typeof call !== 'object' || !('tool' in call)) continue;
+        const {
+          tool: callTool,
+          arguments: inputs,
+          args: callArgs,
+        } = call as Record<string, unknown>;
+        if (typeof callTool !== 'string') continue;
+        this.redactToolFields(callTool, inputs);
+        this.redactToolFields(callTool, callArgs);
+      }
+    }
+    return redacted;
+  }
+
+  private redactToolFields(tool: string, args: unknown): void {
+    if (!args || typeof args !== 'object' || Array.isArray(args)) return;
+    for (const field of this.toolFields.get(tool) ?? []) {
+      if (Object.hasOwn(args, field)) (args as Record<string, unknown>)[field] = '[REDACTED]';
+    }
   }
 
   recent(n: number): AuditEntry[] {
@@ -90,6 +124,7 @@ export class AuditLogger {
   }
 
   startDailyCleanup(): void {
+    if (this.retentionDays === 0 || this.cleanupTimer) return;
     this.cleanupTimer = setInterval(() => {
       this.db.cleanup(this.retentionDays);
     }, 86400_000);

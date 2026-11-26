@@ -104,7 +104,7 @@ export class ApprovalPreviewReader {
       const text = previewText(redacted);
       const formatted = previewFields(redacted, text, hook);
       const requested = hook.request_fields?.length
-        ? previewFields(this.deps.auditLogger.redactArgs(request.args), '', {
+        ? previewFields(this.deps.auditLogger.redactArgs(request.args, request.tool), '', {
             ...hook,
             fields: hook.request_fields,
           })

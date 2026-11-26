@@ -123,6 +123,14 @@ export const ClientCredentialsConfig = z
     client_id: EnvString,
     client_secret: EnvString,
     /**
+     * How the client authenticates to the token endpoint. `client_secret_basic` (HTTP Basic) is
+     * the OAuth2 default; use `client_secret_post` for issuers that only accept credentials in
+     * the `application/x-www-form-urlencoded` body.
+     */
+    auth_method: z
+      .enum(['client_secret_basic', 'client_secret_post'])
+      .default('client_secret_basic'),
+    /**
      * Scopes to request, verbatim — the separator is the issuer's to define (Linear uses commas,
      * the OAuth2 spec says spaces), so the string is passed through untouched. Omit to accept the
      * issuer's default scopes. NOTE: some issuers revoke every live token when an app's scopes
@@ -194,6 +202,12 @@ export const McpServerConfig = z.discriminatedUnion('type', [
        * never use the operator-configured execution budget.
        */
       request_timeout_ms: z.number().int().positive().default(60_000),
+      /**
+       * MCP protocol negotiation mode. `auto` probes modern discovery (`server/discover`) before
+       * falling back; `legacy` skips modern discovery for servers that only expose their full
+       * tool catalog over the legacy initialize handshake.
+       */
+      protocol_mode: z.enum(['auto', 'legacy']).default('auto'),
       ...ProviderInstructionsFields,
       ...CredentialProbeFields,
       ...McpAppsFields,
@@ -374,6 +388,8 @@ export const ToolArgConstraintConfig = z
     label: z.string().optional(),
     value_set: z.string().optional(),
     expose_values: z.boolean().optional(),
+    // Optional operator-authored recovery guidance appended to argument-policy denials.
+    retry_hint: z.string().trim().min(1).max(1000).optional(),
   })
   .strict()
   .superRefine((value, ctx) => {
@@ -1018,10 +1034,16 @@ export type SecurityConfig = z.infer<typeof SecurityConfig>;
 export const AuditConfig = z
   .object({
     db_path: PathString.default('./audit.db'),
-    retention_days: z.number().default(90),
+    /** Retention period in days. Set to `0` to keep audit, approval, and grant history permanently. */
+    retention_days: z.number().int().min(0).default(90),
     redact_fields: z
       .array(z.string())
       .default(['password', 'token', 'secret', 'key', 'authorization']),
+    /**
+     * Exact top-level argument keys to redact for specific tools (keyed by `provider/tool` or its
+     * sanitized `provider_tool` form), in both direct calls and `airlock/request_approval` plans.
+     */
+    redact_tool_fields: z.record(z.string(), z.array(z.string())).optional(),
   })
   .strict();
 export type AuditConfig = z.infer<typeof AuditConfig>;
