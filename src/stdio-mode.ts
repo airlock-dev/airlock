@@ -64,6 +64,7 @@ export async function runStdioMode(
 
   // Audit
   const auditLogger = new AuditLogger(config.audit);
+  auditLogger.setAgentAliases(config.agents);
   auditLogger.startDailyCleanup();
 
   // Approvals — provider is created before engine, so forward calls via closure
@@ -320,6 +321,8 @@ export async function runStdioMode(
       currentAgentConfig = newConfig.agents[agentId];
     }
     activeConfig = newConfig;
+    auditLogger.updateConfig(newConfig.audit);
+    auditLogger.setAgentAliases(newConfig.agents);
     hitlEngine.setTimeoutMs(newConfig.approvals.timeout_ms);
     hitlEngine.configure(engineOptionsFromConfig(newConfig, getConfig));
     updateManagementRequestSecurity(newConfig, managementRequestSecurity);

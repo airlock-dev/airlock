@@ -60,7 +60,12 @@ describe('ClientCredentialsTokenSource', () => {
 
     const source = new ClientCredentialsTokenSource(
       'postBot',
-      { ...CFG, auth_method: 'client_secret_post' },
+      {
+        ...CFG,
+        client_id: 'cid&x=1',
+        client_secret: 'csec:a=b&c',
+        auth_method: 'client_secret_post',
+      },
       storeDir
     );
     expect(await source.getToken()).toBe('tok-post');
@@ -69,9 +74,11 @@ describe('ClientCredentialsTokenSource', () => {
     expect(url).toBe(CFG.token_url);
     const headers = init.headers as Record<string, string>;
     expect(headers.Authorization).toBeUndefined();
-    expect(String(init.body)).toBe(
-      'grant_type=client_credentials&scope=read%2Cwrite&client_id=cid&client_secret=csecret'
-    );
+    const params = new URLSearchParams(String(init.body));
+    expect(params.get('grant_type')).toBe('client_credentials');
+    expect(params.get('scope')).toBe('read,write');
+    expect(params.get('client_id')).toBe('cid&x=1');
+    expect(params.get('client_secret')).toBe('csec:a=b&c');
   });
 
   it('reuses a cached token instead of minting again', async () => {

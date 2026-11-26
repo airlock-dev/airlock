@@ -91,7 +91,10 @@ export class ApprovalPreviewReader {
         };
       }
       const result = await Promise.race([
-        registry.call(hook.tool, args, request.agentId, { downstreamSessionId: randomUUID() }),
+        registry.call(hook.tool, args, request.agentId, {
+          downstreamSessionId: randomUUID(),
+          operatorPreview: true,
+        }),
         new Promise<never>((_resolve, reject) => {
           timer = setTimeout(() => reject(new Error('timeout')), hook.timeout_ms);
           timer.unref();
@@ -104,10 +107,14 @@ export class ApprovalPreviewReader {
       const text = previewText(redacted);
       const formatted = previewFields(redacted, text, hook);
       const requested = hook.request_fields?.length
-        ? previewFields(this.deps.auditLogger.redactArgs(request.args, request.tool), '', {
-            ...hook,
-            fields: hook.request_fields,
-          })
+        ? previewFields(
+            this.deps.auditLogger.redactArgs(request.args, request.tool, request.agentId),
+            '',
+            {
+              ...hook,
+              fields: hook.request_fields,
+            }
+          )
         : undefined;
       outcome = 'approval_preview_success';
       return {

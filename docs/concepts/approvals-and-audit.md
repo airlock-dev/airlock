@@ -230,19 +230,23 @@ For sandboxed tools, the resolved sandbox context is included alongside the reco
 
 ## Secret redaction
 
-Sensitive fields are automatically redacted in audit logs. Airlock matches field names case-insensitively against configurable patterns:
+Sensitive fields are automatically redacted in audit logs, pending approvals, and approval previews. Airlock matches field names case-insensitively against configurable substring patterns, and also supports exact top-level argument keys per tool via `redact_tool_fields`:
 
 ```yaml
 audit:
+  retention_days: 90 # set to 0 for permanent retention
   redact_fields:
     - password
     - token
     - secret
     - authorization
     - api_key
+  redact_tool_fields:
+    uploads/put_file:
+      - content
 ```
 
-Matched fields are replaced with `[REDACTED]` in the stored args.
+Matched fields are replaced with `[REDACTED]` in stored audit arguments, pending approvals, and `airlock/request_approval` plans. Tool aliases inherit their target tool's `redact_tool_fields`.
 
 ## Management API
 

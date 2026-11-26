@@ -202,7 +202,8 @@ function passesConstraint(actual: unknown, constraint: ToolArgConstraintConfig):
 }
 
 function retryInstruction(constraint: ToolArgConstraintConfig): string {
-  if (constraint.retry_hint) return constraint.retry_hint;
+  const hint = constraint.retry_hint?.trim();
+  if (hint) return hint;
   if (hasConstraintKey(constraint, 'equals')) return 'Retry with that value.';
   if (hasConstraintKey(constraint, 'glob_allow')) return 'Retry with an allowed pattern match.';
   return 'Retry with one of the allowed values.';

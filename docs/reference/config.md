@@ -547,6 +547,10 @@ agents:
 survives. Use `description_append` when the vendor's docs are fine and you only need to add a
 caveat, so you do not have to restate their text by hand and keep it in sync.
 
+Any `arg_policy` constraint (including `tool_overrides.<tool>.args` and `events.arg_policy`) accepts
+an optional `retry_hint` string (1–1000 characters after trimming) to replace the default retry
+guidance on both disallowed-value and missing-required-argument denials.
+
 Other agent fields and their defaults:
 
 | Field                            | Default         | Effect                                                                               |
@@ -817,8 +821,9 @@ audit logs, approval history, and grant records.
 
 `redact_fields` defaults to `password`, `token`, `secret`, `key`, and `authorization`; setting it
 replaces that list. `redact_tool_fields` targets exact top-level argument keys on specific tools
-(matched by `provider/tool` or `provider_tool`) in both direct calls and `airlock/request_approval`
-plans without globally redacting common names like `content` on unrelated tools.
+(matched by `provider/tool` or `provider_tool`, and inherited by `tool_overrides.*.alias_of`
+aliases) in direct calls, pending approvals, `airlock/request_approval` plans, and approval preview
+`request_fields` without globally redacting common names like `content` on unrelated tools.
 
 ## `server`
 

@@ -306,5 +306,37 @@ describe('argPolicyMiddleware', () => {
     expect(result.text).toContain('Use the shared work calendar ID from the team runbook.');
     expect(result.text).not.toContain('Retry with that value.');
     expect(okNext).not.toHaveBeenCalled();
+
+    // Missing required argument also uses retry_hint; whitespace-only falls back to default
+    const missingCtx = makeCtx({
+      args: { action: 'create' },
+      agentConfig: makeAgentConfig({
+        arg_policy: {
+          'google_workspace/manage_event': {
+            calendar_id: [
+              {
+                equals: 'work-calendar',
+                retry_hint: 'Provide the work calendar ID.',
+              },
+            ],
+          },
+        },
+      }),
+    });
+    const missingResult = await mw(missingCtx, okNext);
+    expect(missingResult.text).toContain('Provide the work calendar ID.');
+
+    const blankCtx = makeCtx({
+      args: { calendar_id: 'other' },
+      agentConfig: makeAgentConfig({
+        arg_policy: {
+          'google_workspace/manage_event': {
+            calendar_id: [{ equals: 'work-calendar', retry_hint: '   ' }],
+          },
+        },
+      }),
+    });
+    const blankResult = await mw(blankCtx, okNext);
+    expect(blankResult.text).toContain('Retry with that value.');
   });
 });

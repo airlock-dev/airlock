@@ -61,7 +61,7 @@ jobs:
         run: |
           VERSION=$(node -p "require('./package.json').version")
           for i in $(seq 1 60); do
-            if curl -fsSL "https://registry.npmjs.org/airlock-bot/${VERSION}" >/dev/null 2>&1; then
+            if curl -fsSL --connect-timeout 10 --max-time 20 "https://registry.npmjs.org/airlock-bot/${VERSION}" >/dev/null 2>&1; then
               echo "airlock-bot@${VERSION} is live on npm"
               sleep 10
               exit 0
@@ -78,7 +78,9 @@ jobs:
             if ./mcp-publisher publish; then
               exit 0
             fi
-            echo "mcp-publisher publish attempt ${attempt} failed; retrying in 10s..."
-            sleep 10
+            if [ "${attempt}" -lt 3 ]; then
+              echo "mcp-publisher publish attempt ${attempt} failed; retrying in 10s..."
+              sleep 10
+            fi
           done
           exit 1

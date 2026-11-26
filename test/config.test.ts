@@ -53,6 +53,76 @@ describe('GatewayConfig schema', () => {
     expect(result.data.audit.retention_days).toBe(90);
   });
 
+  it('validates retention_days, redact_tool_fields, auth_method, protocol_mode, and retry_hint', () => {
+    const parsed = GatewayConfig.parse({
+      providers: {
+        legacySrv: {
+          type: 'http',
+          url: 'https://mcp.example.com/mcp',
+          protocol_mode: 'legacy',
+          client_credentials: {
+            token_url: 'https://auth.example.com/token',
+            client_id: 'cid',
+            client_secret: 'csec',
+            auth_method: 'client_secret_post',
+          },
+        },
+      },
+      agents: {
+        bot: {
+          allow: ['legacySrv/*'],
+          events: { allow: ['legacySrv/*'] },
+          arg_policy: {
+            'legacySrv/send': {
+              from: { equals: 'bot@example.com', retry_hint: '  Use the bot address.  ' },
+            },
+          },
+        },
+      },
+      audit: {
+        retention_days: 0,
+        redact_tool_fields: { 'legacySrv/upload': ['content'] },
+      },
+    });
+    expect(parsed.audit.retention_days).toBe(0);
+    expect(parsed.audit.redact_tool_fields).toEqual({ 'legacySrv/upload': ['content'] });
+    expect(parsed.agents.bot.arg_policy?.['legacySrv/send'].from[0].retry_hint).toBe(
+      'Use the bot address.'
+    );
+    const warnings = validateConfig(parsed).filter((d) => d.level === 'warn');
+    expect(warnings.some((d) => d.message.includes('protocol_mode: legacy'))).toBe(true);
+
+    expect(GatewayConfig.safeParse({ audit: { retention_days: -1 } }).success).toBe(false);
+    expect(GatewayConfig.safeParse({ audit: { retention_days: 1.5 } }).success).toBe(false);
+    expect(
+      GatewayConfig.safeParse({
+        providers: { s: { type: 'sse', url: 'https://example.com/sse', protocol_mode: 'legacy' } },
+      }).success
+    ).toBe(false);
+    expect(
+      GatewayConfig.safeParse({
+        agents: {
+          a: {
+            arg_policy: {
+              'x/y': { arg: { equals: '1', retry_hint: '   ' } },
+            },
+          },
+        },
+      }).success
+    ).toBe(false);
+    expect(
+      GatewayConfig.safeParse({
+        agents: {
+          a: {
+            arg_policy: {
+              'x/y': { arg: { equals: '1', retry_hint: 'a'.repeat(1001) } },
+            },
+          },
+        },
+      }).success
+    ).toBe(false);
+  });
+
   it('maps deprecated management exposure aliases into the management_api block', () => {
     const result = GatewayConfig.safeParse({
       server: {

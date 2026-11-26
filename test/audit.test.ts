@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -400,6 +400,7 @@ describe('AuditLogger', () => {
       args: JSON.stringify({
         calls: [
           { tool: 'uploads_put_file', arguments: upload },
+          { tool: 'uploads/put_file', args: upload },
           { tool: other, arguments: upload },
         ],
       }),
@@ -407,16 +408,107 @@ describe('AuditLogger', () => {
     });
     expect(JSON.parse(logger.recent(1)[0].args).calls).toEqual([
       { tool: 'uploads_put_file', arguments: safe },
+      { tool: 'uploads/put_file', args: safe },
       { tool: other, arguments: upload },
     ]);
     expect(upload.content).toBe('dGVzdA==');
   });
 
-  it('does not schedule cleanup timer when retention_days is 0', () => {
+  it('supports sanitized provider_tool config keys, merges overlaps, isolates collisions, and handles aliases', () => {
     logger.stop();
-    logger = new AuditLogger(makeConfig({ retention_days: 0 }));
-    logger.startDailyCleanup();
-    expect((logger as unknown as { cleanupTimer?: NodeJS.Timeout }).cleanupTimer).toBeUndefined();
+    logger = new AuditLogger(
+      makeConfig({
+        redact_tool_fields: {
+          uploads_put_file: ['content'],
+          'uploads/put_file': ['extra'],
+          'a/b_c': ['only_a'],
+          'a_b/c': ['only_b'],
+        },
+      })
+    );
+    logger.setAgentAliases({
+      agent1: {
+        tool_overrides: {
+          safe_upload: { alias_of: 'uploads/put_file' },
+        },
+      },
+    });
+
+    // Sanitized key + canonical key merge without overwriting
+    expect(
+      logger.redactArgs({ content: 'raw', extra: 'secret', ok: 'yes' }, 'uploads/put_file')
+    ).toEqual({
+      content: '[REDACTED]',
+      extra: '[REDACTED]',
+      ok: 'yes',
+    });
+    // Colliding canonical names do not bleed into each other
+    expect(logger.redactArgs({ only_a: '1', only_b: '2' }, 'a/b_c')).toEqual({
+      only_a: '[REDACTED]',
+      only_b: '2',
+    });
+    expect(logger.redactArgs({ only_a: '1', only_b: '2' }, 'a_b/c')).toEqual({
+      only_a: '1',
+      only_b: '[REDACTED]',
+    });
+    // Alias inherits canonical tool redaction in both log() and approval plans
+    logger.log({
+      agent_id: 'agent1',
+      tool: 'safe_upload',
+      args: JSON.stringify({ content: 'raw', extra: 'secret', ok: 'yes' }),
+      result: 'received',
+    });
+    expect(JSON.parse(logger.recent(1)[0].args)).toEqual({
+      content: '[REDACTED]',
+      extra: '[REDACTED]',
+      ok: 'yes',
+    });
+    // Prototype-key safety
+    const protoInput = JSON.parse('{"__proto__":"raw","safe":"ok"}') as Record<string, unknown>;
+    logger.updateConfig(makeConfig({ redact_tool_fields: { 'proto/test': ['__proto__'] } }));
+    const protoOut = logger.redactArgs(protoInput, 'proto/test');
+    expect(Object.getOwnPropertyDescriptor(protoOut, '__proto__')?.value).toBe('[REDACTED]');
+    expect(protoOut.safe).toBe('ok');
+  });
+
+  it('skips cleanup when retention_days is 0 and supports hot-reloading retention and redaction', () => {
+    vi.useFakeTimers();
+    try {
+      logger.stop();
+      logger = new AuditLogger(makeConfig({ retention_days: 0 }));
+      logger.startDailyCleanup();
+      logger.log({
+        agent_id: 'agent1',
+        tool: 'uploads/put_file',
+        args: JSON.stringify({ content: 'plain' }),
+        result: 'success',
+      });
+      // Advance 200 days — retention_days: 0 keeps the row intact
+      vi.advanceTimersByTime(200 * 86400_000);
+      expect(logger.recent(10)).toHaveLength(1);
+
+      // Hot-reload enables redact_tool_fields and 30-day retention
+      logger.updateConfig(
+        makeConfig({
+          retention_days: 30,
+          redact_tool_fields: { 'uploads/put_file': ['content'] },
+        })
+      );
+      logger.log({
+        agent_id: 'agent1',
+        tool: 'uploads/put_file',
+        args: JSON.stringify({ content: 'plain2' }),
+        result: 'success',
+      });
+      expect(JSON.parse(logger.recent(1)[0].args)).toEqual({ content: '[REDACTED]' });
+
+      // Advance 1 day — daily cleanup timer now fires and removes the 200-day-old row only
+      vi.advanceTimersByTime(86400_000);
+      expect(logger.recent(10)).toHaveLength(1);
+      expect(JSON.parse(logger.recent(1)[0].args)).toEqual({ content: '[REDACTED]' });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('query filters work', () => {

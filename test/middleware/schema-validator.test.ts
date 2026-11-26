@@ -138,28 +138,45 @@ describe('schemaValidatorMiddleware', () => {
     // No error = cached validator works
   });
 
-  it('compiles draft 2020-12 schemas and isolates duplicate $id across refreshes', async () => {
+  it('compiles draft 2020-12 and 2019-09 schemas (including URI variants) and isolates duplicate $id across refreshes', async () => {
     const mw = schemaValidatorMiddleware();
     const schema1 = {
-      $schema: 'https://json-schema.org/draft/2020-12/schema',
+      $schema: 'https://json-schema.org/draft/2020-12/schema#',
       $id: 'urn:airlock:test:dup',
+      $defs: { tag: { type: 'string' } },
       type: 'object',
-      properties: { a: { type: 'string' } },
+      properties: {
+        a: { $ref: '#/$defs/tag' },
+        pair: { type: 'array', prefixItems: [{ type: 'string' }, { type: 'number' }] },
+      },
       required: ['a'],
     };
     const schema2 = {
-      $schema: 'https://json-schema.org/draft/2020-12/schema',
+      $schema: 'http://json-schema.org/draft/2020-12/schema',
       $id: 'urn:airlock:test:dup',
       type: 'object',
       properties: { b: { type: 'number' } },
       required: ['b'],
     };
+    const schema2019 = {
+      $schema: 'https://json-schema.org/draft/2019-09/schema#',
+      $id: 'urn:airlock:test:dup',
+      type: 'object',
+      properties: { c: { type: 'boolean' } },
+      required: ['c'],
+    };
 
-    const ctx1 = makeCtx({ args: { a: 'ok' } });
+    const ctx1 = makeCtx({ args: { a: 'ok', pair: ['x', 1] } });
     (ctx1.deps.registry.getAllTools as any).mockReturnValue([
       { name: 'test/tool', inputSchema: schema1 },
     ]);
     await expect(mw(ctx1, okNext)).resolves.toEqual(okResponse);
+
+    const ctx1Bad = makeCtx({ args: { a: 'ok', pair: [123, 'bad'] } });
+    (ctx1Bad.deps.registry.getAllTools as any).mockReturnValue([
+      { name: 'test/tool', inputSchema: schema1 },
+    ]);
+    await expect(mw(ctx1Bad, okNext)).rejects.toThrow('Invalid arguments');
 
     const ctx2 = makeCtx({ args: { b: 42 } });
     (ctx2.deps.registry.getAllTools as any).mockReturnValue([
@@ -172,5 +189,11 @@ describe('schemaValidatorMiddleware', () => {
       { name: 'test/tool', inputSchema: schema2 },
     ]);
     await expect(mw(ctx3, okNext)).rejects.toThrow('Invalid arguments');
+
+    const ctx4 = makeCtx({ args: { c: true } });
+    (ctx4.deps.registry.getAllTools as any).mockReturnValue([
+      { name: 'test/tool', inputSchema: schema2019 },
+    ]);
+    await expect(mw(ctx4, okNext)).resolves.toEqual(okResponse);
   });
 });

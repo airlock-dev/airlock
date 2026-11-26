@@ -123,6 +123,31 @@ describe('McpBackendAdapter', () => {
     );
   });
 
+  it('isolates operator preview reads by omitting authenticatedAgentId', async () => {
+    const pool = makePool({
+      callTool: vi.fn().mockResolvedValue({ content: [{ type: 'text', text: 'ok' }] }),
+    });
+    const adapter = new McpBackendAdapter('messages', pool);
+
+    await adapter.call({
+      tool: 'messages/get_chat',
+      args: { chat_guid: 'chat-1' },
+      agentId: 'real-agent',
+      meta: {
+        downstreamSessionId: 'preview-ephemeral-1',
+        operatorPreview: true,
+        mcpRequestMeta: { authenticatedAgentId: 'forged-agent' },
+      },
+    });
+
+    expect(pool.callTool).toHaveBeenCalledWith(
+      'messages',
+      'get_chat',
+      { chat_guid: 'chat-1' },
+      { agentId: 'preview-ephemeral-1' }
+    );
+  });
+
   it('does not special-case send_message tool names', async () => {
     const pool = makePool({
       callTool: vi.fn().mockResolvedValue({ content: [{ type: 'text', text: 'ok' }] }),

@@ -45,7 +45,7 @@ interface CachedToken {
  * 3. **Single-flight.** A burst of concurrent requests on a cold cache must mint ONE token, not one
  *    per request — otherwise the quota above is spent in a single reconnect storm.
  */
-type ClientCredentialsSourceConfig = Omit<ClientCredentialsConfig, 'auth_method'> & {
+export type ClientCredentialsSourceConfig = Omit<ClientCredentialsConfig, 'auth_method'> & {
   auth_method?: ClientCredentialsConfig['auth_method'];
 };
 

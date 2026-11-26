@@ -21,8 +21,10 @@ import type {
 } from '../events/protocol.js';
 import { FileOAuthProvider, type OAuthCallbackMode } from './oauth-provider.js';
 import type { OAuthCallbackRouter } from './oauth-callback-router.js';
-import { ClientCredentialsTokenSource } from './client-credentials.js';
-import type { ClientCredentialsConfig } from '../config/schema.js';
+import {
+  ClientCredentialsTokenSource,
+  type ClientCredentialsSourceConfig,
+} from './client-credentials.js';
 import type { OAuthGrantHealth, OAuthGrantState, ProviderConnectionStatus } from './status.js';
 import type { OAuthStorageMode } from './oauth-store.js';
 import {
@@ -207,7 +209,7 @@ export class HttpMcpClient {
     private clientId?: string,
     private clientSecret?: string,
     private oauthCallbackUrl?: string,
-    clientCredentials?: ClientCredentialsConfig,
+    clientCredentials?: ClientCredentialsSourceConfig,
     private requestTimeoutMs = 60_000,
     options: HttpMcpClientOptions = {}
   ) {

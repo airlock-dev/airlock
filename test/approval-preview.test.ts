@@ -231,7 +231,10 @@ describe('ApprovalPreviewReader', () => {
       'records/read',
       { id: 'opaque-17', format: 'text' },
       'researcher',
-      { downstreamSessionId: expect.stringMatching(/^[0-9a-f-]{36}$/) }
+      {
+        downstreamSessionId: expect.stringMatching(/^[0-9a-f-]{36}$/),
+        operatorPreview: true,
+      }
     );
     expect(JSON.stringify(f.auditLogger.log.mock.calls)).not.toContain('private record');
     expect(f.request).not.toHaveProperty('preview');

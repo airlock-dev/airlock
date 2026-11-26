@@ -1548,6 +1548,7 @@ export function upsertProvider(configPath: string, body: ProviderBody): WebState
       client_secret: undefined,
       client_credentials: undefined,
       request_timeout_ms: undefined,
+      protocol_mode: undefined,
     });
   } else {
     const url =
@@ -1596,6 +1597,7 @@ export function upsertProvider(configPath: string, body: ProviderBody): WebState
             client_secret: undefined,
             client_credentials: undefined,
             request_timeout_ms: undefined,
+            protocol_mode: undefined,
           }
         : {}),
     });

@@ -131,10 +131,12 @@ const DEFAULTS = {
 function redactApprovalArgs(
   auditLogger: AuditLogger,
   args: Record<string, unknown>,
-  tool?: string
+  tool?: string | string[],
+  agentId?: string
 ): Record<string, unknown> {
   return (
-    (auditLogger as { redactArgs?: AuditLogger['redactArgs'] }).redactArgs?.(args, tool) ?? args
+    (auditLogger as { redactArgs?: AuditLogger['redactArgs'] }).redactArgs?.(args, tool, agentId) ??
+    args
   );
 }
 
@@ -198,7 +200,12 @@ export class HitlEngine implements ApprovalApi {
   }): HitlTicket {
     const id = generateId();
     const code = generateApprovalCode();
-    const approvalArgs = redactApprovalArgs(this.auditLogger, params.args, params.tool);
+    const approvalArgs = redactApprovalArgs(
+      this.auditLogger,
+      params.args,
+      params.tool,
+      params.agentId
+    );
     const createdAt = new Date().toISOString();
     const kind = params.kind ?? 'call';
     const mode = params.mode ?? 'sync';
@@ -253,8 +260,12 @@ export class HitlEngine implements ApprovalApi {
   }
 
   /** Redact args the same way approval requests are redacted before display. */
-  redact(args: Record<string, unknown>, tool?: string): Record<string, unknown> {
-    return redactApprovalArgs(this.auditLogger, args, tool);
+  redact(
+    args: Record<string, unknown>,
+    tool?: string | string[],
+    agentId?: string
+  ): Record<string, unknown> {
+    return redactApprovalArgs(this.auditLogger, args, tool, agentId);
   }
 
   /** The notification payload for a request just created, ready for the batcher. */

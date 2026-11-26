@@ -102,6 +102,7 @@ export class Gateway {
 
     // Audit logger
     this.auditLogger = new AuditLogger(this.config.audit);
+    this.auditLogger.setAgentAliases(this.config.agents);
     this.auditLogger.startDailyCleanup();
 
     // Approvals — provider needs approvalApi but engine doesn't exist yet, use forwarder
@@ -523,6 +524,7 @@ export class Gateway {
         this.config.approvals.batch_window_ms,
         newConfig.approvals.batch_window_ms,
       ],
+      ['audit.db_path', this.config.audit.db_path, newConfig.audit.db_path],
       ...(this.config.uploads?.enabled && newConfig.uploads?.enabled
         ? ([['uploads.dir', this.config.uploads.dir, newConfig.uploads.dir]] as Array<
             [string, unknown, unknown]
@@ -643,6 +645,8 @@ export class Gateway {
     this.uploadStore.updateConfig(newConfig.uploads);
     const reloadEpoch = ++this.reloadEpoch;
     this.config = newConfig;
+    this.auditLogger.updateConfig(newConfig.audit);
+    this.auditLogger.setAgentAliases(newConfig.agents);
     this.updateRequestSecurity(newConfig);
     this.hitlEngine.setTimeoutMs(newConfig.approvals.timeout_ms);
     this.hitlEngine.configure(engineOptionsFromConfig(newConfig, () => this.config));
