@@ -3,7 +3,7 @@
   "name": "io.github.airlock-dev/airlock",
   "title": "Airlock: Permissions-Aware MCP Gateway",
   "description": "Permissions-aware MCP gateway with per-agent allow/ask/deny policy, HITL approvals, and audit logs.",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "websiteUrl": "https://airlock.bot",
   "repository": {
     "url": "https://github.com/airlock-dev/airlock",
@@ -13,7 +13,7 @@
     {
       "registryType": "npm",
       "identifier": "airlock-bot",
-      "version": "0.4.0",
+      "version": "0.4.1",
       "runtimeHint": "npx",
       "transport": {
         "type": "stdio"
