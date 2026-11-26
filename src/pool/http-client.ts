@@ -21,8 +21,10 @@ import type {
 } from '../events/protocol.js';
 import { FileOAuthProvider, type OAuthCallbackMode } from './oauth-provider.js';
 import type { OAuthCallbackRouter } from './oauth-callback-router.js';
-import { ClientCredentialsTokenSource } from './client-credentials.js';
-import type { ClientCredentialsConfig } from '../config/schema.js';
+import {
+  ClientCredentialsTokenSource,
+  type ClientCredentialsSourceConfig,
+} from './client-credentials.js';
 import type { OAuthGrantHealth, OAuthGrantState, ProviderConnectionStatus } from './status.js';
 import type { OAuthStorageMode } from './oauth-store.js';
 import {
@@ -89,6 +91,8 @@ export interface HttpMcpClientOptions {
   oauthCallbackRouter?: OAuthCallbackRouter;
   /** Declare MCP Apps support upstream (the provider's `mcp_apps` setting). */
   mcpApps?: boolean;
+  /** Keep legacy-only provider tools available when modern discovery publishes a smaller catalog. */
+  protocolMode?: 'auto' | 'legacy';
 }
 
 /** Whether an HTTP fetch payload is strictly an MCP `notifications/cancelled` frame. */
@@ -192,6 +196,7 @@ export class HttpMcpClient {
   private readonly oauthMaxRefreshIntervalMs?: number;
   /** Declare MCP Apps support upstream (the provider's `mcp_apps` setting). */
   private readonly mcpApps: boolean;
+  private readonly protocolMode: 'auto' | 'legacy';
   /** Consecutive ambiguous refresh failures (drives the one quick retry). */
   private ambiguousFailures = 0;
 
@@ -204,11 +209,12 @@ export class HttpMcpClient {
     private clientId?: string,
     private clientSecret?: string,
     private oauthCallbackUrl?: string,
-    clientCredentials?: ClientCredentialsConfig,
+    clientCredentials?: ClientCredentialsSourceConfig,
     private requestTimeoutMs = 60_000,
     options: HttpMcpClientOptions = {}
   ) {
     this.mcpApps = options.mcpApps === true;
+    this.protocolMode = options.protocolMode ?? 'auto';
     if (this.oauth) {
       this.oauthProvider = new FileOAuthProvider(
         this.id,
@@ -292,7 +298,7 @@ export class HttpMcpClient {
     this.client = new EventsAwareClient(
       { name: 'airlock', version: VERSION },
       {
-        versionNegotiation: { mode: 'auto' },
+        versionNegotiation: { mode: this.protocolMode },
         capabilities: upstreamClientCapabilities(this.mcpApps),
       }
     );

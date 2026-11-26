@@ -27,6 +27,7 @@ const log = childLogger('mcp-adapter');
 
 const DOWNSTREAM_SESSION_ID_META_KEY = 'downstreamSessionId';
 const MCP_REQUEST_META_KEY = 'mcpRequestMeta';
+const OPERATOR_PREVIEW_META_KEY = 'operatorPreview';
 
 type McpRequestMeta = Record<string, unknown>;
 
@@ -34,14 +35,28 @@ function nonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0;
 }
 
-function mcpRequestMeta(meta: Record<string, unknown> | undefined): McpRequestMeta | undefined {
+function mcpRequestMeta(toolCall: ToolCall): McpRequestMeta | undefined {
+  const meta = toolCall.meta;
   const downstreamSessionId = meta?.[DOWNSTREAM_SESSION_ID_META_KEY];
-  if (!nonEmptyString(downstreamSessionId)) return undefined;
-
   const existing = meta?.[MCP_REQUEST_META_KEY];
+  // Operator approval previews run in an isolated ephemeral session and must never be
+  // attributed to the requesting agent's durable identity or advance its watermarks.
+  if (meta?.[OPERATOR_PREVIEW_META_KEY] === true) {
+    if (!nonEmptyString(downstreamSessionId)) return undefined;
+    const base = isRecord(existing) ? { ...existing } : {};
+    delete base.authenticatedAgentId;
+    return {
+      ...base,
+      agentId: downstreamSessionId,
+    };
+  }
+  // Keep the session-scoped agentId contract for provider watermarks while also
+  // stamping a durable authenticatedAgentId across sessions and restarts.
+  // Both fields are written after caller metadata so clients cannot forge either.
   return {
     ...(isRecord(existing) ? existing : {}),
-    agentId: downstreamSessionId,
+    agentId: nonEmptyString(downstreamSessionId) ? downstreamSessionId : toolCall.agentId,
+    authenticatedAgentId: toolCall.agentId,
   };
 }
 
@@ -93,7 +108,7 @@ export class McpBackendAdapter implements BackendAdapter {
     }
     const originalName = toolCall.tool.slice(prefix.length);
     const sandbox = toolCall.meta?.sandbox as ResolvedSandboxConfig | undefined;
-    const requestMeta = mcpRequestMeta(toolCall.meta);
+    const requestMeta = mcpRequestMeta(toolCall);
     const uploadPlan = toolCall.meta?.uploadPlan as UploadExecutionPlan | undefined;
 
     const sessionId =

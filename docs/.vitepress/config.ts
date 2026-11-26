@@ -5,9 +5,10 @@ export default defineConfig({
   description: 'Permissions-aware MCP gateway for AI agents',
   cleanUrls: true,
   lastUpdated: true,
+  head: [['link', { rel: 'icon', href: '/favicon.png', type: 'image/png' }]],
   themeConfig: {
     siteTitle: 'Airlock',
-    logo: '/logo.svg',
+    logo: '/favicon.png',
     nav: [
       { text: 'Guide', link: '/quickstart' },
       { text: 'Concepts', link: '/concepts/permissions' },

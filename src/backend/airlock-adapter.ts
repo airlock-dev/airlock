@@ -471,7 +471,13 @@ export class AirlockBackendAdapter implements BackendAdapter {
           fingerprintBindings && fingerprintBindings.length > 0
             ? fingerprintCallWithUploads(entry.tool.name, args, fingerprintBindings)
             : fingerprintCall(entry.tool.name, args),
-        args: hitlEngine.redact(displayArgs),
+        args: hitlEngine.redact(
+          displayArgs,
+          entry.resolvedName && entry.resolvedName !== entry.tool.name
+            ? [entry.tool.name, entry.resolvedName]
+            : entry.tool.name,
+          toolCall.agentId
+        ),
       });
     }
 

@@ -54,7 +54,12 @@ describe('McpBackendAdapter', () => {
       agentId: 'a1',
     });
     expect(result.success).toBe(true);
-    expect(pool.callTool).toHaveBeenCalledWith('github', 'create_pr', { repo: 'test' });
+    expect(pool.callTool).toHaveBeenCalledWith(
+      'github',
+      'create_pr',
+      { repo: 'test' },
+      { agentId: 'a1', authenticatedAgentId: 'a1' }
+    );
   });
 
   it('stamps downstream MCP calls with the session id in agent metadata', async () => {
@@ -78,7 +83,68 @@ describe('McpBackendAdapter', () => {
       'messages',
       'get_chat_messages',
       { chat_guid: 'chat-1' },
-      { progressToken: 'progress-1', agentId: 'session-agent-1' }
+      {
+        progressToken: 'progress-1',
+        agentId: 'session-agent-1',
+        authenticatedAgentId: 'configured-agent',
+      }
+    );
+  });
+
+  it('overwrites caller-supplied identity fields in mcpRequestMeta', async () => {
+    const pool = makePool({
+      callTool: vi.fn().mockResolvedValue({ content: [{ type: 'text', text: 'ok' }] }),
+    });
+    const adapter = new McpBackendAdapter('messages', pool);
+
+    const result = await adapter.call({
+      tool: 'messages/get_chat_messages',
+      args: { chat_guid: 'chat-1' },
+      agentId: 'real-agent',
+      meta: {
+        mcpRequestMeta: {
+          progressToken: 'progress-1',
+          agentId: 'forged-agent',
+          authenticatedAgentId: 'forged-admin',
+        },
+      },
+    });
+
+    expect(result.success).toBe(true);
+    expect(pool.callTool).toHaveBeenCalledWith(
+      'messages',
+      'get_chat_messages',
+      { chat_guid: 'chat-1' },
+      {
+        progressToken: 'progress-1',
+        agentId: 'real-agent',
+        authenticatedAgentId: 'real-agent',
+      }
+    );
+  });
+
+  it('isolates operator preview reads by omitting authenticatedAgentId', async () => {
+    const pool = makePool({
+      callTool: vi.fn().mockResolvedValue({ content: [{ type: 'text', text: 'ok' }] }),
+    });
+    const adapter = new McpBackendAdapter('messages', pool);
+
+    await adapter.call({
+      tool: 'messages/get_chat',
+      args: { chat_guid: 'chat-1' },
+      agentId: 'real-agent',
+      meta: {
+        downstreamSessionId: 'preview-ephemeral-1',
+        operatorPreview: true,
+        mcpRequestMeta: { authenticatedAgentId: 'forged-agent' },
+      },
+    });
+
+    expect(pool.callTool).toHaveBeenCalledWith(
+      'messages',
+      'get_chat',
+      { chat_guid: 'chat-1' },
+      { agentId: 'preview-ephemeral-1' }
     );
   });
 
@@ -95,10 +161,15 @@ describe('McpBackendAdapter', () => {
     });
 
     expect(result.success).toBe(true);
-    expect(pool.callTool).toHaveBeenCalledWith('messages', 'send_message', {
-      chat_guid: 'chat-1',
-      message: 'hi',
-    });
+    expect(pool.callTool).toHaveBeenCalledWith(
+      'messages',
+      'send_message',
+      {
+        chat_guid: 'chat-1',
+        message: 'hi',
+      },
+      { agentId: 'configured-agent', authenticatedAgentId: 'configured-agent' }
+    );
   });
 
   it('rejects tools with wrong prefix', async () => {

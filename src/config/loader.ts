@@ -192,6 +192,11 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
       .filter(([, cfg]) => cfg.type === 'sse')
       .map(([id]) => id)
   );
+  const legacyHttpProviderNames = new Set(
+    Object.entries(mcpConfigs)
+      .filter(([, cfg]) => cfg.type === 'http' && cfg.protocol_mode === 'legacy')
+      .map(([id]) => id)
+  );
   const builtins = getBuiltinProviders(config.providers);
 
   const validateEventRules = (
@@ -230,6 +235,13 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
           message: `${scopeLabel} event pattern references legacy SSE provider "${ns}", which does not support MCP Events (SEP-3415).`,
           suggestion: `Use a Streamable HTTP ("type: http") or stdio MCP provider for events.`,
         });
+      } else if (legacyHttpProviderNames.has(ns)) {
+        diagnostics.push({
+          level: 'warn',
+          ...(agent ? { agent } : {}),
+          message: `${scopeLabel} event pattern references HTTP provider "${ns}" with protocol_mode: legacy, which skips MCP 2026-07-28 discovery required for MCP Events (SEP-3415).`,
+          suggestion: `Set protocol_mode: auto on "${ns}" (or omit protocol_mode) to enable MCP Events.`,
+        });
       }
     }
     for (const eventKey of Object.keys(events.arg_policy ?? {})) {
@@ -265,6 +277,13 @@ export function validateConfig(config: Config): ConfigDiagnostic[] {
           ...(agent ? { agent } : {}),
           message: `${scopeLabel}.events.arg_policy references legacy SSE provider "${ns}" in "${eventKey}", which does not support MCP Events.`,
           suggestion: `Use a Streamable HTTP ("type: http") or stdio MCP provider for events.`,
+        });
+      } else if (ns && legacyHttpProviderNames.has(ns)) {
+        diagnostics.push({
+          level: 'warn',
+          ...(agent ? { agent } : {}),
+          message: `${scopeLabel}.events.arg_policy references HTTP provider "${ns}" with protocol_mode: legacy in "${eventKey}", which does not negotiate MCP Events.`,
+          suggestion: `Set protocol_mode: auto on "${ns}" (or omit protocol_mode) to enable MCP Events.`,
         });
       }
     }

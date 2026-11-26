@@ -202,4 +202,65 @@ describe('ClientPool.reload', () => {
     );
     expect(activeClient?.url).toBe('http://127.0.0.1:1/v4');
   });
+
+  it('restarts an HTTP client when protocol_mode or client_credentials.auth_method changes', async () => {
+    const modes: string[] = [];
+    vi.spyOn(HttpMcpClient.prototype, 'connect').mockImplementation(async function (
+      this: HttpMcpClient
+    ) {
+      modes.push((this as unknown as { protocolMode: string }).protocolMode);
+    });
+    const stop = vi.spyOn(HttpMcpClient.prototype, 'stop').mockResolvedValue();
+
+    const pool = new ClientPool(
+      {
+        svc: McpServerConfig.parse({
+          type: 'http',
+          url: 'http://127.0.0.1:1/mcp',
+          protocol_mode: 'auto',
+          client_credentials: {
+            token_url: 'https://auth.example.com/token',
+            client_id: 'cid',
+            client_secret: 'csec',
+            auth_method: 'client_secret_basic',
+          },
+        }),
+      },
+      { healthCheck: false }
+    );
+    await pool.initialize();
+    expect(modes).toEqual(['auto']);
+
+    await pool.reload({
+      svc: McpServerConfig.parse({
+        type: 'http',
+        url: 'http://127.0.0.1:1/mcp',
+        protocol_mode: 'legacy',
+        client_credentials: {
+          token_url: 'https://auth.example.com/token',
+          client_id: 'cid',
+          client_secret: 'csec',
+          auth_method: 'client_secret_basic',
+        },
+      }),
+    });
+    await vi.waitFor(() => expect(modes).toEqual(['auto', 'legacy']));
+    expect(stop).toHaveBeenCalledTimes(1);
+
+    await pool.reload({
+      svc: McpServerConfig.parse({
+        type: 'http',
+        url: 'http://127.0.0.1:1/mcp',
+        protocol_mode: 'legacy',
+        client_credentials: {
+          token_url: 'https://auth.example.com/token',
+          client_id: 'cid',
+          client_secret: 'csec',
+          auth_method: 'client_secret_post',
+        },
+      }),
+    });
+    await vi.waitFor(() => expect(modes).toEqual(['auto', 'legacy', 'legacy']));
+    expect(stop).toHaveBeenCalledTimes(2);
+  });
 });

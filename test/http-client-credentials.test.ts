@@ -10,6 +10,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { ClientCredentialsConfig } from '../src/config/schema.js';
 
 const transportOptions: Array<Record<string, unknown>> = [];
+const clientOptions: Array<Record<string, unknown>> = [];
 const mockClientInstances: Array<{
   connect: ReturnType<typeof vi.fn>;
   callTool: ReturnType<typeof vi.fn>;
@@ -30,7 +31,8 @@ vi.mock('@modelcontextprotocol/client', async (importOriginal) => ({
       terminateSession: vi.fn().mockResolvedValue(undefined),
     };
   }),
-  Client: vi.fn().mockImplementation(() => {
+  Client: vi.fn().mockImplementation((_info, opts) => {
+    clientOptions.push(opts ?? {});
     const connect = vi.fn().mockImplementation(() => {
       const impl = nextConnectImpl;
       nextConnectImpl = undefined;
@@ -69,6 +71,7 @@ const CC: ClientCredentialsConfig = {
   token_url: 'https://issuer.example/oauth/token',
   client_id: 'cid',
   client_secret: 'csecret',
+  auth_method: 'client_secret_basic',
   scope: 'read,write',
 };
 
@@ -76,6 +79,7 @@ let fetchMock: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
   transportOptions.length = 0;
+  clientOptions.length = 0;
   mockClientInstances.length = 0;
   nextConnectImpl = undefined;
   nextCallToolImpl = undefined;
@@ -312,5 +316,27 @@ describe('HttpMcpClient with client_credentials', () => {
       })
     ).rejects.toThrow(/Upload revoked before transport fetch/);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('passes configured protocolMode to versionNegotiation', async () => {
+    const autoClient = new HttpMcpClient('autoSrv', 'https://mcp.example.com/mcp');
+    await autoClient.connect();
+    const legacyClient = new HttpMcpClient(
+      'legacySrv',
+      'https://mcp.example.com/mcp',
+      undefined,
+      false,
+      18432,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      60_000,
+      { protocolMode: 'legacy' }
+    );
+    await legacyClient.connect();
+
+    expect(clientOptions[0]).toMatchObject({ versionNegotiation: { mode: 'auto' } });
+    expect(clientOptions[1]).toMatchObject({ versionNegotiation: { mode: 'legacy' } });
   });
 });
